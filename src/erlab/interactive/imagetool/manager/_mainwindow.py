@@ -34,6 +34,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _ApplicationQuitFilter,
     _HeightForWidthFrame,
+    _manager_settings,
     _MetadataDerivationListWidget,
     _SingleImagePreview,
     _StandaloneAppSpec,
@@ -81,6 +82,17 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NEW_FIGURE_TARGET = "__new_figure__"
+_FIGURE_VIEW_MODE_SETTINGS_KEY = "figures/view_mode"
+_FIGURE_GALLERY_SIZE_SETTINGS_KEY = "figures/gallery_thumbnail_size"
+_FIGURE_VIEW_MODE_LIST = "list"
+_FIGURE_VIEW_MODE_GALLERY = "gallery"
+_FIGURE_VIEW_MODES = (_FIGURE_VIEW_MODE_LIST, _FIGURE_VIEW_MODE_GALLERY)
+_FIGURE_GALLERY_SIZE_MEDIUM = "medium"
+_FIGURE_GALLERY_THUMBNAIL_SIZES = {
+    "small": (112, 84),
+    _FIGURE_GALLERY_SIZE_MEDIUM: (152, 114),
+    "large": (216, 162),
+}
 
 
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
@@ -468,6 +480,11 @@ class ImageToolManager(_ImageToolManagerBase):
             ),
         }
         self._standalone_app_actions: dict[str, QtWidgets.QAction] = {}
+        self._figure_view_mode = self._read_figure_view_mode_setting()
+        self._figure_gallery_thumbnail_size_name = (
+            self._read_figure_gallery_size_setting()
+        )
+        self._updating_figure_view_controls = False
 
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
@@ -860,6 +877,55 @@ class ImageToolManager(_ImageToolManagerBase):
         figure_layout = QtWidgets.QVBoxLayout(self.figure_tab)
         figure_layout.setContentsMargins(0, 0, 0, 0)
         figure_layout.setSpacing(0)
+        self.figure_view_controls = QtWidgets.QWidget(self.figure_tab)
+        self.figure_view_controls.setObjectName("manager_figures_view_controls")
+        figure_view_layout = QtWidgets.QHBoxLayout(self.figure_view_controls)
+        figure_view_layout.setContentsMargins(0, 0, 0, 0)
+        figure_view_layout.setSpacing(
+            self._style_pixel_metric(
+                QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
+            )
+        )
+        figure_view_label = QtWidgets.QLabel("View", self.figure_view_controls)
+        figure_view_layout.addWidget(figure_view_label)
+        self.figure_view_button_group = QtWidgets.QButtonGroup(
+            self.figure_view_controls
+        )
+        self.figure_view_button_group.setExclusive(True)
+        self.figure_view_list_button = self._figure_view_mode_button(
+            "List",
+            self._standard_figure_view_icon("SP_FileDialogListView"),
+            _FIGURE_VIEW_MODE_LIST,
+        )
+        self.figure_view_gallery_button = self._figure_view_mode_button(
+            "Gallery",
+            self._standard_figure_view_icon("SP_FileDialogContentsView"),
+            _FIGURE_VIEW_MODE_GALLERY,
+        )
+        for button in (self.figure_view_list_button, self.figure_view_gallery_button):
+            self.figure_view_button_group.addButton(button)
+            figure_view_layout.addWidget(button)
+        figure_view_label.setBuddy(self.figure_view_list_button)
+        self.figure_gallery_size_label = QtWidgets.QLabel(
+            "Thumbnail", self.figure_view_controls
+        )
+        self.figure_gallery_size_combo = QtWidgets.QComboBox(self.figure_view_controls)
+        self.figure_gallery_size_combo.setObjectName("manager_figures_gallery_size")
+        self.figure_gallery_size_combo.setToolTip("Choose gallery thumbnail size.")
+        self.figure_gallery_size_label.setBuddy(self.figure_gallery_size_combo)
+        for label, key in (
+            ("Small", "small"),
+            ("Medium", "medium"),
+            ("Large", "large"),
+        ):
+            self.figure_gallery_size_combo.addItem(label, key)
+        self.figure_gallery_size_combo.currentIndexChanged.connect(
+            self._figure_gallery_size_changed
+        )
+        figure_view_layout.addStretch(1)
+        figure_view_layout.addWidget(self.figure_gallery_size_label)
+        figure_view_layout.addWidget(self.figure_gallery_size_combo)
+        figure_layout.addWidget(self.figure_view_controls)
         self.figure_list = QtWidgets.QListWidget(self.figure_tab)
         self.figure_list.setObjectName("manager_figures_list")
         self.figure_list.setSelectionMode(
@@ -876,6 +942,8 @@ class ImageToolManager(_ImageToolManagerBase):
         self.figure_list.itemDoubleClicked.connect(self._show_figure_item)
         self.figure_list.customContextMenuRequested.connect(self._show_figure_menu)
         figure_layout.addWidget(self.figure_list)
+        self._apply_figure_view_controls()
+        self._apply_figure_list_view_configuration()
         self.left_tabs.addTab(self.figure_tab, "Figures")
         self.left_tabs.setTabVisible(1, False)
         left_layout.addWidget(self.left_tabs)
@@ -1178,6 +1246,208 @@ class ImageToolManager(_ImageToolManagerBase):
             if uid in self._tool_graph.nodes and self._is_figure_uid(uid)
         ]
 
+    @staticmethod
+    def _settings_string(key: str, default: str) -> str:
+        value = _manager_settings().value(key, default)
+        return value if isinstance(value, str) else default
+
+    def _read_figure_view_mode_setting(self) -> str:
+        mode = self._settings_string(
+            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_LIST
+        )
+        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_LIST
+
+    def _read_figure_gallery_size_setting(self) -> str:
+        size_name = self._settings_string(
+            _FIGURE_GALLERY_SIZE_SETTINGS_KEY, _FIGURE_GALLERY_SIZE_MEDIUM
+        )
+        if size_name in _FIGURE_GALLERY_THUMBNAIL_SIZES:
+            return size_name
+        return _FIGURE_GALLERY_SIZE_MEDIUM
+
+    def _standard_figure_view_icon(self, name: str) -> QtGui.QIcon:
+        fallback = QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView
+        standard = getattr(QtWidgets.QStyle.StandardPixmap, name, fallback)
+        return self._qt_style().standardIcon(standard)
+
+    def _style_pixel_metric(self, metric: QtWidgets.QStyle.PixelMetric) -> int:
+        return self._qt_style().pixelMetric(metric)
+
+    def _qt_style(self) -> QtWidgets.QStyle:
+        style = self.style() or QtWidgets.QApplication.style()
+        if style is None:  # pragma: no cover
+            raise RuntimeError("No active Qt style")
+        return style
+
+    def _figure_view_mode_button(
+        self, text: str, icon: QtGui.QIcon, mode: str
+    ) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton(self.figure_view_controls)
+        button.setObjectName(f"manager_figures_{mode}_view_button")
+        button.setText(text)
+        button.setIcon(icon)
+        button.setCheckable(True)
+        button.setAutoRaise(True)
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setToolTip(f"Show figures in {text.lower()} view.")
+        button.clicked.connect(
+            lambda _checked=False, mode=mode: self._set_figure_view_mode(mode)
+        )
+        return button
+
+    def _set_figure_view_mode(self, mode: str) -> None:
+        if mode not in _FIGURE_VIEW_MODES or mode == self._figure_view_mode:
+            return
+        self._figure_view_mode = mode
+        _manager_settings().setValue(_FIGURE_VIEW_MODE_SETTINGS_KEY, mode)
+        self._apply_figure_view_controls()
+        self._sync_figures_ui()
+
+    @QtCore.Slot(int)
+    def _figure_gallery_size_changed(self, _index: int) -> None:
+        if self._updating_figure_view_controls:
+            return
+        size_name = self.figure_gallery_size_combo.currentData()
+        if (
+            not isinstance(size_name, str)
+            or size_name not in _FIGURE_GALLERY_THUMBNAIL_SIZES
+            or size_name == self._figure_gallery_thumbnail_size_name
+        ):
+            return
+        self._figure_gallery_thumbnail_size_name = size_name
+        _manager_settings().setValue(_FIGURE_GALLERY_SIZE_SETTINGS_KEY, size_name)
+        self._apply_figure_view_controls()
+        self._sync_figures_ui()
+
+    def _apply_figure_view_controls(self) -> None:
+        if not hasattr(self, "figure_view_list_button"):
+            return
+        self._updating_figure_view_controls = True
+        try:
+            self.figure_view_list_button.setChecked(
+                self._figure_view_mode == _FIGURE_VIEW_MODE_LIST
+            )
+            self.figure_view_gallery_button.setChecked(
+                self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY
+            )
+            gallery_mode = self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY
+            self.figure_gallery_size_label.setVisible(gallery_mode)
+            self.figure_gallery_size_combo.setVisible(gallery_mode)
+            self.figure_gallery_size_combo.setEnabled(gallery_mode)
+            for index in range(self.figure_gallery_size_combo.count()):
+                if (
+                    self.figure_gallery_size_combo.itemData(index)
+                    == self._figure_gallery_thumbnail_size_name
+                ):
+                    self.figure_gallery_size_combo.setCurrentIndex(index)
+                    break
+        finally:
+            self._updating_figure_view_controls = False
+
+    def _figure_gallery_thumbnail_size(self) -> QtCore.QSize:
+        width, height = _FIGURE_GALLERY_THUMBNAIL_SIZES[
+            self._figure_gallery_thumbnail_size_name
+        ]
+        return QtCore.QSize(width, height)
+
+    def _figure_gallery_grid_size(self) -> QtCore.QSize:
+        thumbnail_size = self._figure_gallery_thumbnail_size()
+        spacing = self._style_pixel_metric(
+            QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
+        )
+        label_height = self.figure_list.fontMetrics().height() * 2
+        return QtCore.QSize(
+            thumbnail_size.width() + spacing * 4,
+            thumbnail_size.height() + label_height + spacing * 3,
+        )
+
+    def _apply_figure_list_view_configuration(self) -> None:
+        if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
+            self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+            self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+            self.figure_list.setMovement(QtWidgets.QListView.Movement.Static)
+            self.figure_list.setFlow(QtWidgets.QListView.Flow.LeftToRight)
+            self.figure_list.setWrapping(True)
+            self.figure_list.setSpacing(
+                self._style_pixel_metric(
+                    QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
+                )
+            )
+            self.figure_list.setUniformItemSizes(True)
+            self.figure_list.setIconSize(self._figure_gallery_thumbnail_size())
+            self.figure_list.setGridSize(self._figure_gallery_grid_size())
+            self.figure_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
+            return
+        self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.ListMode)
+        self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Fixed)
+        self.figure_list.setMovement(QtWidgets.QListView.Movement.Static)
+        self.figure_list.setFlow(QtWidgets.QListView.Flow.TopToBottom)
+        self.figure_list.setWrapping(False)
+        self.figure_list.setSpacing(0)
+        self.figure_list.setUniformItemSizes(False)
+        self.figure_list.setIconSize(QtCore.QSize())
+        self.figure_list.setGridSize(QtCore.QSize())
+
+    def _figure_gallery_icon(self, uid: str) -> QtGui.QIcon:
+        if not self._is_figure_uid(uid):
+            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
+        node = self._child_node(uid)
+        preview_pixmap = (
+            getattr(node.tool_window, "preview_pixmap", None)
+            if node.tool_window is not None
+            else None
+        )
+        if preview_pixmap is None or preview_pixmap.isNull():
+            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
+        return QtGui.QIcon(self._figure_gallery_thumbnail_pixmap(preview_pixmap))
+
+    def _figure_gallery_placeholder_pixmap(self) -> QtGui.QPixmap:
+        thumbnail_size = self._figure_gallery_thumbnail_size()
+        pixmap = QtGui.QPixmap(thumbnail_size)
+        pixmap.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
+        painter = QtGui.QPainter(pixmap)
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            rect = QtCore.QRectF(pixmap.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            painter.setPen(self.palette().color(QtGui.QPalette.ColorRole.Mid))
+            painter.drawRoundedRect(rect, 3.0, 3.0)
+        finally:
+            painter.end()
+        return pixmap
+
+    def _figure_gallery_thumbnail_pixmap(
+        self, source_pixmap: QtGui.QPixmap
+    ) -> QtGui.QPixmap:
+        thumbnail_size = self._figure_gallery_thumbnail_size()
+        canvas = QtGui.QPixmap(thumbnail_size)
+        canvas.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
+        scaled = source_pixmap.scaled(
+            thumbnail_size,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        painter = QtGui.QPainter(canvas)
+        try:
+            x_pos = (thumbnail_size.width() - scaled.width()) // 2
+            y_pos = (thumbnail_size.height() - scaled.height()) // 2
+            painter.drawPixmap(x_pos, y_pos, scaled)
+        finally:
+            painter.end()
+        return canvas
+
+    def _figure_list_item(self, uid: str) -> QtWidgets.QListWidgetItem:
+        node = self._child_node(uid)
+        item = QtWidgets.QListWidgetItem(node.display_text)
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, uid)
+        item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
+        if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
+            item.setIcon(self._figure_gallery_icon(uid))
+            item.setTextAlignment(
+                QtCore.Qt.AlignmentFlag.AlignHCenter
+                | QtCore.Qt.AlignmentFlag.AlignBottom
+            )
+        return item
+
     def _next_figure_display_name(self) -> str:
         highest = 0
         for uid in self._figure_uids():
@@ -1197,15 +1467,17 @@ class ImageToolManager(_ImageToolManagerBase):
             else set(self._selected_figure_uids())
         )
 
+        has_figures = bool(figure_uids)
+        self.figure_view_controls.setVisible(has_figures)
+        self._apply_figure_view_controls()
+        self._apply_figure_list_view_configuration()
+
         self._refreshing_figure_list = True
         self.figure_list.blockSignals(True)
         try:
             self.figure_list.clear()
             for uid in figure_uids:
-                node = self._child_node(uid)
-                item = QtWidgets.QListWidgetItem(node.display_text)
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, uid)
-                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
+                item = self._figure_list_item(uid)
                 self.figure_list.addItem(item)
                 if uid in selected_uids:
                     item.setSelected(True)
@@ -1214,7 +1486,6 @@ class ImageToolManager(_ImageToolManagerBase):
             self.figure_list.blockSignals(False)
             self._refreshing_figure_list = False
 
-        has_figures = bool(figure_uids)
         self.left_tabs.setTabVisible(1, has_figures)
         left_tab_bar = self.left_tabs.tabBar()
         if left_tab_bar is not None:  # pragma: no branch

@@ -98,6 +98,12 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     duplicate_action: QtGui.QAction
     figure_list: QtWidgets.QListWidget
     figure_tab: QtWidgets.QWidget
+    figure_view_button_group: QtWidgets.QButtonGroup
+    figure_view_controls: QtWidgets.QWidget
+    figure_view_gallery_button: QtWidgets.QToolButton
+    figure_view_list_button: QtWidgets.QToolButton
+    figure_gallery_size_combo: QtWidgets.QComboBox
+    figure_gallery_size_label: QtWidgets.QLabel
     hide_action: QtGui.QAction
     left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction

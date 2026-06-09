@@ -12526,6 +12526,71 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert not manager.left_tabs.isTabVisible(1)
 
 
+def test_manager_figures_gallery_view_preserves_selection_and_persists(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        first_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        second_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        manager._select_figure_uid(first_uid)
+
+        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
+        assert manager.figure_gallery_size_combo.isHidden()
+
+        manager.figure_view_gallery_button.click()
+
+        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.IconMode
+        assert manager.figure_gallery_size_combo.isVisible()
+        assert manager._selected_figure_uids() == [first_uid]
+        for row, uid in enumerate((first_uid, second_uid)):
+            item = manager.figure_list.item(row)
+            assert item is not None
+            assert item.data(QtCore.Qt.ItemDataRole.UserRole) == uid
+            assert not item.icon().isNull()
+
+        old_grid_size = manager.figure_list.gridSize()
+        large_index = manager.figure_gallery_size_combo.findData("large")
+        assert large_index >= 0
+        manager.figure_gallery_size_combo.setCurrentIndex(large_index)
+        assert manager.figure_list.gridSize().width() > old_grid_size.width()
+        assert manager._selected_figure_uids() == [first_uid]
+
+        shown: list[str] = []
+        monkeypatch.setattr(manager, "show_childtool", shown.append)
+        manager._show_figure_item(manager.figure_list.item(0))
+        assert shown == [first_uid]
+
+        manager.figure_view_list_button.click()
+        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
+        assert manager.figure_gallery_size_combo.isHidden()
+        manager.figure_view_gallery_button.click()
+
+    with manager_context() as restored_manager:
+        assert restored_manager._figure_view_mode == "gallery"
+        assert restored_manager._figure_gallery_thumbnail_size_name == "large"
+        restored_uid = restored_manager.add_figuretool(
+            FigureComposerTool(data), show=False
+        )
+        assert (
+            restored_manager.figure_list.viewMode()
+            == QtWidgets.QListView.ViewMode.IconMode
+        )
+        item = restored_manager.figure_list.item(0)
+        assert item is not None
+        assert item.data(QtCore.Qt.ItemDataRole.UserRole) == restored_uid
+        assert not item.icon().isNull()
+
+
 def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
     qtbot,
     monkeypatch,
