@@ -7668,6 +7668,7 @@ def test_figure_composer_method_docs_button_opens_current_url(
         )
         assert button is not None
         assert button.isEnabled()
+        assert not button.autoRaise()
         assert button.property("figure_method_doc_url") == expected
         button.click()
 

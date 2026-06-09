@@ -2428,7 +2428,6 @@ def _build_method_editor(
     docs_button.setObjectName("figureComposerMethodDocsButton")
     docs_button.setText("Docs")
     docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-    docs_button.setAutoRaise(True)
     docs_button.setToolTip("Open API documentation for this method.")
     doc_url = _method_doc_url(spec)
     docs_button.setProperty("figure_method_doc_url", doc_url or "")
