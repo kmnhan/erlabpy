@@ -1960,6 +1960,37 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabFermilineOrientationCombo",
                 "Draw a horizontal or vertical reference line.",
             ),
+            _color_kwarg(
+                "Line color",
+                "color",
+                "figureComposerERLabFermilineColorEdit",
+                (
+                    "Optional Matplotlib color for the line.\n"
+                    "Leave blank to let fermiline use the axes text color."
+                ),
+            ),
+            _kwarg_combo(
+                "Line style",
+                "linestyle",
+                LINE_STYLE_OPTIONS,
+                None,
+                "figureComposerERLabFermilineLineStyleCombo",
+                (
+                    "Optional Matplotlib line style for the line.\n"
+                    "Leave unset to let fermiline use its default style."
+                ),
+                none_label=LINE_STYLE_DEFAULT_LABEL,
+            ),
+            _float_kwarg(
+                "Line width",
+                "linewidth",
+                "figureComposerERLabFermilineLineWidthEdit",
+                (
+                    "Optional line width for the line.\n"
+                    "Leave blank to let fermiline use its default width."
+                ),
+                minimum=0.0,
+            ),
         ),
     ),
     "mark_points": MethodSpec(

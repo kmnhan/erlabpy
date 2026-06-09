@@ -9450,6 +9450,16 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     double_spin_box(page, "figureComposerERLabFermilineValueEdit").setValue(0.1)
     set_combo(page, "figureComposerERLabFermilineOrientationCombo", "v")
     assert operation(6).method_kwargs == {"value": 0.1, "orientation": "v"}
+    set_line_edit(page, "figureComposerERLabFermilineColorEdit", "tab:red")
+    set_combo(page, "figureComposerERLabFermilineLineStyleCombo", "--")
+    set_line_edit(page, "figureComposerERLabFermilineLineWidthEdit", "1.5")
+    assert operation(6).method_kwargs == {
+        "value": 0.1,
+        "orientation": "v",
+        "color": "tab:red",
+        "linestyle": "--",
+        "linewidth": 1.5,
+    }
 
     page = select_method(7)
     set_line_edit(page, "figureComposerERLabMarkPointsPointsEdit", "0, 1")
