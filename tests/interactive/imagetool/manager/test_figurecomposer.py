@@ -6462,6 +6462,7 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
     qtbot.addWidget(tool)
     selector = figurecomposer_toolbar_dialogs._selector_widget(tool, tool)
     assert isinstance(selector, figurecomposer_widgets._AxesSelectorWidget)
+    assert selector.selected_axes() == ((0, 0),)
     selector.set_selected_axes((), emit=False)
     assert figurecomposer_toolbar_dialogs._selector_selection(tool, selector).axes == (
         (0, 0),
@@ -6475,7 +6476,7 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
                 gridspec=FigureGridSpecLayoutState(
                     root=FigureGridSpecGridState(
                         nrows=1,
-                        ncols=1,
+                        ncols=2,
                         axes=(
                             FigureGridSpecAxesState(
                                 axes_id="main",
@@ -6484,6 +6485,15 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
                                     row_stop=1,
                                     col_start=0,
                                     col_stop=1,
+                                ),
+                            ),
+                            FigureGridSpecAxesState(
+                                axes_id="side",
+                                span=FigureGridSpecSpanState(
+                                    row_start=0,
+                                    row_stop=1,
+                                    col_start=1,
+                                    col_stop=2,
                                 ),
                             ),
                         ),
@@ -6500,6 +6510,7 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
         grid_tool,
     )
     assert isinstance(grid_selector, figurecomposer_widgets._GridSpecViewWidget)
+    assert grid_selector.selected_axes_ids() == ("main",)
     grid_selector.set_selected_axes_ids(())
     assert figurecomposer_toolbar_dialogs._selector_selection(
         grid_tool,
