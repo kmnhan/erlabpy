@@ -6824,6 +6824,15 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
         scales_row.findChild(QtWidgets.QComboBox, xscale_combo.objectName()) is not None
     )
     assert grid_row.findChild(QtWidgets.QCheckBox, grid_check.objectName()) is not None
+    grid_row_layout = grid_row.layout()
+    assert grid_row_layout is not None
+    grid_sublabels: list[str] = []
+    for i in range(grid_row_layout.count()):
+        widget = grid_row_layout.itemAt(i).widget()
+        if isinstance(widget, QtWidgets.QLabel):
+            grid_sublabels.append(widget.text())
+    assert "Visible" not in grid_sublabels
+    assert grid_check.text() == "Show"
     assert (
         dialog.findChild(QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo")
         is None

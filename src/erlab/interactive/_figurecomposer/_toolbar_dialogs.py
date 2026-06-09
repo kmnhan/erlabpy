@@ -126,11 +126,12 @@ def _add_axis_compound_form_row(
     row_layout = QtWidgets.QHBoxLayout(row_widget)
     row_layout.setContentsMargins(0, 0, 0, 0)
     for control_label, widget, control_tooltip in controls:
-        label_widget = QtWidgets.QLabel(control_label, row_widget)
-        label_widget.setBuddy(widget)
-        label_widget.setToolTip(control_tooltip)
+        if control_label:
+            label_widget = QtWidgets.QLabel(control_label, row_widget)
+            label_widget.setBuddy(widget)
+            label_widget.setToolTip(control_tooltip)
+            row_layout.addWidget(label_widget)
         widget.setToolTip(control_tooltip)
-        row_layout.addWidget(label_widget)
         row_layout.addWidget(
             widget, 0 if isinstance(widget, QtWidgets.QCheckBox) else 1
         )
@@ -425,7 +426,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         "Grid",
         "figureComposerToolbarAxesGridRow",
         (
-            ("Visible", grid_check, grid_check_tooltip),
+            ("", grid_check, grid_check_tooltip),
             ("Axis", grid_axis_combo, grid_axis_tooltip),
             ("Ticks", grid_which_combo, grid_which_tooltip),
         ),
