@@ -3762,7 +3762,7 @@ def _method_display(operation: FigureOperationState) -> str:
         return f"ax.{spec.name}"
     if operation.method_family == FigureMethodFamily.FIGURE:
         return f"fig.{spec.name}"
-    return spec.name
+    return f"eplt.{spec.name}"
 
 
 def _callable_display(spec: MethodSpec) -> str:

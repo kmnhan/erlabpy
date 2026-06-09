@@ -7552,8 +7552,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     _select_operation_rows(tool, (3,))
-    assert tool.operation_list.item(3).text() == "clean_labels"
-    assert tool.step_section_buttons["method"].text() == "clean_labels"
+    assert tool.operation_list.item(3).text() == "eplt.clean_labels"
+    assert tool.step_section_buttons["method"].text() == "eplt.clean_labels"
     tool._select_step_section("method")
     erlab_method_page = tool.step_editor_stack.currentWidget()
     assert all(
@@ -7968,6 +7968,15 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
             )
         )
         == "fig.supxlabel"
+    )
+    assert (
+        figurecomposer_method._method_display(
+            FigureOperationState.method(
+                family=FigureMethodFamily.ERLAB,
+                name="clean_labels",
+            )
+        )
+        == "eplt.clean_labels"
     )
     assert (
         figurecomposer_method._callable_display(
