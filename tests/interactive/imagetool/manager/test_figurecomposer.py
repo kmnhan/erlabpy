@@ -7588,8 +7588,8 @@ def test_figure_composer_method_doc_url_uses_family_templates() -> None:
     assert figurecomposer_method._method_doc_url(
         figurecomposer_method.ERLAB_METHODS["clean_labels"]
     ) == (
-        "https://erlabpy.readthedocs.io/en/stable/generated/"
-        "erlab.plotting.clean_labels.html"
+        "https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html"
+        "#erlab.plotting.clean_labels"
     )
     spec = figurecomposer_method.MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -7601,8 +7601,8 @@ def test_figure_composer_method_doc_url_uses_family_templates() -> None:
         doc_name="documented_name",
     )
     assert figurecomposer_method._method_doc_url(spec) == (
-        "https://erlabpy.readthedocs.io/en/stable/generated/"
-        "erlab.plotting.documented_name.html"
+        "https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html"
+        "#erlab.plotting.documented_name"
     )
 
 
@@ -7657,8 +7657,8 @@ def test_figure_composer_method_docs_button_opens_current_url(
         ),
         (
             2,
-            "https://erlabpy.readthedocs.io/en/stable/generated/"
-            "erlab.plotting.clean_labels.html",
+            "https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html"
+            "#erlab.plotting.clean_labels",
         ),
     ):
         tool.operation_list.setCurrentRow(row)
@@ -7679,8 +7679,8 @@ def test_figure_composer_method_docs_button_opens_current_url(
             "matplotlib.figure.Figure.supxlabel.html"
         ),
         (
-            "https://erlabpy.readthedocs.io/en/stable/generated/"
-            "erlab.plotting.clean_labels.html"
+            "https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html"
+            "#erlab.plotting.clean_labels"
         ),
     ]
 

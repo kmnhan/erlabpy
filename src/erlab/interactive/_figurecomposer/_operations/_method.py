@@ -2188,7 +2188,9 @@ _FAMILY_TOOLTIPS = {
     FigureMethodFamily.ERLAB: "Add an erlab.plotting helper step after plotting.",
 }
 _MATPLOTLIB_DOC_BASE = "https://matplotlib.org/stable/api/_as_gen"
-_ERLAB_PLOTTING_DOC_BASE = "https://erlabpy.readthedocs.io/en/stable/generated"
+_ERLAB_PLOTTING_DOC_BASE = (
+    "https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html"
+)
 
 _CALL_POLICY_LABELS = {
     MethodCallPolicy.EACH_AXIS_AX_KEYWORD: "Each selected axis",
@@ -3790,7 +3792,7 @@ def _method_doc_url(spec: MethodSpec) -> str | None:
         case FigureMethodFamily.FIGURE:
             return f"{_MATPLOTLIB_DOC_BASE}/matplotlib.figure.Figure.{doc_name}.html"
         case FigureMethodFamily.ERLAB:
-            return f"{_ERLAB_PLOTTING_DOC_BASE}/erlab.plotting.{doc_name}.html"
+            return f"{_ERLAB_PLOTTING_DOC_BASE}#erlab.plotting.{doc_name}"
     return None
 
 
