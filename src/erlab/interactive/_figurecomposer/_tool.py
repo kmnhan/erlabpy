@@ -1560,6 +1560,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not operation_ids:
             return
         key = self._editor_input_error_key(widget)
+        self._record_editor_input_error_for_key(key, operation_ids, error)
+
+    def _record_editor_input_error_for_key(
+        self,
+        key: str,
+        operation_ids: Sequence[str],
+        error: FigureComposerInputError,
+    ) -> None:
+        if not operation_ids:
+            return
         errors = {
             operation_id: dict(operation_errors)
             for operation_id, operation_errors in self._operation_input_errors.items()
@@ -1576,6 +1586,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not operation_ids:
             return
         key = self._editor_input_error_key(widget)
+        self._clear_editor_input_error_for_key(key, operation_ids)
+
+    def _clear_editor_input_error_for_key(
+        self, key: str, operation_ids: Sequence[str]
+    ) -> None:
+        if not self._operation_input_errors or not operation_ids:
+            return
         errors = {
             operation_id: dict(operation_errors)
             for operation_id, operation_errors in self._operation_input_errors.items()
@@ -3256,14 +3273,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 guarded_widget
             ):
                 return
+            input_error_key = self._editor_input_error_key(guarded_widget)
+            operation_ids = self._editable_operation_ids_for_error()
             previous_widget = self._active_editor_signal_widget
             self._active_editor_signal_widget = guarded_widget
             try:
                 callback(*args)
             except FigureComposerInputError as exc:
-                self._record_editor_input_error(guarded_widget, exc)
+                self._record_editor_input_error_for_key(
+                    input_error_key, operation_ids, exc
+                )
             else:
-                self._clear_editor_input_error(guarded_widget)
+                self._clear_editor_input_error_for_key(input_error_key, operation_ids)
             finally:
                 self._active_editor_signal_widget = previous_widget
 

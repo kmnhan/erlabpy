@@ -3705,6 +3705,34 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     assert "Invalid input:" not in tool.source_status_label.text()
 
 
+def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    operation = tool.tool_status.operations[0]
+    edit = QtWidgets.QLineEdit(tool)
+    edit.setObjectName("figureComposerDeletedSenderEdit")
+    tool._set_operation_input_errors(
+        {operation.operation_id: {edit.objectName(): "old error"}}
+    )
+
+    def delete_sender() -> None:
+        edit.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    tool._connect_editor_signal(edit, edit.editingFinished, delete_sender)
+    edit.editingFinished.emit()
+
+    assert not erlab.interactive.utils.qt_is_valid(edit)
+    assert not tool._operation_has_invalid_input(operation)
+
+
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
     restore_interactive_options,
 ) -> None:
