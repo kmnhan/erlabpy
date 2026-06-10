@@ -886,26 +886,23 @@ class ImageToolManager(_ImageToolManagerBase):
                 QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
             )
         )
-        figure_view_label = QtWidgets.QLabel("View", self.figure_view_controls)
-        figure_view_layout.addWidget(figure_view_label)
         self.figure_view_button_group = QtWidgets.QButtonGroup(
             self.figure_view_controls
         )
         self.figure_view_button_group.setExclusive(True)
         self.figure_view_list_button = self._figure_view_mode_button(
             "List",
-            self._standard_figure_view_icon("SP_FileDialogListView"),
+            erlab.interactive.utils.qtawesome.icon("ph.list-bullets"),
             _FIGURE_VIEW_MODE_LIST,
         )
         self.figure_view_gallery_button = self._figure_view_mode_button(
             "Gallery",
-            self._standard_figure_view_icon("SP_FileDialogContentsView"),
+            erlab.interactive.utils.qtawesome.icon("ph.grid-four"),
             _FIGURE_VIEW_MODE_GALLERY,
         )
         for button in (self.figure_view_list_button, self.figure_view_gallery_button):
             self.figure_view_button_group.addButton(button)
             figure_view_layout.addWidget(button)
-        figure_view_label.setBuddy(self.figure_view_list_button)
         self.figure_gallery_size_label = QtWidgets.QLabel(
             "Thumbnail", self.figure_view_controls
         )
@@ -1257,11 +1254,6 @@ class ImageToolManager(_ImageToolManagerBase):
             return size_name
         return _FIGURE_GALLERY_SIZE_MEDIUM
 
-    def _standard_figure_view_icon(self, name: str) -> QtGui.QIcon:
-        fallback = QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView
-        standard = getattr(QtWidgets.QStyle.StandardPixmap, name, fallback)
-        return self._qt_style().standardIcon(standard)
-
     def _style_pixel_metric(self, metric: QtWidgets.QStyle.PixelMetric) -> int:
         return self._qt_style().pixelMetric(metric)
 
@@ -1276,11 +1268,11 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.figure_view_controls)
         button.setObjectName(f"manager_figures_{mode}_view_button")
-        button.setText(text)
         button.setIcon(icon)
         button.setCheckable(True)
         button.setAutoRaise(True)
-        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setAccessibleName(f"{text} view")
         button.setToolTip(f"Show figures in {text.lower()} view.")
         button.clicked.connect(
             lambda _checked=False, mode=mode: self._set_figure_view_mode(mode)

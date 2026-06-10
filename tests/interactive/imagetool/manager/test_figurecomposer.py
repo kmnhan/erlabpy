@@ -12763,6 +12763,10 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
 
         assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
         assert manager.figure_gallery_size_combo.isHidden()
+        assert manager.figure_view_list_button.text() == ""
+        assert manager.figure_view_gallery_button.text() == ""
+        assert not manager.figure_view_list_button.icon().isNull()
+        assert not manager.figure_view_gallery_button.icon().isNull()
 
         manager.figure_view_gallery_button.click()
 
