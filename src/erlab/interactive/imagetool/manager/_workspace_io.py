@@ -1388,22 +1388,26 @@ class _WorkspaceIOController:
         ) -> xr.Dataset:
             if imagetool and entry.get("data_backing") == "dask":
                 return _load_xarray_dataset(payload_path, chunks={}, load=False)
-            if imagetool:
-                try:
-                    ds = _manager_workspace._read_workspace_dataset_group_h5py(
-                        fname,
-                        payload_path,
-                        preferred_data_name=_ITOOL_DATA_NAME,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed h5py workspace payload read for %s",
-                        payload_path,
-                        exc_info=True,
-                    )
-                else:
-                    if ds is not None:
-                        return ds
+            preferred_data_name = (
+                _ITOOL_DATA_NAME
+                if imagetool
+                else erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            )
+            try:
+                ds = _manager_workspace._read_workspace_dataset_group_h5py(
+                    fname,
+                    payload_path,
+                    preferred_data_name=preferred_data_name,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed h5py workspace payload read for %s",
+                    payload_path,
+                    exc_info=True,
+                )
+            else:
+                if ds is not None:
+                    return ds
 
             return _load_xarray_dataset(payload_path, chunks=None, load=True)
 

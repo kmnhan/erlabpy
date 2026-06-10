@@ -5,13 +5,10 @@ from __future__ import annotations
 import contextlib
 import typing
 
-import numpy as np
-import xarray as xr
-
-from erlab.interactive.imagetool import _serialization
-
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    import xarray as xr
 
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._state import (
@@ -20,23 +17,6 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationState,
     FigureSourceState,
     FigureSubplotsState,
-)
-
-_SAVED_SOURCE_DATA_NAME = "_figure_composer_source_data"
-_SAVED_SOURCE_DATA_NAME_ATTR = "_figure_composer_source_data_name"
-_NONE_DATA_NAME = "<none-value>"
-_STALE_SOURCE_ENCODING_KEYS = frozenset(
-    (
-        "chunksizes",
-        "compression",
-        "compression_opts",
-        "contiguous",
-        "fletcher32",
-        "original_shape",
-        "preferred_chunks",
-        "shuffle",
-        "source",
-    )
 )
 
 
@@ -177,42 +157,3 @@ def _decode_indexer(value: typing.Any) -> typing.Any:
 
 def _decode_indexers(indexers: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
     return {key: _decode_indexer(value) for key, value in indexers.items()}
-
-
-def _source_data_to_blob(data: xr.DataArray) -> np.ndarray:
-    """Serialize one figure source without aligning it to other sources."""
-    data_name = _NONE_DATA_NAME if data.name is None else str(data.name)
-    ds = data.to_dataset(name=_SAVED_SOURCE_DATA_NAME, promote_attrs=False)
-    ds.attrs[_SAVED_SOURCE_DATA_NAME_ATTR] = data_name
-    serialized = _serialization.encode_private_coords(ds, _SAVED_SOURCE_DATA_NAME)
-    serialized = _drop_stale_source_encoding(serialized)
-    blob = serialized.to_netcdf(
-        path=None,
-        engine="h5netcdf",
-        invalid_netcdf=True,
-    )
-    return np.frombuffer(blob, dtype=np.uint8).copy()
-
-
-def _drop_stale_source_encoding(ds: xr.Dataset) -> xr.Dataset:
-    serialized = ds.copy(deep=False)
-    for variable in serialized.variables.values():
-        variable.encoding = {
-            key: value
-            for key, value in variable.encoding.items()
-            if key not in _STALE_SOURCE_ENCODING_KEYS
-        }
-    return serialized
-
-
-def _source_data_from_blob(blob: typing.Any) -> xr.DataArray:
-    """Restore one figure source saved by `_source_data_to_blob`."""
-    ds = xr.load_dataset(
-        memoryview(np.asarray(blob, dtype=np.uint8).tobytes()),
-        engine="h5netcdf",
-    )
-    restored = _serialization.restore_private_coords(ds, _SAVED_SOURCE_DATA_NAME)
-    data_name = restored.attrs.get(_SAVED_SOURCE_DATA_NAME_ATTR, _NONE_DATA_NAME)
-    if data_name == _NONE_DATA_NAME:
-        data_name = None
-    return restored[_SAVED_SOURCE_DATA_NAME].rename(data_name)

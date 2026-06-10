@@ -34,6 +34,7 @@ import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
@@ -243,25 +244,6 @@ def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
         with figurecomposer_defaults._figure_draw_context():
             canvas.draw()
         return np.asarray(canvas.buffer_rgba()).copy()
-
-
-def test_figure_composer_source_blob_ignores_stale_backend_encoding() -> None:
-    data = xr.DataArray(
-        np.arange(3.0),
-        dims=("x",),
-        coords={"x": [0.0, 1.0, 2.0]},
-        name="secondary",
-    )
-    data.encoding["compression"] = "unknown"
-    data.encoding["source"] = "stale-source.nc"
-    data.coords["x"].encoding["compression"] = "unknown"
-
-    blob = figurecomposer_sources._source_data_to_blob(data)
-    restored = figurecomposer_sources._source_data_from_blob(blob)
-
-    xr.testing.assert_equal(restored, data)
-    assert data.encoding["compression"] == "unknown"
-    assert data.coords["x"].encoding["compression"] == "unknown"
 
 
 def test_figure_composer_secondary_source_roundtrip_ignores_stale_backend_encoding(
@@ -667,11 +649,6 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
         )
         is None
     )
-
-    restored_none_name = figurecomposer_sources._source_data_from_blob(
-        figurecomposer_sources._source_data_to_blob(unnamed)
-    )
-    assert restored_none_name.name is None
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
@@ -13186,6 +13163,7 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
 
 def test_manager_workspace_figure_sources_save_as_references(
     qtbot,
+    tmp_path: Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -13220,15 +13198,22 @@ def test_manager_workspace_figure_sources_save_as_references(
             references = json.loads(
                 ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
             )
-            source_entries = json.loads(
-                ds.attrs[figurecomposer_tool_module._PERSISTED_SOURCE_MAP_ATTR]
-            )
-            secondary_variable = source_entries[0]["variable"]
 
             assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
-            assert secondary_variable in references
+            assert "data_1" in references
             assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
-            assert ds[secondary_variable].size == 0
+            assert ds["data_1"].size == 0
+            assert manager_workspace._workspace_dataset_can_write_h5py(ds)
+
+            fname = tmp_path / "figure-source-references.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            saved_ds = manager_workspace._read_workspace_dataset_group_h5py(
+                fname,
+                f"figures/{figure_uid}/tool",
+                preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            )
+            assert saved_ds is not None
+            assert "data_1" in saved_ds
 
             manager.remove_all_tools()
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -13236,6 +13221,18 @@ def test_manager_workspace_figure_sources_save_as_references(
             assert manager._from_datatree(
                 tree, replace=True, mark_dirty=False, select=False
             )
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+            assert manager._load_workspace_file(
+                fname,
+                replace=True,
+                associate=False,
+                mark_dirty=False,
+                select=False,
+            )
+            loaded_tool = manager._tool_graph.nodes[figure_uid].tool_window
+            assert isinstance(loaded_tool, FigureComposerTool)
+            xr.testing.assert_identical(loaded_tool._source_data["data_1"], second)
         finally:
             tree.close()
 

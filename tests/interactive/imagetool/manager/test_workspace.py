@@ -79,6 +79,34 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
         self._status = status
 
 
+def test_tool_data_blob_ignores_stale_backend_encoding() -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="secondary",
+    )
+    data.encoding["compression"] = "unknown"
+    data.encoding["source"] = "stale-source.nc"
+    data.coords["x"].encoding["compression"] = "unknown"
+
+    blob = erlab.interactive.utils._tool_data_to_blob(data, "secondary")
+    restored = erlab.interactive.utils._tool_data_from_blob(blob)
+
+    xr.testing.assert_equal(restored, data)
+    assert data.encoding["compression"] == "unknown"
+    assert data.coords["x"].encoding["compression"] == "unknown"
+
+
+def test_tool_data_blob_preserves_none_name() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+
+    blob = erlab.interactive.utils._tool_data_to_blob(data, "secondary")
+    restored = erlab.interactive.utils._tool_data_from_blob(blob)
+
+    assert restored.name is None
+
+
 def _wait_for_fit_idle(qtbot, tool: Fit1DTool, *, timeout: int = 10000) -> None:
     def _fit_idle() -> bool:
         if tool._fit_thread is not None:
@@ -2536,6 +2564,83 @@ def test_workspace_writer_encodes_saved_tool_spaced_associated_coord(
     xr.testing.assert_equal(
         loaded[data_name].coords["Fake Motor"], data.coords["Fake Motor"]
     )
+
+
+def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
+    tmp_path,
+) -> None:
+    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    primary = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(2.0),
+            "y": np.arange(3.0),
+            "Fake Motor": ("x", np.linspace(10.0, 20.0, 2)),
+        },
+        name="primary",
+    )
+    secondary = xr.DataArray(
+        np.arange(4.0),
+        dims=("z",),
+        coords={"z": np.linspace(0.0, 1.0, 4)},
+        name=None,
+    )
+    ds = primary.to_dataset(name=data_name)
+    ds["data_1"] = erlab.interactive.utils._tool_data_to_blob(secondary, "data_1")
+    fname = tmp_path / "saved-tool-extra-blob.itws"
+
+    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname,
+        "0/tool",
+        preferred_data_name=data_name,
+    )
+
+    assert loaded is not None
+    assert manager_workspace._workspace_dataset_can_write_h5py(
+        imagetool_serialization.encode_private_coords(ds, data_name)
+    )
+    xr.testing.assert_equal(
+        loaded[data_name].coords["Fake Motor"], primary.coords["Fake Motor"]
+    )
+    restored_secondary = erlab.interactive.utils._tool_data_from_blob(loaded["data_1"])
+    xr.testing.assert_equal(restored_secondary, secondary)
+
+
+def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> None:
+    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        {
+            data_name: erlab.interactive.utils._tool_data_placeholder(),
+            "data_1": erlab.interactive.utils._tool_data_placeholder(),
+        },
+        attrs={
+            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    data_name: {"kind": "manager_node", "node_uid": "uid-0"},
+                    "data_1": {"kind": "manager_node", "node_uid": "uid-1"},
+                }
+            )
+        },
+    )
+    fname = tmp_path / "saved-tool-references.itws"
+
+    assert manager_workspace._write_workspace_dataset_group_h5py(fname, "0/tool", ds)
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname,
+        "0/tool",
+        preferred_data_name=data_name,
+    )
+
+    assert loaded is not None
+    assert set(loaded.data_vars) == {data_name, "data_1"}
+    reference_dim = erlab.interactive.utils._SAVED_TOOL_DATA_REFERENCE_DIM
+    assert loaded[data_name].dims == (reference_dim,)
+    assert loaded["data_1"].dims == (reference_dim,)
+    assert json.loads(
+        loaded.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+    ) == json.loads(ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR])
 
 
 def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(

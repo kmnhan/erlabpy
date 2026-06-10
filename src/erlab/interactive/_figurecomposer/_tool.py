@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import json
 import math
 import textwrap
 import typing
@@ -79,7 +78,6 @@ from erlab.interactive._figurecomposer._rendering import (
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
-    _source_data_from_blob,
     _source_display_label,
     _source_display_tooltip,
     _source_duplicate_labels,
@@ -127,8 +125,6 @@ _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
-_PERSISTED_SOURCE_MAP_ATTR = "_figure_composer_source_payloads"
-_PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
 
 
 def _target_axes_count_text(count: int) -> str:
@@ -3685,16 +3681,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if fallback_name not in recipe_sources:
             del self._source_data[fallback_name]
 
-    def _persistence_source_variable_entries(self) -> tuple[tuple[str, str], ...]:
-        entries: list[tuple[str, str]] = []
-        index = 0
-        for source_name in self._source_data:
-            if source_name == self._recipe.primary_source:
-                continue
-            entries.append((source_name, f"{_PERSISTED_SOURCE_VAR_PREFIX}{index}"))
-            index += 1
-        return tuple(entries)
-
     def _recipe_source(self, source_name: str) -> FigureSourceState | None:
         for source in self._recipe.sources:
             if source.name == source_name:
@@ -3727,99 +3713,37 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         del data
         if variable_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
             return self._source_reference_payload(self._recipe.primary_source)
-        for (
-            source_name,
-            source_variable_name,
-        ) in self._persistence_source_variable_entries():
-            if variable_name == source_variable_name:
-                return self._source_reference_payload(source_name)
-        return None
+        return self._source_reference_payload(variable_name)
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self.tool_data}
-        for source_name, variable_name in self._persistence_source_variable_entries():
-            items[variable_name] = self._source_data[source_name]
+        for source_name, data in self._source_data.items():
+            if source_name == self._recipe.primary_source:
+                continue
+            if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
+                raise ValueError(
+                    "Figure source aliases cannot use the reserved saved-tool data name"
+                )
+            items[source_name] = data
         return items
-
-    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
-        """Persist the mapping between secondary source names and data items."""
-        source_entries: list[dict[str, str]] = []
-        saved = ds.copy()
-        for source_name, variable_name in self._persistence_source_variable_entries():
-            source_entries.append(
-                {
-                    "source": source_name,
-                    "variable": variable_name,
-                }
-            )
-        if source_entries:
-            saved.attrs[_PERSISTED_SOURCE_MAP_ATTR] = json.dumps(source_entries)
-        return saved
 
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
-        payload_json = ds.attrs.get(_PERSISTED_SOURCE_MAP_ATTR)
+        del ds
         source_data = dict(self._source_data)
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
-        if primary_data is not None:
+        changed = False
+        if primary_data is not None and self._recipe.primary_source not in source_data:
             source_data[self._recipe.primary_source] = primary_data
-        changed = False
-        if isinstance(payload_json, str):
-            try:
-                payloads = json.loads(payload_json)
-            except json.JSONDecodeError:
-                payloads = ()
-            if isinstance(payloads, list):
-                for payload in payloads:
-                    if not isinstance(payload, dict):
-                        continue
-                    source_name = payload.get("source")
-                    variable_name = payload.get("variable")
-                    if (
-                        isinstance(source_name, str)
-                        and isinstance(variable_name, str)
-                        and variable_name in data_items
-                    ):
-                        source_data[source_name] = data_items[variable_name]
-                        changed = True
-        if not changed:
-            return
-        self.set_source_data(source_data)
-        self._apply_recipe_to_controls()
-        _render_preview(self, show_window=False)
-
-    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
-        payload_json = ds.attrs.get(_PERSISTED_SOURCE_MAP_ATTR)
-        if not isinstance(payload_json, str):
-            return
-        try:
-            payloads = json.loads(payload_json)
-        except json.JSONDecodeError:
-            return
-        if not isinstance(payloads, list):
-            return
-        source_data = dict(self._source_data)
-        changed = False
-        for payload in payloads:
-            if not isinstance(payload, dict):
+            changed = True
+        for source in self._recipe.sources:
+            if source.name == self._recipe.primary_source:
                 continue
-            source_name = payload.get("source")
-            variable_name = payload.get("variable")
-            if (
-                not isinstance(source_name, str)
-                or not isinstance(variable_name, str)
-                or variable_name not in ds
-            ):
+            source_data_item = data_items.get(source.name)
+            if source_data_item is None:
                 continue
-            if source_name in source_data:
-                continue
-            try:
-                source_data[source_name] = _source_data_from_blob(
-                    ds[variable_name].values
-                )
-            except (OSError, TypeError, ValueError, KeyError):
-                continue
+            source_data[source.name] = source_data_item
             changed = True
         if not changed:
             return
