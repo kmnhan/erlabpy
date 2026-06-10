@@ -116,9 +116,12 @@ from erlab.interactive._figurecomposer._text import (
     _dict_from_text,
     _float_pair_from_text,
     _format_dict,
+    _format_limit_pair,
     _format_literal_sequence,
     _format_pair,
     _format_string_tuple,
+    _limit_pair_from_text,
+    _limit_pair_from_value,
     _literal_from_text,
     _literal_sequence_from_text,
     _RawCode,
@@ -1055,7 +1058,8 @@ AXES_METHODS: dict[str, MethodSpec] = {
             _float_pair_args(
                 "Limits",
                 "figureComposerAxesMethodLimitsEdit",
-                "Lower and upper limits as two comma-separated values.",
+                "Lower and upper limits as two comma-separated values.\n"
+                "Use None to keep one side unchanged.",
             ),
         ),
     ),
@@ -1070,7 +1074,8 @@ AXES_METHODS: dict[str, MethodSpec] = {
             _float_pair_args(
                 "Limits",
                 "figureComposerAxesMethodLimitsEdit",
-                "Lower and upper limits as two comma-separated values.",
+                "Lower and upper limits as two comma-separated values.\n"
+                "Use None to keep one side unchanged.",
             ),
         ),
     ),
@@ -2855,7 +2860,7 @@ def _add_method_control_row(
             text, mixed = tool._batch_text(
                 operation,
                 lambda target: _method_float_pair_args(tool, target, spec),
-                _format_pair,
+                _format_limit_pair,
             )
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
@@ -3285,7 +3290,7 @@ def _update_current_method_kwarg_from_value(
 def _update_current_method_args_from_pair_text(
     tool: FigureComposerTool, text: str
 ) -> None:
-    _update_current_method_args(tool, _float_pair_from_text(text) or ())
+    _update_current_method_args(tool, _limit_pair_from_text(text) or ())
 
 
 def _empty_text_as_none(text: str) -> str | None:
@@ -3308,11 +3313,11 @@ def _method_arg_value(
 
 def _method_float_pair_args(
     tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
-) -> tuple[float, float] | None:
+) -> tuple[float | None, float | None] | None:
     args = _method_args(operation, spec, tool)
     if len(args) < 2:
         return None
-    return float(args[0]), float(args[1])
+    return _limit_pair_from_value(args[:2])
 
 
 def _method_kwarg_value(

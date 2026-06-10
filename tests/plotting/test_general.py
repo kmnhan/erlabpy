@@ -106,6 +106,11 @@ def test_plot_slices_general(monkeypatch) -> None:
     assert axes[0, 0].get_ylim() == (0.3, 0.7)
     plt.close()
 
+    fig, axes = plot_slices(maps, xlim=(0.2, None), ylim=(None, 0.7))
+    assert axes[0, 0].get_xlim()[0] == 0.2
+    assert axes[0, 0].get_ylim()[1] == 0.7
+    plt.close()
+
     # Test 3D slicing
     test_darr = xr.DataArray(
         np.random.default_rng(0).random((11, 11, 11)),

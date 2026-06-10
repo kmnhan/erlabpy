@@ -64,7 +64,12 @@ from erlab.interactive._figurecomposer._subplot_adjust import (
     normalize_subplots_adjust_kwargs,
     subplots_adjust_spinbox_range,
 )
-from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
+from erlab.interactive._figurecomposer._text import (
+    FigureComposerInputError,
+    _dict_from_text,
+    _format_dict,
+    _limit_pair_from_text,
+)
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _ColorLineEditWidget,
@@ -645,7 +650,10 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def update_limit_method(edit: QtWidgets.QLineEdit, name: str) -> None:
         if updating or _line_edit_mixed_unchanged(edit) or not edit.isModified():
             return
-        limits = _float_pair_from_text(edit.text())
+        try:
+            limits = _limit_pair_from_text(edit.text())
+        except FigureComposerInputError:
+            return
         if limits is None:
             return
         upsert_axis_method(name, args=limits)

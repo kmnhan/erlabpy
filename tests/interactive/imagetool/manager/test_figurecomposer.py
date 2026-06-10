@@ -538,8 +538,13 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
 
     assert figurecomposer_text._plot_limit_from_text("") is None
     assert figurecomposer_text._plot_limit_from_text("1.5") == 1.5
+    assert figurecomposer_text._plot_limit_from_text("None") is None
     assert figurecomposer_text._plot_limit_from_text("[2]") == 2.0
     assert figurecomposer_text._plot_limit_from_text("(1, 2)") == (1.0, 2.0)
+    assert figurecomposer_text._plot_limit_from_text("0, None") == (0.0, None)
+    assert figurecomposer_text._plot_limit_from_text("(None, 2)") == (None, 2.0)
+    assert figurecomposer_text._limit_pair_from_text("0, None") == (0.0, None)
+    assert figurecomposer_text._format_plot_limit((0.0, None)) == "0, None"
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
         figurecomposer_text._plot_limit_from_text("(1, 2, 3)")
 
@@ -1409,7 +1414,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     ).model_copy(
         update={
             "transpose": True,
-            "xlim": (-1.0, 1.0),
+            "xlim": (-1.0, None),
             "ylim": 0.5,
             "crop": False,
             "same_limits": True,
@@ -1523,7 +1528,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
 
     image_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, image_operation)
     assert image_kwargs["transpose"] is True
-    assert image_kwargs["xlim"] == (-1.0, 1.0)
+    assert image_kwargs["xlim"] == (-1.0, None)
     assert image_kwargs["ylim"] == 0.5
     assert image_kwargs["crop"] is False
     assert image_kwargs["same_limits"] is True
@@ -1539,6 +1544,17 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert image_kwargs["order"] == "F"
     assert image_kwargs["cmap_order"] == "F"
     assert image_kwargs["norm_order"] == "F"
+
+    set_xlim_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_xlim",
+        args=(0.0, None),
+    )
+    assert figurecomposer_method._method_float_pair_args(
+        tool,
+        set_xlim_operation,
+        figurecomposer_method._method_spec(set_xlim_operation),
+    ) == (0.0, None)
     assert image_kwargs["subplot_kw"] == {"sharex": True}
     assert image_kwargs["annotate_kw"] == {"fontsize": 8}
     assert image_kwargs["colorbar_kw"] == {"ticks": [0.0, 1.0]}
@@ -6383,6 +6399,7 @@ def test_figure_composer_toolbar_axis_state_helpers(qtbot) -> None:
         2.0,
     )
     assert figurecomposer_toolbar_dialogs._float_pair_from_text("1") is None
+    assert figurecomposer_text._limit_pair_from_text("1, None") == (1.0, None)
     assert figurecomposer_toolbar_dialogs._aspect_text(2.0) == "2"
     assert figurecomposer_toolbar_dialogs._aspect_value("equal") == "equal"
     assert figurecomposer_toolbar_dialogs._aspect_value("2.5") == 2.5

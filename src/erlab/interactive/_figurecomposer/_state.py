@@ -257,7 +257,7 @@ class FigureMethodFamily(enum.StrEnum):
 
 
 _POWER_NORM_NAME = "PowerNorm"
-FigureLimit = float | tuple[float, float]
+FigureLimit = float | tuple[float | None, float | None]
 
 
 class _PlotSlicesShape(typing.NamedTuple):

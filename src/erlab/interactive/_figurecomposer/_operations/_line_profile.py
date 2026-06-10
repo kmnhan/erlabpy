@@ -61,6 +61,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
     from qtpy import QtWidgets
 
+    from erlab.interactive._figurecomposer._state import FigureLimit
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -680,9 +681,23 @@ def _apply_line_axes_limits(
     axis: matplotlib.axes.Axes, operation: FigureOperationState
 ) -> None:
     if operation.xlim is not None:
-        axis.set_xlim(operation.xlim)
+        _set_axis_xlim(axis, operation.xlim)
     if operation.ylim is not None:
-        axis.set_ylim(operation.ylim)
+        _set_axis_ylim(axis, operation.ylim)
+
+
+def _set_axis_xlim(axis: matplotlib.axes.Axes, limit: FigureLimit) -> None:
+    if isinstance(limit, tuple):
+        axis.set_xlim(*limit)
+    else:
+        axis.set_xlim(limit)
+
+
+def _set_axis_ylim(axis: matplotlib.axes.Axes, limit: FigureLimit) -> None:
+    if isinstance(limit, tuple):
+        axis.set_ylim(*limit)
+    else:
+        axis.set_ylim(limit)
 
 
 def _line_data_items(

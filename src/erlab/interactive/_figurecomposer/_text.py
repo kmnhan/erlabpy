@@ -54,27 +54,67 @@ def _float_pair_from_text(text: str) -> tuple[float, float] | None:
         raise _input_error("Enter exactly two comma-separated numbers.") from exc
 
 
+def _limit_bound_from_value(value: typing.Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _limit_pair_from_value(value: typing.Any) -> tuple[float | None, float | None]:
+    if isinstance(value, str | bytes) or not isinstance(value, list | tuple):
+        raise _input_error(
+            "Enter two comma-separated numbers or None, such as 0, None."
+        )
+    if len(value) != 2:
+        raise _input_error(
+            "Enter two comma-separated numbers or None, such as 0, None."
+        )
+    try:
+        return (_limit_bound_from_value(value[0]), _limit_bound_from_value(value[1]))
+    except (TypeError, ValueError) as exc:
+        raise _input_error(
+            "Enter two comma-separated numbers or None, such as 0, None."
+        ) from exc
+
+
+def _limit_pair_from_text(text: str) -> tuple[float | None, float | None] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    value = _literal_from_text(
+        stripped,
+        message="Enter two comma-separated numbers or None, such as 0, None.",
+    )
+    return _limit_pair_from_value(value)
+
+
 def _plot_limit_from_text(text: str) -> FigureLimit | None:
     stripped = text.strip()
     if not stripped:
         return None
     value = _literal_from_text(
         stripped,
-        message="Enter one number or one pair of numbers, such as -1, 1.",
+        message=(
+            "Enter one number or one pair of numbers or None, such as -1, 1 or 0, None."
+        ),
     )
     try:
+        if value is None:
+            return None
         if isinstance(value, int | float):
             return float(value)
         if isinstance(value, list | tuple):
             if len(value) == 1:
-                return float(value[0])
+                return _limit_bound_from_value(value[0])
             if len(value) == 2:
-                return (float(value[0]), float(value[1]))
+                return _limit_pair_from_value(value)
     except (TypeError, ValueError) as exc:
         raise _input_error(
-            "Enter one number or one pair of numbers, such as -1, 1."
+            "Enter one number or one pair of numbers or None, such as -1, 1 or 0, None."
         ) from exc
-    raise _input_error("Enter one number or one pair of numbers, such as -1, 1.")
+    raise _input_error(
+        "Enter one number or one pair of numbers or None, such as -1, 1 or 0, None."
+    )
 
 
 def _float_tuple_from_text(text: str) -> tuple[float, ...]:
@@ -204,12 +244,22 @@ def _format_pair(value: tuple[float, float] | None) -> str:
     return f"{value[0]:g}, {value[1]:g}"
 
 
+def _format_limit_bound(value: float | None) -> str:
+    return "None" if value is None else f"{value:g}"
+
+
+def _format_limit_pair(value: tuple[float | None, float | None] | None) -> str:
+    if value is None:
+        return ""
+    return f"{_format_limit_bound(value[0])}, {_format_limit_bound(value[1])}"
+
+
 def _format_plot_limit(value: FigureLimit | None) -> str:
     if value is None:
         return ""
     if isinstance(value, int | float):
         return f"{value:g}"
-    return _format_pair(value)
+    return _format_limit_pair(value)
 
 
 def _format_tuple(value: Sequence[float]) -> str:
