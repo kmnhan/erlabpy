@@ -12911,8 +12911,9 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
     with manager_context() as manager:
         manager.show()
         assert not manager.left_tabs.tabBar().isVisible()
-        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
         assert not manager.left_tabs.isTabVisible(1)
+        assert not hasattr(manager, "figure_tab")
+        assert not hasattr(manager, "figure_view_controls")
 
         itool(
             xr.DataArray(
@@ -12944,8 +12945,8 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         manager._remove_childtool(figure_uid)
         assert figure_uid not in manager._tool_graph.nodes
         assert not manager.left_tabs.tabBar().isVisible()
-        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
         assert not manager.left_tabs.isTabVisible(1)
+        assert not hasattr(manager, "figure_tab")
 
 
 def test_manager_figures_tab_does_not_set_empty_minimum_width(
@@ -12964,7 +12965,7 @@ def test_manager_figures_tab_does_not_set_empty_minimum_width(
         empty_width = manager.left_tabs.minimumSizeHint().width()
 
         assert manager.left_tabs.count() == 1
-        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
+        assert not hasattr(manager, "figure_tab")
 
         figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
 
@@ -12974,8 +12975,13 @@ def test_manager_figures_tab_does_not_set_empty_minimum_width(
         manager._remove_childtool(figure_uid)
 
         assert manager.left_tabs.count() == 1
-        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
+        assert not hasattr(manager, "figure_tab")
         assert manager.left_tabs.minimumSizeHint().width() == empty_width
+
+        manager._clear_figure_selection_from_tree()
+        manager._figure_selection_changed()
+        manager._show_figure_item(QtWidgets.QListWidgetItem("removed"))
+        manager._show_figure_menu(QtCore.QPoint())
 
 
 def test_manager_figures_gallery_view_preserves_selection_and_persists(

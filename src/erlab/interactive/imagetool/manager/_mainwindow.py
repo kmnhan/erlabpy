@@ -872,75 +872,6 @@ class ImageToolManager(_ImageToolManagerBase):
             left_tab_bar.hide()
         self.left_tabs.addTab(self.tree_view, "Data/Tools")
 
-        self.figure_tab = QtWidgets.QWidget(self.left_tabs)
-        self.figure_tab.setObjectName("manager_figures_tab")
-        figure_layout = QtWidgets.QVBoxLayout(self.figure_tab)
-        figure_layout.setContentsMargins(0, 0, 0, 0)
-        figure_layout.setSpacing(0)
-        self.figure_view_controls = QtWidgets.QWidget(self.figure_tab)
-        self.figure_view_controls.setObjectName("manager_figures_view_controls")
-        figure_view_layout = QtWidgets.QHBoxLayout(self.figure_view_controls)
-        figure_view_layout.setContentsMargins(0, 0, 0, 0)
-        figure_view_layout.setSpacing(
-            self._style_pixel_metric(
-                QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
-            )
-        )
-        self.figure_view_button_group = QtWidgets.QButtonGroup(
-            self.figure_view_controls
-        )
-        self.figure_view_button_group.setExclusive(True)
-        self.figure_view_list_button = self._figure_view_mode_button(
-            "List",
-            erlab.interactive.utils.qtawesome.icon("ph.list-bullets"),
-            _FIGURE_VIEW_MODE_LIST,
-        )
-        self.figure_view_gallery_button = self._figure_view_mode_button(
-            "Gallery",
-            erlab.interactive.utils.qtawesome.icon("ph.grid-four"),
-            _FIGURE_VIEW_MODE_GALLERY,
-        )
-        for button in (self.figure_view_list_button, self.figure_view_gallery_button):
-            self.figure_view_button_group.addButton(button)
-            figure_view_layout.addWidget(button)
-        self.figure_gallery_size_label = QtWidgets.QLabel(
-            "Thumbnail", self.figure_view_controls
-        )
-        self.figure_gallery_size_combo = QtWidgets.QComboBox(self.figure_view_controls)
-        self.figure_gallery_size_combo.setObjectName("manager_figures_gallery_size")
-        self.figure_gallery_size_combo.setToolTip("Choose gallery thumbnail size.")
-        self.figure_gallery_size_label.setBuddy(self.figure_gallery_size_combo)
-        for label, key in (
-            ("Small", "small"),
-            ("Medium", "medium"),
-            ("Large", "large"),
-        ):
-            self.figure_gallery_size_combo.addItem(label, key)
-        self.figure_gallery_size_combo.currentIndexChanged.connect(
-            self._figure_gallery_size_changed
-        )
-        figure_view_layout.addStretch(1)
-        figure_view_layout.addWidget(self.figure_gallery_size_label)
-        figure_view_layout.addWidget(self.figure_gallery_size_combo)
-        figure_layout.addWidget(self.figure_view_controls)
-        self.figure_list = QtWidgets.QListWidget(self.figure_tab)
-        self.figure_list.setObjectName("manager_figures_list")
-        self.figure_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self.figure_list.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.SelectedClicked
-        )
-        self.figure_list.setContextMenuPolicy(
-            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.figure_list.itemSelectionChanged.connect(self._figure_selection_changed)
-        self.figure_list.itemChanged.connect(self._figure_item_changed)
-        self.figure_list.itemDoubleClicked.connect(self._show_figure_item)
-        self.figure_list.customContextMenuRequested.connect(self._show_figure_menu)
-        figure_layout.addWidget(self.figure_list)
-        self._apply_figure_view_controls()
-        self._apply_figure_list_view_configuration()
         left_layout.addWidget(self.left_tabs)
 
         # Construct right side of splitter
@@ -1261,6 +1192,139 @@ class ImageToolManager(_ImageToolManagerBase):
             raise RuntimeError("No active Qt style")
         return style
 
+    def _create_figures_ui(self) -> None:
+        if hasattr(self, "figure_tab"):
+            return
+
+        self.figure_tab = QtWidgets.QWidget(self.left_tabs)
+        self.figure_tab.setObjectName("manager_figures_tab")
+        figure_layout = QtWidgets.QVBoxLayout(self.figure_tab)
+        figure_layout.setContentsMargins(0, 0, 0, 0)
+        figure_layout.setSpacing(0)
+        self.figure_view_controls = QtWidgets.QWidget(self.figure_tab)
+        self.figure_view_controls.setObjectName("manager_figures_view_controls")
+        figure_view_layout = QtWidgets.QHBoxLayout(self.figure_view_controls)
+        figure_view_layout.setContentsMargins(0, 0, 0, 0)
+        figure_view_layout.setSpacing(
+            self._style_pixel_metric(
+                QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
+            )
+        )
+        self.figure_view_button_group = QtWidgets.QButtonGroup(
+            self.figure_view_controls
+        )
+        self.figure_view_button_group.setExclusive(True)
+        self.figure_view_list_button = self._figure_view_mode_button(
+            "List",
+            erlab.interactive.utils.qtawesome.icon("ph.list-bullets"),
+            _FIGURE_VIEW_MODE_LIST,
+        )
+        self.figure_view_gallery_button = self._figure_view_mode_button(
+            "Gallery",
+            erlab.interactive.utils.qtawesome.icon("ph.grid-four"),
+            _FIGURE_VIEW_MODE_GALLERY,
+        )
+        for button in (self.figure_view_list_button, self.figure_view_gallery_button):
+            self.figure_view_button_group.addButton(button)
+            figure_view_layout.addWidget(button)
+        self.figure_gallery_size_label = QtWidgets.QLabel(
+            "Thumbnail", self.figure_view_controls
+        )
+        self.figure_gallery_size_combo = QtWidgets.QComboBox(self.figure_view_controls)
+        self.figure_gallery_size_combo.setObjectName("manager_figures_gallery_size")
+        self.figure_gallery_size_combo.setToolTip("Choose gallery thumbnail size.")
+        self.figure_gallery_size_label.setBuddy(self.figure_gallery_size_combo)
+        for label, key in (
+            ("Small", "small"),
+            ("Medium", "medium"),
+            ("Large", "large"),
+        ):
+            self.figure_gallery_size_combo.addItem(label, key)
+        self.figure_gallery_size_combo.currentIndexChanged.connect(
+            self._figure_gallery_size_changed
+        )
+        figure_view_layout.addStretch(1)
+        figure_view_layout.addWidget(self.figure_gallery_size_label)
+        figure_view_layout.addWidget(self.figure_gallery_size_combo)
+        figure_layout.addWidget(self.figure_view_controls)
+        self.figure_list = QtWidgets.QListWidget(self.figure_tab)
+        self.figure_list.setObjectName("manager_figures_list")
+        self.figure_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.figure_list.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.SelectedClicked
+        )
+        self.figure_list.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.figure_list.itemSelectionChanged.connect(self._figure_selection_changed)
+        self.figure_list.itemChanged.connect(self._figure_item_changed)
+        self.figure_list.itemDoubleClicked.connect(self._show_figure_item)
+        self.figure_list.customContextMenuRequested.connect(self._show_figure_menu)
+        figure_layout.addWidget(self.figure_list)
+        self._apply_figure_view_controls()
+        self._apply_figure_list_view_configuration()
+
+    def _destroy_figures_ui(self) -> None:
+        figure_tab = getattr(self, "figure_tab", None)
+        if figure_tab is None:
+            return
+
+        self._refreshing_figure_list = True
+        figure_list = getattr(self, "figure_list", None)
+        if figure_list is not None and erlab.interactive.utils.qt_is_valid(figure_list):
+            figure_list.blockSignals(True)
+            with contextlib.suppress(TypeError, RuntimeError):
+                figure_list.itemSelectionChanged.disconnect(
+                    self._figure_selection_changed
+                )
+            with contextlib.suppress(TypeError, RuntimeError):
+                figure_list.itemChanged.disconnect(self._figure_item_changed)
+            with contextlib.suppress(TypeError, RuntimeError):
+                figure_list.itemDoubleClicked.disconnect(self._show_figure_item)
+            with contextlib.suppress(TypeError, RuntimeError):
+                figure_list.customContextMenuRequested.disconnect(
+                    self._show_figure_menu
+                )
+        gallery_size_combo = getattr(self, "figure_gallery_size_combo", None)
+        if gallery_size_combo is not None and erlab.interactive.utils.qt_is_valid(
+            gallery_size_combo
+        ):
+            with contextlib.suppress(TypeError, RuntimeError):
+                gallery_size_combo.currentIndexChanged.disconnect(
+                    self._figure_gallery_size_changed
+                )
+        for button_name in (
+            "figure_view_list_button",
+            "figure_view_gallery_button",
+        ):
+            button = getattr(self, button_name, None)
+            if button is not None and erlab.interactive.utils.qt_is_valid(button):
+                with contextlib.suppress(TypeError, RuntimeError):
+                    button.clicked.disconnect()
+
+        tab_index = self.left_tabs.indexOf(figure_tab)
+        if tab_index >= 0:
+            if self.left_tabs.currentIndex() == tab_index:
+                self.left_tabs.setCurrentIndex(0)
+            self.left_tabs.removeTab(tab_index)
+        figure_tab.hide()
+        figure_tab.deleteLater()
+        for attr in (
+            "figure_tab",
+            "figure_view_controls",
+            "figure_view_button_group",
+            "figure_view_list_button",
+            "figure_view_gallery_button",
+            "figure_gallery_size_label",
+            "figure_gallery_size_combo",
+            "figure_list",
+        ):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self._refreshing_figure_list = False
+
     def _figure_view_mode_button(
         self, text: str, icon: QtGui.QIcon, mode: str
     ) -> QtWidgets.QToolButton:
@@ -1371,20 +1435,23 @@ class ImageToolManager(_ImageToolManagerBase):
         self.figure_list.setGridSize(QtCore.QSize())
 
     def _set_figures_tab_available(self, available: bool) -> None:
+        if not available:
+            self._destroy_figures_ui()
+            left_tab_bar = self.left_tabs.tabBar()
+            if left_tab_bar is not None:  # pragma: no branch
+                left_tab_bar.setVisible(False)
+            self.left_tabs.updateGeometry()
+            return
+
+        self._create_figures_ui()
         tab_index = self.left_tabs.indexOf(self.figure_tab)
-        if available:
-            if tab_index < 0:
-                tab_index = self.left_tabs.addTab(self.figure_tab, "Figures")
-            self.left_tabs.setTabVisible(tab_index, True)
-        elif tab_index >= 0:
-            if self.left_tabs.currentIndex() == tab_index:
-                self.left_tabs.setCurrentIndex(0)
-            self.left_tabs.removeTab(tab_index)
-            self.figure_tab.setParent(self.left_tabs)
-            self.figure_tab.hide()
+        if tab_index < 0:
+            tab_index = self.left_tabs.addTab(self.figure_tab, "Figures")
+        self.figure_tab.show()
+        self.left_tabs.setTabVisible(tab_index, True)
         left_tab_bar = self.left_tabs.tabBar()
         if left_tab_bar is not None:  # pragma: no branch
-            left_tab_bar.setVisible(available)
+            left_tab_bar.setVisible(True)
         self.left_tabs.updateGeometry()
 
     def _figure_gallery_icon(self, uid: str) -> QtGui.QIcon:
@@ -1456,9 +1523,6 @@ class ImageToolManager(_ImageToolManagerBase):
         return f"Figure {highest + 1}"
 
     def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
-        if not hasattr(self, "figure_list"):
-            return
-
         figure_uids = self._figure_uids()
         selected_uids = (
             {select_uid}
@@ -1468,6 +1532,8 @@ class ImageToolManager(_ImageToolManagerBase):
 
         has_figures = bool(figure_uids)
         self._set_figures_tab_available(has_figures)
+        if not has_figures:
+            return
         self.figure_view_controls.setVisible(has_figures)
         self._apply_figure_view_controls()
         self._apply_figure_list_view_configuration()
@@ -1486,10 +1552,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self.figure_list.blockSignals(False)
             self._refreshing_figure_list = False
 
-        if has_figures and select_uid is not None:
+        if select_uid is not None:
             self.left_tabs.setCurrentWidget(self.figure_tab)
-        elif not has_figures:
-            self.figure_list.clearSelection()
 
     def _figure_uid_from_item(
         self, item: QtWidgets.QListWidgetItem | None
@@ -1507,7 +1571,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot()
     def _clear_figure_selection_from_tree(self) -> None:
-        if self._refreshing_figure_list:
+        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
             return
         if not self.tree_view.selectedIndexes():
             return
@@ -1519,7 +1583,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot()
     def _figure_selection_changed(self) -> None:
-        if self._refreshing_figure_list:
+        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
             return
         if self.figure_list.selectedItems():
             selection_model = self.tree_view.selectionModel()
@@ -1535,7 +1599,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot(QtWidgets.QListWidgetItem)
     def _figure_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
-        if self._refreshing_figure_list:
+        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
             return
         uid = self._figure_uid_from_item(item)
         if uid is None or not self._is_figure_uid(uid):
@@ -1545,12 +1609,16 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot(QtWidgets.QListWidgetItem)
     def _show_figure_item(self, item: QtWidgets.QListWidgetItem) -> None:
+        if not hasattr(self, "figure_list"):
+            return
         uid = self._figure_uid_from_item(item)
         if uid is not None and self._is_figure_uid(uid):
             self.show_childtool(uid)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_figure_menu(self, position: QtCore.QPoint) -> None:
+        if not hasattr(self, "figure_list"):
+            return
         menu = QtWidgets.QMenu("Figures", self.figure_list)
         menu.addAction(self.show_action)
         menu.addAction(self.hide_action)

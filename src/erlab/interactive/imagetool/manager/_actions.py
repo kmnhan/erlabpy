@@ -65,12 +65,15 @@ class _ActionsController:
         if len(selected_images) + len(selected_tools) == 1:
             target = selected_images[0] if selected_images else selected_tools[0]
             if isinstance(target, str) and self._manager._is_figure_uid(target):
-                for row in range(self._manager.figure_list.count()):
-                    item = self._manager.figure_list.item(row)
+                figure_list = getattr(self._manager, "figure_list", None)
+                if figure_list is None:
+                    return
+                for row in range(figure_list.count()):
+                    item = figure_list.item(row)
                     if item is None:
                         continue
                     if item.data(QtCore.Qt.ItemDataRole.UserRole) == target:
-                        self._manager.figure_list.editItem(item)
+                        figure_list.editItem(item)
                         return
             self._manager.tree_view.edit(
                 self._manager.tree_view._model._row_index(target)
