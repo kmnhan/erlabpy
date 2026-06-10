@@ -12709,6 +12709,7 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
     with manager_context() as manager:
         manager.show()
         assert not manager.left_tabs.tabBar().isVisible()
+        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
         assert not manager.left_tabs.isTabVisible(1)
 
         itool(
@@ -12727,6 +12728,7 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert len(manager._tool_graph.figure_uids) == 1
         figure_uid = manager._tool_graph.figure_uids[0]
         assert manager.left_tabs.tabBar().isVisible()
+        assert manager.left_tabs.indexOf(manager.figure_tab) == 1
         assert manager.left_tabs.isTabVisible(1)
         assert figure_uid in manager._tool_graph.figure_uids
         assert figure_uid not in manager._tool_graph.root_wrappers[0]._childtool_indices
@@ -12740,7 +12742,38 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         manager._remove_childtool(figure_uid)
         assert figure_uid not in manager._tool_graph.nodes
         assert not manager.left_tabs.tabBar().isVisible()
+        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
         assert not manager.left_tabs.isTabVisible(1)
+
+
+def test_manager_figures_tab_does_not_set_empty_minimum_width(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        manager.show()
+        empty_width = manager.left_tabs.minimumSizeHint().width()
+
+        assert manager.left_tabs.count() == 1
+        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
+
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+
+        assert manager.left_tabs.count() == 2
+        assert manager.left_tabs.indexOf(manager.figure_tab) == 1
+
+        manager._remove_childtool(figure_uid)
+
+        assert manager.left_tabs.count() == 1
+        assert manager.left_tabs.indexOf(manager.figure_tab) < 0
+        assert manager.left_tabs.minimumSizeHint().width() == empty_width
 
 
 def test_manager_figures_gallery_view_preserves_selection_and_persists(

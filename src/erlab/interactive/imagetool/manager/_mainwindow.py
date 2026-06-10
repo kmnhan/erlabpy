@@ -941,8 +941,6 @@ class ImageToolManager(_ImageToolManagerBase):
         figure_layout.addWidget(self.figure_list)
         self._apply_figure_view_controls()
         self._apply_figure_list_view_configuration()
-        self.left_tabs.addTab(self.figure_tab, "Figures")
-        self.left_tabs.setTabVisible(1, False)
         left_layout.addWidget(self.left_tabs)
 
         # Construct right side of splitter
@@ -1372,6 +1370,23 @@ class ImageToolManager(_ImageToolManagerBase):
         self.figure_list.setIconSize(QtCore.QSize())
         self.figure_list.setGridSize(QtCore.QSize())
 
+    def _set_figures_tab_available(self, available: bool) -> None:
+        tab_index = self.left_tabs.indexOf(self.figure_tab)
+        if available:
+            if tab_index < 0:
+                tab_index = self.left_tabs.addTab(self.figure_tab, "Figures")
+            self.left_tabs.setTabVisible(tab_index, True)
+        elif tab_index >= 0:
+            if self.left_tabs.currentIndex() == tab_index:
+                self.left_tabs.setCurrentIndex(0)
+            self.left_tabs.removeTab(tab_index)
+            self.figure_tab.setParent(self.left_tabs)
+            self.figure_tab.hide()
+        left_tab_bar = self.left_tabs.tabBar()
+        if left_tab_bar is not None:  # pragma: no branch
+            left_tab_bar.setVisible(available)
+        self.left_tabs.updateGeometry()
+
     def _figure_gallery_icon(self, uid: str) -> QtGui.QIcon:
         if not self._is_figure_uid(uid):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
@@ -1452,6 +1467,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         has_figures = bool(figure_uids)
+        self._set_figures_tab_available(has_figures)
         self.figure_view_controls.setVisible(has_figures)
         self._apply_figure_view_controls()
         self._apply_figure_list_view_configuration()
@@ -1470,14 +1486,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self.figure_list.blockSignals(False)
             self._refreshing_figure_list = False
 
-        self.left_tabs.setTabVisible(1, has_figures)
-        left_tab_bar = self.left_tabs.tabBar()
-        if left_tab_bar is not None:  # pragma: no branch
-            left_tab_bar.setVisible(has_figures)
         if has_figures and select_uid is not None:
             self.left_tabs.setCurrentWidget(self.figure_tab)
         elif not has_figures:
-            self.left_tabs.setCurrentIndex(0)
             self.figure_list.clearSelection()
 
     def _figure_uid_from_item(
