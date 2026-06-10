@@ -179,6 +179,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_pixmap_stale = True
         self._preview_pixmap_update_pending = False
         self._preview_pixmap_update_generation = 0
+        self._show_figure_window_generation = 0
+        self._show_figure_window_pending = False
         self._closing = False
         self._section_tab_stop_refs: dict[
             str, weakref.ReferenceType[QtWidgets.QWidget]
@@ -311,13 +313,39 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _show_figure_window_requested(self) -> None:
-        self.show_figure_window(activate=True)
+        self._request_show_figure_window(activate=True)
 
     def show_figure_window(self, *, activate: bool = True) -> None:
         self.figure_window.show_for_setup(
             self._recipe.setup, self._figure_window_title(), activate=activate
         )
         _render_preview(self, show_window=True)
+
+    def _request_show_figure_window(self, *, activate: bool) -> None:
+        if self._closing:
+            return
+        self._show_figure_window_generation += 1
+        self._show_figure_window_pending = True
+        generation = self._show_figure_window_generation
+        erlab.interactive.utils.single_shot(
+            self,
+            0,
+            lambda: self._run_requested_show_figure_window(generation, activate),
+        )
+
+    def _run_requested_show_figure_window(
+        self, generation: int, activate: bool
+    ) -> None:
+        if generation != self._show_figure_window_generation:
+            return
+        self._show_figure_window_pending = False
+        if self._closing or not self.isVisible():
+            return
+        self.show_figure_window(activate=activate)
+
+    def _cancel_queued_show_figure_window(self) -> None:
+        self._show_figure_window_generation += 1
+        self._show_figure_window_pending = False
 
     @QtCore.Slot(float, float)
     def _figure_window_canvas_size_changed(
@@ -432,15 +460,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         if event is not None:
             super().showEvent(event)
-        self.show_figure_window(activate=False)
+        self._request_show_figure_window(activate=False)
 
     def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
+        self._cancel_queued_show_figure_window()
         self._hide_figure_window()
         if event is not None:
             super().hideEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._closing = True
+        self._cancel_queued_show_figure_window()
         self._preview_render_update_generation += 1
         self._preview_render_update_pending = False
         self._preview_pixmap_update_generation += 1

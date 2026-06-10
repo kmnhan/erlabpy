@@ -781,6 +781,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         axes_customize_callback: Callable[[], None] = _noop_toolbar_callback,
     ) -> None:
         super().__init__(None)
+        erlab.interactive.utils.patch_macos_matplotlib_qt_cursor()
         self._closing_from_owner = False
         self._suppress_resize_signal = False
         self._resize_signal_pending = False

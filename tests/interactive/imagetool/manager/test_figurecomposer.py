@@ -3139,6 +3139,45 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     assert info_changes == [(4.5, 3.0)]
 
 
+def test_figure_composer_show_defers_figure_window(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    calls: list[bool] = []
+
+    def record_show_figure_window(*, activate: bool = True) -> None:
+        calls.append(activate)
+
+    monkeypatch.setattr(tool, "show_figure_window", record_show_figure_window)
+
+    tool.show()
+
+    assert calls == []
+    qtbot.waitUntil(lambda: calls == [False], timeout=1000)
+
+
+def test_figure_composer_hide_cancels_deferred_figure_window(
+    qtbot, monkeypatch
+) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    calls: list[bool] = []
+
+    def record_show_figure_window(*, activate: bool = True) -> None:
+        calls.append(activate)
+
+    monkeypatch.setattr(tool, "show_figure_window", record_show_figure_window)
+
+    tool.show()
+    tool.hide()
+    qtbot.wait(20)
+
+    assert calls == []
+
+
 def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         "erlab.interactive._figurecomposer._tool._render_preview",

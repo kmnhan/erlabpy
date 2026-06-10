@@ -87,6 +87,7 @@ __all__ = [
     "load_ui",
     "make_crosshairs",
     "parse_data",
+    "patch_macos_matplotlib_qt_cursor",
     "qt_is_valid",
     "save_fit_ui",
     "set_widget_cursor",
@@ -175,6 +176,38 @@ def qt_is_valid(*objects: object) -> bool:
 
 _ERLAB_CURSOR_SHAPE_PROPERTY = "_erlab_cursor_shape"
 _ERLAB_CURSOR_UNSET = "unset"
+_MPL_QT_CURSOR_PATCH_ATTR = "_erlab_original_set_cursor"
+
+
+def patch_macos_matplotlib_qt_cursor() -> None:
+    """Disable Matplotlib Qt cursor updates on macOS.
+
+    Matplotlib's QtAgg backend updates the canvas cursor during navigation and
+    draw/expose handling. On macOS this can enter Qt Cocoa's cursor-image
+    conversion while another top-level window is being shown, which has caused
+    native crashes in the manager. Losing Matplotlib's cursor shape feedback is
+    preferable to crashing the process.
+    """
+    if sys.platform != "darwin":
+        return
+
+    try:
+        backend_qt = importlib.import_module("matplotlib.backends.backend_qt")
+    except Exception:  # pragma: no cover - Matplotlib backend availability varies
+        logger.debug("Could not import Matplotlib Qt backend for cursor patch")
+        return
+
+    canvas_cls = typing.cast("typing.Any", getattr(backend_qt, "FigureCanvasQT", None))
+    if canvas_cls is None or hasattr(canvas_cls, _MPL_QT_CURSOR_PATCH_ATTR):
+        return
+
+    original_set_cursor = canvas_cls.set_cursor
+
+    def _set_cursor_noop(self: object, cursor: object) -> None:
+        return None
+
+    setattr(canvas_cls, _MPL_QT_CURSOR_PATCH_ATTR, original_set_cursor)
+    canvas_cls.set_cursor = _set_cursor_noop
 
 
 def set_widget_cursor(
