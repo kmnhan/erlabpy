@@ -3088,6 +3088,41 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     assert owner_close_event.isAccepted()
 
 
+def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+
+    draw_idle_calls: list[object] = []
+    info_changes: list[tuple[float, float]] = []
+
+    def record_draw_idle(canvas) -> None:
+        draw_idle_calls.append(canvas)
+
+    monkeypatch.setattr(
+        figurecomposer_widgets.FigureCanvas, "draw_idle", record_draw_idle
+    )
+    tool.sigInfoChanged.connect(
+        lambda: info_changes.append(tool.tool_status.setup.figsize)
+    )
+
+    tool._figure_window_canvas_size_changed(4.0, 2.5)
+    assert tool.tool_status.setup.figsize == (4.0, 2.5)
+    assert np.isclose(tool.width_spin.value(), 4.0)
+    assert np.isclose(tool.height_spin.value(), 2.5)
+    assert draw_idle_calls == []
+    assert info_changes == []
+
+    tool._figure_window_canvas_size_changed(4.5, 3.0)
+    assert tool.tool_status.setup.figsize == (4.5, 3.0)
+    qtbot.waitUntil(lambda: len(draw_idle_calls) == 1, timeout=1000)
+
+    assert info_changes == [(4.5, 3.0)]
+
+
 def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         "erlab.interactive._figurecomposer._tool._render_preview",
@@ -3633,6 +3668,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
 
     item = tool.operation_list.item(0)
     assert item is not None
@@ -7908,7 +7944,9 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         == colorbar_spec.call_policy
     )
 
-    assert figurecomposer_method._live_layout_axes(tool).shape == (1, 2)
+    assert figurecomposer_method._live_layout_axes(
+        tool, render_if_missing=True
+    ).shape == (1, 2)
     assert (
         figurecomposer_method._first_live_axis(
             tool,
@@ -7957,7 +7995,9 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(grid_tool)
-    grid_axes = figurecomposer_method._live_layout_axes(grid_tool)
+    grid_axes = figurecomposer_method._live_layout_axes(
+        grid_tool, render_if_missing=True
+    )
     assert isinstance(grid_axes, dict)
     assert set(grid_axes) == {"axis-a"}
     assert (
@@ -7973,7 +8013,7 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         figurecomposer_method._limit_method_default_args(
             grid_tool,
             figurecomposer_method.AXES_METHODS["set_xlim"],
-            FigureAxesSelectionState(axes=(), axes_ids=("axis-a",)),
+            FigureAxesSelectionState(axes=(), axes_ids=("missing-axis",)),
         )
         == ()
     )
@@ -8729,6 +8769,7 @@ def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) ->
 def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_profile_source("data"))
     qtbot.addWidget(tool)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
 
     axis = tool.figure.axes[0]
     expected_xlim = tuple(float(value) for value in axis.get_xlim())

@@ -122,6 +122,7 @@ if typing.TYPE_CHECKING:
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
+_FIGURE_RESIZE_RENDER_DELAY_MS = 120
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
@@ -176,6 +177,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_input_errors: dict[str, dict[str, str]] = {}
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
+        self._figure_resize_render_generation = 0
+        self._section_tab_stop_refs: dict[
+            str, weakref.ReferenceType[QtWidgets.QWidget]
+        ] = {}
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
@@ -310,11 +315,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.figure_window.show_for_setup(
             self._recipe.setup, self._figure_window_title(), activate=activate
         )
-        self.canvas.flush_events()
-        self._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
-        _render_preview(self, show_window=False)
-        self.canvas.draw()
-        self.canvas.flush_events()
+        _render_preview(self, show_window=True)
 
     @QtCore.Slot(float, float)
     def _figure_window_canvas_size_changed(
@@ -322,9 +323,34 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         if self._updating_controls:
             return
-        self._set_recipe_figsize_from_canvas(
-            width_inches, height_inches, draw=True, emit_info=True
+        if self._set_recipe_figsize_from_canvas(
+            width_inches, height_inches, draw=False, emit_info=False
+        ):
+            self._queue_figure_resize_render()
+
+    def _queue_figure_resize_render(self) -> None:
+        self._figure_resize_render_generation += 1
+        generation = self._figure_resize_render_generation
+        erlab.interactive.utils.single_shot(
+            self,
+            _FIGURE_RESIZE_RENDER_DELAY_MS,
+            lambda: self._run_queued_figure_resize_render(generation),
         )
+
+    def _run_queued_figure_resize_render(self, generation: int) -> None:
+        if generation != self._figure_resize_render_generation:
+            return
+        window = self._figure_window
+        if (
+            window is not None
+            and erlab.interactive.utils.qt_is_valid(window, window.canvas)
+            and window.isVisible()
+        ):
+            if self._rendering:
+                self._queue_figure_resize_render()
+                return
+            window.canvas.draw_idle()
+        self.sigInfoChanged.emit()
 
     def _sync_recipe_figsize_to_canvas(self, *, draw: bool, emit_info: bool) -> bool:
         canvas_size = self.canvas.size()
@@ -2963,6 +2989,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return page, layout
 
     def _set_step_sections(self, sections: Sequence[StepSection]) -> None:
+        self._section_tab_stop_refs.clear()
         while self.step_navigator_layout.count():
             item = self.step_navigator_layout.takeAt(0)
             if item is None:
@@ -3014,9 +3041,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index = self.step_section_keys.index(key)
         self.step_editor_stack.setCurrentIndex(index)
         for button_key, button in self.step_section_buttons.items():
+            selected = button_key == key
             font = button.font()
-            font.setBold(button_key == key)
-            button.setFont(font)
+            if font.bold() != selected:
+                font.setBold(selected)
+                button.setFont(font)
         self._refresh_step_tab_order()
 
     def _refresh_step_section_button_texts(self) -> None:
@@ -3045,12 +3074,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current_page = self.step_editor_stack.currentWidget()
         if current_page is None:
             return None
-        for widget in (current_page, *current_page.findChildren(QtWidgets.QWidget)):
+        cache_key = self._current_step_section_key
+        cached_ref = self._section_tab_stop_refs.get(cache_key)
+        if cached_ref is not None:
+            cached_widget = cached_ref()
+            if (
+                cached_widget is not None
+                and erlab.interactive.utils.qt_is_valid(cached_widget)
+                and cached_widget.isEnabled()
+                and self._accepts_tab_focus(cached_widget)
+                and (
+                    cached_widget is current_page
+                    or current_page.isAncestorOf(cached_widget)
+                )
+            ):
+                return cached_widget
+            self._section_tab_stop_refs.pop(cache_key, None)
+        if (
+            erlab.interactive.utils.qt_is_valid(current_page)
+            and current_page.isEnabled()
+            and self._accepts_tab_focus(current_page)
+        ):
+            self._section_tab_stop_refs[cache_key] = weakref.ref(current_page)
+            return current_page
+        for widget in current_page.findChildren(QtWidgets.QWidget):
             if (
                 erlab.interactive.utils.qt_is_valid(widget)
                 and widget.isEnabled()
                 and self._accepts_tab_focus(widget)
             ):
+                self._section_tab_stop_refs[cache_key] = weakref.ref(widget)
                 return widget
         return None
 

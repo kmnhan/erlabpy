@@ -97,6 +97,7 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
+    _render_preview,
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -2289,18 +2290,26 @@ def _method_combo(
 
 def _live_layout_axes(
     tool: FigureComposerTool,
+    *,
+    render_if_missing: bool = False,
 ) -> np.ndarray | dict[str, Axes] | None:
     setup = tool._recipe.setup
     if setup.layout_mode == "gridspec":
         axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
         axes = tool.figure.axes[: len(axes_ids)]
         if len(axes) < len(axes_ids):
+            if render_if_missing:
+                _render_preview(tool, show_window=False)
+                return _live_layout_axes(tool)
             return None
         return dict(zip(axes_ids, axes, strict=True))
 
     count = setup.nrows * setup.ncols
     axes = tool.figure.axes[:count]
     if len(axes) < count:
+        if render_if_missing:
+            _render_preview(tool, show_window=False)
+            return _live_layout_axes(tool)
         return None
     return np.asarray(axes, dtype=object).reshape(setup.nrows, setup.ncols)
 
@@ -2308,7 +2317,7 @@ def _live_layout_axes(
 def _first_live_axis(
     tool: FigureComposerTool, selection: FigureAxesSelectionState
 ) -> Axes | None:
-    layout_axes = _live_layout_axes(tool)
+    layout_axes = _live_layout_axes(tool, render_if_missing=True)
     if layout_axes is None:
         return None
     if isinstance(layout_axes, dict) and not selection.axes_ids:

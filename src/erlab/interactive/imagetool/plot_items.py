@@ -1909,7 +1909,7 @@ class ItoolPlotItem(pg.PlotItem):
     @staticmethod
     def _figure_composer_operation_updates(
         plot_kwargs: dict[str, typing.Any],
-    ) -> dict[str, typing.Any]:
+    ) -> dict[str, typing.Any] | None:
         field_names = {
             "transpose",
             "xlim",
@@ -1964,6 +1964,8 @@ class ItoolPlotItem(pg.PlotItem):
                     updates[key] = plain_value
             else:
                 extra_kwargs[key] = plain_value
+        if not updates and not extra_kwargs:
+            return None
         updates["extra_kwargs"] = extra_kwargs
         return updates
 
@@ -1980,7 +1982,7 @@ class ItoolPlotItem(pg.PlotItem):
         from erlab.interactive._figurecomposer import FigureOperationState
 
         plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
-        updates = self._figure_composer_operation_updates(plot_kwargs)
+        updates = self._figure_composer_operation_updates(plot_kwargs) or {}
 
         if selected_maps is not None:
             return FigureOperationState.plot_slices(

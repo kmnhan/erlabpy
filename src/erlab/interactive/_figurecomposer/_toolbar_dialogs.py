@@ -1571,14 +1571,13 @@ def _selector_widget(
         if not selected_axes:
             selected_axes = _gridspec_valid_axes_ids(
                 setup, _gridspec_all_axes_ids(setup)
-            )
-        selected_axes = selected_axes[:1]
+            )[:1]
         selector.set_selected_axes_ids(selected_axes)
         return selector
     selector = _AxesSelectorWidget(parent)
     selector.set_grid(setup.nrows, setup.ncols)
     selected_axes = tool._selected_axes_state().valid_axes(setup)
-    selector.set_selected_axes(selected_axes[:1] or ((0, 0),))
+    selector.set_selected_axes(selected_axes or ((0, 0),))
     return selector
 
 
