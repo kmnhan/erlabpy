@@ -1115,8 +1115,6 @@ class ImageToolManager(_ImageToolManagerBase):
             self._stop_servers()
             unregister_manager_record(self._manager_record.internal_id)
 
-            self._compact_workspace_before_shutdown()
-
             logger.debug("Removing all ImageTool windows...")
             with self._workspace_load_context():
                 self.remove_all_tools()

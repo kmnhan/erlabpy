@@ -4471,6 +4471,29 @@ def test_manager_close_save_path_skips_macos_file_path_update(
         assert not manager._workspace_state.closing_document
 
 
+def test_manager_close_does_not_compact_workspace(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_state.path = tmp_path / "close-no-compact.itws"
+        manager._workspace_state.delta_save_count = 1
+        compact_calls: list[str] = []
+
+        monkeypatch.setattr(
+            manager,
+            "_compact_workspace_before_shutdown",
+            lambda: compact_calls.append("compact"),
+        )
+
+        assert manager.close()
+
+    assert compact_calls == []
+
+
 def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
     fname = tmp_path / "busy-message.itws"
     calls: list[dict[str, object]] = []

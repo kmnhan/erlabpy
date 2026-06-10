@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import math
 import textwrap
@@ -182,6 +183,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
         self._preview_pixmap_stale = True
         self._preview_pixmap_update_pending = False
+        self._preview_pixmap_update_generation = 0
+        self._closing = False
         self._section_tab_stop_refs: dict[
             str, weakref.ReferenceType[QtWidgets.QWidget]
         ] = {}
@@ -442,6 +445,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             super().hideEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._closing = True
+        self._preview_pixmap_update_generation += 1
+        self._preview_pixmap_update_pending = False
         self._remove_operation_list_event_filter()
         self._close_figure_window()
         if event is not None:
@@ -3750,6 +3756,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def request_preview_pixmap_update(
         self, *, delay_ms: int = _PREVIEW_PIXMAP_UPDATE_DELAY_MS
     ) -> None:
+        if self._closing:
+            return
         if not self._recipe.operations:
             self._preview_pixmap_cache = None
             self._preview_pixmap_stale = False
@@ -3757,13 +3765,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._preview_pixmap_update_pending or not self._preview_pixmap_stale:
             return
         self._preview_pixmap_update_pending = True
+        self._preview_pixmap_update_generation += 1
+        generation = self._preview_pixmap_update_generation
         erlab.interactive.utils.single_shot(
             self,
             delay_ms,
-            self._run_queued_preview_pixmap_update,
+            functools.partial(self._run_queued_preview_pixmap_update, generation),
         )
 
-    def _run_queued_preview_pixmap_update(self) -> None:
+    def _run_queued_preview_pixmap_update(self, generation: int) -> None:
+        if generation != self._preview_pixmap_update_generation or self._closing:
+            return
         self._preview_pixmap_update_pending = False
         if self._rendering:
             self.request_preview_pixmap_update()

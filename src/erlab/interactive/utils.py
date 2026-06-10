@@ -243,6 +243,24 @@ def single_shot(
     QtCore.QTimer.singleShot(msec, _call)
 
 
+_APPLICATION_QUIT_REQUESTED_PROPERTY = "_erlab_application_quit_requested"
+
+
+def _set_application_quit_requested(requested: bool) -> None:
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        app.setProperty(_APPLICATION_QUIT_REQUESTED_PROPERTY, bool(requested))
+
+
+def _application_quit_requested() -> bool:
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return False
+    if app.closingDown():
+        return True
+    return bool(app.property(_APPLICATION_QUIT_REQUESTED_PROPERTY))
+
+
 class _CloseShortcutEventFilter(QtCore.QObject):
     def __init__(self, widget: QtWidgets.QWidget, callback: Callable[[], None]) -> None:
         super().__init__(widget)

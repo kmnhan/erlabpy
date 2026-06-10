@@ -718,6 +718,13 @@ class _ApplicationQuitFilter(QtCore.QObject):
         super().__init__(manager)
         self._manager = manager
 
+    def _close_manager_for_application_quit(self) -> None:
+        erlab.interactive.utils._set_application_quit_requested(True)
+        try:
+            self._manager.close()
+        finally:
+            erlab.interactive.utils._set_application_quit_requested(False)
+
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
@@ -725,7 +732,7 @@ class _ApplicationQuitFilter(QtCore.QObject):
             return False
         if event.type() == QtCore.QEvent.Type.Quit:
             event.accept()
-            self._manager.close()
+            self._close_manager_for_application_quit()
             return True
         if (
             event.type() == QtCore.QEvent.Type.KeyPress
@@ -733,7 +740,7 @@ class _ApplicationQuitFilter(QtCore.QObject):
             and event.matches(QtGui.QKeySequence.StandardKey.Quit)
         ):
             event.accept()
-            self._manager.close()
+            self._close_manager_for_application_quit()
             return True
         return False
 

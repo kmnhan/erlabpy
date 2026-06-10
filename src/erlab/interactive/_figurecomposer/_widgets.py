@@ -945,7 +945,11 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         )
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        if self._closing_from_owner:
+        if (
+            self._closing_from_owner
+            or erlab.interactive.utils._application_quit_requested()
+        ):
+            self._remove_event_filters()
             if event is not None:
                 super().closeEvent(event)
             return

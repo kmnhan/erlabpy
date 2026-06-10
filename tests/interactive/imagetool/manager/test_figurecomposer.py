@@ -3087,6 +3087,16 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     window.closeEvent(owner_close_event)
     assert owner_close_event.isAccepted()
 
+    window._closing_from_owner = False
+    window.show()
+    app_quit_close_event = QtGui.QCloseEvent()
+    erlab.interactive.utils._set_application_quit_requested(True)
+    try:
+        window.closeEvent(app_quit_close_event)
+    finally:
+        erlab.interactive.utils._set_application_quit_requested(False)
+    assert app_quit_close_event.isAccepted()
+
 
 def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(
