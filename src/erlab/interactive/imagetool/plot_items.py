@@ -1978,11 +1978,12 @@ class ItoolPlotItem(pg.PlotItem):
     ):
         from erlab.interactive._figurecomposer import FigureOperationState
 
+        plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
+        updates = self._figure_composer_operation_updates(plot_kwargs)
+        if updates is None:
+            updates = {}
+
         if selected_maps is not None:
-            plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
-            updates = self._figure_composer_operation_updates(plot_kwargs)
-            if updates is None:
-                updates = {}
             return FigureOperationState.plot_slices(
                 label="plot_slices",
                 sources=(source_name,),
@@ -2017,12 +2018,7 @@ class ItoolPlotItem(pg.PlotItem):
                 label="plot_slices",
                 sources=(source_name,),
                 map_selections=map_selections,
-            )
-
-        plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
-        updates = self._figure_composer_operation_updates(plot_kwargs)
-        if updates is None:
-            updates = {}
+            ).model_copy(update=updates)
 
         slice_dim = str(variable_dim) if variable_dim is not None else None
         slice_values: tuple[float, ...] = ()

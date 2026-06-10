@@ -1400,6 +1400,60 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     win.close()
 
 
+def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=("alpha", "eV", "Track Shift"),
+        coords={
+            "alpha": np.arange(5),
+            "eV": np.arange(5),
+            "Track Shift": np.arange(5),
+        },
+    )
+    win = itool(data, execute=False)
+    win.slicer_area._in_manager = True
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+    created: list[dict[str, object]] = []
+    win.slicer_area.set_colormap(cmap="magma", gamma=0.3)
+    win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.5, 2.5]})
+
+    class _Manager:
+        def target_from_slicer_area(self, slicer_area):
+            assert slicer_area is win.slicer_area
+            return 0
+
+        def _node_for_target(self, target):
+            assert target == 0
+            return types.SimpleNamespace(uid="n0")
+
+        def _script_input_name_for_node(self, node):
+            assert node.uid == "n0"
+            return "data_0"
+
+        def create_figure_from_slicer_area(self, slicer_area, **kwargs):
+            assert slicer_area is win.slicer_area
+            created.append(kwargs)
+            return "figure"
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", _Manager()
+    )
+
+    main_image.plot_with_matplotlib()
+    operation = created[0]["operation"]
+
+    assert operation.xlim == (1.0, 3.0)
+    assert operation.ylim == (0.5, 2.5)
+    assert operation.cmap == "magma"
+    assert operation.norm_gamma == pytest.approx(0.3)
+    assert operation.map_selections[0].qsel == {"Track Shift": 2.0}
+
+    win.close()
+
+
 def test_figure_composer_operation_uses_transposed_source_axis_order(qtbot) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
