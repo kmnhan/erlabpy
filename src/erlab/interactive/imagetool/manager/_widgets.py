@@ -914,10 +914,36 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.setToolTip("Main image preview")
+        self.hide()
 
     def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+        if pixmap.isNull():
+            self._pixmapitem.setPixmap(QtGui.QPixmap())
+            self.hide()
+            self.updateGeometry()
+            return
         self._pixmapitem.setPixmap(pixmap)
         self.fitInView(self._pixmapitem)
+
+    def setVisible(self, visible: bool) -> None:
+        if visible and self._pixmapitem.pixmap().isNull():
+            visible = False
+        super().setVisible(visible)
+
+    def show(self) -> None:
+        if self._pixmapitem.pixmap().isNull():
+            return
+        super().show()
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        if self._pixmapitem.pixmap().isNull():
+            return QtCore.QSize(0, 0)
+        return super().minimumSizeHint()
+
+    def sizeHint(self) -> QtCore.QSize:
+        if self._pixmapitem.pixmap().isNull():
+            return QtCore.QSize(0, 0)
+        return super().sizeHint()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)

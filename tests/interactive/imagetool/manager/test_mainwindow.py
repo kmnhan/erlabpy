@@ -355,6 +355,26 @@ def test_update_info_handles_legacy_imagetool_preview_attribute(
         assert manager.preview_widget.isVisible()
 
 
+def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+
+    preview.setPixmap(QtGui.QPixmap())
+    preview.setVisible(True)
+    preview.show()
+
+    assert not preview.isVisible()
+    assert preview.sizeHint() == QtCore.QSize(0, 0)
+    assert preview.minimumSizeHint() == QtCore.QSize(0, 0)
+
+    pixmap = QtGui.QPixmap(16, 8)
+    pixmap.fill(QtGui.QColor("red"))
+    preview.setPixmap(pixmap)
+    preview.setVisible(True)
+
+    assert preview.isVisible()
+
+
 def test_batch_action_transform_error_paths(
     qtbot,
     monkeypatch,
