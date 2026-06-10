@@ -301,4 +301,5 @@ def _render_preview(
         ):
             tool.canvas.draw_idle()
     finally:
+        tool._mark_preview_pixmap_stale()
         tool._rendering = False

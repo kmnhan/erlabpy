@@ -3842,6 +3842,8 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
 
     assert "plt.style.use(['classic'])" in code
     assert "# Skipped unavailable stylesheets: 'missing-style'" in code
+    assert tool.preview_pixmap is None
+    assert tool.refresh_preview_pixmap() is not None
     assert tool.preview_pixmap is not None
     namespace = {"data": data}
     with mpl.rc_context():
@@ -4057,7 +4059,8 @@ def test_figure_composer_preview_suppresses_collapsed_layout_warning(
 
     monkeypatch.setattr(FigureCanvasAgg, "draw", draw_with_warning)
 
-    assert tool.preview_pixmap is not None
+    assert tool.preview_pixmap is None
+    assert tool.refresh_preview_pixmap() is not None
     assert not any(
         "constrained_layout not applied" in str(warning.message) for warning in recwarn
     )
@@ -5894,7 +5897,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     live_figure = tool.figure
     live_canvas = tool.figure_window.canvas
     live_axes_count = len(live_figure.axes)
-    preview = tool.preview_pixmap
+    preview = tool.refresh_preview_pixmap()
     assert preview is not None
     assert not preview.isNull()
     assert preview.width() > 0
@@ -12691,6 +12694,46 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         assert item is not None
         assert item.data(QtCore.Qt.ItemDataRole.UserRole) == restored_uid
         assert not item.icon().isNull()
+
+
+def test_manager_figure_selection_defers_preview_generation(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_tool = FigureComposerTool(data)
+        refresh_calls: list[None] = []
+        request_calls: list[int] = []
+
+        def record_refresh() -> None:
+            refresh_calls.append(None)
+
+        def record_request(*, delay_ms: int = 250) -> None:
+            request_calls.append(delay_ms)
+
+        monkeypatch.setattr(figure_tool, "refresh_preview_pixmap", record_refresh)
+        monkeypatch.setattr(
+            figure_tool, "request_preview_pixmap_update", record_request
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        manager._select_figure_uid(figure_uid)
+
+        assert refresh_calls == []
+        assert request_calls == []
+        assert not manager.preview_widget.isVisible()
+
+        qtbot.waitUntil(lambda: request_calls == [0], timeout=1000)
+        assert refresh_calls == []
 
 
 def test_manager_copy_full_code_for_file_backed_figure_composer_sources(

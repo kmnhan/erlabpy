@@ -123,6 +123,7 @@ _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
+_PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
@@ -178,6 +179,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
+        self._preview_pixmap_cache: QtGui.QPixmap | None = None
+        self._preview_pixmap_stale = True
+        self._preview_pixmap_update_pending = False
         self._section_tab_stop_refs: dict[
             str, weakref.ReferenceType[QtWidgets.QWidget]
         ] = {}
@@ -383,6 +387,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(
             update={"setup": setup.model_copy(update={"figsize": figsize})}
         )
+        self._mark_preview_pixmap_stale()
         self.figure.set_size_inches(figsize, forward=False)
         self._updating_controls = True
         try:
@@ -3733,7 +3738,43 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def preview_pixmap(self) -> QtGui.QPixmap | None:
+        return self._preview_pixmap_cache
+
+    @property
+    def preview_pixmap_stale(self) -> bool:
+        return self._preview_pixmap_stale
+
+    def _mark_preview_pixmap_stale(self) -> None:
+        self._preview_pixmap_stale = True
+
+    def request_preview_pixmap_update(
+        self, *, delay_ms: int = _PREVIEW_PIXMAP_UPDATE_DELAY_MS
+    ) -> None:
         if not self._recipe.operations:
+            self._preview_pixmap_cache = None
+            self._preview_pixmap_stale = False
+            return
+        if self._preview_pixmap_update_pending or not self._preview_pixmap_stale:
+            return
+        self._preview_pixmap_update_pending = True
+        erlab.interactive.utils.single_shot(
+            self,
+            delay_ms,
+            self._run_queued_preview_pixmap_update,
+        )
+
+    def _run_queued_preview_pixmap_update(self) -> None:
+        self._preview_pixmap_update_pending = False
+        if self._rendering:
+            self.request_preview_pixmap_update()
+            return
+        self.refresh_preview_pixmap()
+        self.sigInfoChanged.emit()
+
+    def refresh_preview_pixmap(self) -> QtGui.QPixmap | None:
+        if not self._recipe.operations:
+            self._preview_pixmap_cache = None
+            self._preview_pixmap_stale = False
             return None
         with _figure_style_context():
             figure = Figure(
@@ -3741,23 +3782,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 dpi=self._recipe.setup.dpi,
                 layout=typing.cast("typing.Any", self._recipe.setup.layout),
             )
-            canvas = FigureCanvasAgg(figure)
             try:
-                _render_into_figure(self, figure, sync_visible=False)
-                with _figure_draw_context():
-                    canvas.draw()
-                width, height = canvas.get_width_height()
-                if width <= 0 or height <= 0:
-                    return None
-                image = QtGui.QImage(
-                    canvas.buffer_rgba(),
-                    width,
-                    height,
-                    QtGui.QImage.Format.Format_RGBA8888,
-                )
-                return QtGui.QPixmap.fromImage(image.copy())
-            except Exception:
-                return None
+                canvas = FigureCanvasAgg(figure)
+                try:
+                    _render_into_figure(self, figure, sync_visible=False)
+                    with _figure_draw_context():
+                        canvas.draw()
+                    width, height = canvas.get_width_height()
+                except Exception:
+                    preview = None
+                else:
+                    if width <= 0 or height <= 0:
+                        preview = None
+                    else:
+                        image = QtGui.QImage(
+                            canvas.buffer_rgba(),
+                            width,
+                            height,
+                            QtGui.QImage.Format.Format_RGBA8888,
+                        )
+                        preview = QtGui.QPixmap.fromImage(image.copy())
+                self._preview_pixmap_cache = preview
+                self._preview_pixmap_stale = False
+                return preview
             finally:
                 figure.clear()
 

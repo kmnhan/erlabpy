@@ -27,10 +27,13 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_TOOL_PREVIEW_UPDATE_DELAY_MS = 250
+
 
 class _DetailsPanelController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+        self._tool_preview_update_generation = 0
 
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
@@ -324,20 +327,21 @@ class _DetailsPanelController:
                     self._manager.preview_widget.setVisible(True)
                     return
 
+                tool_window = node.tool_window
                 preview_pixmap = (
-                    None
-                    if node.tool_window is None
-                    else node.tool_window.preview_pixmap
+                    None if tool_window is None else tool_window.preview_pixmap
                 )
+                if tool_window is not None and getattr(
+                    tool_window, "preview_pixmap_stale", False
+                ):
+                    self._schedule_tool_preview_update(node.uid)
                 if preview_pixmap is not None and not preview_pixmap.isNull():
                     self._manager.preview_widget.setPixmap(preview_pixmap)
                     self._manager.preview_widget.setVisible(True)
                     return
 
                 image_item = (
-                    None
-                    if node.tool_window is None
-                    else node.tool_window.preview_imageitem
+                    None if tool_window is None else tool_window.preview_imageitem
                 )
                 if image_item is None:
                     self._manager.preview_widget.setVisible(False)
@@ -363,6 +367,33 @@ class _DetailsPanelController:
     def _schedule_tool_metadata_update(self, uid: str) -> None:
         """Refresh expensive selected-tool metadata after bursty info updates settle."""
         self._manager._tool_metadata_queue.schedule(uid)
+
+    def _schedule_tool_preview_update(self, uid: str) -> None:
+        self._tool_preview_update_generation += 1
+        generation = self._tool_preview_update_generation
+        erlab.interactive.utils.single_shot(
+            self._manager,
+            _TOOL_PREVIEW_UPDATE_DELAY_MS,
+            lambda: self._run_scheduled_tool_preview_update(uid, generation),
+        )
+
+    def _run_scheduled_tool_preview_update(self, uid: str, generation: int) -> None:
+        if generation != self._tool_preview_update_generation:
+            return
+        if self._manager._selected_tool_uids() != [uid]:
+            return
+        try:
+            node = self._manager._child_node(uid)
+        except KeyError:
+            return
+        tool_window = node.tool_window
+        request = (
+            None
+            if tool_window is None
+            else getattr(tool_window, "request_preview_pixmap_update", None)
+        )
+        if callable(request):
+            request(delay_ms=0)
 
     def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
         for uid in sorted(pending):
