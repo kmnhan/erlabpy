@@ -363,6 +363,14 @@ def test_get_binned_cache_tracks_bin_updates_and_axis_swaps(qtbot) -> None:
     assert slicer.get_binned(0) == (True, False, False)
 
 
+def test_swap_axes_rejects_axes_outside_data_dimensions(qtbot) -> None:
+    data = xr.DataArray(np.zeros((3, 4), dtype=np.float32), dims=("a", "b"))
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    with pytest.raises(IndexError, match="incompatible with 2-dimensional data"):
+        slicer.swap_axes(0, 2)
+
+
 def test_clear_dim_cache_resets_dimension_memos(qtbot) -> None:
     data = xr.DataArray(
         np.zeros((3, 4, 5), dtype=np.float32),

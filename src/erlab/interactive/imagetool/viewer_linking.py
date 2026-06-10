@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import functools
 import inspect
+import operator
 import typing
 import weakref
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Hashable, Iterable
 
     from qtpy import QtWidgets
 
@@ -140,6 +141,7 @@ def link_slicer(
             if records_history and transaction_id is None and sync_enabled:
                 transaction_id = obj.next_linked_history_transaction_id()
 
+            source_dims = tuple(obj.data.dims) if sync_enabled else ()
             call_kwargs = dict(kwargs)
             if records_history:
                 call_kwargs["__slicer_transaction_id"] = transaction_id
@@ -154,6 +156,7 @@ def link_slicer(
                         obj,
                         func.__name__,
                         all_args.arguments,
+                        source_dims,
                         indices,
                         steps,
                         color,
@@ -218,6 +221,7 @@ class SlicerLinkProxy:
         source: ImageSlicerArea,
         funcname: str,
         arguments: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
         indices: bool,
         steps: bool,
         color: bool,
@@ -237,6 +241,8 @@ class SlicerLinkProxy:
             Name of the called method.
         arguments
             Arguments included in the function call.
+        source_dims
+            Dimension order on ``source`` before the linked method changed it.
         indices, steps, color
             Arguments given to the decorator. See :func:`link_slicer`
 
@@ -244,41 +250,80 @@ class SlicerLinkProxy:
         if color and not self.link_colors:
             return
         for target in self.children.difference({source}):
-            getattr(target, funcname)(
-                **self.convert_args(
-                    source,
-                    target,
-                    dict(arguments),
-                    indices,
-                    steps,
-                    transaction_id,
-                    keep_pending,
-                )
+            converted_args = self.convert_args(
+                source,
+                target,
+                dict(arguments),
+                source_dims,
+                indices,
+                steps,
+                transaction_id,
+                keep_pending,
             )
+            if converted_args is None:
+                continue
+            getattr(target, funcname)(**converted_args)
 
     def convert_args(
         self,
         source: ImageSlicerArea,
         target: ImageSlicerArea,
         args: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
         indices: bool,
         steps: bool,
         transaction_id: str | None,
         keep_pending: bool,
-    ):
+    ) -> dict[str, typing.Any] | None:
+        source_axis_for_index: int | None = None
+        if "axis" in args:
+            source_axis = self._coerce_axis(args["axis"])
+            if source_axis is None:
+                return None
+            mapped_axis = self.convert_axis(source_dims, target, source_axis)
+            if mapped_axis is None:
+                return None
+            source_axis_for_index = source_axis
+            args["axis"] = mapped_axis
+
+        if "ax1" in args and "ax2" in args:
+            target_axes: list[int] = []
+            for key in ("ax1", "ax2"):
+                source_axis = self._coerce_axis(args[key])
+                if source_axis is None:
+                    return None
+                mapped_axis = self.convert_axis(source_dims, target, source_axis)
+                if mapped_axis is None:
+                    return None
+                target_axes.append(mapped_axis)
+            args["ax1"], args["ax2"] = target_axes
+
+        if args.get("axes") is not None:
+            mapped_axes = self.convert_axes(source_dims, target, args["axes"])
+            if mapped_axes is None:
+                return None
+            args["axes"] = mapped_axes
+
         if indices:
             index: int | None = args.get("value")
 
             if index is not None:
-                axis: int | None = args.get("axis")
+                mapped_index_axis: int | None = args.get("axis")
 
-                if axis is None:
+                if source_axis_for_index is None or mapped_index_axis is None:
                     raise ValueError(
                         "Axis argument not found in method decorated "
                         "with the `indices=True` argument"
                     )
 
-                args["value"] = self.convert_index(source, target, axis, index, steps)
+                args["value"] = self.convert_index(
+                    source,
+                    target,
+                    source_axis_for_index,
+                    mapped_index_axis,
+                    index,
+                    steps,
+                )
 
         args["__slicer_skip_sync"] = True  # passed onto the decorator
         args["__slicer_transaction_id"] = transaction_id
@@ -286,21 +331,62 @@ class SlicerLinkProxy:
         return args
 
     @staticmethod
+    def _coerce_axis(axis: typing.Any) -> int | None:
+        try:
+            return operator.index(axis)
+        except TypeError:
+            return None
+
+    @staticmethod
+    def convert_axis(
+        source_dims: tuple[Hashable, ...],
+        target: ImageSlicerArea,
+        axis: int,
+    ) -> int | None:
+        if not 0 <= axis < len(source_dims):
+            return None
+        dim = source_dims[axis]
+        try:
+            return target.data.dims.index(dim)
+        except ValueError:
+            return None
+
+    @classmethod
+    def convert_axes(
+        cls,
+        source_dims: tuple[Hashable, ...],
+        target: ImageSlicerArea,
+        axes: Iterable[typing.Any],
+    ) -> tuple[int, ...] | None:
+        converted_axes: list[int] = []
+        for axis in axes:
+            source_axis = cls._coerce_axis(axis)
+            if source_axis is None:
+                return None
+            target_axis = cls.convert_axis(source_dims, target, source_axis)
+            if target_axis is not None and target_axis not in converted_axes:
+                converted_axes.append(target_axis)
+        if not converted_axes:
+            return None
+        return tuple(converted_axes)
+
+    @staticmethod
     def convert_index(
         source: ImageSlicerArea,
         target: ImageSlicerArea,
-        axis: int,
+        source_axis: int,
+        target_axis: int,
         index: int,
         steps: bool,
     ):
         if steps:
             return round(
                 index
-                * source.array_slicer.incs_uniform[axis]
-                / target.array_slicer.incs_uniform[axis]
+                * source.array_slicer.incs_uniform[source_axis]
+                / target.array_slicer.incs_uniform[target_axis]
             )
-        value = source.array_slicer.value_of_index(axis, index, uniform=False)
+        value = source.array_slicer.value_of_index(source_axis, index, uniform=False)
         new_index: int = target.array_slicer.index_of_value(
-            axis, float(value), uniform=False
+            target_axis, float(value), uniform=False
         )
         return new_index

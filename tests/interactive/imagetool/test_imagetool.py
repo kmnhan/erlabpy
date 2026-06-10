@@ -3644,6 +3644,105 @@ def _linked_pair(qtbot):
     return typing.cast("list[ImageTool]", wins)
 
 
+def test_linked_swap_axes_skips_targets_without_swapped_dimensions(qtbot) -> None:
+    data2d = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    data1d = data2d.isel(y=0, drop=True)
+    wins = itool([data2d, data1d], execute=False, link=True)
+    assert isinstance(wins, list)
+    assert len(wins) == 2
+    for win in wins:
+        qtbot.addWidget(win)
+    target_dims = wins[1].slicer_area.data.dims
+    target_indices = list(wins[1].slicer_area.array_slicer.get_indices(0))
+    refreshed_axes: list[tuple[int, ...] | None] = []
+    wins[1].slicer_area.sigIndexChanged.connect(
+        lambda _cursor, axes: refreshed_axes.append(axes)
+    )
+
+    wins[0].slicer_area.set_index(1, 2)
+
+    assert wins[1].slicer_area.array_slicer.get_indices(0) == target_indices
+    wins[0].slicer_area.refresh_current((1,))
+    assert refreshed_axes == []
+    wins[0].slicer_area.refresh_current((0, 1))
+    assert refreshed_axes == [(0,)]
+
+    wins[0].slicer_area.manual_limits = {"x": [0.0, 2.0], "y": [1.0, 3.0]}
+    wins[0].slicer_area.propagate_limit_change(wins[0].slicer_area.main_image)
+
+    assert wins[1].slicer_area.manual_limits == {"x": [0.0, 2.0]}
+    target_slice = wins[1].slicer_area.make_slice_dict()
+    assert set(target_slice) == {"x"}
+    assert target_slice["x"].start == 0
+    assert target_slice["x"].stop == 2
+
+    wins[0].slicer_area.swap_axes(0, 1)
+
+    assert wins[0].slicer_area.data.dims == ("y", "x")
+    assert wins[1].slicer_area.data.dims == target_dims
+    assert len(wins[1].slicer_area.array_slicer.get_bins(0)) == len(target_dims)
+
+    for win in wins:
+        win.close()
+
+
+def test_linked_axis_arguments_follow_dimension_names(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3, dtype=float),
+            "y": np.arange(4, dtype=float),
+            "z": np.arange(5, dtype=float),
+        },
+    )
+    wins = itool([data, data.transpose("z", "y", "x")], execute=False, link=True)
+    assert isinstance(wins, list)
+    assert len(wins) == 2
+    for win in wins:
+        qtbot.addWidget(win)
+
+    wins[0].slicer_area.set_index(0, 2)
+
+    target_area = wins[1].slicer_area
+    target_x_axis = target_area.data.dims.index("x")
+    assert target_area.array_slicer.get_indices(0)[target_x_axis] == 2
+
+    wins[0].slicer_area.swap_axes(0, 1)
+
+    assert wins[0].slicer_area.data.dims == ("y", "x", "z")
+    assert target_area.data.dims == ("z", "x", "y")
+
+    for win in wins:
+        win.close()
+
+
+def test_manual_limits_ignore_dimensions_missing_from_data(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5).astype(float),
+        dims=["x"],
+        coords={"x": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.set_manual_limits({"x": [0.0, 2.0], "missing": [1.0, 3.0]})
+
+    assert area.manual_limits == {"x": [0.0, 2.0]}
+
+    area.manual_limits["missing"] = [1.0, 3.0]
+    slice_dict = area.make_slice_dict()
+
+    assert set(slice_dict) == {"x"}
+
+    win.close()
+
+
 class _SceneDragEvent:
     def __init__(self, scene_pos: QtCore.QPointF) -> None:
         self._scene_pos = scene_pos

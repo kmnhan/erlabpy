@@ -1157,6 +1157,11 @@ class ArraySlicer(QtCore.QObject):
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int) -> None:
+        if not 0 <= ax1 < self._obj.ndim or not 0 <= ax2 < self._obj.ndim:
+            raise IndexError(
+                f"axis indices {ax1} and {ax2} are incompatible with "
+                f"{self._obj.ndim}-dimensional data"
+            )
         for i in range(self.n_cursors):
             self._bins[i][ax1], self._bins[i][ax2] = (
                 self._bins[i][ax2],
