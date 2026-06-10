@@ -12355,6 +12355,17 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
         {"('bad', 'key')": 1.0},
     )
 
+    non_identifier_key_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs={"Track Shift": 2.0},
+    )
+    assert non_identifier_key_operation.map_selections == ()
+    assert non_identifier_key_operation.slice_dim == "Track Shift"
+    assert non_identifier_key_operation.slice_values == (2.0,)
+
     slice_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
         fake,
         source_name="data",
@@ -12424,6 +12435,20 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
     )
     assert qsel_line_operation.line_selection == {"eV": [0.0, 1.0], "beta": 2.0}
     assert qsel_line_operation.line_iter_dim == "eV"
+
+    non_identifier_key_line_operation = ItoolPlotItem._figure_composer_line_operation(
+        fake,
+        source_name="data",
+        variable_dim="Track Shift",
+        x_dim="kx",
+        qsel_kwargs={"Track Shift": [0.0, 1.0], "beta": 2.0},
+    )
+    assert non_identifier_key_line_operation.map_selections == ()
+    assert non_identifier_key_line_operation.line_selection == {
+        "Track Shift": [0.0, 1.0],
+        "beta": 2.0,
+    }
+    assert non_identifier_key_line_operation.line_iter_dim == "Track Shift"
 
     invalid_key_line_operation = ItoolPlotItem._figure_composer_line_operation(
         fake,

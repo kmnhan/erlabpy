@@ -1469,8 +1469,45 @@ def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
     assert operation.ylim == (0.5, 2.5)
     assert operation.cmap == "magma"
     assert operation.norm_gamma == pytest.approx(0.3)
-    assert operation.map_selections[0].qsel == {"Track Shift": 2.0}
+    assert operation.map_selections == ()
+    assert operation.slice_dim == "Track Shift"
+    assert operation.slice_values == (2.0,)
+    assert operation.slice_kwargs == {}
 
+    from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
+
+    composer = FigureComposerTool.from_sources(
+        {"data_0": data},
+        sources=(FigureSourceState(name="data_0", label="data"),),
+        operations=(operation,),
+        primary_source="data_0",
+    )
+    qtbot.addWidget(composer)
+
+    dim_combo = composer.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
+    values_edit = composer.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
+    )
+    slice_kwargs_edit = composer.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
+    )
+    assert dim_combo is not None
+    assert values_edit is not None
+    assert slice_kwargs_edit is not None
+    assert dim_combo.currentText() == "Track Shift"
+    assert values_edit.text() == "2"
+    assert slice_kwargs_edit.text() == ""
+
+    import matplotlib.pyplot as plt
+
+    namespace: dict[str, typing.Any] = {"data_0": data}
+    exec(composer.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].axes
+    plt.close(namespace["fig"])
+
+    composer.close()
     win.close()
 
 

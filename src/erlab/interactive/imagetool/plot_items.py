@@ -1992,12 +1992,8 @@ class ItoolPlotItem(pg.PlotItem):
             ).model_copy(
                 update=updates,
             )
-        if qsel_kwargs is None or not all(
-            erlab.interactive.utils._is_kwarg_name(key) for key in qsel_kwargs
-        ):
-            if qsel_kwargs is None:
-                map_selections = ()
-            else:
+        if qsel_kwargs is None or any(not isinstance(key, str) for key in qsel_kwargs):
+            if qsel_kwargs is not None:
                 selection_count = (
                     self.slicer_area.n_cursors if variable_dim is not None else 1
                 )
@@ -2130,13 +2126,7 @@ class ItoolPlotItem(pg.PlotItem):
         if qsel_kwargs is None:
             line_selection: dict[str, typing.Any] = {}
             line_iter_dim = None
-        elif all(erlab.interactive.utils._is_kwarg_name(key) for key in qsel_kwargs):
-            line_selection = {
-                str(key): self._figure_composer_plain_value(value)
-                for key, value in qsel_kwargs.items()
-            }
-            line_iter_dim = str(variable_dim) if variable_dim is not None else None
-        else:
+        elif any(not isinstance(key, str) for key in qsel_kwargs):
             selection_count = (
                 self.slicer_area.n_cursors if variable_dim is not None else 1
             )
@@ -2161,6 +2151,12 @@ class ItoolPlotItem(pg.PlotItem):
                     **style_updates,
                 }
             )
+        else:
+            line_selection = {
+                str(key): self._figure_composer_plain_value(value)
+                for key, value in qsel_kwargs.items()
+            }
+            line_iter_dim = str(variable_dim) if variable_dim is not None else None
 
         return FigureOperationState.line(
             label="line",
