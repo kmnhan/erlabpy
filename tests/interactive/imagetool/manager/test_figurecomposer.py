@@ -642,6 +642,38 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     )
     assert selected_multi_mean is not None
     assert selected_multi_mean.ndim == 0
+
+    nonuniform_public = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+        },
+        name="map",
+    )
+    nonuniform_internal = erlab.interactive.imagetool.slicer.make_dims_uniform(
+        nonuniform_public
+    )
+    assert nonuniform_internal.dims == ("alpha", "eV", "sample_temp_idx")
+    assert figurecomposer_sources._available_source_dims(
+        {"data": nonuniform_internal}, ("data",)
+    ) == ["alpha", "eV", "sample_temp"]
+    nonuniform_selected = figurecomposer_sources._selected_data(
+        {"data": nonuniform_internal},
+        FigureDataSelectionState(
+            source="data",
+            isel={"sample_temp": {"kind": "slice", "start": 1, "stop": 3}},
+            mean_dims=("sample_temp",),
+        ),
+    )
+    assert nonuniform_selected is not None
+    xr.testing.assert_identical(
+        nonuniform_selected,
+        nonuniform_public.isel(sample_temp=slice(1, 3)).qsel.mean("sample_temp"),
+    )
+
     assert (
         figurecomposer_sources._middle_coord_value(
             xr.DataArray([], dims=("x",), coords={"x": []}), "x"
@@ -654,6 +686,41 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
         )
         is None
     )
+
+
+def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
+    qtbot,
+) -> None:
+    public = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+        },
+        name="map",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data",),
+        map_selections=(
+            FigureDataSelectionState(source="data", isel={"sample_temp": 1}),
+        ),
+    )
+
+    tool = FigureComposerTool.from_sources(
+        {"data": internal},
+        sources=(FigureSourceState(name="data", label="map"),),
+        operations=(operation,),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.operation_list.count() == 1
+    assert "sample_temp_idx" not in tool.generated_code()
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:

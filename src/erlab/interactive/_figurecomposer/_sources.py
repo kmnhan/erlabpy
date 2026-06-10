@@ -10,6 +10,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+import erlab.interactive.imagetool.slicer
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -67,6 +68,10 @@ def _valid_source_variable(name: str) -> str:
     return name
 
 
+def _public_source_data(data: xr.DataArray) -> xr.DataArray:
+    return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+
+
 def _available_source_dims(
     source_data: Mapping[str, xr.DataArray], sources: Sequence[str]
 ) -> list[str]:
@@ -75,7 +80,7 @@ def _available_source_dims(
         data = source_data.get(source)
         if data is None:
             continue
-        for dim in data.dims:
+        for dim in _public_source_data(data).dims:
             if dim not in dims:
                 dims.append(str(dim))
     return dims
@@ -87,6 +92,7 @@ def _selected_data(
     selected = source_data.get(selection.source)
     if selected is None:
         return None
+    selected = _public_source_data(selected)
     if selection.isel:
         selected = selected.isel(_decode_indexers(selection.isel))
     if selection.qsel:
@@ -117,6 +123,7 @@ def _default_plot_operation(
     *,
     setup: FigureSubplotsState,
 ) -> FigureOperationState:
+    data = _public_source_data(data)
     squeezed = data.squeeze(drop=True)
     if squeezed.ndim == 1:
         return FigureOperationState.line(
@@ -143,6 +150,7 @@ def _default_plot_operation(
 
 
 def _default_setup_for_data(data: xr.DataArray) -> FigureSubplotsState:
+    data = _public_source_data(data)
     squeezed = data.squeeze(drop=True)
     if squeezed.ndim <= 2:
         return FigureSubplotsState()
