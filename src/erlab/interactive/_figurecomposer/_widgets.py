@@ -362,7 +362,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
             self._update_button_from_text()
         self.editingFinished.emit()
 
-    def _button_color_changed(self, color: QtGui.QColor) -> None:
+    def _button_color_changed(self, color: object) -> None:
         if self._syncing:
             return
         if not isinstance(color, QtGui.QColor) or not color.isValid():
@@ -412,13 +412,13 @@ class _ColorPickerButton(QtWidgets.QPushButton):
     def color(self) -> QtGui.QColor:
         return QtGui.QColor(self._color)
 
-    def setColor(self, color: QtGui.QColor) -> None:
+    def setColor(self, color: object) -> None:
         if not isinstance(color, QtGui.QColor) or not color.isValid():
             return
         self._color = QtGui.QColor(color)
         self.update()
 
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
         super().paintEvent(event)
         painter = QtGui.QPainter(self)
         try:
@@ -471,6 +471,8 @@ class _ColorListEditorWidget(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self._syncing = False
+        self._pending_row_rebuild_colors: tuple[str, ...] | None = None
+        self._row_rebuild_pending = False
         self.main_edit = QtWidgets.QLineEdit(self)
         self._rows_widget = QtWidgets.QWidget(self)
         self._rows_layout = QtWidgets.QVBoxLayout(self._rows_widget)
@@ -535,18 +537,18 @@ class _ColorListEditorWidget(QtWidgets.QWidget):
         colors = _color_tuple_from_text(self.main_edit.text())
         self._syncing = True
         try:
-            self._rebuild_rows(colors)
+            self._set_row_colors_from_text(colors)
         finally:
             self._syncing = False
         self.colorsChanged.emit(colors)
 
     def _add_color(self) -> None:
         colors = (*self.colors(), "")
-        self._set_colors_from_rows(colors)
+        self._set_colors_from_structure_change(colors)
 
     def _remove_color(self, index: int) -> None:
         colors = tuple(color for i, color in enumerate(self.colors()) if i != index)
-        self._set_colors_from_rows(colors)
+        self._set_colors_from_structure_change(colors)
 
     def _row_color_changed(self) -> None:
         colors = tuple(edit.text().strip() for edit in self._row_editors())
@@ -560,10 +562,70 @@ class _ColorListEditorWidget(QtWidgets.QWidget):
             with QtCore.QSignalBlocker(self.main_edit):
                 self.main_edit.setText(_format_color_tuple(colors))
                 self.main_edit.setModified(True)
-            self._rebuild_rows(colors)
         finally:
             self._syncing = False
         self.colorsChanged.emit(colors)
+
+    def _set_colors_from_structure_change(self, colors: tuple[str, ...]) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            with QtCore.QSignalBlocker(self.main_edit):
+                self.main_edit.setText(_format_color_tuple(colors))
+                self.main_edit.setModified(True)
+            self._rebuild_rows_when_safe(colors)
+        finally:
+            self._syncing = False
+        self.colorsChanged.emit(colors)
+
+    def _set_row_colors_from_text(self, colors: tuple[str, ...]) -> None:
+        editors = self._row_editors()
+        if len(editors) != len(colors):
+            self._rebuild_rows_when_safe(colors)
+            return
+        for edit, color in zip(editors, colors, strict=True):
+            edit.setText(color)
+
+    def _rebuild_rows_when_safe(self, colors: tuple[str, ...]) -> None:
+        if self._rows_have_focus():
+            self._queue_rebuild_rows(colors)
+            return
+        self._pending_row_rebuild_colors = None
+        self._rebuild_rows(colors)
+
+    def _rows_have_focus(self) -> bool:
+        focus_widget = QtWidgets.QApplication.focusWidget()
+        return (
+            focus_widget is not None
+            and erlab.interactive.utils.qt_is_valid(focus_widget)
+            and (
+                focus_widget is self._rows_widget
+                or self._rows_widget.isAncestorOf(focus_widget)
+            )
+        )
+
+    def _queue_rebuild_rows(
+        self, colors: tuple[str, ...], *, delay_ms: int = 0
+    ) -> None:
+        self._pending_row_rebuild_colors = colors
+        if self._row_rebuild_pending:
+            return
+        self._row_rebuild_pending = True
+        erlab.interactive.utils.single_shot(
+            self, delay_ms, self._run_pending_row_rebuild
+        )
+
+    def _run_pending_row_rebuild(self) -> None:
+        self._row_rebuild_pending = False
+        colors = self._pending_row_rebuild_colors
+        self._pending_row_rebuild_colors = None
+        if colors is None:
+            return
+        if self._rows_have_focus():
+            self._queue_rebuild_rows(colors, delay_ms=50)
+            return
+        self._rebuild_rows(colors)
 
     def _rebuild_rows(self, colors: tuple[str, ...]) -> None:
         while self._rows_layout.count():

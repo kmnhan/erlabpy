@@ -2215,9 +2215,25 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     color_list._remove_color(1)
     assert changed[-1] == ("green",)
     first_editor = color_list._row_editors()[0]
+    first_row = first_editor.parentWidget()
     first_editor.setText("black")
-    color_list._row_color_changed()
+    first_editor.editingFinished.emit()
     assert changed[-1][0] == "black"
+    assert erlab.interactive.utils.qt_is_valid(first_editor, first_row)
+    assert color_list._row_editors()[0] is first_editor
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            QtWidgets.QApplication,
+            "focusWidget",
+            staticmethod(lambda: first_editor.line_edit),
+        )
+        color_list._set_colors_from_structure_change(("black", "white"))
+        assert color_list._row_rebuild_pending
+        assert color_list._row_editors()[0] is first_editor
+    color_list._run_pending_row_rebuild()
+    assert len(color_list._row_editors()) == 2
+
     color_list._syncing = True
     color_list._set_colors_from_rows(("white",))
     color_list._syncing = False
