@@ -15,6 +15,7 @@ import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._axes import _axes_expression_value
 from erlab.interactive._figurecomposer._defaults import _figure_style_context
 from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_all_axes_ids,
     _gridspec_region_valid,
     _gridspec_valid_axes_ids,
 )
@@ -173,6 +174,43 @@ def _make_gridspec_axes(
     root_spec = figure.add_gridspec(**gridspec_kwargs(root))
     build_grid(root, root_spec)
     return axes_by_id
+
+
+def _live_layout_axes(
+    tool: FigureComposerTool,
+    *,
+    render_if_missing: bool = False,
+) -> np.ndarray | dict[str, matplotlib.axes.Axes] | None:
+    """Return the current live axes without rendering unless explicitly requested."""
+    window = tool._figure_window
+    if window is None or not erlab.interactive.utils.qt_is_valid(window):
+        if not render_if_missing:
+            return None
+        _render_preview(tool, show_window=False)
+        window = tool._figure_window
+        if window is None or not erlab.interactive.utils.qt_is_valid(window):
+            return None
+
+    figure = window.figure
+    setup = tool._recipe.setup
+    if setup.layout_mode == "gridspec":
+        axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+        axes = figure.axes[: len(axes_ids)]
+        if len(axes) < len(axes_ids):
+            if not render_if_missing:
+                return None
+            _render_preview(tool, show_window=False)
+            return _live_layout_axes(tool)
+        return dict(zip(axes_ids, axes, strict=True))
+
+    count = setup.nrows * setup.ncols
+    axes = figure.axes[:count]
+    if len(axes) < count:
+        if not render_if_missing:
+            return None
+        _render_preview(tool, show_window=False)
+        return _live_layout_axes(tool)
+    return np.asarray(axes, dtype=object).reshape(setup.nrows, setup.ncols)
 
 
 def _source_namespace(

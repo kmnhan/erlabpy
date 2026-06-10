@@ -1667,15 +1667,27 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         )
         == ""
     )
-    assert figurecomposer_plot_slices._plot_slices_color_limit_placeholders(
-        tool,
-        FigureOperationState.plot_slices(
-            label="image",
-            sources=("image",),
-            slice_dim="eV",
-            slice_values=(0.0,),
-            axes=FigureAxesSelectionState(axes=((0, 0),)),
+    placeholder_operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("image",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    )
+    placeholder_tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="image", label="image"),),
+            operations=(placeholder_operation,),
+            primary_source="image",
         ),
+        source_data={"image": image},
+    )
+    qtbot.addWidget(placeholder_tool)
+    figurecomposer_rendering._render_preview(placeholder_tool, show_window=False)
+    assert figurecomposer_plot_slices._plot_slices_color_limit_placeholders(
+        placeholder_tool,
+        placeholder_operation,
     ) == {"vmin": "0", "vmax": "11"}
     assert (
         figurecomposer_plot_slices._norm_gamma_value(
@@ -3382,7 +3394,10 @@ def test_figure_composer_editor_factories_preserve_mixed_and_missing_values(
     assert committed[-1] is True
 
 
-def test_figure_composer_axes_selection_guards_recipe_updates(qtbot) -> None:
+def test_figure_composer_axes_selection_guards_recipe_updates(
+    qtbot,
+    monkeypatch,
+) -> None:
     data = _figure_composer_profile_source("data")
     line_operation = FigureOperationState.line(
         label="profile",
@@ -3400,6 +3415,12 @@ def test_figure_composer_axes_selection_guards_recipe_updates(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
 
     tool._updating_controls = True
     try:
@@ -3410,13 +3431,19 @@ def test_figure_composer_axes_selection_guards_recipe_updates(qtbot) -> None:
 
     tool._axes_selection_changed(())
     assert tool.tool_status.operations[0].axes.axes == ((0, 0),)
+    assert render_calls == []
 
     tool._axes_selection_changed(((0, 1),))
     assert tool.tool_status.operations[0].axes.axes == ((0, 1),)
+    assert render_calls == []
+    assert tool._preview_render_update_pending
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
 
     tool.axes_expression_edit.setText("axs[0, :]")
     tool._axes_expression_changed()
     assert tool.tool_status.operations[0].axes.expression == "axs[0, :]"
+    assert len(render_calls) == 1
+    qtbot.waitUntil(lambda: len(render_calls) == 2, timeout=1000)
 
     tool.add_operation(
         FigureOperationState.custom(label="code", code="pass", trusted=True)
@@ -3431,6 +3458,7 @@ def test_figure_composer_axes_selection_guards_recipe_updates(qtbot) -> None:
 
 def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
     qtbot,
+    monkeypatch,
 ) -> None:
     data = _figure_composer_profile_source("data")
     root = FigureGridSpecGridState(
@@ -3476,6 +3504,12 @@ def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
 
     tool.gridspec_axes_selector.set_selected_axes_ids(("right",), emit=False)
     tool._updating_controls = True
@@ -3487,6 +3521,9 @@ def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
 
     tool._gridspec_axes_selection_changed()
     assert tool.tool_status.operations[0].axes.axes_ids == ("right",)
+    assert render_calls == []
+    assert tool._preview_render_update_pending
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
 
     tool.add_operation(
         FigureOperationState.custom(label="code", code="pass", trusted=True)
@@ -5490,6 +5527,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         ),
     )
     qtbot.addWidget(tool)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool._update_operation_editor()
 
     assert tool.findChildren(FigureCanvasQTAgg) == []
     assert tool.findChildren(NavigationToolbar2QT) == []
@@ -6019,6 +6058,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
 def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
+    qtbot.waitUntil(lambda: not tool._step_tab_order_update_pending, timeout=1000)
 
     buttons = tuple(tool.step_section_buttons.values())
     assert len(buttons) > 1
@@ -6029,6 +6069,7 @@ def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
         assert button.nextInFocusChain() is buttons[index + 1]
 
     tool._select_step_section(tool.step_section_keys[-1])
+    qtbot.waitUntil(lambda: not tool._step_tab_order_update_pending, timeout=1000)
     buttons = tuple(tool.step_section_buttons.values())
     for index, button in enumerate(buttons[:-1]):
         assert button.nextInFocusChain() is buttons[index + 1]
@@ -11180,6 +11221,8 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         ),
     )
     qtbot.addWidget(tool)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool._update_operation_editor()
     tool._select_step_section("colors")
 
     colors_page = tool.step_editor_stack.currentWidget()

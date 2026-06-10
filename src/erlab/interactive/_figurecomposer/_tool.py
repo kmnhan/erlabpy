@@ -161,6 +161,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rendering = False
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
+        self._preview_render_update_generation = 0
+        self._step_tab_order_update_pending = False
         self._retired_editor_drain_pending = False
         self._combo_popup_guard_tokens: set[int] = set()
         self._next_combo_popup_guard_token = 0
@@ -439,6 +441,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._closing = True
+        self._preview_render_update_generation += 1
+        self._preview_render_update_pending = False
         self._preview_pixmap_update_generation += 1
         self._preview_pixmap_update_pending = False
         self._remove_operation_list_event_filter()
@@ -1965,19 +1969,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._queue_preview_render_update()
 
     def _queue_preview_render_update(self) -> None:
-        if self._preview_render_update_pending:
+        if self._closing:
             return
+        self._preview_render_update_generation += 1
+        generation = self._preview_render_update_generation
         self._preview_render_update_pending = True
         erlab.interactive.utils.single_shot(
             self,
             _PREVIEW_RENDER_UPDATE_DELAY_MS,
-            self._run_queued_preview_render_update,
+            functools.partial(self._run_queued_preview_render_update, generation),
         )
 
-    def _run_queued_preview_render_update(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self):
+    def _run_queued_preview_render_update(self, generation: int) -> None:
+        if (
+            generation != self._preview_render_update_generation
+            or self._closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+        ):
             return
         self._preview_render_update_pending = False
+        if self._rendering:
+            self._queue_preview_render_update()
+            return
         _render_preview(self)
         self.sigInfoChanged.emit()
 
@@ -2193,11 +2206,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             axes = ((0, 0),)
         index, operation = current
         selection = operation.axes.model_copy(update={"axes": axes, "expression": ""})
+        if selection == operation.axes:
+            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
+            return
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
+            render=False,
             sync_axes=False,
         )
+        self.sigInfoChanged.emit()
+        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -2214,11 +2233,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selection = operation.axes.model_copy(
             update={"axes_ids": axes_ids, "expression": ""}
         )
+        if selection == operation.axes:
+            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
+            return
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
+            render=False,
             sync_axes=False,
         )
+        self.sigInfoChanged.emit()
+        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -2246,11 +2271,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selection = operation.axes.model_copy(
             update={"expression": self.axes_expression_edit.text().strip()}
         )
+        if selection == operation.axes:
+            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
+            return
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
+            render=False,
             sync_axes=False,
         )
+        self.sigInfoChanged.emit()
+        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3050,7 +3081,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if font.bold() != selected:
                 font.setBold(selected)
                 button.setFont(font)
-        self._refresh_step_tab_order()
+        self._queue_step_tab_order_refresh()
 
     def _refresh_step_section_button_texts(self) -> None:
         for key, button in self.step_section_buttons.items():
@@ -3129,6 +3160,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             tab_chain.append(next_widget)
         for index, widget in enumerate(tab_chain[:-1]):
             QtWidgets.QWidget.setTabOrder(widget, tab_chain[index + 1])
+
+    def _queue_step_tab_order_refresh(self) -> None:
+        if self._step_tab_order_update_pending or self._closing:
+            return
+        self._step_tab_order_update_pending = True
+        erlab.interactive.utils.single_shot(
+            self,
+            0,
+            self._run_queued_step_tab_order_refresh,
+        )
+
+    def _run_queued_step_tab_order_refresh(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        self._step_tab_order_update_pending = False
+        self._refresh_step_tab_order()
 
     def _selected_sources_for_operation(
         self, operation: FigureOperationState

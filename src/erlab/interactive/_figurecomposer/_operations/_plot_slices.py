@@ -7,17 +7,11 @@ import typing
 
 import numpy as np
 import xarray as xr
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _selection_code
-from erlab.interactive._figurecomposer._defaults import (
-    _figure_draw_context,
-    _figure_style_context,
-)
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
@@ -66,7 +60,7 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _make_axes,
+    _live_layout_axes,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -2672,30 +2666,22 @@ def _plot_slices_rendered_value(
     operation: FigureOperationState,
     reader: Callable[[Sequence[matplotlib.axes.Axes]], typing.Any],
 ) -> typing.Any:
-    with _figure_style_context():
-        figure = Figure(
-            figsize=tool._recipe.setup.figsize,
-            dpi=tool._recipe.setup.dpi,
-            layout=typing.cast("typing.Any", tool._recipe.setup.layout),
+    if tool._preview_render_update_pending or tool._operation_has_invalid_axes(
+        operation
+    ):
+        return None
+    axs = _live_layout_axes(tool)
+    if axs is None:
+        return None
+    try:
+        axes = _iter_axes(
+            _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
         )
-        canvas = FigureCanvasAgg(figure)
-        try:
-            axs = _make_axes(tool, figure, sync_visible=False)
-            if tool._operation_has_invalid_axes(operation):
-                return None
-            _render_plot_slices(tool, operation, axs)
-            with _figure_draw_context():
-                canvas.draw()
-            axes = _iter_axes(
-                _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
-            )
-            if not axes:
-                return None
-            return reader(axes)
-        except Exception:
+        if not axes:
             return None
-        finally:
-            figure.clear()
+        return reader(axes)
+    except Exception:
+        return None
 
 
 def _plot_slices_limit_placeholder(
