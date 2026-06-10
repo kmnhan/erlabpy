@@ -19,7 +19,10 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_region_valid,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._sources import _valid_source_variable
+from erlab.interactive._figurecomposer._sources import (
+    _public_source_data,
+    _valid_source_variable,
+)
 
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -228,7 +231,7 @@ def _source_namespace(
         "eplt": eplt,
     }
     for name, data in tool._source_data.items():
-        namespace[_valid_source_variable(name)] = data
+        namespace[_valid_source_variable(name)] = _public_source_data(data)
     return namespace
 
 

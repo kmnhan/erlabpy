@@ -78,6 +78,7 @@ from erlab.interactive._figurecomposer._rendering import (
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
+    _public_source_data,
     _source_display_label,
     _source_display_tooltip,
     _source_duplicate_labels,
@@ -1218,7 +1219,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         shape_label = QtWidgets.QLabel(
             erlab.interactive.utils._apply_qt_accent_color(
                 erlab.utils.formatting.format_darr_shape_html(
-                    data.rename(None),
+                    _public_source_data(data).rename(None),
                     show_size=False,
                 )
             ),

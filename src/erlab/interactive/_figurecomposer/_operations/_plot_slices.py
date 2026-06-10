@@ -64,6 +64,7 @@ from erlab.interactive._figurecomposer._rendering import (
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
+    _public_source_data,
     _selected_data,
     _valid_source_variable,
 )
@@ -3174,7 +3175,7 @@ def _operation_maps(
         ]
 
     return [
-        tool._source_data[name]
+        _public_source_data(tool._source_data[name])
         for name in operation.sources
         if name in tool._source_data
     ]

@@ -1585,6 +1585,7 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureAxesSelectionState,
             FigureOperationState,
         )
+        from erlab.interactive._figurecomposer._sources import _public_source_data
 
         if not source_data:
             return ()
@@ -1593,7 +1594,10 @@ class ImageToolManager(_ImageToolManagerBase):
         all_axes = FigureAxesSelectionState(
             axes=self._figure_all_axes(setup.nrows, setup.ncols)
         )
-        squeezed = [data.squeeze(drop=True) for data in source_data.values()]
+        squeezed = [
+            _public_source_data(data).squeeze(drop=True)
+            for data in source_data.values()
+        ]
 
         if all(data.ndim > 1 for data in squeezed):
             first = squeezed[0]
@@ -1692,12 +1696,16 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationKind,
             FigureSubplotsState,
         )
+        from erlab.interactive._figurecomposer._sources import _public_source_data
 
         if operation is not None and operation.kind == FigureOperationKind.PLOT_SLICES:
             nrows, ncols = self._figure_plot_slices_grid_shape(operation)
             return FigureSubplotsState(nrows=nrows, ncols=ncols)
 
-        squeezed = [data.squeeze(drop=True) for data in source_data.values()]
+        squeezed = [
+            _public_source_data(data).squeeze(drop=True)
+            for data in source_data.values()
+        ]
         if squeezed and all(data.ndim > 1 for data in squeezed):
             return FigureSubplotsState(
                 nrows=max(len(squeezed), 1),
@@ -1721,6 +1729,7 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationState,
             FigureSourceState,
         )
+        from erlab.interactive._figurecomposer._sources import _public_source_data
 
         resolved_targets = tuple(dict.fromkeys(targets))
         if not resolved_targets:
@@ -1743,7 +1752,10 @@ class ImageToolManager(_ImageToolManagerBase):
         if (
             operation is None
             and custom_code is None
-            and all(data.squeeze(drop=True).ndim > 1 for data in source_data.values())
+            and all(
+                _public_source_data(data).squeeze(drop=True).ndim > 1
+                for data in source_data.values()
+            )
         ):
             auto_operation = self._figure_plot_slices_operation_from_targets(
                 resolved_targets, source_names
@@ -1915,6 +1927,7 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureComposerTool,
             FigureSourceState,
         )
+        from erlab.interactive._figurecomposer._sources import _public_source_data
 
         resolved_targets = tuple(dict.fromkeys(targets))
         if not resolved_targets:
@@ -1933,7 +1946,8 @@ class ImageToolManager(_ImageToolManagerBase):
         source_names = tuple(source.name for source in sources)
         auto_operation = None
         if operation is None and all(
-            data.squeeze(drop=True).ndim > 1 for data in source_data.values()
+            _public_source_data(data).squeeze(drop=True).ndim > 1
+            for data in source_data.values()
         ):
             auto_operation = self._figure_plot_slices_operation_from_targets(
                 resolved_targets, source_names

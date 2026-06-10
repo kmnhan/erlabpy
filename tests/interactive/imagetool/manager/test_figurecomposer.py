@@ -692,12 +692,12 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
     qtbot,
 ) -> None:
     public = xr.DataArray(
-        np.arange(24.0).reshape(2, 3, 4),
-        dims=("alpha", "eV", "sample_temp"),
+        np.arange(24.0).reshape(4, 2, 3),
+        dims=("sample_temp", "alpha", "eV"),
         coords={
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
             "alpha": [0.0, 1.0],
             "eV": [-0.1, 0.0, 0.1],
-            "sample_temp": [10.0, 15.0, 30.0, 60.0],
         },
         name="map",
     )
@@ -721,6 +721,105 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
 
     assert tool.operation_list.count() == 1
     assert "sample_temp_idx" not in tool.generated_code()
+
+
+def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
+    public = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+        },
+        name="map",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data",),
+    )
+
+    tool = FigureComposerTool.from_sources(
+        {"data": internal},
+        sources=(FigureSourceState(name="data", label="map"),),
+        operations=(operation,),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, operation)
+    assert "sample_temp" in shape.source_text
+    assert "sample_temp_idx" not in shape.source_text
+    shape_item = tool.source_list.topLevelItem(0)
+    assert shape_item is not None
+    shape_label = tool.source_list.itemWidget(shape_item, 1)
+    assert isinstance(shape_label, QtWidgets.QLabel)
+    assert "sample_temp_idx" not in shape_label.text()
+
+
+def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None:
+    public = xr.DataArray(
+        np.arange(8.0).reshape(4, 2),
+        dims=("sample_temp", "alpha"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+            "alpha": [0.0, 1.0],
+        },
+        name="profile",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    operation = FigureOperationState.line(
+        label="line",
+        source="data",
+    ).model_copy(update={"line_selection": {"sample_temp": 15.0}, "line_x": "alpha"})
+
+    tool = FigureComposerTool.from_sources(
+        {"data": internal},
+        sources=(FigureSourceState(name="data", label="profile"),),
+        operations=(operation,),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    coordinate_names = figurecomposer_line_profile._available_line_coordinate_names(
+        tool, operation
+    )
+    assert "alpha" in coordinate_names
+    assert "sample_temp_idx" not in coordinate_names
+    line_items = figurecomposer_line_profile._line_data_items(tool, operation)
+    assert len(line_items) == 1
+    assert line_items[0].dims == ("alpha",)
+
+
+def test_manager_default_figure_seed_uses_public_nonuniform_dims(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    public = xr.DataArray(
+        np.arange(24.0).reshape(4, 2, 3),
+        dims=("sample_temp", "alpha", "eV"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+        },
+        name="map",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+
+    with manager_context() as manager:
+        operation = manager._make_figure_operations_for_sources(
+            {"data": internal},
+            setup=FigureSubplotsState(),
+        )[0]
+
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.slice_dim == "sample_temp"
+    assert "sample_temp_idx" not in operation.model_dump_json()
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
@@ -1237,6 +1336,42 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         "}",
     ]
     assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
+
+
+def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
+    public = xr.DataArray(
+        np.arange(8.0).reshape(4, 2),
+        dims=("sample_temp", "alpha"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+            "alpha": [0.0, 1.0],
+        },
+        name="map",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    operation = FigureOperationState.custom(
+        label="code",
+        code=(
+            "assert 'sample_temp' in data.dims\n"
+            "assert 'sample_temp_idx' not in data.dims"
+        ),
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        internal,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="map"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "(render error)" not in item.text()
 
 
 def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(

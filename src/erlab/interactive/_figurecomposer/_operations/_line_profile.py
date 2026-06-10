@@ -34,6 +34,7 @@ from erlab.interactive._figurecomposer._rendering import (
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
+    _public_source_data,
     _selected_data,
     _valid_source_variable,
 )
@@ -97,6 +98,7 @@ def _line_choice_data(
     data = tool._source_data.get(operation.line_source)
     if data is None:
         return None
+    data = _public_source_data(data)
     if operation.line_selection:
         data = data.qsel(operation.line_selection)
     data = data.squeeze(drop=True)
@@ -143,6 +145,7 @@ def _available_line_offset_coords(
     data = tool._source_data.get(operation.line_source)
     if data is None:
         return []
+    data = _public_source_data(data)
     if operation.line_selection:
         data = data.qsel(operation.line_selection)
     line_data = data.squeeze(drop=True)
@@ -713,6 +716,7 @@ def _line_data_items(
         data = tool._source_data.get(operation.line_source)
         if data is None:
             return []
+        data = _public_source_data(data)
         if operation.line_selection:
             data = data.qsel(operation.line_selection)
         line_data = data.squeeze(drop=True)
@@ -1012,6 +1016,7 @@ def _default_profile_x_dim(
     data = tool._source_data.get(source_name)
     if data is None:
         return None
+    data = _public_source_data(data)
     candidates = [str(dim) for dim in data.dims if str(dim) != operation.slice_dim]
     if candidates:
         return candidates[-1]
