@@ -61,7 +61,7 @@ from erlab.interactive.imagetool.dialogs import (
     SymmetrizeNfoldDialog,
     ThinDialog,
 )
-from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
+from erlab.interactive.imagetool.plot_items import ItoolPlotItem, _PolyROIEditDialog
 from erlab.interactive.imagetool.slicer import ArraySlicerState
 from erlab.interactive.imagetool.viewer import ImageSlicerArea
 from erlab.interactive.imagetool.viewer_state import (
@@ -1250,6 +1250,26 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
     assert operation.extra_kwargs == {}
 
     win.close()
+
+
+def test_figure_composer_operation_updates_keep_independent_state() -> None:
+    updates = ItoolPlotItem._figure_composer_operation_updates(
+        {
+            "xlim": (1.0, 3.0),
+            "ylim": (0.5, 2.5),
+            "cmap": "magma",
+            "gamma": 0.3,
+            "norm": "|custom.Norm(dynamic_value)|",
+            "unsupported": "|not_literal|",
+        }
+    )
+
+    assert updates["xlim"] == (1.0, 3.0)
+    assert updates["ylim"] == (0.5, 2.5)
+    assert updates["cmap"] == "magma"
+    assert updates["norm_name"] == "PowerNorm"
+    assert updates["norm_gamma"] == pytest.approx(0.3)
+    assert updates["extra_kwargs"] == {}
 
 
 def test_slicer_area_colormap_lut_matches_dense_powernorm(qtbot) -> None:

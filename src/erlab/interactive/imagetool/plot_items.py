@@ -1889,12 +1889,15 @@ class ItoolPlotItem(pg.PlotItem):
         }
         if norm_name not in allowed:
             return None
-        args = [ast.literal_eval(arg) for arg in call.args]
-        kwargs: dict[str, typing.Any] = {}
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return None
-            kwargs[keyword.arg] = ast.literal_eval(keyword.value)
+        try:
+            args = [ast.literal_eval(arg) for arg in call.args]
+            kwargs: dict[str, typing.Any] = {}
+            for keyword in call.keywords:
+                if keyword.arg is None:
+                    return None
+                kwargs[keyword.arg] = ast.literal_eval(keyword.value)
+        except (TypeError, ValueError):
+            return None
         from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
 
         updates = _norm_updates_from_kwargs(kwargs)
@@ -1906,7 +1909,7 @@ class ItoolPlotItem(pg.PlotItem):
     @staticmethod
     def _figure_composer_operation_updates(
         plot_kwargs: dict[str, typing.Any],
-    ) -> dict[str, typing.Any] | None:
+    ) -> dict[str, typing.Any]:
         field_names = {
             "transpose",
             "xlim",
@@ -1941,12 +1944,10 @@ class ItoolPlotItem(pg.PlotItem):
         extra_kwargs: dict[str, typing.Any] = {}
         for key, value in plot_kwargs.items():
             if key == "norm":
-                if not isinstance(value, str):
-                    return None
-                norm_updates = ItoolPlotItem._figure_composer_norm_updates(value)
-                if norm_updates is None:
-                    return None
-                updates.update(norm_updates)
+                if isinstance(value, str):
+                    norm_updates = ItoolPlotItem._figure_composer_norm_updates(value)
+                    if norm_updates is not None:
+                        updates.update(norm_updates)
                 continue
             plain_value = ItoolPlotItem._figure_composer_plain_value(value)
             if (
@@ -1954,7 +1955,7 @@ class ItoolPlotItem(pg.PlotItem):
                 and plain_value.startswith("|")
                 and plain_value.endswith("|")
             ):
-                return None
+                continue
             if key in field_names:
                 if key == "gamma":
                     updates["norm_name"] = "PowerNorm"
@@ -1980,8 +1981,6 @@ class ItoolPlotItem(pg.PlotItem):
 
         plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
         updates = self._figure_composer_operation_updates(plot_kwargs)
-        if updates is None:
-            updates = {}
 
         if selected_maps is not None:
             return FigureOperationState.plot_slices(
