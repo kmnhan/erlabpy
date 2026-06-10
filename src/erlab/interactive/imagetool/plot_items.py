@@ -1687,8 +1687,31 @@ class ItoolPlotItem(pg.PlotItem):
             selected += f".qsel.mean({avg_arg})"
         return selected
 
+    def _sync_figure_composer_view_limits(self) -> None:
+        """Snapshot visible plot limits before seeding a Figure Composer step."""
+        for dim, rng in zip(
+            self.axis_dims_uniform,
+            self.vb.state["viewRange"],
+            strict=True,
+        ):
+            if dim is None:
+                continue
+            try:
+                axis = self.slicer_area.data.dims.index(dim)
+            except ValueError:
+                continue
+            data_min, data_max = sorted(
+                self.slicer_area.array_slicer.lims_uniform[axis]
+            )
+            view_min, view_max = sorted(float(value) for value in rng)
+            if view_min > data_min or view_max < data_max:
+                self.slicer_area.manual_limits[dim] = [view_min, view_max]
+            else:
+                self.slicer_area.manual_limits.pop(dim, None)
+
     def figure_composer_operation(self, *, source_name: str):
         """Build a Figure Composer operation from the current ImageTool plot state."""
+        self._sync_figure_composer_view_limits()
         non_display_axes = tuple(
             sorted(set(range(self.slicer_area.data.ndim)) - set(self.display_axis))
         )

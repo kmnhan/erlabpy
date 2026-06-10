@@ -1336,6 +1336,13 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     qtbot.addWidget(win)
     main_image = win.slicer_area.images[0]
     created: list[dict[str, object]] = []
+    x_range = (1.0, 3.0)
+    y_range = (0.5, 2.5)
+    win.slicer_area.set_colormap(cmap="magma", gamma=1.5, reverse=True)
+    win.slicer_area.levels = (10.0, 20.0)
+    win.slicer_area.lock_levels(True)
+    main_image.getViewBox().setRange(xRange=x_range, yRange=y_range, padding=0.0)
+    win.slicer_area.manual_limits.clear()
 
     class _Manager:
         def target_from_slicer_area(self, slicer_area):
@@ -1372,6 +1379,14 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     assert operation.sources == ("data_0",)
     assert isinstance(operation.transpose, bool)
     assert isinstance(operation.crop, bool)
+    assert operation.xlim == x_range
+    assert operation.ylim == y_range
+    assert operation.cmap == "magma_r"
+    assert operation.norm_name == "PowerNorm"
+    assert operation.norm_gamma == pytest.approx(1.5)
+    assert operation.vmin == pytest.approx(0.0)
+    assert operation.vmax == pytest.approx(124.0)
+    assert operation.same_limits is True
     assert "custom_code" not in created[0]
 
     composer = FigureComposerTool.from_sources(

@@ -200,7 +200,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._current_step_section_key = "sources"
         self._build_ui()
         self._apply_recipe_to_controls()
-        _render_preview(self, show_window=False)
 
     @staticmethod
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
