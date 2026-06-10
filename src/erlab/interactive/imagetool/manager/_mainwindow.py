@@ -1093,7 +1093,6 @@ class ImageToolManager(_ImageToolManagerBase):
         logger.debug("Closing ImageTool Manager...")
         previous_closing_workspace_document = self._workspace_state.closing_document
         self._workspace_state.closing_document = True
-        close_confirmed = False
         try:
             if not self._confirm_save_dirty_workspace(
                 "Closing this manager will discard unsaved workspace changes."
@@ -1101,9 +1100,6 @@ class ImageToolManager(_ImageToolManagerBase):
                 if event:
                     event.ignore()
                 return
-
-            close_confirmed = True
-            self._workspace_controller._cancel_macos_workspace_window_file_path_update()
 
             logger.debug("Waiting for file handlers to finish...")
             if len(self._file_handlers) > 0:  # pragma: no cover
@@ -1173,8 +1169,6 @@ class ImageToolManager(_ImageToolManagerBase):
             super().closeEvent(event)
         finally:
             self._workspace_state.closing_document = previous_closing_workspace_document
-            if not close_confirmed:
-                self._workspace_controller._schedule_macos_workspace_window_file_path_update()
 
     @property
     def ntools(self) -> int:

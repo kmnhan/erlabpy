@@ -134,14 +134,6 @@ class _WorkspaceIOController:
         self._manager = manager
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
-        self._pending_workspace_window_file_path: str | None = None
-        self._workspace_window_file_path_defer_depth = 0
-        self._workspace_window_file_path_timer = QtCore.QTimer(manager)
-        self._workspace_window_file_path_timer.setSingleShot(True)
-        self._workspace_window_file_path_timer.setInterval(0)
-        self._workspace_window_file_path_timer.timeout.connect(
-            self._apply_macos_workspace_window_file_path
-        )
 
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
@@ -398,13 +390,14 @@ class _WorkspaceIOController:
         )
 
     def _update_workspace_window_title(self) -> None:
-        if self._manager._workspace_state.path is None:
-            window_file_path = ""
-        else:
-            window_file_path = typing.cast("str", self._manager.workspace_path)
-        if sys.platform == "darwin":
-            self._defer_macos_workspace_window_file_path_update(window_file_path)
-        else:
+        # macOS represented-file/proxy-icon updates can crash inside Qt/Cocoa
+        # while workspaces are being opened or closed. Keep the visible title
+        # and all workspace state in sync without calling setWindowFilePath().
+        if sys.platform != "darwin":
+            if self._manager._workspace_state.path is None:
+                window_file_path = ""
+            else:
+                window_file_path = typing.cast("str", self._manager.workspace_path)
             self._manager.setWindowFilePath(window_file_path)
         workspace_display_name = (
             "Untitled"
@@ -416,71 +409,6 @@ class _WorkspaceIOController:
             f" - ImageTool Manager #{self._manager.manager_index}"
         )
         self._manager.setWindowModified(self._manager.is_workspace_modified)
-
-    def _defer_macos_workspace_window_file_path_update(
-        self, window_file_path: str
-    ) -> None:
-        # Work around a macOS Qt/Cocoa crash observed while opening and closing
-        # workspaces in QWidget.setWindowFilePath() -> QImage.toCGImage(). The
-        # represented-file/proxy-icon update is queued until workspace load/save
-        # boundaries are no longer active, while closing windows skip it entirely.
-        if self._manager._workspace_state.closing_document:
-            self._cancel_macos_workspace_window_file_path_update()
-            return
-        if (
-            self._pending_workspace_window_file_path is None
-            and self._manager.windowFilePath() == window_file_path
-        ):
-            return
-        self._pending_workspace_window_file_path = window_file_path
-        self._schedule_macos_workspace_window_file_path_update()
-
-    @contextlib.contextmanager
-    def _macos_workspace_window_file_path_update_context(self) -> Iterator[None]:
-        self._workspace_window_file_path_defer_depth += 1
-        try:
-            yield
-        finally:
-            self._workspace_window_file_path_defer_depth -= 1
-            self._schedule_macos_workspace_window_file_path_update()
-
-    def _schedule_macos_workspace_window_file_path_update(self) -> None:
-        if (
-            self._pending_workspace_window_file_path is None
-            or self._manager._workspace_state.closing_document
-            or self._macos_workspace_window_file_path_update_deferred()
-            or self._workspace_window_file_path_timer.isActive()
-        ):
-            return
-        self._workspace_window_file_path_timer.start()
-
-    def _macos_workspace_window_file_path_update_deferred(self) -> bool:
-        return (
-            self._workspace_window_file_path_defer_depth > 0
-            or self._manager._workspace_state.loading_depth > 0
-            or self._manager._workspace_state.saving_depth > 0
-            or self._manager._workspace_state.save_in_progress
-        )
-
-    def _cancel_macos_workspace_window_file_path_update(self) -> None:
-        self._pending_workspace_window_file_path = None
-        self._workspace_window_file_path_timer.stop()
-
-    def _apply_macos_workspace_window_file_path(self) -> None:
-        window_file_path = self._pending_workspace_window_file_path
-        if window_file_path is None or not erlab.interactive.utils.qt_is_valid(
-            self._manager
-        ):
-            self._pending_workspace_window_file_path = None
-            return
-        if self._manager._workspace_state.closing_document:
-            return
-        if self._macos_workspace_window_file_path_update_deferred():
-            return
-        self._pending_workspace_window_file_path = None
-        if self._manager.windowFilePath() == window_file_path:
-            return
-        self._manager.setWindowFilePath(window_file_path)
 
     def _release_workspace_lock(self) -> None:
         if self._manager._workspace_state.lock is None:
@@ -730,10 +658,7 @@ class _WorkspaceIOController:
     @contextlib.contextmanager
     def _workspace_load_context(self) -> Iterator[None]:
         with self._manager._workspace_state.load_context():
-            try:
-                yield
-            finally:
-                self._schedule_macos_workspace_window_file_path_update()
+            yield
 
     def _send_workspace_posted_events(self) -> None:
         for _ in range(3):
@@ -2230,39 +2155,38 @@ class _WorkspaceIOController:
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
-        with self._macos_workspace_window_file_path_update_context():
-            associated_fname = fname
-            associated_lock: QtCore.QLockFile | None = None
-            if _manager_workspace._workspace_schema_requires_conversion(schema_version):
-                converted = self._manager._save_legacy_workspace_as_v4(
-                    fname, native=native, existing_access=workspace_access
+        associated_fname = fname
+        associated_lock: QtCore.QLockFile | None = None
+        if _manager_workspace._workspace_schema_requires_conversion(schema_version):
+            converted = self._manager._save_legacy_workspace_as_v4(
+                fname, native=native, existing_access=workspace_access
+            )
+            if converted is None:
+                self._manager._set_workspace_path(None)
+                self._manager._workspace_state.needs_full_save = True
+                self._manager._mark_workspace_structure_dirty(
+                    "Legacy workspace needs conversion"
                 )
-                if converted is None:
-                    self._manager._set_workspace_path(None)
-                    self._manager._workspace_state.needs_full_save = True
-                    self._manager._mark_workspace_structure_dirty(
-                        "Legacy workspace needs conversion"
-                    )
-                    return
-                associated_fname, associated_lock = converted
-                delta_save_count = 0
-                schema_version = _manager_workspace._current_workspace_schema_version()
-            elif workspace_access is not None:
-                associated_lock = workspace_access.take_lock()
+                return
+            associated_fname, associated_lock = converted
+            delta_save_count = 0
+            schema_version = _manager_workspace._current_workspace_schema_version()
+        elif workspace_access is not None:
+            associated_lock = workspace_access.take_lock()
 
-            self._manager._set_workspace_path(
-                associated_fname, workspace_lock=associated_lock
-            )
-            self._manager._workspace_state.delta_save_count = delta_save_count
-            self._manager._workspace_state.schema_version = schema_version
-            self._manager._workspace_state.needs_full_save = (
-                _manager_workspace._workspace_schema_requires_full_save(schema_version)
-            )
-            if rebind_data:
-                self._manager._rebind_workspace_backed_imagetools(associated_fname)
-            self._manager._drain_workspace_restore_events()
-            self._manager._mark_workspace_clean()
-            self._manager._record_recent_workspace(associated_fname)
+        self._manager._set_workspace_path(
+            associated_fname, workspace_lock=associated_lock
+        )
+        self._manager._workspace_state.delta_save_count = delta_save_count
+        self._manager._workspace_state.schema_version = schema_version
+        self._manager._workspace_state.needs_full_save = (
+            _manager_workspace._workspace_schema_requires_full_save(schema_version)
+        )
+        if rebind_data:
+            self._manager._rebind_workspace_backed_imagetools(associated_fname)
+        self._manager._drain_workspace_restore_events()
+        self._manager._mark_workspace_clean()
+        self._manager._record_recent_workspace(associated_fname)
 
     def _workspace_rebind_data_for_uid(
         self,
@@ -2815,38 +2739,37 @@ class _WorkspaceIOController:
         )
         if fname is None:
             return False
-        with self._macos_workspace_window_file_path_update_context():
-            old_workspace_path = self._manager._workspace_state.path
-            backing_snapshot = self._manager._workspace_data_backing_snapshot()
-            try:
-                dialog_parent = origin or self._manager
-                with self._manager._workspace_document_access_context(fname) as access:
-                    with erlab.interactive.utils.wait_dialog(
-                        dialog_parent, "Saving workspace..."
-                    ):
-                        self._manager._save_workspace_document(
-                            access.path,
-                            force_full=True,
-                            document_access=access,
-                        )
-                        self._manager._rebind_workspace_backed_imagetools(
-                            access.path,
-                            backing_snapshot=backing_snapshot,
-                            old_workspace_path=old_workspace_path,
-                        )
-                    self._manager._set_workspace_path(
-                        access.path, workspace_lock=access.take_lock()
+        old_workspace_path = self._manager._workspace_state.path
+        backing_snapshot = self._manager._workspace_data_backing_snapshot()
+        try:
+            dialog_parent = origin or self._manager
+            with self._manager._workspace_document_access_context(fname) as access:
+                with erlab.interactive.utils.wait_dialog(
+                    dialog_parent, "Saving workspace..."
+                ):
+                    self._manager._save_workspace_document(
+                        access.path,
+                        force_full=True,
+                        document_access=access,
                     )
-                self._manager._workspace_state.needs_full_save = False
-                self._manager._drain_workspace_deferred_events()
-                self._manager._mark_workspace_clean()
-                self._manager._record_recent_workspace(access.path)
-            except Exception:
-                self._manager._show_operation_error(
-                    "Error while saving workspace",
-                    "An error occurred while saving the workspace file.",
+                    self._manager._rebind_workspace_backed_imagetools(
+                        access.path,
+                        backing_snapshot=backing_snapshot,
+                        old_workspace_path=old_workspace_path,
+                    )
+                self._manager._set_workspace_path(
+                    access.path, workspace_lock=access.take_lock()
                 )
-                return False
+            self._manager._workspace_state.needs_full_save = False
+            self._manager._drain_workspace_deferred_events()
+            self._manager._mark_workspace_clean()
+            self._manager._record_recent_workspace(access.path)
+        except Exception:
+            self._manager._show_operation_error(
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+            return False
         self._manager._restore_focus_after_workspace_save(origin)
         return True
 
