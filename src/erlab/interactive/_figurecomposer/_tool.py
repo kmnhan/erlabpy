@@ -1609,6 +1609,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @staticmethod
     def _editor_input_error_key(widget: QtWidgets.QWidget) -> str:
+        if not erlab.interactive.utils.qt_is_valid(widget):
+            return f"anonymous:{id(widget)}"
         object_name = widget.objectName()
         if object_name:
             return object_name

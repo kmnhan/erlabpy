@@ -3718,9 +3718,8 @@ def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -
     operation = tool.tool_status.operations[0]
     edit = QtWidgets.QLineEdit(tool)
     edit.setObjectName("figureComposerDeletedSenderEdit")
-    tool._set_operation_input_errors(
-        {operation.operation_id: {edit.objectName(): "old error"}}
-    )
+    input_key = edit.objectName()
+    tool._set_operation_input_errors({operation.operation_id: {input_key: "old error"}})
 
     def delete_sender() -> None:
         edit.deleteLater()
@@ -3730,7 +3729,25 @@ def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -
     edit.editingFinished.emit()
 
     assert not erlab.interactive.utils.qt_is_valid(edit)
+    assert tool._editor_input_error_key(edit) == f"anonymous:{id(edit)}"
     assert not tool._operation_has_invalid_input(operation)
+
+    error_edit = QtWidgets.QLineEdit(tool)
+    error_edit.setObjectName("figureComposerDeletedErrorSenderEdit")
+
+    def delete_sender_with_error() -> None:
+        error_edit.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        raise figurecomposer_text.FigureComposerInputError("new error")
+
+    tool._connect_editor_signal(
+        error_edit, error_edit.editingFinished, delete_sender_with_error
+    )
+    error_edit.editingFinished.emit()
+
+    assert not erlab.interactive.utils.qt_is_valid(error_edit)
+    assert tool._operation_has_invalid_input(operation)
+    assert tool._operation_input_error_text(operation) == "new error"
 
 
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
