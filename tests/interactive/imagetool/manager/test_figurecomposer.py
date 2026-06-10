@@ -1,6 +1,7 @@
 import ast
 import contextlib
 import gc
+import json
 import typing
 import warnings
 from collections.abc import Callable
@@ -13181,6 +13182,69 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         assert styles[(1, 0)].cmap == "viridis"
         assert styles[(1, 0)].norm_name is None
         assert styles[(1, 0)].norm_gamma == pytest.approx(0.25)
+
+
+def test_manager_workspace_figure_sources_save_as_references(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    first = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(9.0, 18.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]},
+        name="second",
+    )
+
+    with manager_context() as manager:
+        for data in (first, second):
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+
+        tree = manager._to_datatree()
+        try:
+            ds = typing.cast(
+                "xr.DataTree", tree[f"figures/{figure_uid}/tool"]
+            ).to_dataset(inherit=False)
+            references = json.loads(
+                ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+            )
+            source_entries = json.loads(
+                ds.attrs[figurecomposer_tool_module._PERSISTED_SOURCE_MAP_ATTR]
+            )
+            secondary_variable = source_entries[0]["variable"]
+
+            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
+            assert secondary_variable in references
+            assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
+            assert ds[secondary_variable].size == 0
+
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            assert manager._from_datatree(
+                tree, replace=True, mark_dirty=False, select=False
+            )
+        finally:
+            tree.close()
+
+        restored = typing.cast(
+            "FigureComposerTool", manager._child_node(figure_uid).tool_window
+        )
+        source_data = restored.source_data()
+        xr.testing.assert_identical(source_data["data_0"], first)
+        xr.testing.assert_identical(source_data["data_1"], second)
 
 
 def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None:

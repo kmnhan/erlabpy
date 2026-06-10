@@ -43,7 +43,7 @@ import erlab
 from erlab.interactive import _qt_state
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable, Iterator, Mapping
+    from collections.abc import Collection, Iterator
 
     import pydantic
     import pyperclip
@@ -804,7 +804,81 @@ _TOOL_SOURCE_BINDING_ATTR = "tool_source_binding"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
 _TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
+_TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
+_TOOL_DATA_BLOB_NAME_ATTR = "tool_data_blob_name"
 _SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
+_SAVED_TOOL_DATA_REFERENCE_DIM = "<saved-tool-data-reference>"
+_SAVED_TOOL_DATA_BLOB_DIM_PREFIX = "<saved-tool-data-blob-"
+_NONE_TOOL_DATA_NAME = "<none-value>"
+_STALE_TOOL_DATA_ENCODING_KEYS = frozenset(
+    (
+        "chunksizes",
+        "compression",
+        "compression_opts",
+        "contiguous",
+        "fletcher32",
+        "original_shape",
+        "preferred_chunks",
+        "shuffle",
+        "source",
+    )
+)
+
+
+def _tool_data_placeholder() -> xr.DataArray:
+    return xr.DataArray(
+        np.empty((0,), dtype=np.uint8),
+        dims=(_SAVED_TOOL_DATA_REFERENCE_DIM,),
+    )
+
+
+def _tool_data_blob_dim(variable_name: str) -> str:
+    return f"{_SAVED_TOOL_DATA_BLOB_DIM_PREFIX}{variable_name.encode().hex()}>"
+
+
+def _tool_data_to_blob(data: xr.DataArray, variable_name: str) -> xr.DataArray:
+    from erlab.interactive.imagetool import _serialization
+
+    data_name = _NONE_TOOL_DATA_NAME if data.name is None else str(data.name)
+    ds = data.to_dataset(name=_SAVED_TOOL_DATA_NAME, promote_attrs=False)
+    ds.attrs[_TOOL_DATA_BLOB_NAME_ATTR] = data_name
+    encoded = _serialization.encode_private_coords(ds, _SAVED_TOOL_DATA_NAME)
+    encoded = _drop_stale_tool_data_encoding(encoded)
+    blob = encoded.to_netcdf(
+        path=None,
+        engine="h5netcdf",
+        invalid_netcdf=True,
+    )
+    return xr.DataArray(
+        np.frombuffer(blob, dtype=np.uint8).copy(),
+        dims=(_tool_data_blob_dim(variable_name),),
+        attrs={_TOOL_DATA_BLOB_NAME_ATTR: data_name},
+    )
+
+
+def _drop_stale_tool_data_encoding(ds: xr.Dataset) -> xr.Dataset:
+    serialized = ds.copy(deep=False)
+    for variable in serialized.variables.values():
+        variable.encoding = {
+            key: value
+            for key, value in variable.encoding.items()
+            if key not in _STALE_TOOL_DATA_ENCODING_KEYS
+        }
+    return serialized
+
+
+def _tool_data_from_blob(blob: xr.DataArray) -> xr.DataArray:
+    from erlab.interactive.imagetool import _serialization
+
+    ds = xr.load_dataset(
+        memoryview(np.asarray(blob.values, dtype=np.uint8).tobytes()),
+        engine="h5netcdf",
+    )
+    restored = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
+    data_name = restored.attrs.get(_TOOL_DATA_BLOB_NAME_ATTR, _NONE_TOOL_DATA_NAME)
+    if data_name == _NONE_TOOL_DATA_NAME:
+        data_name = None
+    return restored[_SAVED_TOOL_DATA_NAME].rename(data_name)
 
 
 class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
@@ -3091,6 +3165,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_reload: Callable[[], bool] | None = None
         self._managed_source_reload_available: Callable[[], bool] | None = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
+        self._save_tool_data_references = False
+        self._save_tool_data_reference_node_uids: frozenset[str] | None = None
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
         self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
@@ -4371,6 +4447,95 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Restore optional payload saved by `_append_persistence_payload()`."""
         return
 
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        """Return named data artifacts that belong to this saved tool window."""
+        return {_SAVED_TOOL_DATA_NAME: self.tool_data}
+
+    def _restore_persistence_data_items(
+        self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+    ) -> None:
+        """Restore named data artifacts saved by `_persistence_data_items()`."""
+        del data_items, ds
+
+    @contextlib.contextmanager
+    def _save_tool_data_reference_context(
+        self, available_node_uids: Iterable[str] | None = None
+    ) -> Iterator[None]:
+        """Temporarily prefer manager references over embedded data payloads."""
+        previous_enabled = self._save_tool_data_references
+        previous_uids = self._save_tool_data_reference_node_uids
+        self._save_tool_data_references = True
+        self._save_tool_data_reference_node_uids = (
+            None if available_node_uids is None else frozenset(available_node_uids)
+        )
+        try:
+            yield
+        finally:
+            self._save_tool_data_references = previous_enabled
+            self._save_tool_data_reference_node_uids = previous_uids
+
+    def _tool_data_reference_payload(
+        self, variable_name: str, data: xr.DataArray
+    ) -> dict[str, typing.Any] | None:
+        """Return a saved reference payload for a persistence data item."""
+        del data
+        if (
+            not self._save_tool_data_references
+            or variable_name != _SAVED_TOOL_DATA_NAME
+            or not self.has_source_binding
+            or self.source_state != "fresh"
+            or self._source_parent_fetcher is None
+        ):
+            return None
+        try:
+            parent_data = self._source_parent_fetcher()
+            self._materialized_source_spec(parent_data)
+        except Exception:
+            return None
+        return {"kind": "parent_source"}
+
+    def _reference_saved_tool_data(
+        self, variable_name: str, data: xr.DataArray
+    ) -> dict[str, typing.Any] | None:
+        payload = self._tool_data_reference_payload(variable_name, data)
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise TypeError("tool data reference payload must be a dictionary")
+        kind = payload.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise ValueError("tool data reference payload must define a non-empty kind")
+        return payload
+
+    def _saved_tool_data_dataset(self) -> xr.Dataset:
+        data_items = self._persistence_data_items()
+        if _SAVED_TOOL_DATA_NAME not in data_items:
+            raise ValueError(
+                f"{type(self).__name__}._persistence_data_items() must include "
+                f"{_SAVED_TOOL_DATA_NAME!r}"
+            )
+
+        variables: dict[str, xr.DataArray] = {}
+        references: dict[str, dict[str, typing.Any]] = {}
+        for variable_name, data in data_items.items():
+            if not variable_name:
+                raise ValueError("tool data item names must be non-empty strings")
+            if variable_name in variables:
+                raise ValueError(f"duplicate tool data item {variable_name!r}")
+            reference = self._reference_saved_tool_data(variable_name, data)
+            if reference is not None:
+                variables[variable_name] = _tool_data_placeholder()
+                references[variable_name] = reference
+            elif variable_name == _SAVED_TOOL_DATA_NAME:
+                variables[variable_name] = data
+            else:
+                variables[variable_name] = _tool_data_to_blob(data, variable_name)
+
+        ds = xr.Dataset(variables).assign_attrs(self._saved_tool_attrs)
+        if references:
+            ds.attrs[_TOOL_DATA_REFERENCES_ATTR] = json.dumps(references)
+        return ds
+
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
 
@@ -4380,10 +4545,119 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             A dataset containing the data and attributes needed to restore the tool.
 
         """
-        ds = self.tool_data.to_dataset(
-            name=_SAVED_TOOL_DATA_NAME, promote_attrs=False
-        ).assign_attrs(self._saved_tool_attrs)
+        ds = self._saved_tool_data_dataset()
         return self._append_persistence_payload(ds)
+
+    @staticmethod
+    def _saved_tool_data_references(
+        ds: xr.Dataset,
+    ) -> dict[str, dict[str, typing.Any]]:
+        payload = ds.attrs.get(_TOOL_DATA_REFERENCES_ATTR)
+        if payload is None:
+            return {}
+        if not isinstance(payload, str):
+            raise TypeError("Saved tool data references must be JSON text")
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict):
+            raise TypeError("Saved tool data references must be a JSON object")
+        references: dict[str, dict[str, typing.Any]] = {}
+        for variable_name, reference in decoded.items():
+            if not isinstance(variable_name, str) or not variable_name:
+                raise TypeError("Saved tool data reference names must be strings")
+            if not isinstance(reference, dict):
+                raise TypeError(
+                    f"Saved tool data reference {variable_name!r} must be an object"
+                )
+            references[variable_name] = reference
+        return references
+
+    @staticmethod
+    def _saved_source_spec_from_attrs(
+        ds: xr.Dataset,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        payload = ds.attrs.get(_TOOL_SOURCE_SPEC_ATTR)
+        if not isinstance(payload, str):
+            raise TypeError("Referenced tool data is missing source provenance")
+        provenance = erlab.interactive.imagetool.provenance
+        source_spec = provenance.parse_tool_provenance_spec(
+            typing.cast("Mapping[str, typing.Any]", json.loads(payload))
+        )
+        live_source_spec = provenance.require_live_source_spec(source_spec)
+        if live_source_spec is None:
+            raise ValueError("Referenced tool data source provenance is not replayable")
+        return live_source_spec
+
+    @classmethod
+    def _resolve_saved_tool_data_reference(
+        cls,
+        reference: Mapping[str, typing.Any],
+        ds: xr.Dataset,
+        *,
+        source_parent_data: xr.DataArray | None,
+        reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
+        | None,
+    ) -> xr.DataArray:
+        kind = reference.get("kind")
+        if kind == "parent_source":
+            if source_parent_data is None:
+                raise ValueError(
+                    "Saved tool data references parent ImageTool data, but the "
+                    "parent data is unavailable."
+                )
+            return cls._saved_source_spec_from_attrs(ds).apply(source_parent_data)
+        if kind == "manager_node":
+            if reference_resolver is None:
+                raise ValueError(
+                    "Saved tool data references another manager node, but no "
+                    "manager-node resolver is available."
+                )
+            resolved = reference_resolver(reference)
+            if resolved is None:
+                node_uid = reference.get("node_uid")
+                raise ValueError(
+                    "Saved tool data references a manager node that could not be "
+                    f"resolved: {node_uid!r}"
+                )
+            return resolved
+        raise ValueError(f"Unsupported saved tool data reference kind: {kind!r}")
+
+    @classmethod
+    def _tool_data_items_from_dataset(
+        cls,
+        ds: xr.Dataset,
+        *,
+        source_parent_data: xr.DataArray | None,
+        reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
+        | None,
+    ) -> dict[str, xr.DataArray]:
+        references = cls._saved_tool_data_references(ds)
+        data_items: dict[str, xr.DataArray] = {}
+        for variable_name, reference in references.items():
+            if variable_name not in ds:
+                raise ValueError(
+                    f"Saved tool data reference points to missing variable "
+                    f"{variable_name!r}"
+                )
+            data_items[variable_name] = cls._resolve_saved_tool_data_reference(
+                reference,
+                ds,
+                source_parent_data=source_parent_data,
+                reference_resolver=reference_resolver,
+            )
+
+        for variable_name, data_array in ds.data_vars.items():
+            if variable_name in data_items:
+                continue
+            if _TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs:
+                if not isinstance(variable_name, str):
+                    raise TypeError("Saved tool data variable names must be strings")
+                data_items[variable_name] = _tool_data_from_blob(data_array)
+
+        if _SAVED_TOOL_DATA_NAME not in data_items:
+            if _SAVED_TOOL_DATA_NAME not in ds:
+                raise ValueError("Saved tool dataset is missing primary tool data")
+            data_items[_SAVED_TOOL_DATA_NAME] = ds[_SAVED_TOOL_DATA_NAME]
+        return data_items
 
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
@@ -4399,6 +4673,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """
         from erlab.interactive.imagetool import _serialization
 
+        source_parent_data = typing.cast(
+            "xr.DataArray | None", kwargs.pop("_source_parent_data", None)
+        )
+        reference_resolver = typing.cast(
+            "Callable[[Mapping[str, typing.Any]], xr.DataArray | None] | None",
+            kwargs.pop("_tool_data_reference_resolver", None),
+        )
         ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
 
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
@@ -4416,12 +4697,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         for attr in qual.split("."):
             cls_obj = getattr(cls_obj, attr)
         cls_obj = typing.cast("type[typing.Self]", cls_obj)
+        data_items = cls_obj._tool_data_items_from_dataset(
+            ds,
+            source_parent_data=source_parent_data,
+            reference_resolver=reference_resolver,
+        )
 
         # Instantiate the class and set the status
         tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
         if tool_data_name == "<none-value>":
             tool_data_name = None
-        tool = cls_obj(ds[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs)
+        tool = cls_obj(
+            data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
+        )
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
@@ -4485,6 +4773,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     exc_info=True,
                 )
         tool._restore_persistence_payload(ds)
+        tool._restore_persistence_data_items(data_items, ds)
         tool.setWindowTitle(ds.attrs["tool_title"])
         if (
             not _qt_state.restore_qt_window_state(

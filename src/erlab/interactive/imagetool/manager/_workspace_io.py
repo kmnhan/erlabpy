@@ -9,6 +9,7 @@ import pathlib
 import sys
 import typing
 import uuid
+from collections.abc import Mapping
 
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
@@ -791,7 +792,10 @@ class _WorkspaceIOController:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
             if not tool.can_save_and_load():
                 return
-            ds = tool.to_dataset()
+            with tool._save_tool_data_reference_context(
+                self._manager._tool_graph.nodes
+            ):
+                ds = tool.to_dataset()
             ds.attrs["tool_title"] = _strip_workspace_modified_placeholder(
                 ds.attrs.get("tool_title", "")
             )
@@ -989,8 +993,32 @@ class _WorkspaceIOController:
         parent_target: int | str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int | str:
+        source_parent_data: xr.DataArray | None = None
+        if parent_target is not None:
+            source_parent_data = self._manager._node_for_target(
+                parent_target
+            ).current_source_data()
+
+        def _tool_data_reference_resolver(
+            payload: Mapping[str, typing.Any],
+        ) -> xr.DataArray | None:
+            node_uid = payload.get("node_uid")
+            if not isinstance(node_uid, str) or not node_uid:
+                return None
+            target: int | str = node_uid
+            if loaded_targets_by_uid is not None:
+                target = loaded_targets_by_uid.get(node_uid, node_uid)
+            try:
+                return self._manager._node_for_target(target).current_source_data()
+            except (KeyError, ValueError):
+                return None
+
         tool: erlab.interactive.utils.ToolWindow = (
-            erlab.interactive.utils.ToolWindow.from_dataset(ds)
+            erlab.interactive.utils.ToolWindow.from_dataset(
+                ds,
+                _source_parent_data=source_parent_data,
+                _tool_data_reference_resolver=_tool_data_reference_resolver,
+            )
         )
         if parent_target is None:
             if tool.manager_collection != "figures":

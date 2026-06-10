@@ -3193,6 +3193,55 @@ def test_manager_load_workspace_tool_dataset_rejects_root_tool(
         manager._load_workspace_tool_dataset(ds, parent_target=None)
 
 
+def test_manager_workspace_tool_data_reference_roundtrip(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 11.0, 12.0]},
+        name="source",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = _AddedTimeChildTool(data.copy(deep=False))
+        child.set_source_binding(provenance.full_data())
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        tree = manager._to_datatree()
+        try:
+            ds = typing.cast(
+                "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
+            ).to_dataset(inherit=False)
+            references = json.loads(
+                ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+            )
+            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
+            assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
+            with pytest.raises(ValueError, match="parent data is unavailable"):
+                erlab.interactive.utils.ToolWindow.from_dataset(ds)
+
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            assert manager._from_datatree(
+                tree, replace=True, mark_dirty=False, select=False
+            )
+        finally:
+            tree.close()
+
+        loaded_child = manager.get_childtool(child_uid)
+        assert isinstance(loaded_child, _AddedTimeChildTool)
+        xr.testing.assert_identical(loaded_child.tool_data, data)
+
+
 def test_manager_from_h5py_workspace_manifest_validation(
     tmp_path,
     manager_context: Callable[
