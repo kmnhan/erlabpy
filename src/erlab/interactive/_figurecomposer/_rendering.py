@@ -29,6 +29,8 @@ from erlab.interactive._figurecomposer._sources import (
 )
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from erlab.interactive._figurecomposer._state import (
         FigureAxesSelectionState,
         FigureGridSpecGridState,
@@ -327,7 +329,7 @@ def _render_into_figure(
 
 
 @contextlib.contextmanager
-def _rendered_output_figure(tool: FigureComposerTool) -> typing.Iterator[Figure]:
+def _rendered_output_figure(tool: FigureComposerTool) -> Iterator[Figure]:
     window = _valid_figure_window(tool)
     if window is not None:
         _render_into_figure(tool, window.figure, sync_visible=False)
@@ -357,22 +359,18 @@ def _render_preview(
         return
     tool._rendering = True
     try:
+        window = _valid_figure_window(tool)
         if show_window is None:
-            show_window = (
-                window := _valid_figure_window(tool)
-            ) is not None and window.isVisible()
+            show_window = window is not None and window.isVisible()
         if show_window:
             tool.canvas.flush_events()
             tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
             _render_into_figure(tool, tool.figure, sync_visible=True)
-        elif (window := _valid_figure_window(tool)) is not None:
+        elif window is not None and window.isVisible():
             _render_into_figure(tool, window.figure, sync_visible=False)
         else:
-            figure = _new_offscreen_figure(tool)
-            try:
-                _render_into_figure(tool, figure, sync_visible=False)
-            finally:
-                figure.clear()
+            tool._mark_preview_pixmap_stale()
+            return
         if show_window:
             tool.canvas.draw()
             tool.canvas.flush_events()

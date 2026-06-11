@@ -1968,7 +1968,8 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         source_data={"image": image},
     )
     qtbot.addWidget(placeholder_tool)
-    figurecomposer_rendering._render_preview(placeholder_tool, show_window=False)
+    placeholder_tool.show_figure_window(activate=False)
+    figurecomposer_rendering._render_preview(placeholder_tool, show_window=True)
     assert figurecomposer_plot_slices._plot_slices_color_limit_placeholders(
         placeholder_tool,
         placeholder_operation,
@@ -4151,7 +4152,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool.show_figure_window(activate=False)
 
     item = tool.operation_list.item(0)
     assert item is not None
@@ -4326,7 +4327,8 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
     assert "plt.style.use(['classic'])" in code
     assert "# Skipped unavailable stylesheets: 'missing-style'" in code
     assert tool.preview_pixmap is None
-    assert tool.refresh_preview_pixmap() is not None
+    assert tool.refresh_preview_pixmap() is None
+    assert tool.refresh_preview_pixmap(allow_offscreen=True) is not None
     assert tool.preview_pixmap is not None
     namespace = {"data": data}
     with mpl.rc_context():
@@ -4608,7 +4610,7 @@ def test_figure_composer_preview_suppresses_collapsed_layout_warning(
     monkeypatch.setattr(figurecomposer_widgets.FigureCanvas, "draw", draw_with_warning)
 
     assert tool.preview_pixmap is None
-    assert tool.refresh_preview_pixmap() is not None
+    assert tool.refresh_preview_pixmap() is None
     assert not any(
         "constrained_layout not applied" in str(warning.message) for warning in recwarn
     )
@@ -6163,7 +6165,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         ),
     )
     qtbot.addWidget(tool)
-    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool.show_figure_window(activate=False)
     tool._update_operation_editor()
 
     assert tool.findChildren(FigureCanvasQTAgg) == []
@@ -6572,13 +6574,13 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert not any(
         "constrained_layout not applied" in str(warning.message) for warning in recwarn
     )
-    assert tool._figure_window is None
+    assert tool._figure_window is not None
     preview = tool.refresh_preview_pixmap()
     assert preview is not None
     assert not preview.isNull()
     assert preview.width() > 0
     assert preview.height() > 0
-    assert tool._figure_window is None
+    assert tool._figure_window is not None
 
     setup_before = tool.tool_status.setup.model_copy()
     code_before = tool.generated_code()
@@ -6605,7 +6607,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     )
     tool.export_figure()
     assert exported["figsize"] == setup_before.figsize
-    assert tool._figure_window is None
+    assert tool._figure_window is not None
     monkeypatch.setattr(Figure, "savefig", original_savefig)
 
     show_activations: list[bool] = []
@@ -6618,7 +6620,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
 
     monkeypatch.setattr(figure_window, "show_for_setup", record_show_for_setup)
 
+    tool._hide_figure_window()
     tool.show()
+    qtbot.wait_until(lambda: bool(show_activations), timeout=5000)
     qtbot.wait_until(lambda: tool.figure_window.isVisible(), timeout=5000)
     assert show_activations[-1] is False
     activation_count = len(show_activations)
@@ -8700,9 +8704,8 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(grid_tool)
-    grid_axes = figurecomposer_method._live_layout_axes(
-        grid_tool, render_if_missing=True
-    )
+    grid_tool.show_figure_window(activate=False)
+    grid_axes = figurecomposer_method._live_layout_axes(grid_tool)
     assert isinstance(grid_axes, dict)
     assert set(grid_axes) == {"axis-a"}
     assert (
@@ -11898,7 +11901,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         ),
     )
     qtbot.addWidget(tool)
-    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool.show_figure_window(activate=False)
     tool._update_operation_editor()
     tool._select_step_section("colors")
 
@@ -13595,7 +13598,7 @@ def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
     with manager_context() as manager:
         figure_tool = FigureComposerTool(data)
         manager.add_figuretool(figure_tool, show=False)
-        assert figure_tool.refresh_preview_pixmap() is not None
+        assert figure_tool.refresh_preview_pixmap(allow_offscreen=True) is not None
 
         def fail_preview_update(*_args, **_kwargs) -> None:
             pytest.fail("gallery thumbnail updates must not render the recipe")
