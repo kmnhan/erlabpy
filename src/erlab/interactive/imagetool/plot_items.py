@@ -641,7 +641,7 @@ class ItoolPlotItem(pg.PlotItem):
         if self._plot_with_matplotlib_action is not None:
             return
         insert_before = self._new_window_separator or self._new_window_action
-        plot_action = QtGui.QAction("Plot with matplotlib", self.vb.menu)
+        plot_action = QtGui.QAction("New Figure", self.vb.menu)
         plot_action.setObjectName("itool_plot_with_matplotlib_action")
         plot_action.triggered.connect(self.plot_with_matplotlib)
         append_action = QtGui.QAction("Append to Figure", self.vb.menu)
