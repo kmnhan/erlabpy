@@ -4199,6 +4199,34 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
     namespace["plt"].close(namespace["fig"])
 
 
+def test_figure_composer_preview_uses_live_canvas_without_rerender(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    live_figure = tool.figure
+    live_canvas = tool.canvas
+
+    def fail_render(*_args, **_kwargs) -> None:
+        pytest.fail("canvas preview refresh should not rerender the recipe")
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_into_figure", fail_render)
+
+    preview = tool.refresh_preview_pixmap()
+
+    assert preview is not None
+    assert not preview.isNull()
+    assert tool.figure is live_figure
+    assert tool.canvas is live_canvas
+
+
 def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
     qtbot,
     monkeypatch,
@@ -4399,13 +4427,14 @@ def test_figure_composer_preview_suppresses_collapsed_layout_warning(
     )
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    original_draw = FigureCanvasAgg.draw
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    original_draw = figurecomposer_widgets.FigureCanvas.draw
 
     def draw_with_warning(self, *args, **kwargs):
         warnings.warn(_COLLAPSED_LAYOUT_WARNING, UserWarning, stacklevel=2)
         return original_draw(self, *args, **kwargs)
 
-    monkeypatch.setattr(FigureCanvasAgg, "draw", draw_with_warning)
+    monkeypatch.setattr(figurecomposer_widgets.FigureCanvas, "draw", draw_with_warning)
 
     assert tool.preview_pixmap is None
     assert tool.refresh_preview_pixmap() is not None
@@ -13338,6 +13367,82 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         assert item is not None
         assert item.data(QtCore.Qt.ItemDataRole.UserRole) == restored_uid
         assert not item.icon().isNull()
+
+
+def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_tool = FigureComposerTool(data)
+        manager.add_figuretool(figure_tool, show=False)
+        assert figure_tool.refresh_preview_pixmap() is not None
+
+        def fail_preview_update(*_args, **_kwargs) -> None:
+            pytest.fail("gallery thumbnail updates must not render the recipe")
+
+        monkeypatch.setattr(
+            figure_tool, "request_preview_pixmap_update", fail_preview_update
+        )
+        monkeypatch.setattr(figure_tool, "refresh_preview_pixmap", fail_preview_update)
+
+        manager.figure_view_gallery_button.click()
+        old_grid_size = manager.figure_list.gridSize()
+        size_name = (
+            "large"
+            if manager._figure_gallery_thumbnail_size_name != "large"
+            else "small"
+        )
+        size_index = manager.figure_gallery_size_combo.findData(size_name)
+        assert size_index >= 0
+        manager.figure_gallery_size_combo.setCurrentIndex(size_index)
+
+        assert manager.figure_list.gridSize() != old_grid_size
+
+
+def test_manager_figures_gallery_updates_one_icon_from_preview_signal(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_tool = FigureComposerTool(data)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        manager.figure_view_gallery_button.click()
+        item = manager._figure_list_item_for_uid(figure_uid)
+        assert item is not None
+        old_cache_key = item.icon().cacheKey()
+
+        pixmap = QtGui.QPixmap(32, 24)
+        pixmap.fill(QtGui.QColor("red"))
+        figure_tool._preview_pixmap_cache = pixmap
+        figure_tool._preview_pixmap_generation += 1
+        figure_tool._preview_thumbnail_cache.clear()
+        figure_tool._preview_pixmap_stale = False
+
+        def fail_sync(*_args, **_kwargs) -> None:
+            pytest.fail("preview updates should update the changed gallery item only")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_sync_figures_ui", fail_sync)
+            figure_tool.sigInfoChanged.emit()
+
+        assert item.icon().cacheKey() != old_cache_key
 
 
 def test_manager_figure_selection_defers_preview_generation(

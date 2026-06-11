@@ -14,7 +14,6 @@ import weakref
 # isort: off
 from qtpy import QtCore, QtGui, QtWidgets
 
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 # isort: on
 
@@ -177,6 +176,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
+        self._preview_pixmap_generation = 0
+        self._preview_thumbnail_cache: dict[
+            tuple[int, int], tuple[int, QtGui.QPixmap]
+        ] = {}
         self._preview_pixmap_stale = True
         self._preview_pixmap_update_pending = False
         self._preview_pixmap_update_generation = 0
@@ -476,6 +479,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = False
         self._preview_pixmap_update_generation += 1
         self._preview_pixmap_update_pending = False
+        self._clear_preview_pixmap_cache(stale=False)
         self._remove_operation_list_event_filter()
         self._close_figure_window()
         if event is not None:
@@ -3752,6 +3756,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data = dict(source_data)
+        self._mark_preview_pixmap_stale()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
         if not uid_map:
@@ -3867,11 +3872,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return self._preview_pixmap_cache
 
     @property
+    def preview_pixmap_generation(self) -> int:
+        return self._preview_pixmap_generation
+
+    @property
     def preview_pixmap_stale(self) -> bool:
         return self._preview_pixmap_stale
 
+    def _clear_preview_pixmap_cache(self, *, stale: bool) -> None:
+        self._preview_pixmap_cache = None
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = stale
+
     def _mark_preview_pixmap_stale(self) -> None:
         self._preview_pixmap_stale = True
+        self._preview_thumbnail_cache.clear()
 
     def request_preview_pixmap_update(
         self, *, delay_ms: int = _PREVIEW_PIXMAP_UPDATE_DELAY_MS
@@ -3879,8 +3895,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._closing:
             return
         if not self._recipe.operations:
-            self._preview_pixmap_cache = None
-            self._preview_pixmap_stale = False
+            self._clear_preview_pixmap_cache(stale=False)
             return
         if self._preview_pixmap_update_pending or not self._preview_pixmap_stale:
             return
@@ -3903,11 +3918,35 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.refresh_preview_pixmap()
         self.sigInfoChanged.emit()
 
-    def refresh_preview_pixmap(self) -> QtGui.QPixmap | None:
-        if not self._recipe.operations:
-            self._preview_pixmap_cache = None
-            self._preview_pixmap_stale = False
+    def _canvas_preview_pixmap(self) -> QtGui.QPixmap | None:
+        window = self._figure_window
+        if (
+            window is None
+            or not erlab.interactive.utils.qt_is_valid(window)
+            or not erlab.interactive.utils.qt_is_valid(window.canvas)
+        ):
             return None
+
+        canvas = window.canvas
+        try:
+            with _figure_style_context():
+                canvas.draw()
+            width, height = canvas.get_width_height(physical=True)
+            if width <= 0 or height <= 0:
+                return None
+            image = QtGui.QImage(
+                canvas.buffer_rgba(),
+                width,
+                height,
+                QtGui.QImage.Format.Format_RGBA8888,
+            )
+            return QtGui.QPixmap.fromImage(image.copy())
+        except Exception:
+            return None
+
+    def _fallback_preview_pixmap(self) -> QtGui.QPixmap | None:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
         with _figure_style_context():
             figure = Figure(
                 figsize=self._recipe.setup.figsize,
@@ -3922,23 +3961,50 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         canvas.draw()
                     width, height = canvas.get_width_height()
                 except Exception:
-                    preview = None
-                else:
-                    if width <= 0 or height <= 0:
-                        preview = None
-                    else:
-                        image = QtGui.QImage(
-                            canvas.buffer_rgba(),
-                            width,
-                            height,
-                            QtGui.QImage.Format.Format_RGBA8888,
-                        )
-                        preview = QtGui.QPixmap.fromImage(image.copy())
-                self._preview_pixmap_cache = preview
-                self._preview_pixmap_stale = False
-                return preview
+                    return None
+                if width <= 0 or height <= 0:
+                    return None
+                image = QtGui.QImage(
+                    canvas.buffer_rgba(),
+                    width,
+                    height,
+                    QtGui.QImage.Format.Format_RGBA8888,
+                )
+                return QtGui.QPixmap.fromImage(image.copy())
             finally:
                 figure.clear()
+
+    def refresh_preview_pixmap(self) -> QtGui.QPixmap | None:
+        if not self._recipe.operations:
+            self._clear_preview_pixmap_cache(stale=False)
+            return None
+        preview = self._canvas_preview_pixmap()
+        if preview is None:
+            preview = self._fallback_preview_pixmap()
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = False
+        return preview
+
+    def preview_thumbnail_pixmap(self, size: QtCore.QSize) -> QtGui.QPixmap | None:
+        preview = self._preview_pixmap_cache
+        if preview is None or preview.isNull() or not size.isValid() or size.isEmpty():
+            return None
+        cache_key = (size.width(), size.height())
+        cached = self._preview_thumbnail_cache.get(cache_key)
+        if cached is not None and cached[0] == self._preview_pixmap_generation:
+            return QtGui.QPixmap(cached[1])
+        thumbnail = preview.scaled(
+            size,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_thumbnail_cache[cache_key] = (
+            self._preview_pixmap_generation,
+            thumbnail,
+        )
+        return QtGui.QPixmap(thumbnail)
 
     def source_states(self) -> tuple[FigureSourceState, ...]:
         return self._recipe.sources

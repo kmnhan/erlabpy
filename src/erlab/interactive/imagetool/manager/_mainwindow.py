@@ -1458,14 +1458,19 @@ class ImageToolManager(_ImageToolManagerBase):
         if not self._is_figure_uid(uid):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
         node = self._child_node(uid)
-        preview_pixmap = (
-            getattr(node.tool_window, "preview_pixmap", None)
-            if node.tool_window is not None
-            else None
-        )
-        if preview_pixmap is None or preview_pixmap.isNull():
+        tool_window = node.tool_window
+        if tool_window is None:
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        return QtGui.QIcon(self._figure_gallery_thumbnail_pixmap(preview_pixmap))
+        if getattr(tool_window, "preview_pixmap_stale", False):
+            request_preview = getattr(
+                tool_window, "request_preview_pixmap_update", None
+            )
+            if callable(request_preview):
+                request_preview()
+        thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
+        if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
+            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
+        return QtGui.QIcon(thumbnail_pixmap)
 
     def _figure_gallery_placeholder_pixmap(self) -> QtGui.QPixmap:
         thumbnail_size = self._figure_gallery_thumbnail_size()
@@ -1481,17 +1486,33 @@ class ImageToolManager(_ImageToolManagerBase):
             painter.end()
         return pixmap
 
+    def _figure_gallery_tool_thumbnail_pixmap(
+        self, tool_window: object
+    ) -> QtGui.QPixmap | None:
+        thumbnail_size = self._figure_gallery_thumbnail_size()
+        thumbnail_provider = getattr(tool_window, "preview_thumbnail_pixmap", None)
+        if callable(thumbnail_provider):
+            thumbnail = thumbnail_provider(thumbnail_size)
+            if thumbnail is not None and not thumbnail.isNull():
+                return self._figure_gallery_thumbnail_pixmap(thumbnail)
+        preview_pixmap = getattr(tool_window, "preview_pixmap", None)
+        if preview_pixmap is None or preview_pixmap.isNull():
+            return None
+        return self._figure_gallery_thumbnail_pixmap(preview_pixmap)
+
     def _figure_gallery_thumbnail_pixmap(
         self, source_pixmap: QtGui.QPixmap
     ) -> QtGui.QPixmap:
         thumbnail_size = self._figure_gallery_thumbnail_size()
         canvas = QtGui.QPixmap(thumbnail_size)
         canvas.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
-        scaled = source_pixmap.scaled(
-            thumbnail_size,
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.SmoothTransformation,
-        )
+        scaled = source_pixmap
+        if source_pixmap.size() != thumbnail_size:
+            scaled = source_pixmap.scaled(
+                thumbnail_size,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
         painter = QtGui.QPainter(canvas)
         try:
             x_pos = (thumbnail_size.width() - scaled.width()) // 2
@@ -1554,6 +1575,31 @@ class ImageToolManager(_ImageToolManagerBase):
 
         if select_uid is not None:
             self.left_tabs.setCurrentWidget(self.figure_tab)
+
+    def _figure_list_item_for_uid(self, uid: str) -> QtWidgets.QListWidgetItem | None:
+        if not hasattr(self, "figure_list"):
+            return None
+        for row in range(self.figure_list.count()):
+            item = self.figure_list.item(row)
+            if item is not None and self._figure_uid_from_item(item) == uid:
+                return item
+        return None
+
+    def _update_figure_gallery_icon(self, uid: str) -> None:
+        if (
+            not hasattr(self, "figure_list")
+            or self._refreshing_figure_list
+            or self._figure_view_mode != _FIGURE_VIEW_MODE_GALLERY
+            or not self._is_figure_uid(uid)
+        ):
+            return
+        item = self._figure_list_item_for_uid(uid)
+        if item is not None:
+            self.figure_list.blockSignals(True)
+            try:
+                item.setIcon(self._figure_gallery_icon(uid))
+            finally:
+                self.figure_list.blockSignals(False)
 
     def _figure_uid_from_item(
         self, item: QtWidgets.QListWidgetItem | None

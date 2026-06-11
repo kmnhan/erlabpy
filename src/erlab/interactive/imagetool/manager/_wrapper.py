@@ -1246,6 +1246,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_tool_info_changed(self) -> None:
         self.manager._mark_tool_info_dirty(self.uid)
+        self.manager._update_figure_gallery_icon(self.uid)
         self.manager._schedule_tool_metadata_update(self.uid)
 
     @QtCore.Slot()
