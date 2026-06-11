@@ -13,7 +13,10 @@ import xarray as xr
 import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._axes import _axes_expression_value
-from erlab.interactive._figurecomposer._defaults import _figure_style_context
+from erlab.interactive._figurecomposer._defaults import (
+    _apply_figure_dpi,
+    _figure_style_context,
+)
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_region_valid,
@@ -91,6 +94,10 @@ def _make_axes(
     *,
     sync_visible: bool = True,
 ) -> np.ndarray | dict[str, matplotlib.axes.Axes]:
+    setup = tool._recipe.setup
+    if figure is None:
+        figure = tool.figure
+    _apply_figure_dpi(figure, setup.dpi)
     if (
         sync_visible
         and tool._figure_window is not None
@@ -98,20 +105,12 @@ def _make_axes(
         and tool._figure_window.isVisible()
     ):
         tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
-    if figure is None:
-        figure = tool.figure
+        setup = tool._recipe.setup
+        _apply_figure_dpi(figure, setup.dpi)
     figure.clear()
-    setup = tool._recipe.setup
     figure.set_facecolor(mpl.rcParams["figure.facecolor"])
     figure.set_edgecolor(mpl.rcParams["figure.edgecolor"])
     figure.set_size_inches(setup.figsize, forward=False)
-    figure_any = typing.cast("typing.Any", figure)
-    if getattr(figure_any, "_original_dpi", setup.dpi) != setup.dpi:
-        figure_any._original_dpi = setup.dpi
-        figure_any._set_dpi(
-            setup.dpi * getattr(figure_any.canvas, "device_pixel_ratio", 1),
-            forward=False,
-        )
     with contextlib.suppress(ValueError, NotImplementedError):
         _set_creation_layout_engine(figure, _setup_layout_value(tool))
     if setup.layout_mode == "gridspec":

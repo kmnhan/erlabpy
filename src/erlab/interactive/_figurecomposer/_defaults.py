@@ -14,6 +14,8 @@ import erlab.interactive._stylesheets
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from matplotlib.figure import Figure
+
 _MM_PER_INCH = 25.4
 _LAYOUT_COLLAPSED_WARNING = (
     r"constrained_layout not applied because axes sizes collapsed to zero\."
@@ -62,6 +64,17 @@ def _default_figsize() -> tuple[float, float]:
 
 def _default_figure_dpi() -> float:
     return float(_styled_rcparams_value("figure.dpi"))
+
+
+def _apply_figure_dpi(figure: Figure, dpi: float) -> None:
+    figure_any = typing.cast("typing.Any", figure)
+    if getattr(figure_any, "_original_dpi", dpi) == dpi:
+        return
+    figure_any._original_dpi = dpi
+    figure_any._set_dpi(
+        dpi * getattr(figure_any.canvas, "device_pixel_ratio", 1),
+        forward=False,
+    )
 
 
 def _default_layout() -> typing.Literal["constrained", "tight"] | None:

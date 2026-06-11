@@ -6070,7 +6070,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert editor_tabs.currentWidget() is tool.recipe_page
     assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
     layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
-    assert layout_grid.rowCount() == 9
+    assert layout_grid.rowCount() == 10
     assert layout_grid.columnCount() == 5
     assert (
         tool.findChild(QtWidgets.QWidget, "figureComposerLayoutModeControls")
@@ -6079,6 +6079,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QWidget, "figureComposerGridControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeMmControls") is not None
+    assert tool.findChild(QtWidgets.QWidget, "figureComposerDpiControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
     assert tool.gridspec_editor_widget.isHidden()
@@ -6097,13 +6098,13 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     layout_label = tool.findChild(QtWidgets.QLabel, "figureComposerLayoutControls")
     assert layout_label is not None
     assert layout_grid.getItemPosition(layout_grid.indexOf(layout_label)) == (
-        5,
+        6,
         0,
         1,
         2,
     )
     assert layout_grid.getItemPosition(layout_grid.indexOf(tool.layout_combo)) == (
-        5,
+        6,
         2,
         1,
         3,
@@ -6226,6 +6227,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.height_spin,
             tool.width_mm_spin,
             tool.height_mm_spin,
+            tool.dpi_spin,
             tool.layout_combo,
             tool.sharex_combo,
             tool.sharey_combo,
@@ -6263,6 +6265,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "fraction": 0.05,
         "pad": 0.02,
     }
+    tool.dpi_spin.setValue(180.0)
+    tool._setup_controls_changed()
+    assert tool.tool_status.setup.dpi == 180.0
     tool._update_operation_editor()
     annotate_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAnnotateKwEdit"

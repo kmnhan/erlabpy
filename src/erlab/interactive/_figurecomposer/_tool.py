@@ -783,6 +783,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.height_mm_spin.setRange(0.25 * _MM_PER_INCH, 100.0 * _MM_PER_INCH)
         self.height_mm_spin.setDecimals(2)
         self.height_mm_spin.setSingleStep(1.0)
+        self.dpi_spin = QtWidgets.QDoubleSpinBox(layout_page)
+        self.dpi_spin.setObjectName("figureComposerDpiSpin")
+        self.dpi_spin.setRange(1.0, 10000.0)
+        self.dpi_spin.setDecimals(1)
+        self.dpi_spin.setSingleStep(10.0)
         self.layout_combo = QtWidgets.QComboBox(layout_page)
         self.layout_combo.addItems(
             ["default", "constrained", "compressed", "tight", "none"]
@@ -832,6 +837,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 widget.setToolTip(tooltip)
                 setup_layout.addWidget(label, row, column)
                 setup_layout.addWidget(widget, row, column + 1)
+
+        def add_grid_single_row(
+            row: int,
+            row_label_text: str,
+            row_object_name: str,
+            row_tooltip: str,
+            field_label_text: str,
+            widget: QtWidgets.QWidget,
+            field_tooltip: str,
+        ) -> None:
+            row_label = QtWidgets.QLabel(row_label_text, layout_page)
+            row_label.setObjectName(row_object_name)
+            row_label.setToolTip(row_tooltip)
+            row_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
+            field_label = QtWidgets.QLabel(field_label_text, layout_page)
+            field_label.setBuddy(widget)
+            field_label.setToolTip(field_tooltip)
+            widget.setToolTip(field_tooltip)
+            setup_layout.addWidget(row_label, row, 0)
+            setup_layout.addWidget(field_label, row, 1)
+            setup_layout.addWidget(widget, row, 2, 1, 3)
 
         mode_label = QtWidgets.QLabel("Layout mode", layout_page)
         mode_label.setObjectName("figureComposerLayoutModeControls")
@@ -1019,6 +1048,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.height_mm_spin,
             "Figure height in millimeters. Converted to inches for Matplotlib.",
         )
+        add_grid_single_row(
+            5,
+            "Resolution",
+            "figureComposerDpiControls",
+            "Figure resolution passed to Matplotlib.",
+            "DPI",
+            self.dpi_spin,
+            "Figure dots per inch passed to Matplotlib and generated code.",
+        )
         layout_row_label = QtWidgets.QLabel("Layout engine", layout_page)
         layout_row_label.setObjectName("figureComposerLayoutControls")
         layout_row_label.setToolTip(
@@ -1033,10 +1071,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Creation-time Matplotlib layout engine.\n"
             "Default omits the layout argument; none passes layout='none'.",
         )
-        setup_layout.addWidget(layout_row_label, 5, 0, 1, 2)
-        setup_layout.addWidget(self.layout_combo, 5, 2, 1, 3)
+        setup_layout.addWidget(layout_row_label, 6, 0, 1, 2)
+        setup_layout.addWidget(self.layout_combo, 6, 2, 1, 3)
         add_grid_pair_row(
-            6,
+            7,
             "Share axes",
             "figureComposerShareControls",
             "Matplotlib shared-axis settings passed to plt.subplots.",
@@ -1048,7 +1086,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Matplotlib sharey setting passed to plt.subplots.",
         )
         add_grid_pair_row(
-            7,
+            8,
             "Ratios",
             "figureComposerRatioControls",
             "Optional width and height ratios for subplots or active GridSpec grid.",
@@ -1059,7 +1097,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.height_ratios_edit,
             "Optional height ratios, one positive number per row.",
         )
-        setup_layout.setRowStretch(8, 1)
+        setup_layout.setRowStretch(9, 1)
 
         layout_index = self.editor_tabs.addTab(layout_page, "Layout")
         self.editor_tabs.setTabToolTip(
@@ -1077,6 +1115,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.ncols_spin,
             self.width_spin,
             self.height_spin,
+            self.dpi_spin,
         ):
             typing.cast("QtWidgets.QAbstractSpinBox", widget).editingFinished.connect(
                 self._setup_controls_changed
@@ -1113,6 +1152,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._sync_active_grid_controls(setup)
             self.width_spin.setValue(setup.figsize[0])
             self.height_spin.setValue(setup.figsize[1])
+            self.dpi_spin.setValue(setup.dpi)
             self._sync_size_mm_controls(setup.figsize)
             self._set_combo_value(self.layout_combo, setup.layout or "default")
             self._set_combo_value(self.sharex_combo, str(setup.sharex))
@@ -2100,7 +2140,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 setup = self._recipe.setup.model_copy(
                     update={
                         "figsize": (self.width_spin.value(), self.height_spin.value()),
-                        "dpi": self._recipe.setup.dpi,
+                        "dpi": self.dpi_spin.value(),
                         "layout": self._layout_combo_value(),
                     }
                 )
@@ -2126,7 +2166,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     nrows=self.nrows_spin.value(),
                     ncols=self.ncols_spin.value(),
                     figsize=(self.width_spin.value(), self.height_spin.value()),
-                    dpi=self._recipe.setup.dpi,
+                    dpi=self.dpi_spin.value(),
                     layout=self._layout_combo_value(),
                     sharex=self._combo_bool_or_text(self.sharex_combo),
                     sharey=self._combo_bool_or_text(self.sharey_combo),

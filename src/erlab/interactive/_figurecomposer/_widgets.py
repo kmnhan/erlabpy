@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer._axes import _all_axes_for_shape
 from erlab.interactive._figurecomposer._defaults import (
+    _apply_figure_dpi,
     _figure_draw_context,
     _figure_style_context,
 )
@@ -912,6 +913,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         canvas_height = max(1, round(setup.figsize[1] * setup.dpi))
         target_canvas_size = QtCore.QSize(canvas_width, canvas_height)
         self.figure.set_size_inches(setup.figsize, forward=False)
+        _apply_figure_dpi(self.figure, setup.dpi)
         if (
             self.isVisible()
             and self.canvas.size().isValid()
