@@ -1461,6 +1461,12 @@ class ItoolPlotItem(pg.PlotItem):
             for cursor in range(self.slicer_area.n_cursors)
         ]
 
+        return self._qsel_kwargs_from_cursor_kwargs(all_qsel_kws)
+
+    def _qsel_kwargs_from_cursor_kwargs(
+        self, all_qsel_kws: list[dict[Hashable, float]]
+    ) -> tuple[dict[Hashable, float | list[float]], Hashable | None]:
+        """Merge per-cursor ``qsel`` kwargs into scalar or per-cursor values."""
         all_keys: set[Hashable] = set().union(*(d.keys() for d in all_qsel_kws))
         result: dict[Hashable, float | list[float]] = {}
         varying: list[Hashable] = []
@@ -1486,6 +1492,42 @@ class ItoolPlotItem(pg.PlotItem):
         result = {k: result[k] for k in ordered_keys}
 
         return result, variable_dim_name
+
+    def _public_nonuniform_qsel_kwargs_multicursor(
+        self, non_display_axes: tuple[int, ...]
+    ) -> tuple[dict[Hashable, float | list[float]], Hashable | None]:
+        """Generate public-coordinate ``qsel`` kwargs for non-uniform hidden axes."""
+        public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area._tool_source_parent_data()
+        )
+        all_qsel_kws: list[dict[Hashable, float]] = []
+
+        for cursor in range(self.slicer_area.n_cursors):
+            cursor_qsel_kws: dict[Hashable, float] = {}
+            binned = self.array_slicer.get_binned(cursor)
+            for axis in non_display_axes:
+                if axis in self.array_slicer._nonuniform_axes:
+                    dim_name = self._selection_dim_name(axis)
+                    indexer = self.array_slicer._bin_slice(
+                        cursor, axis, int_if_one=True
+                    )
+                    binned_dims = (dim_name,) if binned[axis] else ()
+                    cursor_qsel_kws.update(
+                        erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
+                            public_data, {dim_name: indexer}, binned_dims
+                        )
+                    )
+                    continue
+
+                disp_for_axis = tuple(
+                    i for i in range(self.slicer_area.data.ndim) if i != axis
+                )
+                cursor_qsel_kws.update(
+                    self.array_slicer.qsel_args(cursor, disp_for_axis)
+                )
+            all_qsel_kws.append(cursor_qsel_kws)
+
+        return self._qsel_kwargs_from_cursor_kwargs(all_qsel_kws)
 
     def _multicursor_selection_plan(
         self,
@@ -1529,6 +1571,13 @@ class ItoolPlotItem(pg.PlotItem):
             represented by a single varying dimension.
         """
         if has_nonuniform_non_display_axes:
+            with contextlib.suppress(ValueError):
+                qsel_kwargs, variable_dim = (
+                    self._public_nonuniform_qsel_kwargs_multicursor(non_display_axes)
+                )
+                selected_dims = set(qsel_kwargs)
+                return qsel_kwargs, None, variable_dim, selected_dims
+
             varying: list[Hashable] = []
             for axis in non_display_axes:
                 dim_name = self._selection_dim_name(axis)

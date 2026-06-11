@@ -723,6 +723,32 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
     assert "sample_temp_idx" not in tool.generated_code()
 
 
+def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> None:
+    public = xr.DataArray(
+        np.arange(24.0).reshape(4, 2, 3),
+        dims=("sample_temp", "alpha", "eV"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+        },
+        name="map",
+    )
+    tool = erlab.interactive.itool(public, manager=False, execute=False)
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    tool.slicer_area.set_value(axis=0, value=30.0, cursor=0)
+    operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
+
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.map_selections == ()
+    assert operation.slice_dim == "sample_temp"
+    assert operation.slice_values == (30.0,)
+    assert operation.slice_kwargs == {}
+    assert "sample_temp_idx" not in operation.model_dump_json()
+
+
 def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     public = xr.DataArray(
         np.arange(24.0).reshape(2, 3, 4),
