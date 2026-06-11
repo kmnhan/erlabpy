@@ -4345,7 +4345,7 @@ def test_figure_composer_preview_uses_live_canvas_without_rerender(
     )
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    figurecomposer_rendering._render_preview(tool, show_window=False)
+    tool.show_figure_window(activate=False)
     live_figure = tool.figure
     live_canvas = tool.canvas
 
@@ -4360,6 +4360,22 @@ def test_figure_composer_preview_uses_live_canvas_without_rerender(
     assert not preview.isNull()
     assert tool.figure is live_figure
     assert tool.canvas is live_canvas
+
+
+def test_figure_composer_hidden_preview_does_not_create_window(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+
+    assert tool._figure_window is None
+    assert tool._operation_render_errors == {}
 
 
 def test_figure_composer_preview_update_is_cancelled_on_close(qtbot) -> None:
@@ -6556,29 +6572,13 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert not any(
         "constrained_layout not applied" in str(warning.message) for warning in recwarn
     )
-    assert not tool.figure_window.isVisible()
-    assert len(tool.figure.axes) == 2
-    assert tool.figure_window.parent() is None
-    assert tool.figure_window.canvas.figure is tool.figure
-    live_figure = tool.figure
-    live_canvas = tool.figure_window.canvas
-    live_axes_count = len(live_figure.axes)
+    assert tool._figure_window is None
     preview = tool.refresh_preview_pixmap()
     assert preview is not None
     assert not preview.isNull()
     assert preview.width() > 0
     assert preview.height() > 0
-    assert tool.figure is live_figure
-    assert tool.figure_window.canvas is live_canvas
-    assert len(tool.figure.axes) == live_axes_count
-    show_activations: list[bool] = []
-    original_show_for_setup = tool.figure_window.show_for_setup
-
-    def record_show_for_setup(*args, activate: bool) -> None:
-        show_activations.append(activate)
-        original_show_for_setup(*args, activate=activate)
-
-    monkeypatch.setattr(tool.figure_window, "show_for_setup", record_show_for_setup)
+    assert tool._figure_window is None
 
     setup_before = tool.tool_status.setup.model_copy()
     code_before = tool.generated_code()
@@ -6587,21 +6587,36 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.generated_code() == code_before
 
     exported: dict[str, tuple[float, float]] = {}
-    tool.figure.set_size_inches((12.0, 9.0), forward=False)
     monkeypatch.setattr(
         QtWidgets.QFileDialog,
         "getSaveFileName",
         lambda *args, **kwargs: ("figure.png", ""),
     )
+
+    original_savefig = Figure.savefig
+
+    def record_savefig(fig: Figure, filename: str, **kwargs: object) -> None:
+        exported["figsize"] = tuple(float(value) for value in fig.get_size_inches())
+
     monkeypatch.setattr(
-        tool.figure,
+        Figure,
         "savefig",
-        lambda filename, **kwargs: exported.setdefault(
-            "figsize", tuple(tool.figure.get_size_inches())
-        ),
+        record_savefig,
     )
     tool.export_figure()
     assert exported["figsize"] == setup_before.figsize
+    assert tool._figure_window is None
+    monkeypatch.setattr(Figure, "savefig", original_savefig)
+
+    show_activations: list[bool] = []
+    figure_window = tool.figure_window
+    original_show_for_setup = figure_window.show_for_setup
+
+    def record_show_for_setup(*args, activate: bool) -> None:
+        show_activations.append(activate)
+        original_show_for_setup(*args, activate=activate)
+
+    monkeypatch.setattr(figure_window, "show_for_setup", record_show_for_setup)
 
     tool.show()
     qtbot.wait_until(lambda: tool.figure_window.isVisible(), timeout=5000)
@@ -9459,11 +9474,15 @@ def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) ->
 def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_profile_source("data"))
     qtbot.addWidget(tool)
-    figurecomposer_rendering._render_preview(tool, show_window=False)
+    layout_axes = figurecomposer_rendering._live_layout_axes(
+        tool, render_if_missing=True
+    )
+    assert layout_axes is not None
 
-    axis = tool.figure.axes[0]
+    axis = figurecomposer_rendering._iter_axes(layout_axes)[0]
     expected_xlim = tuple(float(value) for value in axis.get_xlim())
     expected_ylim = tuple(float(value) for value in axis.get_ylim())
+    assert tool._figure_window is None
 
     tool._add_operation("method:axes")
     figurecomposer_method._update_current_method_name(tool, "set_xlim")

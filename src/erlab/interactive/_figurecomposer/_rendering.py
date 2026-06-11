@@ -9,6 +9,7 @@ import matplotlib as mpl
 import matplotlib.axes
 import numpy as np
 import xarray as xr
+from matplotlib.figure import Figure
 
 import erlab
 import erlab.plotting as eplt
@@ -28,8 +29,6 @@ from erlab.interactive._figurecomposer._sources import (
 )
 
 if typing.TYPE_CHECKING:
-    from matplotlib.figure import Figure
-
     from erlab.interactive._figurecomposer._state import (
         FigureAxesSelectionState,
         FigureGridSpecGridState,
@@ -178,41 +177,61 @@ def _make_gridspec_axes(
     return axes_by_id
 
 
+def _new_offscreen_figure(tool: FigureComposerTool) -> Figure:
+    setup = tool._recipe.setup
+    with _figure_style_context():
+        return Figure(
+            figsize=setup.figsize,
+            dpi=setup.dpi,
+            layout=typing.cast("typing.Any", setup.layout),
+        )
+
+
+def _valid_figure_window(tool: FigureComposerTool) -> typing.Any | None:
+    window = tool._figure_window
+    if window is not None and erlab.interactive.utils.qt_is_valid(window):
+        return window
+    return None
+
+
+def _layout_axes_from_figure(
+    tool: FigureComposerTool, figure: Figure
+) -> np.ndarray | dict[str, matplotlib.axes.Axes] | None:
+    setup = tool._recipe.setup
+    if setup.layout_mode == "gridspec":
+        axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+        axes = figure.axes[: len(axes_ids)]
+        if len(axes) < len(axes_ids):
+            return None
+        return dict(zip(axes_ids, axes, strict=True))
+
+    count = setup.nrows * setup.ncols
+    axes = figure.axes[:count]
+    if len(axes) < count:
+        return None
+    return np.asarray(axes, dtype=object).reshape(setup.nrows, setup.ncols)
+
+
 def _live_layout_axes(
     tool: FigureComposerTool,
     *,
     render_if_missing: bool = False,
 ) -> np.ndarray | dict[str, matplotlib.axes.Axes] | None:
     """Return the current live axes without rendering unless explicitly requested."""
-    window = tool._figure_window
-    if window is None or not erlab.interactive.utils.qt_is_valid(window):
+    window = _valid_figure_window(tool)
+    if window is None:
         if not render_if_missing:
             return None
-        _render_preview(tool, show_window=False)
-        window = tool._figure_window
-        if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return None
+        figure = _new_offscreen_figure(tool)
+        _render_into_figure(tool, figure, sync_visible=False)
+        return _layout_axes_from_figure(tool, figure)
 
     figure = window.figure
-    setup = tool._recipe.setup
-    if setup.layout_mode == "gridspec":
-        axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-        axes = figure.axes[: len(axes_ids)]
-        if len(axes) < len(axes_ids):
-            if not render_if_missing:
-                return None
-            _render_preview(tool, show_window=False)
-            return _live_layout_axes(tool)
-        return dict(zip(axes_ids, axes, strict=True))
-
-    count = setup.nrows * setup.ncols
-    axes = figure.axes[:count]
-    if len(axes) < count:
-        if not render_if_missing:
-            return None
-        _render_preview(tool, show_window=False)
-        return _live_layout_axes(tool)
-    return np.asarray(axes, dtype=object).reshape(setup.nrows, setup.ncols)
+    layout_axes = _layout_axes_from_figure(tool, figure)
+    if layout_axes is not None or not render_if_missing:
+        return layout_axes
+    _render_into_figure(tool, figure, sync_visible=False)
+    return _layout_axes_from_figure(tool, figure)
 
 
 def _source_namespace(
@@ -307,6 +326,23 @@ def _render_into_figure(
     tool._set_operation_render_errors(render_errors)
 
 
+@contextlib.contextmanager
+def _rendered_output_figure(tool: FigureComposerTool) -> typing.Iterator[Figure]:
+    window = _valid_figure_window(tool)
+    if window is not None:
+        _render_into_figure(tool, window.figure, sync_visible=False)
+        tool._mark_preview_pixmap_stale()
+        yield window.figure
+        return
+
+    figure = _new_offscreen_figure(tool)
+    try:
+        _render_into_figure(tool, figure, sync_visible=False)
+        yield figure
+    finally:
+        figure.clear()
+
+
 def _render_error_text(error: Exception) -> str:
     detail = str(error)
     if detail:
@@ -323,23 +359,25 @@ def _render_preview(
     try:
         if show_window is None:
             show_window = (
-                tool._figure_window is not None
-                and erlab.interactive.utils.qt_is_valid(tool._figure_window)
-                and tool._figure_window.isVisible()
-            )
+                window := _valid_figure_window(tool)
+            ) is not None and window.isVisible()
         if show_window:
             tool.canvas.flush_events()
             tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
-        _render_into_figure(tool, tool.figure, sync_visible=True)
+            _render_into_figure(tool, tool.figure, sync_visible=True)
+        elif (window := _valid_figure_window(tool)) is not None:
+            _render_into_figure(tool, window.figure, sync_visible=False)
+        else:
+            figure = _new_offscreen_figure(tool)
+            try:
+                _render_into_figure(tool, figure, sync_visible=False)
+            finally:
+                figure.clear()
         if show_window:
             tool.canvas.draw()
             tool.canvas.flush_events()
-        elif (
-            tool._figure_window is not None
-            and erlab.interactive.utils.qt_is_valid(tool._figure_window)
-            and tool._figure_window.isVisible()
-        ):
-            tool.canvas.draw_idle()
+        elif (window := _valid_figure_window(tool)) is not None and window.isVisible():
+            window.canvas.draw_idle()
     finally:
         tool._mark_preview_pixmap_stale()
         tool._rendering = False

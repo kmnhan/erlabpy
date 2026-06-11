@@ -73,6 +73,7 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._rendering import (
     _render_into_figure,
     _render_preview,
+    _rendered_output_figure,
 )
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
@@ -3774,9 +3775,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if not filename:
             return
-        _render_preview(self, show_window=False)
-        with _figure_draw_context():
-            self.figure.savefig(
+        with _rendered_output_figure(self) as figure, _figure_draw_context():
+            figure.savefig(
                 filename,
                 dpi=self._recipe.export.dpi,
                 transparent=self._recipe.export.transparent,
