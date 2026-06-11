@@ -2268,6 +2268,18 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
     emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
     editor.sigPanelStylesChanged.connect(emitted.append)
 
+    editor.cmap_combo.activated.emit(editor.cmap_combo.currentIndex())
+    editor.cmap_reverse_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    editor.norm_combo.activated.emit(editor.norm_combo.currentIndex())
+    editor.gamma_edit.setText("2")
+    editor.gamma_edit.setModified(True)
+    editor.gamma_edit.editingFinished.emit()
+    editor.clip_combo.activated.emit(editor.clip_combo.currentIndex())
+    editor.norm_kwargs_edit.setText("clip=False")
+    editor.norm_kwargs_edit.setModified(True)
+    editor.norm_kwargs_edit.editingFinished.emit()
+    assert emitted == []
+
     assert not editor.cmap_override_check.isTristate()
     editor.cmap_override_check.click()
     assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Checked

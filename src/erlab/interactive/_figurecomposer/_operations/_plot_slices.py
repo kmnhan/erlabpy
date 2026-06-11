@@ -986,8 +986,15 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         else:
             self._update_selected_styles({"cmap": None})
 
+    def _cmap_override_active(self) -> bool:
+        return self.cmap_override_check.checkState() == QtCore.Qt.CheckState.Checked
+
     def _cmap_changed(self, _index: int) -> None:
-        if self._updating or self.cmap_combo.currentData() is _MISSING:
+        if (
+            self._updating
+            or not self._cmap_override_active()
+            or self.cmap_combo.currentData() is _MISSING
+        ):
             return
         base = self.cmap_combo.currentText()
         reverse = self.cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Checked
@@ -995,7 +1002,11 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
 
     def _cmap_reverse_changed(self, state: int) -> None:
         check_state = QtCore.Qt.CheckState(state)
-        if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
+        if (
+            self._updating
+            or not self._cmap_override_active()
+            or check_state == QtCore.Qt.CheckState.PartiallyChecked
+        ):
             return
         base = self.cmap_combo.currentText()
         if self.cmap_combo.currentData() is _MISSING:
@@ -1027,29 +1038,46 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
                 }
             )
 
+    def _norm_override_active(self) -> bool:
+        return self.norm_override_check.checkState() == QtCore.Qt.CheckState.Checked
+
     def _norm_changed(self, _index: int) -> None:
-        if self._updating or self.norm_combo.currentData() is _MISSING:
+        if (
+            self._updating
+            or not self._norm_override_active()
+            or self.norm_combo.currentData() is _MISSING
+        ):
             return
         self._update_selected_styles({"norm_name": self.norm_combo.currentText()})
 
     def _number_changed(self, attr: str, edit: QtWidgets.QLineEdit) -> None:
-        if self._updating or (
-            edit.placeholderText() == "(multiple values)" and not edit.isModified()
+        if (
+            self._updating
+            or not self._norm_override_active()
+            or (edit.placeholderText() == "(multiple values)" and not edit.isModified())
         ):
             return
         text = edit.text().strip()
         self._update_selected_styles({attr: float(text) if text else None})
 
     def _clip_changed(self, _index: int) -> None:
-        if self._updating or self.clip_combo.currentData() is _MISSING:
+        if (
+            self._updating
+            or not self._norm_override_active()
+            or self.clip_combo.currentData() is _MISSING
+        ):
             return
         text = self.clip_combo.currentText()
         self._update_selected_styles({"norm_clip": _norm_clip_from_text(text)})
 
     def _norm_kwargs_changed(self) -> None:
-        if self._updating or (
-            self.norm_kwargs_edit.placeholderText() == "(multiple values)"
-            and not self.norm_kwargs_edit.isModified()
+        if (
+            self._updating
+            or not self._norm_override_active()
+            or (
+                self.norm_kwargs_edit.placeholderText() == "(multiple values)"
+                and not self.norm_kwargs_edit.isModified()
+            )
         ):
             return
         self._update_selected_styles(
