@@ -708,6 +708,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         target_axes_layout.setSpacing(4)
         self.axes_selector = _AxesSelectorWidget(self.target_axes_page)
         self.axes_selector.sigSelectionChanged.connect(self._axes_selection_changed)
+        self.axes_selector.sigAddRowRequested.connect(self._add_subplot_row)
+        self.axes_selector.sigAddColumnRequested.connect(self._add_subplot_column)
         target_axes_layout.addWidget(self.axes_selector)
         self.gridspec_axes_selector = _GridSpecViewWidget(
             self.target_axes_page, mode="select"
@@ -2198,6 +2200,27 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
         _render_preview(self)
         self.sigInfoChanged.emit()
+
+    @QtCore.Slot()
+    def _add_subplot_row(self) -> None:
+        self._grow_subplot_grid("row")
+
+    @QtCore.Slot()
+    def _add_subplot_column(self) -> None:
+        self._grow_subplot_grid("column")
+
+    def _grow_subplot_grid(self, direction: typing.Literal["row", "column"]) -> bool:
+        if self._recipe.setup.layout_mode != "subplots":
+            return False
+        if direction == "row":
+            if self.nrows_spin.value() >= self.nrows_spin.maximum():
+                return False
+            self.nrows_spin.setValue(self.nrows_spin.value() + 1)
+        else:
+            if self.ncols_spin.value() >= self.ncols_spin.maximum():
+                return False
+            self.ncols_spin.setValue(self.ncols_spin.value() + 1)
+        return True
 
     @QtCore.Slot()
     def _size_mm_controls_changed(self) -> None:

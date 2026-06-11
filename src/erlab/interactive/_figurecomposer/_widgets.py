@@ -1029,10 +1029,14 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
     """Grid selector for target axes in the current figure layout."""
 
     sigSelectionChanged = QtCore.Signal(object)
+    sigAddRowRequested = QtCore.Signal()
+    sigAddColumnRequested = QtCore.Signal()
     _CELL_WIDTH = 46
     _CELL_HEIGHT = 26
     _CELL_GAP = 3
     _GRID_MARGIN = 4
+    _ADD_PILL_THICKNESS = 12
+    _ADD_PILL_GAP = 4
     _MIN_WIDTH = 68
     _MIN_HEIGHT = 34
 
@@ -1047,6 +1051,7 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         self._drag_base: frozenset[tuple[int, int]] = frozenset()
         self._drag_additive = False
         self._hovered_axis: tuple[int, int] | None = None
+        self._hovered_add_control: typing.Literal["row", "column"] | None = None
         self.setObjectName("figureComposerAxesSelector")
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
@@ -1063,8 +1068,14 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         margin = 2 * self._GRID_MARGIN
         size = self._grid_content_size()
         return QtCore.QSize(
-            max(self._MIN_WIDTH, size.width() + margin),
-            max(self._MIN_HEIGHT, size.height() + margin),
+            max(
+                self._MIN_WIDTH,
+                size.width() + margin + self._ADD_PILL_GAP + self._ADD_PILL_THICKNESS,
+            ),
+            max(
+                self._MIN_HEIGHT,
+                size.height() + margin + self._ADD_PILL_GAP + self._ADD_PILL_THICKNESS,
+            ),
         )
 
     def minimumSizeHint(self) -> QtCore.QSize:
@@ -1165,13 +1176,25 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
                 QtCore.Qt.AlignmentFlag.AlignCenter,
                 text,
             )
+        self._draw_add_pill(painter, colors, "row")
+        self._draw_add_pill(painter, colors, "column")
 
     def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is None or event.button() != QtCore.Qt.MouseButton.LeftButton:
             if event is not None:
                 super().mousePressEvent(event)
             return
-        axis = self._axis_at(event.position().toPoint())
+        pos = event.position().toPoint()
+        add_control = self._add_control_at(pos)
+        if add_control == "row":
+            self.sigAddRowRequested.emit()
+            event.accept()
+            return
+        if add_control == "column":
+            self.sigAddColumnRequested.emit()
+            event.accept()
+            return
+        axis = self._axis_at(pos)
         if axis is None:
             return
         modifiers = event.modifiers()
@@ -1201,9 +1224,12 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
     def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is None:
             return
-        axis = self._axis_at(event.position().toPoint())
-        if axis != self._hovered_axis:
+        pos = event.position().toPoint()
+        add_control = self._add_control_at(pos)
+        axis = None if add_control is not None else self._axis_at(pos)
+        if axis != self._hovered_axis or add_control != self._hovered_add_control:
             self._hovered_axis = axis
+            self._hovered_add_control = add_control
             self.update()
         if (
             self._drag_origin is not None
@@ -1227,6 +1253,7 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
 
     def leaveEvent(self, event: QtCore.QEvent | None) -> None:
         self._hovered_axis = None
+        self._hovered_add_control = None
         self.update()
         if event is not None:
             super().leaveEvent(event)
@@ -1235,7 +1262,73 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         rect = self.rect()
         if rect.isEmpty():
             rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
-        return _centered_rect(rect, self._grid_content_size(), self._GRID_MARGIN)
+        grid_area = rect.adjusted(
+            0,
+            0,
+            -(self._ADD_PILL_GAP + self._ADD_PILL_THICKNESS),
+            -(self._ADD_PILL_GAP + self._ADD_PILL_THICKNESS),
+        )
+        if grid_area.width() <= 0 or grid_area.height() <= 0:
+            grid_area = rect
+        return _centered_rect(grid_area, self._grid_content_size(), self._GRID_MARGIN)
+
+    def _add_pill_rect(
+        self, direction: typing.Literal["row", "column"]
+    ) -> QtCore.QRect:
+        grid_rect = self._grid_rect()
+        if grid_rect.isNull():
+            return QtCore.QRect()
+        if direction == "row":
+            return QtCore.QRect(
+                grid_rect.left(),
+                grid_rect.bottom() + 1 + self._ADD_PILL_GAP,
+                grid_rect.width(),
+                self._ADD_PILL_THICKNESS,
+            )
+        return QtCore.QRect(
+            grid_rect.right() + 1 + self._ADD_PILL_GAP,
+            grid_rect.top(),
+            self._ADD_PILL_THICKNESS,
+            grid_rect.height(),
+        )
+
+    def _draw_add_pill(
+        self,
+        painter: QtGui.QPainter,
+        colors: _SelectorColors,
+        direction: typing.Literal["row", "column"],
+    ) -> None:
+        rect = self._add_pill_rect(direction)
+        if rect.isNull():
+            return
+        hovered = self._hovered_add_control == direction
+        face = _blend_qcolors(colors.face, colors.selection, 0.12 if hovered else 0.04)
+        edge = _blend_qcolors(
+            colors.border, colors.selection, 0.45 if hovered else 0.12
+        )
+        text = colors.selection if hovered else colors.muted_text
+        face.setAlpha(190 if hovered else 70)
+        edge.setAlpha(210 if hovered else 95)
+        _draw_selector_rect(
+            painter,
+            rect,
+            facecolor=face,
+            edgecolor=edge,
+            linewidth=_SELECTOR_BORDER_WIDTH,
+            radius=self._ADD_PILL_THICKNESS / 2,
+        )
+        painter.save()
+        painter.setPen(text)
+        painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, "+")
+        painter.restore()
+
+    def _add_control_at(
+        self, pos: QtCore.QPoint
+    ) -> typing.Literal["row", "column"] | None:
+        for direction in ("row", "column"):
+            if self._add_pill_rect(direction).contains(pos):
+                return direction
+        return None
 
     def _grid_content_size(self) -> QtCore.QSize:
         return QtCore.QSize(

@@ -2587,6 +2587,22 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
     selector.mouseMoveEvent(None)
     selector.leaveEvent(None)
 
+    add_requests: list[str] = []
+    selector.sigAddRowRequested.connect(lambda: add_requests.append("row"))
+    selector.sigAddColumnRequested.connect(lambda: add_requests.append("column"))
+    qtbot.mouseMove(selector, selector._add_pill_rect("row").center())
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector._add_pill_rect("row").center(),
+    )
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector._add_pill_rect("column").center(),
+    )
+    assert add_requests == ["row", "column"]
+
     pixmap = QtGui.QPixmap(selector.size())
     pixmap.fill(QtCore.Qt.GlobalColor.transparent)
     selector.render(pixmap)
@@ -3263,7 +3279,7 @@ def test_axes_selector_size_hint_tracks_grid(qtbot):
     selector.set_grid(1, 4)
     one_by_four_hint = selector.sizeHint()
     assert one_by_four_hint.width() < 220
-    assert one_by_four_hint.height() <= 40
+    assert one_by_four_hint.height() <= 52
     assert (
         selector.sizePolicy().horizontalPolicy() == QtWidgets.QSizePolicy.Policy.Maximum
     )
@@ -3272,7 +3288,7 @@ def test_axes_selector_size_hint_tracks_grid(qtbot):
     selector.set_grid(2, 4)
     two_by_four_hint = selector.sizeHint()
     assert two_by_four_hint.width() == one_by_four_hint.width()
-    assert one_by_four_hint.height() < two_by_four_hint.height() < 70
+    assert one_by_four_hint.height() < two_by_four_hint.height() < 82
 
     selector.resize(two_by_four_hint + QtCore.QSize(80, 40))
     grid_rect = QtCore.QRect(
@@ -3282,10 +3298,45 @@ def test_axes_selector_size_hint_tracks_grid(qtbot):
     available_rect = selector.rect().adjusted(
         selector._GRID_MARGIN,
         selector._GRID_MARGIN,
-        -selector._GRID_MARGIN,
-        -selector._GRID_MARGIN,
+        -(
+            selector._GRID_MARGIN
+            + selector._ADD_PILL_GAP
+            + selector._ADD_PILL_THICKNESS
+        ),
+        -(
+            selector._GRID_MARGIN
+            + selector._ADD_PILL_GAP
+            + selector._ADD_PILL_THICKNESS
+        ),
     )
     assert (grid_rect.center() - available_rect.center()).manhattanLength() <= 1
+
+
+def test_figure_composer_axes_selector_add_pills_grow_subplots(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool._select_step_section("axes")
+    selector = tool.axes_selector
+    selector.resize(selector.sizeHint())
+
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector._add_pill_rect("row").center(),
+    )
+    assert tool.tool_status.setup.nrows == 2
+    assert tool.tool_status.setup.ncols == 1
+
+    selector.resize(selector.sizeHint())
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector._add_pill_rect("column").center(),
+    )
+    assert tool.tool_status.setup.nrows == 2
+    assert tool.tool_status.setup.ncols == 2
 
 
 def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) -> None:
@@ -14251,6 +14302,24 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
             figure_uid,
             FigureAxesSelectionState(axes=((0, 1),)),
         )
+
+        dialog.axes_selector.resize(dialog.axes_selector.sizeHint())
+        qtbot.mouseClick(
+            dialog.axes_selector,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=dialog.axes_selector._add_pill_rect("row").center(),
+        )
+        assert figure_tool.tool_status.setup.nrows == 2
+        assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 1),))
+
+        dialog.axes_selector.resize(dialog.axes_selector.sizeHint())
+        qtbot.mouseClick(
+            dialog.axes_selector,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=dialog.axes_selector._add_pill_rect("column").center(),
+        )
+        assert figure_tool.tool_status.setup.ncols == 3
+        assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 1),))
 
 
 def test_manager_figure_target_dialog_defaults_to_new_figure(

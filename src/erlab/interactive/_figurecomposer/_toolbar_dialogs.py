@@ -1588,6 +1588,19 @@ def _selector_widget(
     selector.set_grid(setup.nrows, setup.ncols)
     selected_axes = tool._selected_axes_state().valid_axes(setup)
     selector.set_selected_axes(selected_axes or ((0, 0),))
+
+    def grow_subplot_grid(direction: typing.Literal["row", "column"]) -> None:
+        selected = selector.selected_axes()
+        if not tool._grow_subplot_grid(direction):
+            return
+        updated_setup = tool._recipe.setup
+        selector.set_grid(updated_setup.nrows, updated_setup.ncols)
+        selector.set_selected_axes(selected or ((0, 0),), emit=True)
+
+    selector.sigAddRowRequested.connect(functools.partial(grow_subplot_grid, "row"))
+    selector.sigAddColumnRequested.connect(
+        functools.partial(grow_subplot_grid, "column")
+    )
     return selector
 
 

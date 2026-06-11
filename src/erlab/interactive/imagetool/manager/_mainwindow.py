@@ -183,6 +183,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
 
         self.figure_combo.currentIndexChanged.connect(self._figure_changed)
         self.axes_selector.sigSelectionChanged.connect(self._selection_changed)
+        self.axes_selector.sigAddRowRequested.connect(self._add_subplot_row)
+        self.axes_selector.sigAddColumnRequested.connect(self._add_subplot_column)
         self.gridspec_axes_selector.sigSelectionChanged.connect(self._selection_changed)
         self.all_axes_button.clicked.connect(self._select_all_axes)
         self.clear_axes_button.clicked.connect(self._clear_axes)
@@ -318,6 +320,30 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             self.gridspec_axes_selector.set_selected_axes_ids((), emit=True)
         else:
             self.axes_selector.set_selected_axes((), emit=True)
+
+    @QtCore.Slot()
+    def _add_subplot_row(self) -> None:
+        self._grow_subplot_grid("row")
+
+    @QtCore.Slot()
+    def _add_subplot_column(self) -> None:
+        self._grow_subplot_grid("column")
+
+    def _grow_subplot_grid(self, direction: typing.Literal["row", "column"]) -> None:
+        tool = self._figure_tool()
+        if tool is None or tool.tool_status.setup.layout_mode != "subplots":
+            return
+        selected = self.axes_selector.selected_axes()
+        if not tool._grow_subplot_grid(direction):
+            return
+        setup = tool.tool_status.setup
+        labels = {
+            (row, col): f"{row}, {col}"
+            for row in range(setup.nrows)
+            for col in range(setup.ncols)
+        }
+        self.axes_selector.set_grid(setup.nrows, setup.ncols, labels)
+        self.axes_selector.set_selected_axes(selected or ((0, 0),), emit=True)
 
     def _figure_tool(self) -> typing.Any | None:
         from erlab.interactive._figurecomposer import FigureComposerTool
