@@ -1727,21 +1727,30 @@ class ImageToolManager(_ImageToolManagerBase):
         if not source_operations:
             return None
 
+        if any(operation.map_selections for operation in source_operations):
+            from erlab.interactive._figurecomposer._exceptions import (
+                FigureComposerPlotSlicesSelectionError,
+            )
+
+            raise FigureComposerPlotSlicesSelectionError
         operation = source_operations[0]
         updates: dict[str, typing.Any] = {"sources": source_names}
         if len(source_names) > 1:
             updates["order"] = "F"
-        if operation.map_selections:
-            updates["map_selections"] = tuple(
-                selection.model_copy(update={"source": source_name})
-                for source_name in source_names
-                for selection in operation.map_selections
-            )
         expanded_operation = operation.model_copy(update=updates)
         return plot_slices_operation_with_source_styles(
             expanded_operation,
             tuple(source_operations),
-            selections_per_source=max(len(operation.map_selections), 1),
+            selections_per_source=1,
+        )
+
+    def _show_figure_plot_slices_selection_error(self, error: Exception) -> None:
+        from erlab.interactive._figurecomposer._exceptions import (
+            PLOT_SLICES_SELECTION_ERROR_TITLE,
+        )
+
+        QtWidgets.QMessageBox.warning(
+            self, PLOT_SLICES_SELECTION_ERROR_TITLE, str(error)
         )
 
     @staticmethod
@@ -1825,9 +1834,17 @@ class ImageToolManager(_ImageToolManagerBase):
                 for data in source_data.values()
             )
         ):
-            auto_operation = self._figure_plot_slices_operation_from_targets(
-                resolved_targets, source_names
+            from erlab.interactive._figurecomposer._exceptions import (
+                FigureComposerPlotSlicesSelectionError,
             )
+
+            try:
+                auto_operation = self._figure_plot_slices_operation_from_targets(
+                    resolved_targets, source_names
+                )
+            except FigureComposerPlotSlicesSelectionError as exc:
+                self._show_figure_plot_slices_selection_error(exc)
+                return None
         setup = self._figure_setup_for_operation(
             None if custom_code is not None else operation or auto_operation,
             source_data,
@@ -2017,9 +2034,17 @@ class ImageToolManager(_ImageToolManagerBase):
             _public_source_data(data).squeeze(drop=True).ndim > 1
             for data in source_data.values()
         ):
-            auto_operation = self._figure_plot_slices_operation_from_targets(
-                resolved_targets, source_names
+            from erlab.interactive._figurecomposer._exceptions import (
+                FigureComposerPlotSlicesSelectionError,
             )
+
+            try:
+                auto_operation = self._figure_plot_slices_operation_from_targets(
+                    resolved_targets, source_names
+                )
+            except FigureComposerPlotSlicesSelectionError as exc:
+                self._show_figure_plot_slices_selection_error(exc)
+                return False
         prompt_operation = operation or auto_operation
 
         if axes_selection is None:

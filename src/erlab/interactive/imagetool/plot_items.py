@@ -1672,6 +1672,25 @@ class ItoolPlotItem(pg.PlotItem):
             return dim_name.removesuffix("_idx")
         return dim_name
 
+    @staticmethod
+    def _plot_slices_qsel_key_is_editable(key: Hashable) -> bool:
+        if not isinstance(key, str):
+            return False
+        dim_name = key.removesuffix("_width") if key.endswith("_width") else key
+        return dim_name.isidentifier() and not dim_name.endswith("_idx")
+
+    @staticmethod
+    def _show_plot_slices_selection_error(
+        parent: QtWidgets.QWidget | None, error: Exception
+    ) -> None:
+        from erlab.interactive._figurecomposer._exceptions import (
+            PLOT_SLICES_SELECTION_ERROR_TITLE,
+        )
+
+        QtWidgets.QMessageBox.warning(
+            parent, PLOT_SLICES_SELECTION_ERROR_TITLE, str(error)
+        )
+
     def _selection_expr_for_cursor(
         self, data_name: str, cursor: int, non_display_axes: tuple[int, ...]
     ) -> str:
@@ -1776,7 +1795,13 @@ class ItoolPlotItem(pg.PlotItem):
                 )
             )
             selection_count = None
-        except ValueError:
+        except ValueError as exc:
+            if self.is_image:
+                from erlab.interactive._figurecomposer._exceptions import (
+                    FigureComposerPlotSlicesSelectionError,
+                )
+
+                raise FigureComposerPlotSlicesSelectionError from exc
             result = None
             selection_exprs = [""]
             variable_dim = None
@@ -1784,6 +1809,17 @@ class ItoolPlotItem(pg.PlotItem):
                 self._selection_dim_name(axis) for axis in non_display_axes
             }
             selection_count = self.slicer_area.n_cursors
+
+        if self.is_image and (
+            selection_exprs is not None
+            or result is None
+            or any(not self._plot_slices_qsel_key_is_editable(key) for key in result)
+        ):
+            from erlab.interactive._figurecomposer._exceptions import (
+                FigureComposerPlotSlicesSelectionError,
+            )
+
+            raise FigureComposerPlotSlicesSelectionError
 
         map_selections = (
             self._figure_composer_map_selections(
@@ -3103,9 +3139,18 @@ class ItoolPlotItem(pg.PlotItem):
                 source_name = manager._script_input_name_for_node(
                     manager._node_for_target(target)
                 )
+                from erlab.interactive._figurecomposer._exceptions import (
+                    FigureComposerPlotSlicesSelectionError,
+                )
+
+                try:
+                    operation = self.figure_composer_operation(source_name=source_name)
+                except FigureComposerPlotSlicesSelectionError as exc:
+                    self._show_plot_slices_selection_error(self.slicer_area, exc)
+                    return
                 manager.create_figure_from_slicer_area(
                     self.slicer_area,
-                    operation=self.figure_composer_operation(source_name=source_name),
+                    operation=operation,
                 )
 
     @QtCore.Slot()
@@ -3120,9 +3165,18 @@ class ItoolPlotItem(pg.PlotItem):
                 source_name = manager._script_input_name_for_node(
                     manager._node_for_target(target)
                 )
+                from erlab.interactive._figurecomposer._exceptions import (
+                    FigureComposerPlotSlicesSelectionError,
+                )
+
+                try:
+                    operation = self.figure_composer_operation(source_name=source_name)
+                except FigureComposerPlotSlicesSelectionError as exc:
+                    self._show_plot_slices_selection_error(self.slicer_area, exc)
+                    return
                 manager.append_figure_from_slicer_area(
                     self.slicer_area,
-                    operation=self.figure_composer_operation(source_name=source_name),
+                    operation=operation,
                 )
 
     @property

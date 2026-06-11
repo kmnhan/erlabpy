@@ -58,6 +58,9 @@ from erlab.interactive._figurecomposer import (
 from erlab.interactive._figurecomposer import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
 from erlab.interactive._figurecomposer._operations import (
     _custom_code as figurecomposer_custom_code,
 )
@@ -115,6 +118,30 @@ def _expected_layout_from_rcparams() -> str | None:
     if mpl.rcParams["figure.autolayout"]:
         return "tight"
     return None
+
+
+def _unsupported_plot_slices_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(120.0).reshape(2, 3, 4, 5),
+        dims=("a", "b", "c", "d"),
+        coords={
+            "a": [0.0, 1.0],
+            "b": [0.0, 1.0, 2.0],
+            "c": [0.0, 1.0, 2.0, 3.0],
+            "d": [0.0, 1.0, 2.0, 3.0, 4.0],
+        },
+        name="map",
+    )
+
+
+def _set_unsupported_plot_slices_cursor_state(
+    tool: erlab.interactive.imagetool.ImageTool,
+) -> None:
+    tool.slicer_area.add_cursor()
+    tool.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    tool.slicer_area.set_value(axis=3, value=0.0, cursor=0)
+    tool.slicer_area.set_value(axis=2, value=2.0, cursor=1)
+    tool.slicer_area.set_value(axis=3, value=1.0, cursor=1)
 
 
 def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
@@ -747,6 +774,19 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     assert operation.slice_values == (30.0,)
     assert operation.slice_kwargs == {}
     assert "sample_temp_idx" not in operation.model_dump_json()
+
+
+def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
+    tool = erlab.interactive.itool(
+        _unsupported_plot_slices_data(), manager=False, execute=False
+    )
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    _set_unsupported_plot_slices_cursor_state(tool)
+
+    with pytest.raises(FigureComposerPlotSlicesSelectionError):
+        tool.slicer_area.images[0].figure_composer_operation(source_name="data")
 
 
 def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
@@ -12714,6 +12754,12 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
         {"xlim": (-1.0, 1.0)} if x_dim == "kx" else {}
     )
 
+    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV")
+    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV_width")
+    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
+    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx")
+    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable(("bad", "key"))
+
     selected_maps_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
         fake,
         source_name="data",
@@ -13086,6 +13132,108 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert not manager.left_tabs.tabBar().isVisible()
         assert not manager.left_tabs.isTabVisible(1)
         assert not hasattr(manager, "figure_tab")
+
+
+def test_imagetool_plot_with_matplotlib_warns_for_uneditable_selection(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        itool(_unsupported_plot_slices_data(), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = manager.get_imagetool(0)
+        _set_unsupported_plot_slices_cursor_state(tool)
+
+        warnings: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda parent, title, text: warnings.append((parent, title, text)),
+        )
+
+        tool.slicer_area.images[0].plot_with_matplotlib()
+
+        assert warnings
+        assert len(manager._tool_graph.figure_uids) == 0
+
+
+def test_manager_figure_action_warns_for_uneditable_plot_slices_selection(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        itool(_unsupported_plot_slices_data(), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = manager.get_imagetool(0)
+        _set_unsupported_plot_slices_cursor_state(tool)
+        select_tools(manager, [0])
+
+        warnings: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda parent, title, text: warnings.append((parent, title, text)),
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert warnings
+        assert len(manager._tool_graph.figure_uids) == 0
+
+
+def test_manager_append_figure_warns_for_uneditable_plot_slices_selection(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        itool(_unsupported_plot_slices_data(), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        source_tool = manager.get_imagetool(0)
+        _set_unsupported_plot_slices_cursor_state(source_tool)
+
+        figure_data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="existing",
+        )
+        figure_tool = FigureComposerTool(
+            figure_data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="existing", label="existing"),),
+                operations=(),
+                primary_source="existing",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        warnings: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda parent, title, text: warnings.append((parent, title, text)),
+        )
+
+        appended = manager.append_figure_from_targets(
+            (0,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            show=False,
+        )
+
+        assert appended is False
+        assert warnings
+        assert figure_tool.tool_status.operations == ()
 
 
 def test_manager_figures_tab_does_not_set_empty_minimum_width(
