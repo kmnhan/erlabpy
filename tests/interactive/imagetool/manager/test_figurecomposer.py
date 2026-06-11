@@ -56,6 +56,9 @@ from erlab.interactive._figurecomposer import (
     _line_transform,
 )
 from erlab.interactive._figurecomposer import (
+    _subplot_adjust as figurecomposer_subplot_adjust,
+)
+from erlab.interactive._figurecomposer import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive._figurecomposer._exceptions import (
@@ -562,6 +565,8 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     assert figurecomposer_text._float_pair_from_text("1, 2.5") == (1.0, 2.5)
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
         figurecomposer_text._float_pair_from_text("1")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+        figurecomposer_text._float_pair_from_text("1, bad")
 
     assert figurecomposer_text._plot_limit_from_text("") is None
     assert figurecomposer_text._plot_limit_from_text("1.5") == 1.5
@@ -571,12 +576,25 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     assert figurecomposer_text._plot_limit_from_text("0, None") == (0.0, None)
     assert figurecomposer_text._plot_limit_from_text("(None, 2)") == (None, 2.0)
     assert figurecomposer_text._limit_pair_from_text("0, None") == (0.0, None)
+    assert figurecomposer_text._limit_pair_from_text("") is None
     assert figurecomposer_text._format_plot_limit((0.0, None)) == "0, None"
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
         figurecomposer_text._plot_limit_from_text("(1, 2, 3)")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
+        figurecomposer_text._plot_limit_from_text("(1, 'bad')")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+        figurecomposer_text._limit_pair_from_text("1")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+        figurecomposer_text._limit_pair_from_text("(1,)")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+        figurecomposer_text._limit_pair_from_text("(1, 'bad')")
 
+    assert figurecomposer_text._float_tuple_from_text("1, 2") == (1.0, 2.0)
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="numbers"):
+        figurecomposer_text._float_tuple_from_text("1, bad")
     assert figurecomposer_text._literal_sequence_from_text("") == ()
     assert figurecomposer_text._literal_sequence_from_text("[1, 2]") == (1, 2)
+    assert figurecomposer_text._literal_sequence_from_text("(1)") == (1,)
     assert figurecomposer_text._literal_sequence_from_text("'x'") == ("x",)
     assert figurecomposer_text._literal_sequence_from_text("1, 2") == (1, 2)
 
@@ -585,6 +603,7 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         "alpha",
         "beta",
     )
+    assert figurecomposer_text._string_tuple_from_text("('alpha')") == ("alpha",)
     assert figurecomposer_text._string_tuple_from_text("['alpha', 2]") == (
         "alpha",
         "2",
@@ -607,7 +626,13 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     }
     assert figurecomposer_text._dict_from_text("{'a': 1}") == {"a": 1}
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+        figurecomposer_text._dict_from_text("a=")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+        figurecomposer_text._dict_from_text("a=object()")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("1")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+        figurecomposer_text._dict_from_text("{1, 2}")
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
         figurecomposer_text._dict_from_text("**{'a': 1}")
     with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
@@ -616,7 +641,14 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         figurecomposer_text._dict_from_text("{alpha: 1}")
 
     assert figurecomposer_text._format_pair(None) == ""
+    assert figurecomposer_text._format_limit_pair(None) == ""
     assert figurecomposer_text._format_plot_limit(2.0) == "2"
+    assert (
+        figurecomposer_text._format_dim_sizes(
+            xr.DataArray(np.zeros((2, 3)), dims=("alpha", "beta"))
+        )
+        == "alpha=2, beta=3"
+    )
     assert figurecomposer_text._format_axes_tuple((), nrows=2, ncols=2) == "none"
     assert figurecomposer_text._selection_value_count(np.arange(6).reshape(2, 3)) == 6
     assert figurecomposer_text._selection_value_count([1, 2]) == 2
@@ -4380,6 +4412,106 @@ def test_figure_composer_hidden_preview_does_not_create_window(qtbot) -> None:
     assert tool._operation_render_errors == {}
 
 
+def test_figure_composer_rendering_helpers_cover_output_paths(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2.0), "y": np.arange(2.0)},
+        name="data",
+    )
+    invalid_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_xlabel",
+        axes=FigureAxesSelectionState(axes=((1, 0),)),
+    ).model_copy(update={"method_args": ("invalid",)})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1, layout="compressed"),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(invalid_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figure = Figure()
+    figurecomposer_rendering._set_creation_layout_engine(figure, "compressed")
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    assert figure.axes[0].get_xlabel() == ""
+    assert (
+        figurecomposer_rendering._layout_axes_from_figure(
+            tool,
+            Figure(figsize=(1.0, 1.0)),
+        )
+        is None
+    )
+
+    assert tool._figure_window is None
+    with figurecomposer_rendering._rendered_output_figure(tool) as output_figure:
+        assert tool._figure_window is None
+        assert output_figure.axes
+    assert output_figure.axes == []
+    assert isinstance(figurecomposer_rendering._make_axes(tool), np.ndarray)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    assert tool._figure_window is not None
+
+    root_grid = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=2,
+        ncols=1,
+        height_ratios=(1.0, 2.0),
+        wspace=0.1,
+        hspace=0.2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="axis-a",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+        child_grids=(
+            FigureGridSpecGridState(
+                grid_id="child",
+                nrows=1,
+                ncols=1,
+                span=FigureGridSpecSpanState(
+                    row_start=3,
+                    row_stop=4,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    grid_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root_grid),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(grid_tool)
+    grid_axes = figurecomposer_rendering._make_axes(
+        grid_tool,
+        Figure(figsize=(1.0, 1.0)),
+        sync_visible=False,
+    )
+    assert isinstance(grid_axes, dict)
+    assert set(grid_axes) == {"axis-a"}
+
+
 def test_figure_composer_preview_update_is_cancelled_on_close(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
@@ -6787,6 +6919,51 @@ def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot) -> None:
     assert copied.size().height() > 0
 
 
+def test_figure_composer_subplots_adjust_helpers_repair_invalid_pairs() -> None:
+    left_min, left_max = figurecomposer_subplot_adjust.subplots_adjust_spinbox_range(
+        "left",
+        {"right": 0.0},
+    )
+    right_min, right_max = figurecomposer_subplot_adjust.subplots_adjust_spinbox_range(
+        "right",
+        {"left": 1.0},
+    )
+    top_min, top_max = figurecomposer_subplot_adjust.subplots_adjust_spinbox_range(
+        "top",
+        {"bottom": 1.0},
+    )
+
+    assert left_min == pytest.approx(left_max)
+    assert right_min == pytest.approx(right_max)
+    assert top_min == pytest.approx(top_max)
+
+    repaired_left = figurecomposer_subplot_adjust.normalize_subplots_adjust_kwargs(
+        {"left": 1.0, "right": 1.0},
+        changed_key="left",
+    )
+    repaired_right = figurecomposer_subplot_adjust.normalize_subplots_adjust_kwargs(
+        {"left": 0.0, "right": 0.0},
+        changed_key="right",
+    )
+    repaired_left_at_min = (
+        figurecomposer_subplot_adjust.normalize_subplots_adjust_kwargs(
+            {"left": 0.0, "right": 0.0},
+            changed_key="left",
+        )
+    )
+    repaired_right_at_max = (
+        figurecomposer_subplot_adjust.normalize_subplots_adjust_kwargs(
+            {"left": 1.0, "right": 1.0},
+            changed_key="right",
+        )
+    )
+
+    assert repaired_left["left"] < repaired_left["right"]
+    assert repaired_right["left"] < repaired_right["right"]
+    assert repaired_left_at_min["left"] < repaired_left_at_min["right"]
+    assert repaired_right_at_max["left"] < repaired_right_at_max["right"]
+
+
 def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     data = _figure_composer_image_source("data")
     tool = FigureComposerTool(
@@ -8772,6 +8949,27 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         parent=tool,
     )
     assert adjust_spin.value() == pytest.approx(default_from_window)
+    adjust_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                    kwargs={"left": 0.2},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(adjust_tool)
+    figurecomposer_method._update_current_subplots_adjust_kwarg(
+        adjust_tool,
+        "left",
+        None,
+    )
+    assert "left" not in adjust_tool.tool_status.operations[0].method_kwargs
 
     layout_spec = figurecomposer_method.FIGURE_METHODS["set_layout_engine"]
     assert (
@@ -8823,14 +9021,22 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     assert figurecomposer_method._format_literal_value(None) == ""
     assert figurecomposer_method._format_literal_value({"alpha": 0.5}) == "alpha=0.5"
     assert figurecomposer_method._format_literal_value((1, 2)) == "1, 2"
+    assert figurecomposer_method._format_literal_value("literal") == '"literal"'
+    assert figurecomposer_method._format_plot_sequence(3.0) == "3.0"
+    assert figurecomposer_method._plot_sequence_from_text("") == ()
+    assert figurecomposer_method._plot_sequence_from_text("1, 2") == (1, 2)
     assert figurecomposer_method._format_aspect_value(None) == ""
     assert figurecomposer_method._format_aspect_value("equal") == "equal"
     assert figurecomposer_method._format_aspect_value(2) == "2"
+    assert figurecomposer_method._format_aspect_value(("custom",)) == '("custom",)'
     assert figurecomposer_method._literal_value_from_text("alpha=0.5") == {"alpha": 0.5}
+    assert figurecomposer_method._literal_value_from_text("") is None
     assert figurecomposer_method._literal_value_from_text("[1, 2]") == [1, 2]
     assert figurecomposer_method._aspect_value_from_text("") is None
     assert figurecomposer_method._aspect_value_from_text("equal") == "equal"
     assert figurecomposer_method._aspect_value_from_text("2") == 2.0
+    assert figurecomposer_method._aspect_value_from_text("custom") == "custom"
+    assert figurecomposer_method._aspect_value_from_text("'manual'") == "manual"
     assert figurecomposer_method._aspect_value_from_text("[1, 2]") == "[1, 2]"
     assert figurecomposer_method._optional_literal_from_text("") is None
     assert figurecomposer_method._optional_literal_from_text("alpha=0.5") == {
@@ -8841,7 +9047,42 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     assert figurecomposer_method._optional_int_from_text("") is None
     assert figurecomposer_method._optional_int_from_text("3") == 3
 
+    assert figurecomposer_method._plot_y_arg_value(
+        FigureOperationState.method(family=FigureMethodFamily.AXES, name="plot"),
+        figurecomposer_method.AXES_METHODS["plot"],
+    ) == (0.0, 1.0)
+    empty_default_spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="empty_default",
+        label="empty_default",
+        tooltip="empty",
+        target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+        call_policy=figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+    )
+    assert (
+        figurecomposer_method._plot_y_arg_value(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="empty_default",
+            ),
+            empty_default_spec,
+        )
+        == ()
+    )
+
     assert figurecomposer_method._family_from_label("bad") == FigureMethodFamily.ERLAB
+    assert (
+        figurecomposer_method._family_from_label("Figure Method")
+        == FigureMethodFamily.FIGURE
+    )
+    assert (
+        figurecomposer_method._call_policy_from_label("Selected axes together")
+        == figurecomposer_method.MethodCallPolicy.AX_KEYWORD
+    )
+    assert (
+        figurecomposer_method._call_policy_from_label("plain_call")
+        == figurecomposer_method.MethodCallPolicy.PLAIN_CALL
+    )
     assert (
         figurecomposer_method._method_selector_text(
             figurecomposer_method.AXES_METHODS["set_xlabel"]
@@ -8896,6 +9137,128 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         figurecomposer_method._callable_display(colorbar_spec)
         == "erlab.plotting.nice_colorbar"
     )
+    assert (
+        figurecomposer_method._method_doc_url(
+            figurecomposer_method.MethodSpec(
+                family=FigureMethodFamily.ERLAB,
+                name="custom_doc",
+                label="custom_doc",
+                tooltip="custom",
+                target_domain=figurecomposer_method.MethodTargetDomain.NONE,
+                call_policy=figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
+                doc_url="https://example.test/docs",
+            )
+        )
+        == "https://example.test/docs"
+    )
+
+    transform_figure, transform_axis = plt.subplots()
+    try:
+        assert (
+            figurecomposer_method._transform_component(
+                transform_figure,
+                transform_axis,
+                "figure",
+            )
+            is transform_figure.transFigure
+        )
+        assert (
+            figurecomposer_method._transform_component(
+                transform_figure,
+                transform_axis,
+                "dpi",
+            )
+            is transform_figure.dpi_scale_trans
+        )
+        assert figurecomposer_method._transform_component_code("figure") == (
+            "fig.transFigure"
+        )
+        assert (
+            figurecomposer_method._transform_component_code("dpi")
+            == "fig.dpi_scale_trans"
+        )
+        with pytest.raises(ValueError, match="Unknown transform component"):
+            figurecomposer_method._transform_component(
+                transform_figure,
+                transform_axis,
+                "bad",
+            )
+        with pytest.raises(ValueError, match="Unknown transform component"):
+            figurecomposer_method._transform_component_code("bad")
+        assert (
+            figurecomposer_method._render_method_transform(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                ),
+                figurecomposer_method.AXES_METHODS["plot"],
+                figure=transform_figure,
+                axis=transform_axis,
+            )
+            is None
+        )
+        assert (
+            figurecomposer_method._method_transform_code(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                ),
+                figurecomposer_method.AXES_METHODS["plot"],
+            )
+            is None
+        )
+    finally:
+        plt.close(transform_figure)
+
+    positional_text_spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="text_values_positional",
+        label="text_values_positional",
+        tooltip="test",
+        target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+        call_policy=figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+        text_values_policy=figurecomposer_method.MethodTextValuesPolicy.POSITIONAL,
+    )
+    keyword_text_spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="text_values_keyword",
+        label="text_values_keyword",
+        tooltip="test",
+        target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+        call_policy=figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+        text_values_policy=figurecomposer_method.MethodTextValuesPolicy.KWARG,
+        text_values_kwarg="labels",
+    )
+    text_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="text_values",
+    ).model_copy(update={"text_values": ("A", "B")})
+    assert figurecomposer_method._render_args_kwargs(
+        tool,
+        text_operation,
+        positional_text_spec,
+    )[0] == (["A", "B"],)
+    assert figurecomposer_method._render_args_kwargs(
+        tool,
+        text_operation,
+        keyword_text_spec,
+    )[1] == {"labels": ["A", "B"]}
+    assert figurecomposer_method._code_args_kwargs(
+        tool,
+        text_operation,
+        keyword_text_spec,
+    )[1] == {"labels": ["A", "B"]}
+
+    no_operation_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(no_operation_tool)
+    figurecomposer_method._update_current_method_name(no_operation_tool, "plot")
 
     tool.operation_list.setCurrentRow(1)
     tool._select_step_section("method")
@@ -8906,19 +9269,47 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     assert figure_method_combo.currentText() == "set_layout_engine"
     assert figure_method_combo.currentData() == "set_layout_engine"
 
+    figurecomposer_method._update_current_method_args(tool, ("none",))
+    assert tool.tool_status.operations[1].method_args == ("none",)
     figurecomposer_method._update_current_layout_engine(tool, 0, "tight")
     assert tool.tool_status.operations[1].method_args == ("tight",)
     assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.1}
     figurecomposer_method._update_current_method_arg(tool, 2, "third")
     assert tool.tool_status.operations[1].method_args == ("tight", None, "third")
+    figurecomposer_method._update_current_method_string_tuple_arg(tool, 4, "tail")
+    assert tool.tool_status.operations[1].method_args == (
+        "tight",
+        None,
+        "third",
+        (),
+        ("tail",),
+    )
     figurecomposer_method._update_current_method_string_tuple_arg(tool, 1, "a, b")
-    assert tool.tool_status.operations[1].method_args == ("tight", ("a", "b"), "third")
+    assert tool.tool_status.operations[1].method_args == (
+        "tight",
+        ("a", "b"),
+        "third",
+        (),
+        ("tail",),
+    )
     figurecomposer_method._update_current_method_string_tuple_arg(tool, 1, "")
     assert tool.tool_status.operations[1].method_args == ("tight",)
     figurecomposer_method._update_current_method_kwarg(tool, "pad", None)
     assert tool.tool_status.operations[1].method_kwargs == {}
     figurecomposer_method._update_current_method_kwarg(tool, "pad", 0.3)
     assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.3}
+    figurecomposer_method._operation_trust_update_callback(tool)(True)
+    assert tool.tool_status.operations[1].trusted is True
+    figurecomposer_method._method_float_pair_args_update_callback(tool)("0, 1")
+    assert tool.tool_status.operations[1].method_args == (0.0, 1.0)
+    figurecomposer_method._update_current_method_family(tool, FigureMethodFamily.AXES)
+    assert tool.tool_status.operations[1].method_family == FigureMethodFamily.AXES
+    figurecomposer_method._update_current_method_family(tool, FigureMethodFamily.FIGURE)
+    assert tool.tool_status.operations[1].method_family == FigureMethodFamily.FIGURE
+    tool.operation_list.setCurrentRow(1)
+    tool._select_step_section("method")
+    figurecomposer_method._update_current_method_name(tool, "set_layout_engine")
+    assert tool.tool_status.operations[1].method_name == "set_layout_engine"
     figurecomposer_method._update_current_method_call_policy(
         tool,
         figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
@@ -8931,6 +9322,185 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     assert tool.tool_status.operations[1].method_call_policy is None
     figurecomposer_method._update_current_method_text_values(tool, "\nlabel\n")
     assert tool.tool_status.operations[1].text_values == ("label",)
+
+
+def test_figure_composer_method_framework_dispatch_policies(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    calls: list[tuple[str, object, dict[str, object]]] = []
+
+    def ax_keyword_helper(*args: object, ax: object, **kwargs: object) -> None:
+        calls.append(("ax_keyword", ax, kwargs))
+
+    def fig_keyword_helper(*args: object, fig: object, **kwargs: object) -> None:
+        calls.append(("fig_keyword", fig, kwargs))
+
+    def each_axis_helper(*args: object, ax: object, **kwargs: object) -> None:
+        calls.append(("each_axis", ax, kwargs))
+
+    def plain_helper(*args: object, **kwargs: object) -> None:
+        calls.append(("plain", args, kwargs))
+
+    monkeypatch.setattr(
+        eplt, "composer_ax_keyword_test", ax_keyword_helper, raising=False
+    )
+    monkeypatch.setattr(
+        eplt, "composer_fig_keyword_test", fig_keyword_helper, raising=False
+    )
+    monkeypatch.setattr(
+        eplt, "composer_each_axis_test", each_axis_helper, raising=False
+    )
+    monkeypatch.setattr(eplt, "composer_plain_test", plain_helper, raising=False)
+    monkeypatch.setitem(
+        figurecomposer_method.ERLAB_METHODS,
+        "composer_ax_keyword_test",
+        figurecomposer_method.MethodSpec(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_ax_keyword_test",
+            label="composer_ax_keyword_test",
+            tooltip="test",
+            target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+            call_policy=figurecomposer_method.MethodCallPolicy.AX_KEYWORD,
+        ),
+    )
+    monkeypatch.setitem(
+        figurecomposer_method.ERLAB_METHODS,
+        "composer_fig_keyword_test",
+        figurecomposer_method.MethodSpec(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_fig_keyword_test",
+            label="composer_fig_keyword_test",
+            tooltip="test",
+            target_domain=figurecomposer_method.MethodTargetDomain.FIGURE,
+            call_policy=figurecomposer_method.MethodCallPolicy.FIG_KEYWORD,
+        ),
+    )
+    monkeypatch.setitem(
+        figurecomposer_method.ERLAB_METHODS,
+        "composer_each_axis_test",
+        figurecomposer_method.MethodSpec(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_each_axis_test",
+            label="composer_each_axis_test",
+            tooltip="test",
+            target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+            call_policy=figurecomposer_method.MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
+        ),
+    )
+    monkeypatch.setitem(
+        figurecomposer_method.ERLAB_METHODS,
+        "composer_plain_test",
+        figurecomposer_method.MethodSpec(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_plain_test",
+            label="composer_plain_test",
+            tooltip="test",
+            target_domain=figurecomposer_method.MethodTargetDomain.NONE,
+            call_policy=figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
+            default_args=("value",),
+        ),
+    )
+    operations = (
+        FigureOperationState.method(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_ax_keyword_test",
+            axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            kwargs={"alpha": 0.5},
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_fig_keyword_test",
+            kwargs={"label": "figure"},
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_each_axis_test",
+            axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            kwargs={"color": "red"},
+        ),
+        FigureOperationState.method(
+            family=FigureMethodFamily.ERLAB,
+            name="composer_plain_test",
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=operations,
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figure = Figure()
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+
+    assert [call[0] for call in calls] == [
+        "ax_keyword",
+        "fig_keyword",
+        "each_axis",
+        "each_axis",
+        "plain",
+    ]
+    assert isinstance(calls[0][1], np.ndarray)
+    assert calls[0][2] == {"alpha": 0.5}
+    assert calls[1][1] is figure
+    assert calls[1][2] == {"label": "figure"}
+    assert calls[2][2] == {"color": "red"}
+    assert calls[3][2] == {"color": "red"}
+    assert calls[4][1] == ("value",)
+
+    lines = [
+        line
+        for operation in operations
+        for line in figurecomposer_method._method_code(tool, operation)
+    ]
+    assert lines == [
+        "eplt.composer_ax_keyword_test(alpha=0.5, ax=axs)",
+        'eplt.composer_fig_keyword_test(label="figure", fig=fig)',
+        "for ax in axs.flat:",
+        '    eplt.composer_each_axis_test(color="red", ax=ax)',
+        'eplt.composer_plain_test("value")',
+    ]
+
+
+def test_figure_composer_axes_plot_data_update_helper(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                    args=((0.0, 1.0),),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_method._update_current_plot_data_arg(tool, "x", "0, 1")
+    assert tool.tool_status.operations[0].method_args == ((0, 1), (0.0, 1.0))
+
+    figurecomposer_method._update_current_plot_data_arg(tool, "y", "2, 3")
+    assert tool.tool_status.operations[0].method_args == ((0, 1), (2, 3))
+
+    figurecomposer_method._update_current_plot_data_arg(tool, "x", "")
+    assert tool.tool_status.operations[0].method_args == ((2, 3),)
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
@@ -9429,6 +9999,78 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     assert len(axs[0, 0].lines) == 1
     assert axs[0, 0].lines[0].get_color() == "tab:blue"
     assert axs[0, 1].lines[0].get_transform() == axs[0, 1].transAxes
+
+
+@pytest.mark.parametrize(
+    ("mode", "code_fragment"),
+    [
+        ("figure", "fig.transFigure"),
+        ("dpi", "fig.dpi_scale_trans"),
+        ("xaxis", "ax.get_xaxis_transform()"),
+        ("yaxis", "ax.get_yaxis_transform()"),
+    ],
+)
+def test_figure_composer_method_transform_presets(
+    mode: str, code_fragment: str
+) -> None:
+    figure, axis = plt.subplots()
+    spec = figurecomposer_method.AXES_METHODS["plot"]
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(update={"method_transform": mode})
+
+    transform = figurecomposer_method._render_method_transform(
+        operation,
+        spec,
+        figure=figure,
+        axis=axis,
+    )
+    code = figurecomposer_method._method_transform_code(operation, spec)
+
+    assert isinstance(transform, mtransforms.Transform)
+    assert repr(code) == code_fragment
+    plt.close(figure)
+
+
+def test_figure_composer_method_custom_transform_errors() -> None:
+    figure, axis = plt.subplots()
+    spec = figurecomposer_method.AXES_METHODS["plot"]
+    untrusted = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(
+        update={
+            "method_transform": "custom",
+            "method_transform_expression": "ax.transAxes",
+        }
+    )
+    empty = untrusted.model_copy(
+        update={"trusted": True, "method_transform_expression": ""}
+    )
+    not_transform = untrusted.model_copy(
+        update={"trusted": True, "method_transform_expression": "1"}
+    )
+
+    with pytest.raises(ValueError, match="not trusted"):
+        figurecomposer_method._method_transform_code(untrusted, spec)
+    with pytest.raises(ValueError, match="empty"):
+        figurecomposer_method._method_transform_code(empty, spec)
+    with pytest.raises(ValueError, match="empty"):
+        figurecomposer_method._render_method_transform(
+            empty,
+            spec,
+            figure=figure,
+            axis=axis,
+        )
+    with pytest.raises(TypeError, match="Transform"):
+        figurecomposer_method._render_method_transform(
+            not_transform,
+            spec,
+            figure=figure,
+            axis=axis,
+        )
+    plt.close(figure)
 
 
 def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) -> None:

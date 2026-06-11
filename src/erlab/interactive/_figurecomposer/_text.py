@@ -138,13 +138,10 @@ def _literal_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
         if isinstance(value, (list, tuple)):
             return tuple(value)
         return (value,)
-    value = _literal_from_text(
+    return _literal_from_text(
         f"({stripped},)",
         message="Enter comma-separated literal values.",
     )
-    if not isinstance(value, tuple):
-        return (value,)
-    return value
 
 
 def _format_literal_sequence(value: Sequence[typing.Any]) -> str:

@@ -1151,10 +1151,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @staticmethod
     def _set_combo_value(combo: QtWidgets.QComboBox, value: str) -> None:
         index = combo.findText(value)
-        if index < 0 and value == "False":
-            index = combo.findText("False")
-        if index < 0 and value == "True":
-            index = combo.findText("True")
         combo.setCurrentIndex(max(index, 0))
 
     def _sync_size_mm_controls(self, figsize: tuple[float, float]) -> None:
