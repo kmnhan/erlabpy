@@ -2779,21 +2779,21 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
         pos=selector.cell_rect((1, 2)).center(),
     )
     assert selected[-1] == ((0, 1), (0, 2), (1, 1), (1, 2))
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.cell_rect((0, 1)).center(),
     )
     assert (0, 1) not in selected[-1]
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.cell_rect((0, 0)).center(),
     )
     assert (0, 0) in selected[-1]
@@ -2813,7 +2813,7 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
     qtbot.mousePress(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.cell_rect((0, 0)).center(),
     )
     qtbot.mouseMove(selector, selector.cell_rect((1, 1)).center())
@@ -2958,21 +2958,21 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
         pos=selector.axis_rect("child-axis").center(),
     )
     assert selected[-1] == ("main-axis", "child-axis")
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.axis_rect("main-axis").center(),
     )
     assert selected[-1] == ("child-axis",)
     qtbot.mousePress(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
-        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.axis_rect("main-axis").center(),
     )
     qtbot.mouseMove(selector, selector.axis_rect("child-axis").center())
