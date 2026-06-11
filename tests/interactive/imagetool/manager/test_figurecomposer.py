@@ -8991,27 +8991,24 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    fallback_spec = figurecomposer_method._method_spec(
-        FigureOperationState.method(family=FigureMethodFamily.AXES, name="missing")
-    )
-    assert fallback_spec is next(iter(figurecomposer_method.AXES_METHODS.values()))
-    assert (
-        figurecomposer_method._method_selector_text(fallback_spec) == fallback_spec.name
-    )
+    with pytest.raises(ValueError, match="Unsupported axes method"):
+        figurecomposer_method._method_spec(
+            FigureOperationState.method(family=FigureMethodFamily.AXES, name="missing")
+        )
+    text_spec = figurecomposer_method.AXES_METHODS["set_xlim"]
+    assert figurecomposer_method._method_selector_text(text_spec) == text_spec.name
 
     colorbar_operation = FigureOperationState.method(
         family=FigureMethodFamily.ERLAB,
         name="nice_colorbar",
     )
     colorbar_spec = figurecomposer_method._method_spec(colorbar_operation)
-    assert (
+    with pytest.raises(ValueError, match="Unsupported call policy"):
         figurecomposer_method._effective_call_policy(
             colorbar_operation.model_copy(update={"method_call_policy": "bad-policy"}),
             colorbar_spec,
         )
-        == colorbar_spec.call_policy
-    )
-    assert (
+    with pytest.raises(ValueError, match="not available"):
         figurecomposer_method._effective_call_policy(
             colorbar_operation.model_copy(
                 update={
@@ -9022,7 +9019,18 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
             ),
             colorbar_spec,
         )
-        == colorbar_spec.call_policy
+    assert (
+        figurecomposer_method._effective_call_policy(
+            colorbar_operation.model_copy(
+                update={
+                    "method_call_policy": (
+                        figurecomposer_method.MethodCallPolicy.AX_KEYWORD.value
+                    )
+                }
+            ),
+            colorbar_spec,
+        )
+        == figurecomposer_method.MethodCallPolicy.AX_KEYWORD
     )
 
     assert figurecomposer_method._live_layout_axes(

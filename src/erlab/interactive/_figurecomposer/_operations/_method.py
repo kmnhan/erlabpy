@@ -2242,7 +2242,9 @@ def _method_spec(operation: FigureOperationState) -> MethodSpec:
     methods = _method_specs(operation.method_family)
     if operation.method_name in methods:
         return methods[operation.method_name]
-    return next(iter(methods.values()))
+    raise ValueError(
+        f"Unsupported {operation.method_family.value} method: {operation.method_name!r}"
+    )
 
 
 def _effective_call_policy(
@@ -2252,11 +2254,13 @@ def _effective_call_policy(
         return spec.call_policy
     try:
         policy = MethodCallPolicy(operation.method_call_policy)
-    except ValueError:
-        return spec.call_policy
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported call policy for {spec.name}: {operation.method_call_policy!r}"
+        ) from exc
     if policy in spec.selectable_call_policies:
         return policy
-    return spec.call_policy
+    raise ValueError(f"Call policy {policy.value!r} is not available for {spec.name}")
 
 
 def _method_selector_text(spec: MethodSpec) -> str:
