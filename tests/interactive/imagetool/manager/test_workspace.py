@@ -5255,6 +5255,26 @@ def test_manager_startup_pending_files_combines_file_open_events(tmp_path) -> No
     ]
 
 
+def test_manager_startup_pending_files_keeps_unresolved_paths(
+    monkeypatch, tmp_path
+) -> None:
+    event_file = tmp_path / "event.h5"
+    argv_file = tmp_path / "argv.h5"
+
+    def fail_resolve(self: pathlib.Path) -> pathlib.Path:
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(pathlib.Path, "resolve", fail_resolve)
+
+    assert manager_module._startup_pending_files([event_file], [argv_file]) == [
+        event_file,
+        argv_file,
+    ]
+    assert manager_module._startup_pending_files([event_file], [event_file]) == [
+        event_file
+    ]
+
+
 def test_manager_startup_ignores_argv_files_with_existing_qapplication(
     monkeypatch, qapp, tmp_path
 ) -> None:
@@ -5367,6 +5387,30 @@ def test_manager_startup_forward_workspace_files_stay_local(
     assert not manager_module._try_forward_startup_files([workspace])
 
 
+def test_manager_startup_forward_invalid_h5_is_data_file(monkeypatch, tmp_path) -> None:
+    data_file = tmp_path / "broken.h5"
+    data_file.write_text("not hdf5")
+    forwarded: list[int | None] = []
+
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: {
+            "resolved_index": 2,
+            "needs_selection": False,
+            "managers": [],
+        },
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_load_in_manager_startup",
+        lambda paths, *, target, timeout_ms: forwarded.append(target),
+    )
+
+    assert manager_module._try_forward_startup_files([data_file])
+    assert forwarded == [2]
+
+
 def test_manager_startup_forward_no_live_manager_stays_local(
     monkeypatch, tmp_path
 ) -> None:
@@ -5390,6 +5434,22 @@ def test_manager_startup_forward_no_live_manager_stays_local(
     )
 
     assert not manager_module._try_forward_startup_files([data_file])
+
+
+def test_manager_startup_forward_empty_and_uninspectable_state(
+    monkeypatch, caplog
+) -> None:
+    assert not manager_module._try_forward_startup_files([])
+
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("locked")),
+    )
+    caplog.set_level(logging.DEBUG, logger=manager_module.logger.name)
+
+    assert not manager_module._try_forward_startup_files([pathlib.Path("data.dat")])
+    assert "Could not inspect live managers" in caplog.text
 
 
 def test_manager_startup_forward_h5_workspace_files_stay_local(
@@ -5447,6 +5507,79 @@ def test_manager_startup_forward_ambiguous_target_choices(
 
     assert manager_module._try_forward_startup_files([data_file]) is expected
     assert forwarded == ([3] if choice == 3 else [])
+
+
+@pytest.mark.parametrize(
+    ("dialog_result", "selected_row", "expected"),
+    [
+        (
+            QtWidgets.QDialog.DialogCode.Rejected,
+            1,
+            manager_module._STARTUP_TARGET_CANCEL,
+        ),
+        (
+            QtWidgets.QDialog.DialogCode.Accepted,
+            -1,
+            manager_module._STARTUP_TARGET_CANCEL,
+        ),
+        (QtWidgets.QDialog.DialogCode.Accepted, 0, manager_module._STARTUP_TARGET_NEW),
+        (QtWidgets.QDialog.DialogCode.Accepted, 1, 7),
+        (QtWidgets.QDialog.DialogCode.Accepted, 2, 8),
+    ],
+)
+def test_manager_startup_target_dialog_returns_selected_target(
+    monkeypatch, qapp, tmp_path, dialog_result, selected_row, expected
+) -> None:
+    inspected: list[tuple[int, str, str]] = []
+    workspace_path = tmp_path / "project.itws"
+
+    def fake_exec(dialog: QtWidgets.QDialog):
+        target_list = dialog.findChild(
+            QtWidgets.QListWidget, "manager_startup_target_list"
+        )
+        assert target_list is not None
+        assert target_list.count() == 3
+        inspected.append(
+            (
+                target_list.currentRow(),
+                target_list.item(1).text(),
+                target_list.item(2).toolTip(),
+            )
+        )
+        target_list.setCurrentRow(selected_row)
+        return dialog_result
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", fake_exec)
+
+    target = manager_module._choose_startup_manager_target(
+        {
+            "managers": [
+                {
+                    "index": 7,
+                    "host": "127.0.0.1",
+                    "port": 45555,
+                    "pid": 123,
+                    "workspace_path": str(workspace_path),
+                },
+                {
+                    "index": 8,
+                    "host": "127.0.0.1",
+                    "port": 45556,
+                    "pid": 456,
+                    "workspace_path": None,
+                },
+            ]
+        }
+    )
+
+    assert target == expected
+    assert inspected == [
+        (
+            0,
+            "Manager #7 - project.itws",
+            "Manager #8\nEndpoint: 127.0.0.1:45556\nProcess ID: 456",
+        )
+    ]
 
 
 def test_manager_startup_open_workspace_dialog_schedules_load(
