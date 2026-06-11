@@ -2620,6 +2620,36 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
     selector.render(pixmap)
 
 
+def test_figure_composer_selector_colors_use_widget_palette_group(qtbot) -> None:
+    selector = figurecomposer_widgets._AxesSelectorWidget()
+    qtbot.addWidget(selector)
+    palette = selector.palette()
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Active,
+        QtGui.QPalette.ColorRole.Highlight,
+        QtGui.QColor("red"),
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Inactive,
+        QtGui.QPalette.ColorRole.Highlight,
+        QtGui.QColor("blue"),
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.Highlight,
+        QtGui.QColor("green"),
+    )
+    selector.setPalette(palette)
+
+    assert figurecomposer_widgets._selector_colors(selector).selection == QtGui.QColor(
+        "blue"
+    )
+    selector.setEnabled(False)
+    assert figurecomposer_widgets._selector_colors(selector).selection == QtGui.QColor(
+        "green"
+    )
+
+
 def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> None:
     main_span = FigureGridSpecSpanState(
         row_start=0,

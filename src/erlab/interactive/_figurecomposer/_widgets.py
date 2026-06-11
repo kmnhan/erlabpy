@@ -95,13 +95,24 @@ def _blend_qcolors(
     )
 
 
-def _selector_colors(palette: QtGui.QPalette) -> _SelectorColors:
-    face = palette.color(QtGui.QPalette.ColorRole.Base)
-    panel = palette.color(QtGui.QPalette.ColorRole.Window)
-    alternate = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
-    border = palette.color(QtGui.QPalette.ColorRole.Mid)
-    selection = palette.color(QtGui.QPalette.ColorRole.Highlight)
-    text = palette.color(QtGui.QPalette.ColorRole.Text)
+def _selector_color_group(widget: QtWidgets.QWidget) -> QtGui.QPalette.ColorGroup:
+    if not widget.isEnabled():
+        return QtGui.QPalette.ColorGroup.Disabled
+    window = widget.window()
+    if window is not None and window.isActiveWindow():
+        return QtGui.QPalette.ColorGroup.Active
+    return QtGui.QPalette.ColorGroup.Inactive
+
+
+def _selector_colors(widget: QtWidgets.QWidget) -> _SelectorColors:
+    palette = widget.palette()
+    color_group = _selector_color_group(widget)
+    face = palette.color(color_group, QtGui.QPalette.ColorRole.Base)
+    panel = palette.color(color_group, QtGui.QPalette.ColorRole.Window)
+    alternate = palette.color(color_group, QtGui.QPalette.ColorRole.AlternateBase)
+    border = palette.color(color_group, QtGui.QPalette.ColorRole.Mid)
+    selection = palette.color(color_group, QtGui.QPalette.ColorRole.Highlight)
+    text = palette.color(color_group, QtGui.QPalette.ColorRole.Text)
     nested_face = _blend_qcolors(face, alternate, 0.42)
     hover_face = _blend_qcolors(face, selection, 0.12)
     selection_face = _blend_qcolors(face, selection, 0.18)
@@ -1141,7 +1152,7 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             super().paintEvent(event)
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        colors = _selector_colors(self.palette())
+        colors = _selector_colors(self)
         for axis in _all_axes_for_shape(self._nrows, self._ncols):
             rect = self.cell_rect(axis)
             selected = axis in self._selected_axes
@@ -1257,6 +1268,16 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         self.update()
         if event is not None:
             super().leaveEvent(event)
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if event is not None and event.type() in {
+            QtCore.QEvent.Type.ActivationChange,
+            QtCore.QEvent.Type.ApplicationPaletteChange,
+            QtCore.QEvent.Type.EnabledChange,
+            QtCore.QEvent.Type.PaletteChange,
+        }:
+            self.update()
+        super().changeEvent(event)
 
     def _grid_rect(self) -> QtCore.QRect:
         rect = self.rect()
@@ -1860,7 +1881,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         *,
         depth: int,
     ) -> None:
-        colors = _selector_colors(self.palette())
+        colors = _selector_colors(self)
 
         _draw_selector_rect(
             painter,
