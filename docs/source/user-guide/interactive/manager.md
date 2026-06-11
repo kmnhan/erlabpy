@@ -143,7 +143,7 @@ Once the manager is running, you can open ImageTools in several ways:
 
 - For custom integration with other workflows, scripts can call
   {func}`erlab.interactive.imagetool.manager.show_in_manager` or
-  {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see
+  {func}`erlab.interactive.imagetool.manager.load_in_manager` directly (see
   {ref}`imagetool-manager-automation`).
 
 (imagetool-manager-multiple-instances)=
