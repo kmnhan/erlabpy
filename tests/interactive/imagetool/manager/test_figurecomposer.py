@@ -3433,6 +3433,22 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     assert info_changes == [(4.5, 3.0)]
 
 
+def test_figure_composer_resize_render_is_cancelled_on_close(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    info_changes: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changes.append(None))
+
+    tool._queue_figure_resize_render()
+    generation = tool._figure_resize_render_generation
+    tool.close()
+    tool._run_queued_figure_resize_render(generation)
+
+    assert info_changes == []
+
+
 def test_figure_composer_show_defers_figure_window(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(
         xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})

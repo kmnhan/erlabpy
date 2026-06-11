@@ -372,7 +372,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _run_queued_figure_resize_render(self, generation: int) -> None:
-        if generation != self._figure_resize_render_generation:
+        if (
+            generation != self._figure_resize_render_generation
+            or self._closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+        ):
             return
         window = self._figure_window
         if window is not None and erlab.interactive.utils.qt_is_valid(window):
@@ -479,6 +483,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._closing = True
         self._cancel_queued_show_figure_window()
+        self._figure_resize_render_generation += 1
         self._preview_render_update_generation += 1
         self._preview_render_update_pending = False
         self._preview_pixmap_update_generation += 1
