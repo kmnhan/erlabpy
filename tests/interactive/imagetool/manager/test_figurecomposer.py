@@ -4799,6 +4799,14 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
         "keyword": "ax2",
         "child-axis": "ax3",
     }
+    assert figurecomposer_gridspec._gridspec_axis_code_names(
+        setup, reserved_names=("peak", "data")
+    ) == {
+        "first": "ax0",
+        "second": "ax1",
+        "keyword": "ax2",
+        "child-axis": "ax3",
+    }
     assert (
         figurecomposer_gridspec._gridspec_axis_variable_name_error(
             setup, "first", "valid_name"
@@ -4813,6 +4821,21 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
     )
     assert "unique" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
         setup, "first", "peak"
+    )
+    assert "reserved" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "fig"
+    )
+    assert "reserved" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "plt"
+    )
+    assert "reserved" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "gs0"
+    )
+    assert "reserved" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "gs0_0"
+    )
+    assert "reserved" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "data", reserved_names=("data",)
     )
     assert figurecomposer_gridspec._gridspec_grid_path(setup, "missing") == (root,)
     assert (
@@ -5051,6 +5074,96 @@ def test_figure_composer_gridspec_codegen_executes(qtbot) -> None:
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
     assert len(namespace["fig"].axes) == 3
+
+
+def test_figure_composer_gridspec_codegen_reserves_live_names(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    span = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    source_axis = FigureGridSpecAxesState(
+        axes_id="source-axis",
+        label="data",
+        span=span,
+    )
+    figure_axis = FigureGridSpecAxesState(
+        axes_id="figure-axis",
+        label="fig",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+    )
+    gridspec_axis = FigureGridSpecAxesState(
+        axes_id="gridspec-axis",
+        label="gs0",
+        span=FigureGridSpecSpanState(
+            row_start=1,
+            row_stop=2,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    child_grid = FigureGridSpecGridState(
+        grid_id="child-grid",
+        nrows=1,
+        ncols=1,
+        span=FigureGridSpecSpanState(
+            row_start=1,
+            row_stop=2,
+            col_start=1,
+            col_stop=2,
+        ),
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="nested-helper-axis",
+                label="gs0_0",
+                span=span,
+            ),
+        ),
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        layout=None,
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                nrows=2,
+                ncols=2,
+                axes=(source_axis, figure_axis, gridspec_axis),
+                child_grids=(child_grid,),
+            )
+        ),
+    )
+    recipe = FigureRecipeState(
+        setup=setup,
+        sources=(FigureSourceState(name="data", label="data"),),
+        primary_source="data",
+    )
+    tool = FigureComposerTool(data, recipe=recipe)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    lines = code.splitlines()
+    assert "data = fig.add_subplot(gs0[0, 0])" not in lines
+    assert "fig = fig.add_subplot(gs0[0, 1])" not in lines
+    assert "gs0 = fig.add_subplot(gs0[1, 0])" not in lines
+    assert "gs0_0 = fig.add_subplot(gs0_0[0, 0])" not in lines
+    assert "ax0 = fig.add_subplot(gs0[0, 0])" in lines
+    assert "ax1 = fig.add_subplot(gs0[0, 1])" in lines
+    assert "ax2 = fig.add_subplot(gs0[1, 0])" in lines
+    assert "gs0_0 = gs0[1, 1].subgridspec(nrows=1, ncols=1)" in lines
+    assert "ax3 = fig.add_subplot(gs0_0[0, 0])" in lines
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["data"] is data
+    assert len(namespace["fig"].axes) == 4
 
 
 def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:

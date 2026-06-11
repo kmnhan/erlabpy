@@ -165,7 +165,9 @@ def _custom_axes_alias_lines(tool: FigureComposerTool) -> list[str]:
     if setup.layout_mode != "gridspec":
         return []
     axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-    axes_code = _gridspec_axis_code_tuple(setup, axes_ids)
+    axes_code = _gridspec_axis_code_tuple(
+        setup, axes_ids, reserved_names=tool._source_names()
+    )
     lines = ["axs = {"]
     lines.extend(
         f"    {axis_id!r}: {axis_code},"
@@ -180,7 +182,9 @@ def _custom_first_axis_code(tool: FigureComposerTool) -> str:
     if setup.layout_mode != "gridspec":
         return "axs[0, 0]"
     axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-    axes_code = _gridspec_axis_code_tuple(setup, axes_ids[:1])
+    axes_code = _gridspec_axis_code_tuple(
+        setup, axes_ids[:1], reserved_names=tool._source_names()
+    )
     return axes_code[0] if axes_code else "None"
 
 

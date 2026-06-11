@@ -42,6 +42,10 @@ def _invalid_gridspec_axes_error(invalid_axes: tuple[str, ...]) -> str:
     return f"{count} selected GridSpec {suffix} outside the current layout"
 
 
+def _reserved_code_names(tool: FigureComposerTool) -> tuple[str, ...]:
+    return tuple(tool._source_names())
+
+
 def _axes_code(
     tool: FigureComposerTool,
     selection: FigureAxesSelectionState,
@@ -59,7 +63,9 @@ def _axes_code(
         axes_ids = _gridspec_valid_axes_ids(setup, selection.axes_ids)
         if not axes_ids:
             raise ValueError("No axes are selected")
-        axes_code = _gridspec_axis_code_tuple(setup, axes_ids)
+        axes_code = _gridspec_axis_code_tuple(
+            setup, axes_ids, reserved_names=_reserved_code_names(tool)
+        )
         if for_plot_slices:
             return "[" + ", ".join(axes_code) + "]"
         if len(axes_code) == 1:
@@ -98,7 +104,9 @@ def _axes_sequence_code(
         axes_ids = _gridspec_valid_axes_ids(setup, selection.axes_ids)
         if not axes_ids:
             raise ValueError("No axes are selected")
-        axes_code = _gridspec_axis_code_tuple(setup, axes_ids)
+        axes_code = _gridspec_axis_code_tuple(
+            setup, axes_ids, reserved_names=_reserved_code_names(tool)
+        )
         if len(axes_code) == 1:
             return f"({axes_code[0]},)"
         return "(" + ", ".join(axes_code) + ")"
@@ -152,7 +160,9 @@ def _gridspec_setup_code_lines(tool: FigureComposerTool) -> list[str]:
     if (layout := _setup_layout_value(tool)) is not None:
         kwargs["layout"] = layout
     lines = [f"fig = plt.figure({_code_kwargs(kwargs)})"]
-    code_names = _gridspec_axis_code_names(setup)
+    code_names = _gridspec_axis_code_names(
+        setup, reserved_names=_reserved_code_names(tool)
+    )
 
     def grid_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:
         grid_kwargs: dict[str, typing.Any] = {

@@ -1571,7 +1571,9 @@ def _selector_widget(
     if setup.layout_mode == "gridspec":
         selector = _GridSpecViewWidget(parent, mode="select")
         labels = {
-            axes_id: _gridspec_axis_display_name(setup, axes_id)
+            axes_id: _gridspec_axis_display_name(
+                setup, axes_id, reserved_names=tool._source_names()
+            )
             for axes_id in _gridspec_all_axes_ids(setup)
         }
         selector.set_layout(setup.gridspec.root, labels)
