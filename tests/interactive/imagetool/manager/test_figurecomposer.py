@@ -6616,6 +6616,7 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
         "zoom",
         "configure_subplots",
         "edit_parameters",
+        "copy_figure_to_clipboard",
         "save_figure",
     ):
         action = toolbar._actions[action_id]
@@ -6636,6 +6637,23 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
     toolbar._actions["edit_parameters"].trigger()
 
     assert calls == ["export", "subplots", "axes"]
+
+
+def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+    tool.figure_window.canvas.draw()
+
+    clipboard = QtWidgets.QApplication.clipboard()
+    clipboard.clear()
+    tool.figure_window.toolbar._actions["copy_figure_to_clipboard"].trigger()
+
+    copied = clipboard.pixmap()
+    assert not copied.isNull()
+    assert copied.size().width() > 0
+    assert copied.size().height() > 0
 
 
 def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:

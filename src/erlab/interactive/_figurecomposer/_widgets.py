@@ -698,6 +698,7 @@ _TOOLBAR_ICON_NAMES = {
     "zoom_to_rect": "mdi6.magnify-plus",
     "subplots": "mdi6.view-grid-outline",
     "qt4_editor_options": "mdi6.tune",
+    "copy_figure_to_clipboard": "mdi6.content-copy",
     "filesave": "mdi6.export",
 }
 
@@ -727,14 +728,27 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
             action.setObjectName(f"figureComposerToolbar_{action_id}")
         tooltips = {
             "save_figure": "Export the composer figure using recipe export settings.",
+            "copy_figure_to_clipboard": "Copy the current figure image.",
             "configure_subplots": (
                 "Add or edit recipe steps for subplot spacing and layout engine."
             ),
             "edit_parameters": "Add or edit recipe steps for selected axes.",
         }
+        self._add_copy_action()
         for action_id, tooltip in tooltips.items():
             if action := self._actions.get(action_id):
                 action.setToolTip(tooltip)
+
+    def _add_copy_action(self) -> None:
+        action_id = "copy_figure_to_clipboard"
+        action = QtGui.QAction(self._icon(action_id), "Copy", self)
+        action.setObjectName(f"figureComposerToolbar_{action_id}")
+        action.triggered.connect(self.copy_figure_to_clipboard)
+        if save_action := self._actions.get("save_figure"):
+            self.insertAction(save_action, action)
+        else:
+            self.addAction(action)
+        self._actions[action_id] = action
 
     def _icon(self, name: str) -> QtGui.QIcon:
         icon_key = name.removesuffix(".png").removesuffix("_large")
@@ -752,6 +766,22 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
 
     def save_figure(self, *args: object) -> None:
         self._export_callback()
+
+    def copy_figure_to_clipboard(self, *args: object) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self, self.canvas):
+            return
+        canvas = typing.cast("FigureCanvas", self.canvas)
+        pixmap = canvas.grab()
+        if pixmap.isNull():
+            return
+        application = typing.cast(
+            "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
+        )
+        if (
+            application is not None
+            and (clipboard := application.clipboard()) is not None
+        ):
+            clipboard.setPixmap(pixmap)
 
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
         if event is not None and event.type() == QtCore.QEvent.Type.PaletteChange:
