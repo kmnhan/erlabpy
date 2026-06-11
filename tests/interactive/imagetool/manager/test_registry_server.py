@@ -1284,7 +1284,7 @@ def test_manager_server_client_helpers_target_socket_branches(
 
     monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
     monkeypatch.setattr(
-        manager_server, "resolve_manager_record", lambda target=None: record
+        manager_server, "resolve_manager_record", lambda target=None, **_kwargs: record
     )
 
     def _query_zmq(payload, **kwargs):
@@ -1333,6 +1333,48 @@ def test_manager_server_client_helpers_target_socket_branches(
         "command",
     ]
     assert all(kwargs["record"] == record for _payload, kwargs in calls)
+
+
+def test_startup_file_forwarding_uses_private_timeout(monkeypatch, tmp_path) -> None:
+    calls: list[tuple[typing.Any, dict[str, typing.Any]]] = []
+    record = manager_registry._ManagerRecord(
+        internal_id="mgr",
+        index=2,
+        pid=123,
+        host="127.0.0.1",
+        port=45555,
+        watch_port=45556,
+        started="2026-05-08T10:00:00",
+        version="3.22.0",
+        heartbeat=100.0,
+    )
+    data_file = tmp_path / "data.dat"
+    data_file.write_text("data", encoding="utf-8")
+
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
+    monkeypatch.setattr(
+        manager_server, "resolve_manager_record", lambda target=None, **_kwargs: record
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_query_zmq",
+        lambda payload, **kwargs: (
+            calls.append((payload, kwargs)) or Response(status="ok")
+        ),
+    )
+
+    manager_server._load_in_manager_startup(
+        (data_file,),
+        target=2,
+        timeout_ms=1234,
+    )
+
+    [(payload, kwargs)] = calls
+    assert payload.packet_type == "open"
+    assert payload.loader_name == "ask"
+    assert payload.filename_list == [str(data_file)]
+    assert kwargs["record"] == record
+    assert kwargs["timeout_ms"] == 1234
 
 
 def test_manager_handle_watch_info_delegates_to_target(monkeypatch) -> None:

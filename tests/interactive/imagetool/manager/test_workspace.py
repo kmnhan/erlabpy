@@ -5226,7 +5226,7 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
     workspace.touch()
     data_file.touch()
 
-    file_args, open_workspace_dialog = manager_module._parse_startup_args(
+    startup_args = manager_module._parse_startup_args(
         [
             manager_desktop.OPEN_WORKSPACE_DIALOG_ARG,
             str(workspace),
@@ -5237,8 +5237,216 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
         ]
     )
 
-    assert open_workspace_dialog
-    assert file_args == [workspace, data_file]
+    assert startup_args.open_workspace_dialog
+    assert startup_args.force_new_manager
+    assert startup_args.files == [workspace, data_file]
+
+
+def test_manager_startup_pending_files_combines_file_open_events(tmp_path) -> None:
+    event_file = tmp_path / "event.h5"
+    argv_file = tmp_path / "argv.h5"
+
+    assert manager_module._startup_pending_files([event_file], [argv_file]) == [
+        event_file,
+        argv_file,
+    ]
+    assert manager_module._startup_pending_files([event_file], [event_file]) == [
+        event_file
+    ]
+
+
+def test_manager_startup_ignores_argv_files_with_existing_qapplication(
+    monkeypatch, qapp, tmp_path
+) -> None:
+    data_file = tmp_path / "data.dat"
+    data_file.touch()
+    handled_files: list[pathlib.Path] = []
+
+    if isinstance(qapp, manager_module._ManagerApp):
+        qapp._pending_files.clear()
+
+    class _FakeManager:
+        def show(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+        def _handle_dropped_files(self, paths: list[pathlib.Path]) -> None:
+            handled_files.extend(paths)
+
+        def load(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        manager_module.sys,
+        "argv",
+        ["erlab-imagetool-manager", str(data_file)],
+    )
+    monkeypatch.setattr(manager_module, "ImageToolManager", _FakeManager)
+    monkeypatch.setattr(
+        manager_module,
+        "_try_forward_startup_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not forward embedded argv files")
+        ),
+    )
+
+    try:
+        manager_module.main(execute=False)
+        assert handled_files == []
+    finally:
+        manager_module._manager_instance = None
+
+
+def test_manager_startup_forward_files_to_resolved_manager(monkeypatch, tmp_path):
+    data_file = tmp_path / "data.dat"
+    data_file.touch()
+    forwarded: list[tuple[list[pathlib.Path], int | None, int]] = []
+
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: {
+            "resolved_index": 4,
+            "needs_selection": False,
+            "managers": [],
+        },
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_load_in_manager_startup",
+        lambda paths, *, target, timeout_ms: forwarded.append(
+            (list(paths), target, timeout_ms)
+        ),
+    )
+
+    assert manager_module._try_forward_startup_files([data_file])
+    assert forwarded == [([data_file], 4, manager_module._STARTUP_FORWARD_TIMEOUT_MS)]
+
+
+def test_manager_startup_forward_failure_falls_back_to_new_manager(
+    monkeypatch, tmp_path, caplog
+):
+    data_file = tmp_path / "data.dat"
+    data_file.touch()
+
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: {
+            "resolved_index": 4,
+            "needs_selection": False,
+            "managers": [],
+        },
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_load_in_manager_startup",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("gone")),
+    )
+    caplog.set_level(logging.INFO, logger=manager_module.logger.name)
+
+    assert not manager_module._try_forward_startup_files([data_file])
+    assert "Could not forward startup files" in caplog.text
+
+
+def test_manager_startup_forward_workspace_files_stay_local(
+    monkeypatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    workspace.touch()
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not inspect managers")
+        ),
+    )
+
+    assert not manager_module._try_forward_startup_files([workspace])
+
+
+def test_manager_startup_forward_no_live_manager_stays_local(
+    monkeypatch, tmp_path
+) -> None:
+    data_file = tmp_path / "data.dat"
+    data_file.touch()
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: {
+            "resolved_index": None,
+            "needs_selection": False,
+            "managers": [],
+        },
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_load_in_manager_startup",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not forward")
+        ),
+    )
+
+    assert not manager_module._try_forward_startup_files([data_file])
+
+
+def test_manager_startup_forward_h5_workspace_files_stay_local(
+    monkeypatch, tmp_path
+) -> None:
+    import h5py
+
+    workspace = tmp_path / "workspace.h5"
+    with h5py.File(workspace, "w") as h5_file:
+        h5_file.attrs["imagetool_workspace_schema_version"] = 5
+    monkeypatch.setattr(
+        manager_module,
+        "manager_selection_info",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not inspect managers")
+        ),
+    )
+
+    assert not manager_module._try_forward_startup_files([workspace])
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        (manager_module._STARTUP_TARGET_NEW, False),
+        (manager_module._STARTUP_TARGET_CANCEL, True),
+        (3, True),
+    ],
+)
+def test_manager_startup_forward_ambiguous_target_choices(
+    monkeypatch, tmp_path, choice, expected
+) -> None:
+    data_file = tmp_path / "data.dat"
+    data_file.touch()
+    forwarded: list[int | None] = []
+    info = {
+        "resolved_index": None,
+        "needs_selection": True,
+        "managers": [{"index": 3}],
+    }
+
+    monkeypatch.setattr(
+        manager_module, "manager_selection_info", lambda **_kwargs: info
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_choose_startup_manager_target",
+        lambda selection_info, parent=None: choice,
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_load_in_manager_startup",
+        lambda paths, *, target, timeout_ms: forwarded.append(target),
+    )
+
+    assert manager_module._try_forward_startup_files([data_file]) is expected
+    assert forwarded == ([3] if choice == 3 else [])
 
 
 def test_manager_startup_open_workspace_dialog_schedules_load(

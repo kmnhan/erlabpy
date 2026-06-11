@@ -251,9 +251,11 @@ def _active_records_unlocked() -> list[_ManagerRecord]:
     return sorted(active, key=lambda record: record.index)
 
 
-def live_manager_records() -> tuple[_ManagerRecord, ...]:
+def live_manager_records(
+    *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> tuple[_ManagerRecord, ...]:
     """Return ready live managers, removing stale registry entries."""
-    with _registry_lock():
+    with _registry_lock(lock_timeout_ms):
         return tuple(
             record
             for record in _active_records_unlocked()
@@ -404,13 +406,15 @@ def clear_default_manager() -> None:
     _default_manager_index = None
 
 
-def resolve_manager_record(target: int | None = None) -> _ManagerRecord:
+def resolve_manager_record(
+    target: int | None = None, *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> _ManagerRecord:
     """Resolve a target index or client default to a live manager record."""
     global _default_manager_index
     if target is not None:
         target = _normalize_manager_index(target, label="target")
 
-    records = live_manager_records()
+    records = live_manager_records(lock_timeout_ms=lock_timeout_ms)
     if target is not None:
         for record in records:
             if record.index == target:
@@ -440,7 +444,9 @@ def resolve_manager_record(target: int | None = None) -> _ManagerRecord:
     )
 
 
-def manager_selection_info() -> dict[str, object]:
+def manager_selection_info(
+    *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> dict[str, object]:
     """Return manager selection state for external clients.
 
     Returns
@@ -452,7 +458,7 @@ def manager_selection_info() -> dict[str, object]:
         ``"none"``, ``"single"``, ``"default"``, or ``"multiple"``.
     """
     global _default_manager_index
-    records = live_manager_records()
+    records = live_manager_records(lock_timeout_ms=lock_timeout_ms)
     default_index = _default_manager_index
     if default_index is not None and all(
         record.index != default_index for record in records

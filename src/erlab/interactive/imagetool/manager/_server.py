@@ -365,10 +365,11 @@ def _recv_multipart(sock: zmq.Socket, **kwargs) -> dict[str, typing.Any]:
 class ImageToolManagerTimeoutError(TimeoutError):
     """Custom timeout error for ImageToolManager operations."""
 
-    def __init__(self) -> None:
+    def __init__(self, timeout_ms: int | None = None) -> None:
+        timeout = ZMQ_TIMEOUT_MS if timeout_ms is None else timeout_ms
         super().__init__(
             f"Timed out waiting for ImageToolManager response after "
-            f"{ZMQ_TIMEOUT_MS} ms. Adjust via the environment variable "
+            f"{timeout} ms. Adjust via the environment variable "
             "ITOOL_MANAGER_ZMQ_TIMEOUT_MS."
         )
 
@@ -378,6 +379,7 @@ def _query_zmq(
     *,
     target: int | None = None,
     record: _ManagerRecord | None = None,
+    timeout_ms: int | None = None,
 ) -> Response:
     """Client side function to send a packet to the server and receive a response.
 
@@ -389,6 +391,7 @@ def _query_zmq(
 
     """
     record = resolve_manager_record(target) if record is None else record
+    response_timeout_ms = ZMQ_TIMEOUT_MS if timeout_ms is None else timeout_ms
 
     ctx = zmq.Context.instance()
 
@@ -408,19 +411,34 @@ def _query_zmq(
         _send_multipart(sock, payload_dict)
 
         # Wait for a response
-        if ZMQ_TIMEOUT_MS > 0 and not poller.poll(ZMQ_TIMEOUT_MS):
-            raise ImageToolManagerTimeoutError
+        if response_timeout_ms > 0 and not poller.poll(response_timeout_ms):
+            raise ImageToolManagerTimeoutError(response_timeout_ms)
         response = Response(**_recv_multipart(sock))
         if response.status == "unpickle-failed":
             logger.debug("Retrying with cloudpickle...")
             _send_multipart(sock, payload_dict, use_cloudpickle=True)
-            if ZMQ_TIMEOUT_MS > 0 and not poller.poll(ZMQ_TIMEOUT_MS):
-                raise ImageToolManagerTimeoutError
+            if response_timeout_ms > 0 and not poller.poll(response_timeout_ms):
+                raise ImageToolManagerTimeoutError(response_timeout_ms)
             response = Response(**_recv_multipart(sock))
     finally:
         sock.close()
 
     return response
+
+
+def _load_paths_and_loader(
+    paths: Iterable[str | os.PathLike], loader_name: str | None
+) -> tuple[list[str], str]:
+    path_list: list[str] = []
+    for p in paths:
+        path = pathlib.Path(p)
+        if not path.exists():
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+        path_list.append(str(path))
+
+    if loader_name is None:
+        return path_list, "ask"
+    return path_list, erlab.io.loaders[loader_name].name
 
 
 _UNSET = object()
@@ -1002,19 +1020,7 @@ def load_in_manager(
         the same Python process and the data is passed directly.
 
     """
-    path_list: list[str] = []
-    for p in paths:
-        path = pathlib.Path(p)
-        if not path.exists():
-            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-        path_list.append(str(path))
-
-    if loader_name is None:
-        loader: str = "ask"
-    else:
-        loader = erlab.io.loaders[
-            loader_name
-        ].name  # Trigger exception if loader_name is not registered
+    path_list, loader = _load_paths_and_loader(paths, loader_name)
 
     direct_manager = _direct_manager_for_target(target)
     if direct_manager is not None:
@@ -1031,6 +1037,33 @@ def load_in_manager(
             arguments=load_kwargs,
         ),
         record=record,
+    )
+
+
+def _load_in_manager_startup(
+    paths: Iterable[str | os.PathLike],
+    *,
+    target: int | None,
+    timeout_ms: int,
+) -> Response | None:
+    """Load startup files into a live manager with a startup-specific timeout."""
+    path_list, loader = _load_paths_and_loader(paths, None)
+
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
+        direct_manager._data_load(path_list, loader, {})
+        return None
+
+    record = resolve_manager_record(target, lock_timeout_ms=timeout_ms)
+    return _query_zmq(
+        OpenFilesPacket(
+            packet_type="open",
+            filename_list=path_list,
+            loader_name=loader,
+            arguments={},
+        ),
+        record=record,
+        timeout_ms=timeout_ms,
     )
 
 
