@@ -840,30 +840,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 setup_layout.addWidget(label, row, column)
                 setup_layout.addWidget(widget, row, column + 1)
 
-        def add_grid_single_row(
-            row: int,
-            row_label_text: str,
-            row_object_name: str,
-            row_tooltip: str,
-            field_label_text: str,
-            widget: QtWidgets.QWidget,
-            field_tooltip: str,
-        ) -> None:
-            row_label = QtWidgets.QLabel(row_label_text, layout_page)
-            row_label.setObjectName(row_object_name)
-            row_label.setToolTip(row_tooltip)
-            row_label.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
-            )
-            field_label = QtWidgets.QLabel(field_label_text, layout_page)
-            field_label.setBuddy(widget)
-            field_label.setToolTip(field_tooltip)
-            widget.setToolTip(field_tooltip)
-            setup_layout.addWidget(row_label, row, 0)
-            setup_layout.addWidget(field_label, row, 1)
-            setup_layout.addWidget(widget, row, 2, 1, 3)
-
         mode_label = QtWidgets.QLabel("Layout mode", layout_page)
         mode_label.setObjectName("figureComposerLayoutModeControls")
         mode_label.setBuddy(self.layout_mode_combo)
@@ -1050,15 +1026,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.height_mm_spin,
             "Figure height in millimeters. Converted to inches for Matplotlib.",
         )
-        add_grid_single_row(
-            5,
-            "Resolution",
-            "figureComposerDpiControls",
-            "Figure resolution passed to Matplotlib.",
-            "DPI",
-            self.dpi_spin,
-            "Figure dots per inch passed to Matplotlib and generated code.",
+        dpi_tooltip = "Figure dots per inch passed to Matplotlib and generated code."
+        dpi_label = QtWidgets.QLabel("DPI", layout_page)
+        dpi_label.setObjectName("figureComposerDpiControls")
+        dpi_label.setBuddy(self.dpi_spin)
+        dpi_label.setToolTip(dpi_tooltip)
+        dpi_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
         )
+        self.dpi_spin.setToolTip(dpi_tooltip)
+        setup_layout.addWidget(dpi_label, 5, 0, 1, 2)
+        setup_layout.addWidget(self.dpi_spin, 5, 2, 1, 3)
         layout_row_label = QtWidgets.QLabel("Layout engine", layout_page)
         layout_row_label.setObjectName("figureComposerLayoutControls")
         layout_row_label.setToolTip(

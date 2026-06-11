@@ -6172,9 +6172,23 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QWidget, "figureComposerGridControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeMmControls") is not None
-    assert tool.findChild(QtWidgets.QWidget, "figureComposerDpiControls") is not None
+    dpi_label = tool.findChild(QtWidgets.QLabel, "figureComposerDpiControls")
+    assert dpi_label is not None
+    assert dpi_label.buddy() is tool.dpi_spin
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
+    assert layout_grid.getItemPosition(layout_grid.indexOf(dpi_label)) == (
+        5,
+        0,
+        1,
+        2,
+    )
+    assert layout_grid.getItemPosition(layout_grid.indexOf(tool.dpi_spin)) == (
+        5,
+        2,
+        1,
+        3,
+    )
     assert tool.gridspec_editor_widget.isHidden()
     gridspec_container = tool.findChild(
         QtWidgets.QWidget, "figureComposerGridSpecEditorContainer"
