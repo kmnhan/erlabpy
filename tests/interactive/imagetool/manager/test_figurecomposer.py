@@ -936,6 +936,10 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         "red",
         "blue",
     )
+    assert figurecomposer_line_style.color_kw_value_from_text("('red', 'blue')") == (
+        "red",
+        "blue",
+    )
     assert figurecomposer_line_style.color_kw_value_from_text("[bad") == "[bad"
 
     parent = QtWidgets.QWidget()
@@ -954,6 +958,9 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert figurecomposer_line_style.style_combo_value(combo) == "none"
     figurecomposer_line_style.set_style_combo_value(combo, "None")
     assert figurecomposer_line_style.style_combo_value(combo) == "none"
+    figurecomposer_line_style.set_style_combo_value(combo, "custom-dash")
+    assert figurecomposer_line_style.style_combo_value(combo) == "custom-dash"
+    assert combo.itemText(combo.count() - 1) == "custom-dash"
 
     spinbox = figurecomposer_line_style.optional_positive_spinbox(None, parent=parent)
     assert (
@@ -1127,6 +1134,10 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
         2.0,
         2.0,
     )
+    assert _line_transform.line_transform_values((1.0, 2.0), 2, default=1.0) == (
+        1.0,
+        2.0,
+    )
     with pytest.raises(ValueError, match="one value or one per profile"):
         _line_transform.line_transform_values((1.0, 2.0, 3.0), 2, default=1.0)
 
@@ -1178,6 +1189,190 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
             normalized_operation,
             profiles=(profile,),
         )
+
+
+def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    with pytest.raises(ValueError, match="outside the current layout"):
+        figurecomposer_code._axes_sequence_code(
+            tool, FigureAxesSelectionState(axes=((1, 0),))
+        )
+    with pytest.raises(ValueError, match="No axes"):
+        figurecomposer_code._axes_sequence_code(tool, FigureAxesSelectionState(axes=()))
+
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="axis-a",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="axis-b",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+    )
+    grid_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(grid_tool)
+
+    assert (
+        figurecomposer_code._axes_code(
+            grid_tool,
+            FigureAxesSelectionState(axes_ids=("axis-a", "axis-b")),
+            for_plot_slices=False,
+        )
+        == "[ax0, ax1]"
+    )
+    with pytest.raises(ValueError, match="No axes"):
+        figurecomposer_code._axes_sequence_code(
+            grid_tool, FigureAxesSelectionState(axes_ids=())
+        )
+
+
+def test_figure_composer_gridspec_helpers_cover_naming_and_region_edges() -> None:
+    invalid_child = FigureGridSpecGridState(
+        grid_id="child",
+        nrows=1,
+        ncols=1,
+        span=None,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="nested-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="axis-a",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="axis-b",
+                label="custom_axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+        child_grids=(invalid_child,),
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(root=root),
+    )
+
+    assert (
+        figurecomposer_gridspec._gridspec_axis_variable_name_error(setup, "axis-b", "")
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_axis_variable_name_error(
+            setup, "axis-b", "ax0"
+        )
+        == "Variable name conflicts with an autogenerated name."
+    )
+    overlap_child = FigureGridSpecGridState(
+        grid_id="overlap-child",
+        nrows=1,
+        ncols=1,
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    overlap_root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=1,
+        child_grids=(overlap_child,),
+    )
+    assert figurecomposer_gridspec._gridspec_region_overlaps(
+        overlap_root,
+        FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    assert tuple(figurecomposer_gridspec._iter_valid_axes_with_grid(root)) == (
+        (root, root.axes[0]),
+        (root, root.axes[1]),
+    )
+    assert (
+        figurecomposer_gridspec._axis_code_name_for_validation(
+            setup,
+            "axis-b",
+            FigureGridSpecAxesState(
+                axes_id="missing-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            0,
+            reserved_names=(),
+        )
+        == "ax0_1"
+    )
+    assert (
+        figurecomposer_gridspec._unique_axis_code_name("ax", {"ax", "ax_1"}) == "ax_2"
+    )
 
 
 def test_figure_composer_editor_control_adapters_cover_mixed_states(qtbot) -> None:
