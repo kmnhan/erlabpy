@@ -1946,10 +1946,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         LineEditControlAdapter(edit).set_mixed(mixed)
 
     @staticmethod
-    def _plain_text_batch_unchanged(edit: QtWidgets.QPlainTextEdit) -> bool:
-        return PlainTextControlAdapter(edit).unchanged_mixed()
-
-    @staticmethod
     def _apply_mixed_plain_text_edit(
         edit: QtWidgets.QPlainTextEdit, mixed: bool
     ) -> None:
@@ -2045,18 +2041,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             lambda _index, operation: operation.model_copy(update=updates),
             rebuild_editor=True,
         )
-
-    def _update_current_operation_in_place(self, **updates: typing.Any) -> None:
-        if self._updating_controls:
-            return
-        self._update_operations(
-            lambda _index, operation: operation.model_copy(update=updates),
-            render=False,
-        )
-        self._update_step_action_buttons()
-        self._refresh_step_section_button_texts()
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
 
     def _queue_preview_render_update(self) -> None:
         if self._closing:

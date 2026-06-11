@@ -283,18 +283,6 @@ def _panel_style_map_for_keys(
     }
 
 
-def _panel_style_for(
-    operation: FigureOperationState, key: _PlotSlicesPanelKey
-) -> FigurePlotSlicesPanelStyleState:
-    return _panel_style_map(operation).get(
-        (key.map_index, key.slice_index),
-        FigurePlotSlicesPanelStyleState(
-            map_index=key.map_index,
-            slice_index=key.slice_index,
-        ),
-    )
-
-
 def _panel_style_from_map(
     styles: Mapping[tuple[int, int], FigurePlotSlicesPanelStyleState],
     key: _PlotSlicesPanelKey,
