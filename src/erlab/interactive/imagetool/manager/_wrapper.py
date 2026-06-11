@@ -420,7 +420,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()
-        if manager is None:
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
@@ -1245,9 +1245,14 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_tool_info_changed(self) -> None:
-        self.manager._mark_tool_info_dirty(self.uid)
-        self.manager._update_figure_gallery_icon(self.uid)
-        self.manager._schedule_tool_metadata_update(self.uid)
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._mark_tool_info_dirty(self.uid)
+        manager._update_figure_gallery_icon(self.uid)
+        manager._schedule_tool_metadata_update(self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:

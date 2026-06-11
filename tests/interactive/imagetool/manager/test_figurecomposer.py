@@ -3297,11 +3297,13 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
         callback: Callable[[], None],
         *guards: QtCore.QObject,
     ) -> None:
-        calls.append((receiver, msec, callback.__name__, guards))
+        callback_name = getattr(
+            getattr(callback, "func", callback), "__name__", type(callback).__name__
+        )
+        calls.append((receiver, msec, callback_name, guards))
 
     monkeypatch.setattr(erlab.interactive.utils, "single_shot", record_single_shot)
     window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
-    qtbot.addWidget(window)
 
     window.resize_to_setup(FigureSubplotsState())
     window._suppress_resize_signal = False
@@ -3309,13 +3311,36 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
 
     assert (window, 0, "_allow_resize_signal", ()) in calls
     assert (window, 0, "_emit_canvas_size_changed", (window.canvas,)) in calls
+    window.close_from_owner()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+
+def test_figure_display_window_skips_stale_resize_callbacks(qtbot) -> None:
+    window = figurecomposer_widgets._FigureComposerDisplayWindow(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+    )
+    emitted_sizes: list[tuple[float, float]] = []
+    window.sigCanvasSizeChanged.connect(
+        lambda width, height: emitted_sizes.append((width, height))
+    )
+
+    window.resizeEvent(None)
+    generation = window._resize_signal_generation
+    canvas = window.canvas
+    window.close_from_owner()
+
+    window._emit_canvas_size_changed(generation, canvas)
+
+    assert emitted_sizes == []
+    assert not window._resize_signal_pending
+    assert window._suppress_resize_signal
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
 def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     window = figurecomposer_widgets._FigureComposerDisplayWindow(
         FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
     )
-    qtbot.addWidget(window)
 
     emitted_sizes: list[tuple[float, float]] = []
     window.sigCanvasSizeChanged.connect(
@@ -3351,25 +3376,26 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     assert not window.isVisible()
 
     window.show()
-    close_event = QtGui.QCloseEvent()
-    window.closeEvent(close_event)
-    assert not close_event.isAccepted()
+    assert not window.close()
     assert not window.isVisible()
 
-    owner_close_event = QtGui.QCloseEvent()
-    window._closing_from_owner = True
-    window.closeEvent(owner_close_event)
-    assert owner_close_event.isAccepted()
-
-    window._closing_from_owner = False
     window.show()
-    app_quit_close_event = QtGui.QCloseEvent()
+    window.close_from_owner()
+    assert not window.isVisible()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    app_quit_window = figurecomposer_widgets._FigureComposerDisplayWindow(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+    )
+    app_quit_window.show()
     erlab.interactive.utils._set_application_quit_requested(True)
     try:
-        window.closeEvent(app_quit_close_event)
+        assert app_quit_window.close()
     finally:
         erlab.interactive.utils._set_application_quit_requested(False)
-    assert app_quit_close_event.isAccepted()
+    assert not app_quit_window.isVisible()
+    app_quit_window.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
 def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
@@ -4225,6 +4251,26 @@ def test_figure_composer_preview_uses_live_canvas_without_rerender(
     assert not preview.isNull()
     assert tool.figure is live_figure
     assert tool.canvas is live_canvas
+
+
+def test_figure_composer_preview_update_is_cancelled_on_close(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    tool.request_preview_pixmap_update(delay_ms=0)
+    assert tool._preview_pixmap_update_pending
+
+    tool.close()
+    QtWidgets.QApplication.processEvents()
+
+    assert not tool._preview_pixmap_update_pending
+    assert tool.preview_pixmap is None
 
 
 def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(

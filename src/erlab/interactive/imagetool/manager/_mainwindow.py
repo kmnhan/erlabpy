@@ -1455,11 +1455,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self.left_tabs.updateGeometry()
 
     def _figure_gallery_icon(self, uid: str) -> QtGui.QIcon:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return QtGui.QIcon()
         if not self._is_figure_uid(uid):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
         node = self._child_node(uid)
         tool_window = node.tool_window
-        if tool_window is None:
+        if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
         if getattr(tool_window, "preview_pixmap_stale", False):
             request_preview = getattr(
@@ -1489,6 +1491,10 @@ class ImageToolManager(_ImageToolManagerBase):
     def _figure_gallery_tool_thumbnail_pixmap(
         self, tool_window: object
     ) -> QtGui.QPixmap | None:
+        if isinstance(
+            tool_window, QtCore.QObject
+        ) and not erlab.interactive.utils.qt_is_valid(tool_window):
+            return None
         thumbnail_size = self._figure_gallery_thumbnail_size()
         thumbnail_provider = getattr(tool_window, "preview_thumbnail_pixmap", None)
         if callable(thumbnail_provider):
@@ -1587,7 +1593,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _update_figure_gallery_icon(self, uid: str) -> None:
         if (
-            not hasattr(self, "figure_list")
+            not erlab.interactive.utils.qt_is_valid(self)
+            or not hasattr(self, "figure_list")
+            or not erlab.interactive.utils.qt_is_valid(self.figure_list)
             or self._refreshing_figure_list
             or self._figure_view_mode != _FIGURE_VIEW_MODE_GALLERY
             or not self._is_figure_uid(uid)

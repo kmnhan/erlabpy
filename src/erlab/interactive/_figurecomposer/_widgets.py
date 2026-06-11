@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import functools
 import math
 import typing
 import weakref
@@ -785,6 +786,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self._closing_from_owner = False
         self._suppress_resize_signal = False
         self._resize_signal_pending = False
+        self._resize_signal_generation = 0
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         with _figure_style_context():
@@ -829,6 +831,11 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
                 continue
             with contextlib.suppress(RuntimeError):
                 target.removeEventFilter(self)
+
+    def _cancel_resize_callbacks(self, *, suppress: bool) -> None:
+        self._suppress_resize_signal = suppress
+        self._resize_signal_pending = False
+        self._resize_signal_generation += 1
 
     def eventFilter(
         self,
@@ -892,10 +899,20 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             )
         self._suppress_resize_signal = True
         self.resize(target_size)
-        erlab.interactive.utils.single_shot(self, 0, self._allow_resize_signal)
+        self._resize_signal_generation += 1
+        generation = self._resize_signal_generation
+        erlab.interactive.utils.single_shot(
+            self,
+            0,
+            functools.partial(self._allow_resize_signal, generation),
+        )
 
     @QtCore.Slot()
-    def _allow_resize_signal(self) -> None:
+    def _allow_resize_signal(self, generation: int | None = None) -> None:
+        if (
+            generation is not None and generation != self._resize_signal_generation
+        ) or self._closing_from_owner:
+            return
         self._suppress_resize_signal = False
 
     def show_for_setup(
@@ -914,10 +931,10 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
 
     def close_from_owner(self) -> None:
         self._closing_from_owner = True
-        self._suppress_resize_signal = True
-        self._resize_signal_pending = False
+        self._cancel_resize_callbacks(suppress=True)
         self._remove_event_filters()
         self.close()
+        self.deleteLater()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         if event is not None:
@@ -925,19 +942,34 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         if self._suppress_resize_signal or self._resize_signal_pending:
             return
         self._resize_signal_pending = True
+        self._resize_signal_generation += 1
+        generation = self._resize_signal_generation
+        canvas = self.canvas
         erlab.interactive.utils.single_shot(
-            self, 0, self._emit_canvas_size_changed, self.canvas
+            self,
+            0,
+            functools.partial(self._emit_canvas_size_changed, generation, canvas),
+            canvas,
         )
 
     @QtCore.Slot()
-    def _emit_canvas_size_changed(self) -> None:
-        self._resize_signal_pending = False
-        if self._suppress_resize_signal:
+    def _emit_canvas_size_changed(
+        self, generation: int | None = None, canvas: FigureCanvas | None = None
+    ) -> None:
+        if generation is not None and generation != self._resize_signal_generation:
+            self._resize_signal_pending = False
             return
-        canvas_size = self.canvas.size()
+        self._resize_signal_pending = False
+        if self._suppress_resize_signal or self._closing_from_owner:
+            return
+        if canvas is None:
+            canvas = self.canvas
+        if not erlab.interactive.utils.qt_is_valid(self, canvas):
+            return
+        canvas_size = canvas.size()
         if canvas_size.isEmpty():
             return
-        dpi = float(typing.cast("typing.Any", self.figure)._original_dpi)
+        dpi = float(typing.cast("typing.Any", canvas.figure)._original_dpi)
         if dpi <= 0.0:
             return
         self.sigCanvasSizeChanged.emit(
@@ -950,12 +982,14 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             self._closing_from_owner
             or erlab.interactive.utils._application_quit_requested()
         ):
+            self._cancel_resize_callbacks(suppress=True)
             self._remove_event_filters()
             if event is not None:
                 super().closeEvent(event)
             return
         if event is not None:
             event.ignore()
+        self._cancel_resize_callbacks(suppress=False)
         self.hide()
 
 
