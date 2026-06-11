@@ -48,10 +48,10 @@ and optional width or height ratios. This is the quickest way to create a row of
 constant-energy maps or a stacked image/profile figure.
 
 Use {guilabel}`GridSpec` mode when the figure needs axes that span several cells or
-nested regions. Drag in the GridSpec editor to create rectangular axes or nested grids.
-Open a nested grid to edit it in place, then use the breadcrumb controls to return to
-the parent grid. Axis labels are optional; the composer generates stable names for code
-when labels are left blank.
+nested regions created with {class}`matplotlib.gridspec.GridSpec` Drag in the GridSpec
+editor to create rectangular axes or nested grids. Open a nested grid to edit it in
+place, then use the breadcrumb controls to return to the parent grid. Axis labels are
+optional; the composer generates stable names for code when labels are left blank.
 
 Changing the layout does not silently rewrite step targets. If a step points to axes
 that no longer exist, the step remains editable and is marked invalid until you repair
