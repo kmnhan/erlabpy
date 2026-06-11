@@ -1739,6 +1739,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self.figure_gallery_updates: list[str] = []
             self._tool_graph = _ManagerToolGraph()
 
         def _update_info(self, *, uid: str) -> None:
@@ -1772,6 +1773,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
+
+        def _update_figure_gallery_icon(self, uid: str) -> None:
+            self.figure_gallery_updates.append(uid)
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)

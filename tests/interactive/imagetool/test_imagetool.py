@@ -1420,7 +1420,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     win.close()
 
 
-def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
+def test_plot_with_matplotlib_rejects_non_identifier_selection_dim(
     qtbot, monkeypatch
 ) -> None:
     data = xr.DataArray(
@@ -1430,6 +1430,66 @@ def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
             "alpha": np.arange(5),
             "eV": np.arange(5),
             "Track Shift": np.arange(5),
+        },
+    )
+    win = itool(data, execute=False)
+    win.slicer_area._in_manager = True
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+    created: list[dict[str, object]] = []
+    warnings_shown: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+
+    class _Manager:
+        def target_from_slicer_area(self, slicer_area):
+            assert slicer_area is win.slicer_area
+            return 0
+
+        def _node_for_target(self, target):
+            assert target == 0
+            return types.SimpleNamespace(uid="n0")
+
+        def _script_input_name_for_node(self, node):
+            assert node.uid == "n0"
+            return "data_0"
+
+        def create_figure_from_slicer_area(self, slicer_area, **kwargs):
+            assert slicer_area is win.slicer_area
+            created.append(kwargs)
+            return "figure"
+
+    def record_warning(
+        parent: QtWidgets.QWidget | None,
+        title: str,
+        text: str,
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        warnings_shown.append((parent, title, text))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", _Manager()
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", record_warning)
+
+    main_image.plot_with_matplotlib()
+
+    assert created == []
+    assert len(warnings_shown) == 1
+    assert warnings_shown[0][0] is win.slicer_area
+    assert "editable plot_slices" in warnings_shown[0][2]
+
+    win.close()
+
+
+def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=("alpha", "eV", "Track_Shift"),
+        coords={
+            "alpha": np.arange(5),
+            "eV": np.arange(5),
+            "Track_Shift": np.arange(5),
         },
     )
     win = itool(data, execute=False)
@@ -1470,7 +1530,7 @@ def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
     assert operation.cmap == "magma"
     assert operation.norm_gamma == pytest.approx(0.3)
     assert operation.map_selections == ()
-    assert operation.slice_dim == "Track Shift"
+    assert operation.slice_dim == "Track_Shift"
     assert operation.slice_values == (2.0,)
     assert operation.slice_kwargs == {}
 
@@ -1496,7 +1556,7 @@ def test_plot_with_matplotlib_preserves_state_with_non_identifier_dim(
     assert dim_combo is not None
     assert values_edit is not None
     assert slice_kwargs_edit is not None
-    assert dim_combo.currentText() == "Track Shift"
+    assert dim_combo.currentText() == "Track_Shift"
     assert values_edit.text() == "2"
     assert slice_kwargs_edit.text() == ""
 
