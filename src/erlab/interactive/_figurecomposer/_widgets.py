@@ -1318,8 +1318,17 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             radius=self._ADD_PILL_THICKNESS / 2,
         )
         painter.save()
-        painter.setPen(text)
-        painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, "+")
+        pen = QtGui.QPen(text, 1.4)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        center = QtCore.QRectF(rect).center()
+        arm = max(2.5, min(rect.width(), rect.height()) * 0.28)
+        painter.drawLine(
+            QtCore.QLineF(center.x() - arm, center.y(), center.x() + arm, center.y())
+        )
+        painter.drawLine(
+            QtCore.QLineF(center.x(), center.y() - arm, center.x(), center.y() + arm)
+        )
         painter.restore()
 
     def _add_control_at(
