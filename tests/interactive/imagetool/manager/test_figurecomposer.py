@@ -10282,12 +10282,13 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
 
     code = tool.generated_code()
     assert "import matplotlib.transforms as mtransforms" in code
-    assert "ax.plot((0.0, 0.5, 1.0), (1.0, 0.5, 0.0)" in code
+    assert "axs[0, 0].plot((0.0, 0.5, 1.0), (1.0, 0.5, 0.0)" in code
     assert 'color="tab:blue"' in code
     assert "clip_on=True" in code
     assert "transform=ax.transData" not in code
     assert (
-        "transform=mtransforms.blended_transform_factory(ax.transData, ax.transAxes)"
+        "transform=mtransforms.blended_transform_factory("
+        "axs[0, 0].transData, axs[0, 0].transAxes)"
     ) in code
     assert "ax.plot((0.0, 0.25, 1.0), transform=ax.transAxes)" in code
 
@@ -11038,7 +11039,7 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     assert figure_legend.get_frame_on() is True
 
     code = tool.generated_code()
-    assert 'ax.legend(loc="upper right", ncols=1' in code
+    assert 'axs[0, 0].legend(loc="upper right", ncols=1' in code
     assert 'title="Axis legend"' in code
     assert "bbox_to_anchor=(1.0, 1.0)" in code
     assert 'fig.legend(loc="lower center", ncols=1' in code
