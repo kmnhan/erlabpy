@@ -147,7 +147,10 @@ def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> 
     # Test if pretty printing works
     erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
 
-    # Interactive summary
+    # Interactive summary without a running ImageTool manager
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "is_running", lambda: False
+    )
     box = erlab.io.loaders.current_loader._isummarize(df)
     btn_box = box.children[0].children[0]
     assert len(btn_box.children) == 3  # prev, next, load full
