@@ -1283,6 +1283,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     converted = ItoolPlotItem._figure_composer_plain_value(
         {
             "flag": np.bool_(True),
+            "plain_int": 3,
             "count": np.int64(2),
             "scale": np.float64(0.25),
             "items": (np.int64(1), np.float64(2.5)),
@@ -1290,6 +1291,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     )
     assert converted == {
         "flag": True,
+        "plain_int": 3,
         "count": 2,
         "scale": 0.25,
         "items": (1, 2.5),
@@ -1297,8 +1299,17 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
 
     assert ItoolPlotItem._figure_composer_operation_updates({}) is None
     assert ItoolPlotItem._figure_composer_norm_updates("not a call") is None
+    assert ItoolPlotItem._figure_composer_norm_updates("CenteredPowerNorm(1)") is None
     assert ItoolPlotItem._figure_composer_norm_updates("other.Norm(1)") is None
     assert ItoolPlotItem._figure_composer_norm_updates("eplt.PowerNorm(1)") is None
+    assert (
+        ItoolPlotItem._figure_composer_norm_updates("eplt.CenteredPowerNorm(**{})")
+        is None
+    )
+    assert (
+        ItoolPlotItem._figure_composer_norm_updates("eplt.CenteredPowerNorm(foo=bar)")
+        is None
+    )
     norm_updates = ItoolPlotItem._figure_composer_norm_updates(
         "eplt.CenteredPowerNorm(0.5, halfrange=1.0)"
     )
@@ -1331,6 +1342,36 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     assert varying_width_operation.slice_dim == "beta"
     assert varying_width_operation.slice_width is None
     assert varying_width_operation.slice_kwargs == {"beta_width": [0.25, 0.5]}
+
+    scalar_width_operation = main_image._figure_composer_plot_slices_operation(
+        source_name="data",
+        variable_dim="beta",
+        dim_order_plot=["alpha", "eV"],
+        qsel_kwargs={"beta": 1.0, "beta_width": 0.25},
+    )
+    assert scalar_width_operation.slice_width == pytest.approx(0.25)
+    assert scalar_width_operation.slice_kwargs == {"beta": 1.0}
+
+    unparsed_width_operation = main_image._figure_composer_plot_slices_operation(
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["alpha", "eV"],
+        qsel_kwargs={"beta": [1.0, 2.0], "beta_width": ["wide"]},
+    )
+    assert unparsed_width_operation.slice_dim == "beta"
+    assert unparsed_width_operation.slice_width is None
+    assert unparsed_width_operation.slice_kwargs == {"beta_width": ["wide"]}
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=2.0, cursor=1)
+    map_selections = main_image._figure_composer_map_selections(
+        source_name="data",
+        non_display_axes=(2,),
+        variable_dim="beta",
+    )
+    assert len(map_selections) == 2
+    assert [selection.qsel["beta"] for selection in map_selections] == [1.0, 2.0]
 
     win.close()
 

@@ -14994,6 +14994,83 @@ def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
         assert manager.figure_list.gridSize() != old_grid_size
 
 
+def test_manager_figures_gallery_helpers_handle_invalid_sources(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+
+    class FakeSettings:
+        def value(self, key: str, default: str) -> object:
+            if key.endswith("view_mode"):
+                return "invalid"
+            if key.endswith("gallery_thumbnail_size"):
+                return "huge"
+            return 1
+
+        def setValue(self, key: str, value: str) -> None:
+            pass
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager_mainwindow, "_manager_settings", lambda: FakeSettings()
+        )
+        assert manager._settings_string("unknown", "fallback") == "fallback"
+        assert manager._read_figure_view_mode_setting() == "list"
+        assert manager._read_figure_gallery_size_setting() == "medium"
+
+        figure_tool = FigureComposerTool(data)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        manager.figure_view_gallery_button.click()
+
+        assert not manager._figure_gallery_icon("missing").isNull()
+        assert manager._figure_gallery_tool_thumbnail_pixmap(object()) is None
+
+        fallback = QtGui.QPixmap(40, 20)
+        fallback.fill(QtGui.QColor("red"))
+
+        class NullThumbnailProvider:
+            preview_pixmap = fallback
+
+            def preview_thumbnail_pixmap(self, _size: QtCore.QSize) -> QtGui.QPixmap:
+                return QtGui.QPixmap()
+
+        assert (
+            manager._figure_gallery_tool_thumbnail_pixmap(NullThumbnailProvider())
+            is not None
+        )
+
+        class DirectThumbnailProvider:
+            preview_pixmap = QtGui.QPixmap()
+
+            def preview_thumbnail_pixmap(self, _size: QtCore.QSize) -> QtGui.QPixmap:
+                pixmap = QtGui.QPixmap(12, 8)
+                pixmap.fill(QtGui.QColor("blue"))
+                return pixmap
+
+        assert (
+            manager._figure_gallery_tool_thumbnail_pixmap(DirectThumbnailProvider())
+            is not None
+        )
+
+        requested: list[None] = []
+        monkeypatch.setattr(
+            figure_tool,
+            "request_preview_pixmap_update",
+            lambda: requested.append(None),
+        )
+        figure_tool._preview_pixmap_stale = True
+        assert not manager._figure_gallery_icon(figure_uid).isNull()
+        assert requested == [None]
+
+
 def test_manager_figures_gallery_updates_one_icon_from_preview_signal(
     monkeypatch,
     manager_context: Callable[
@@ -15881,6 +15958,11 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         dialog._figure_changed()
         assert dialog.axes_selection() is None
         assert not ok_button.isEnabled()
+        dialog._select_all_axes()
+        dialog._grow_subplot_grid("row")
+
+        dialog.figure_combo.setItemData(dialog.figure_combo.currentIndex(), None)
+        assert dialog.figure_uid() == first_uid
 
 
 def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
