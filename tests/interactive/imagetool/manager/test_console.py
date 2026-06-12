@@ -17,6 +17,7 @@ import erlab.interactive.utils
 from erlab.interactive.imagetool import _provenance_framework, itool, provenance
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
+from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 
@@ -2961,6 +2962,24 @@ def test_manager_reload_raw_self_replacement_unavailable(
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> None:
+    controller = object.__new__(_DetailsPanelController)
+    start_entry = provenance.DerivationEntry("Start from data", None, False)
+    unavailable_entry = provenance.DerivationEntry("Opaque step", None, False)
+
+    details = controller._unavailable_replay_code_details(
+        types.SimpleNamespace(
+            derivation_entries=(start_entry, unavailable_entry, unavailable_entry)
+        )
+    )
+    assert details.count("Opaque step") == 1
+
+    fallback = controller._unavailable_replay_code_details(
+        types.SimpleNamespace(derivation_entries=(start_entry,))
+    )
+    assert fallback
 
 
 def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
