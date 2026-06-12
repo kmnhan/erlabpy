@@ -327,18 +327,20 @@ def profile_transform_code_lines(
     *,
     profiles: Sequence[xr.DataArray] | None = None,
     profiles_name: str = "profiles",
+    input_name: str | None = None,
 ) -> list[str]:
     if not line_transform_active(operation):
         return []
     if profiles is not None:
         validate_line_normalization(operation, profiles)
 
+    source_name = input_name or profiles_name
     lines: list[str] = []
     loop_names = ["profile"]
-    loop_values = [profiles_name]
-    scale_name = _profile_scale_code(lines, operation, loop_names, loop_values)
+    loop_values = [source_name]
+    scale_name = _profile_scale_code(operation, loop_names, loop_values)
     offset_name = _profile_offset_code(
-        lines, operation, loop_names, loop_values, profiles_name=profiles_name
+        operation, loop_names, loop_values, profiles_name=source_name
     )
     value_expr = _profile_transform_expression(
         operation, scale_name=scale_name, offset_name=offset_name
@@ -346,7 +348,7 @@ def profile_transform_code_lines(
     lines.append(f"{profiles_name} = [")
     lines.append(f"    {value_expr}")
     if len(loop_names) == 1:
-        lines.append(f"    for profile in {profiles_name}")
+        lines.append(f"    for profile in {source_name}")
     else:
         lines.append("    for " + ", ".join(loop_names) + " in zip(")
         lines.extend(f"        {value}," for value in loop_values)
@@ -426,7 +428,6 @@ def _profile_stack_offset_expression(
 
 
 def _profile_scale_code(
-    lines: list[str],
     operation: FigureOperationState,
     loop_names: list[str],
     loop_values: list[str],
@@ -435,14 +436,12 @@ def _profile_scale_code(
         return None
     if len(operation.line_scales) == 1:
         return repr(operation.line_scales[0])
-    lines.append(f"profile_scales = {list(operation.line_scales)!r}")
     loop_names.append("scale")
-    loop_values.append("profile_scales")
+    loop_values.append(repr(list(operation.line_scales)))
     return "scale"
 
 
 def _profile_offset_code(
-    lines: list[str],
     operation: FigureOperationState,
     loop_names: list[str],
     loop_values: list[str],
@@ -454,36 +453,27 @@ def _profile_offset_code(
     if operation.line_offset_source == "manual":
         if len(operation.line_offsets) == 1:
             return repr(operation.line_offsets[0])
-        lines.append(f"profile_offsets = {list(operation.line_offsets)!r}")
+        offset_values = repr(list(operation.line_offsets))
     elif operation.line_offset_source == "index":
-        lines.extend(_offset_list_code("float(index)", operation, profiles_name))
+        offset_values = _offset_list_code("float(index)", operation, profiles_name)
     else:
         coord_name = line_offset_coordinate_name(operation)
-        lines.extend(
-            _offset_list_code(
-                f"float(profile[{coord_name!r}])", operation, profiles_name
-            )
+        offset_values = _offset_list_code(
+            f"float(profile[{coord_name!r}])", operation, profiles_name
         )
     loop_names.append("offset")
-    loop_values.append("profile_offsets")
+    loop_values.append(offset_values)
     return "offset"
 
 
 def _offset_list_code(
     value_expr: str, operation: FigureOperationState, profiles_name: str
-) -> list[str]:
+) -> str:
     if operation.line_offset_scale != 1.0:
-        lines: list[str] = []
         value_expr = f"{operation.line_offset_scale!r} * {value_expr}"
-    else:
-        lines = []
     if operation.line_offset_source == "index":
-        lines.append(
-            f"profile_offsets = [{value_expr} for index in range(len({profiles_name}))]"
-        )
-    else:
-        lines.append(f"profile_offsets = [{value_expr} for profile in {profiles_name}]")
-    return lines
+        return f"[{value_expr} for index in range(len({profiles_name}))]"
+    return f"[{value_expr} for profile in {profiles_name}]"
 
 
 def _profile_transform_expression(

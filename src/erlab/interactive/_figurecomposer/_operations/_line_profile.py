@@ -7,6 +7,7 @@ import typing
 from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer._code import (
+    _axes_code,
     _axes_sequence_code,
     _maybe_squeeze_drop_code,
     _needs_squeeze_drop,
@@ -1130,18 +1131,8 @@ def _regular_line_code(
         loop_values=loop_values,
     )
     lines.extend(style_lines)
-    if len(loop_names) == 1:
-        loop = "for profile in profiles:"
-    else:
-        loop = (
-            "for "
-            + ", ".join(loop_names)
-            + " in zip("
-            + ", ".join(loop_values)
-            + ", strict=True):"
-        )
     lines.append(f"for ax in {_axes_sequence_code(tool, operation.axes)}:")
-    lines.append(f"    {loop}")
+    lines.extend(_loop_header_lines(loop_names, loop_values, indent="    "))
     coordinate = _line_coordinate_code(operation)
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
@@ -1172,9 +1163,8 @@ def _line_style_code(
         if len(operation.line_labels) == 1:
             kwargs.append(f"label={operation.line_labels[0]!r}")
         else:
-            lines.append(f"profile_labels = {list(operation.line_labels)!r}")
             loop_names.append("label")
-            loop_values.append("profile_labels")
+            loop_values.append(repr(list(operation.line_labels)))
             kwargs.append("label=label")
 
     line_colors = operation.line_colors
@@ -1182,9 +1172,8 @@ def _line_style_code(
         if len(line_colors) == 1:
             kwargs.append(f"color={line_colors[0]!r}")
         else:
-            lines.append(f"profile_colors = {list(line_colors)!r}")
             loop_names.append("color")
-            loop_values.append("profile_colors")
+            loop_values.append(repr(list(line_colors)))
             kwargs.append("color=color")
     return lines, ", ".join(item for item in kwargs if item)
 
@@ -1203,15 +1192,31 @@ def _one_profile_per_axis_code(
         axes_count = _selected_axes_count(tool, operation)
     if profile_count is None:
         profile_count = len(profiles)
-    lines.extend(
-        _one_profile_per_axis_broadcast_code(
-            tool, operation, axes_count=axes_count, profile_count=profile_count
+    if axes_count == 1 and profile_count > 1:
+        return _one_axis_many_profiles_code(
+            tool,
+            operation,
+            profiles=profiles,
+            transform_profiles_in_code=transform_profiles_in_code,
         )
+    broadcast_lines, axes_expr, profiles_expr = _one_profile_per_axis_iterables_code(
+        tool, operation, axes_count=axes_count, profile_count=profile_count
     )
+    lines.extend(broadcast_lines)
     if transform_profiles_in_code:
-        lines.extend(profile_transform_code_lines(operation, profiles=profiles))
+        transform_profiles = profiles
+        if profile_count == 1 and axes_count is not None and axes_count > 1:
+            transform_profiles = profiles * axes_count
+        lines.extend(
+            profile_transform_code_lines(
+                operation,
+                profiles=transform_profiles,
+                input_name=profiles_expr,
+            )
+        )
+        profiles_expr = "profiles"
     loop_names = ["ax", "profile"]
-    loop_values = ["target_axes", "profiles"]
+    loop_values = [axes_expr, profiles_expr]
     style_lines, kwargs_text = _line_style_code(
         operation,
         loop_names=loop_names,
@@ -1219,13 +1224,7 @@ def _one_profile_per_axis_code(
     )
     lines.extend(style_lines)
     coordinate = _line_coordinate_code(operation)
-    lines.append(
-        "for "
-        + ", ".join(loop_names)
-        + " in zip("
-        + ", ".join(loop_values)
-        + ", strict=True):"
-    )
+    lines.extend(_loop_header_lines(loop_names, loop_values))
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
     else:
@@ -1235,6 +1234,39 @@ def _one_profile_per_axis_code(
     lines.append(f"    ax.plot({call_args})")
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
+    return lines
+
+
+def _one_axis_many_profiles_code(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    profiles: list[xr.DataArray],
+    transform_profiles_in_code: bool,
+) -> list[str]:
+    lines: list[str] = []
+    if transform_profiles_in_code:
+        lines.extend(profile_transform_code_lines(operation, profiles=profiles))
+    loop_names = ["profile"]
+    loop_values = ["profiles"]
+    style_lines, kwargs_text = _line_style_code(
+        operation,
+        loop_names=loop_names,
+        loop_values=loop_values,
+    )
+    lines.extend(style_lines)
+    axis_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+    coordinate = _line_coordinate_code(operation)
+    lines.extend(_loop_header_lines(loop_names, loop_values))
+    if operation.line_values_axis == "x":
+        call_args = f"profile, {coordinate}"
+    else:
+        call_args = f"{coordinate}, profile"
+    if kwargs_text:
+        call_args += f", {kwargs_text}"
+    lines.append(f"    {axis_code}.plot({call_args})")
+    if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
+        lines.append(axes_limits_code)
     return lines
 
 
@@ -1249,31 +1281,50 @@ def _selected_axes_count(
     return len(operation.axes.valid_axes(setup))
 
 
-def _one_profile_per_axis_broadcast_code(
+def _loop_header_lines(
+    loop_names: list[str], loop_values: list[str], *, indent: str = ""
+) -> list[str]:
+    if len(loop_names) == 1:
+        return [f"{indent}for {loop_names[0]} in {loop_values[0]}:"]
+    return [
+        f"{indent}for {', '.join(loop_names)} in zip(",
+        *(f"{indent}    {value}," for value in loop_values),
+        f"{indent}    strict=True,",
+        f"{indent}):",
+    ]
+
+
+def _one_profile_per_axis_iterables_code(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     *,
     axes_count: int | None,
     profile_count: int,
-) -> list[str]:
+) -> tuple[list[str], str, str]:
     axes_code = _axes_sequence_code(tool, operation.axes)
     if axes_count is None:
-        return [
-            f"target_axes = list({axes_code})",
-            "if len(target_axes) == 1 and len(profiles) > 1:",
-            "    target_axes = target_axes * len(profiles)",
-            "elif len(profiles) == 1 and len(target_axes) > 1:",
-            "    profiles = profiles * len(target_axes)",
-        ]
-    lines = [f"target_axes = list({axes_code})"]
+        return (
+            [
+                f"target_axes = list({axes_code})",
+                "if len(target_axes) == 1 and len(profiles) > 1:",
+                "    target_axes = target_axes * len(profiles)",
+                "elif len(profiles) == 1 and len(target_axes) > 1:",
+                "    profiles = profiles * len(target_axes)",
+            ],
+            "target_axes",
+            "profiles",
+        )
+    profile_expr = "profiles"
     if axes_count == 1 and profile_count > 1:
-        lines[0] += f" * {profile_count}"
+        axes_code = f"{axes_code} * {profile_count}"
     elif profile_count == 1 and axes_count > 1:
-        lines.append(f"profiles = profiles * {axes_count}")
-    return lines
+        profile_expr = f"profiles * {axes_count}"
+    return [], axes_code, profile_expr
 
 
-def _line_axes_limits_code(operation: FigureOperationState) -> str:
+def _line_axes_limits_code(
+    operation: FigureOperationState, *, axis_name: str = "ax"
+) -> str:
     kwargs: list[str] = []
     if operation.xlim is not None:
         kwargs.append(f"xlim={operation.xlim!r}")
@@ -1281,7 +1332,7 @@ def _line_axes_limits_code(operation: FigureOperationState) -> str:
         kwargs.append(f"ylim={operation.ylim!r}")
     if not kwargs:
         return ""
-    return "ax.set(" + ", ".join(kwargs) + ")"
+    return f"{axis_name}.set(" + ", ".join(kwargs) + ")"
 
 
 def _line_coordinate_code(operation: FigureOperationState) -> str:

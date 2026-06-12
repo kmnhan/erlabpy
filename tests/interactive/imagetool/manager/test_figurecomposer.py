@@ -11642,11 +11642,8 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         loop_values=loop_values,
     )
     assert loop_names == ["profile", "label", "color"]
-    assert loop_values == ["profiles", "profile_labels", "profile_colors"]
-    assert style_lines == [
-        "profile_labels = ['a', 'b']",
-        "profile_colors = ['red', 'blue']",
-    ]
+    assert loop_values == ["profiles", "['a', 'b']", "['red', 'blue']"]
+    assert style_lines == []
     assert "linewidth=2.0" in kwargs_text
     assert "label=label" in kwargs_text
     assert "color=color" in kwargs_text
@@ -11664,9 +11661,11 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         tool, operation.model_copy(update={"line_placement": "one_per_axis"})
     )
     assert not any("if len(target_axes)" in line for line in one_per_axis_lines)
-    assert any(line.startswith("target_axes = list(") for line in one_per_axis_lines)
-    assert any("ax.plot(profile, profile['kx']" in line for line in one_per_axis_lines)
-    assert one_per_axis_lines[-1] == "    ax.set(xlim=(-2.0, 2.0), ylim=(0.0, 20.0))"
+    assert not any(line.startswith("target_axes =") for line in one_per_axis_lines)
+    assert any(
+        "axs[0, 0].plot(profile, profile['kx']" in line for line in one_per_axis_lines
+    )
+    assert one_per_axis_lines[-1] == "axs[0, 0].set(xlim=(-2.0, 2.0), ylim=(0.0, 20.0))"
 
 
 def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
@@ -12050,8 +12049,10 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
     code = tool.generated_code()
     assert "if len(target_axes)" not in code
     assert "profiles =" in code
-    assert "profile_scales = [0.1, 0.2, 0.3]" in code
-    assert "profile_offsets = [-0.2, 0.0, 0.2]" in code
+    assert "profile_scales =" not in code
+    assert "profile_offsets =" not in code
+    assert "[0.1, 0.2, 0.3]," in code
+    assert "[-0.2, 0.0, 0.2]," in code
     assert (
         "profiles = [\n    offset + scale * (profile / profile.max(skipna=True))"
     ) in code
@@ -12174,7 +12175,10 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
     namespace: dict[str, typing.Any] = {"data": data}
     many_profiles_code = many_profiles_tool.generated_code()
     assert "if len(target_axes)" not in many_profiles_code
-    assert "target_axes = list((axs[0, 0],)) * 3" in many_profiles_code
+    assert "target_axes =" not in many_profiles_code
+    assert "for profile in profiles:" in many_profiles_code
+    assert "axs[0, 0].plot(profile['kx'], profile)" in many_profiles_code
+    assert "axs[0, 0].set(xlim=(-0.5, 0.5))" in many_profiles_code
     exec(many_profiles_code, namespace)  # noqa: S102
     lines = namespace["fig"].axes[0].lines
     assert len(lines) == 3
@@ -12212,7 +12216,8 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
     namespace = {"data": data}
     single_profile_code = single_profile_tool.generated_code()
     assert "if len(target_axes)" not in single_profile_code
-    assert "profiles = profiles * 3" in single_profile_code
+    assert "target_axes =" not in single_profile_code
+    assert "profiles * 3," in single_profile_code
     exec(single_profile_code, namespace)  # noqa: S102
     profile = data.qsel(cut=1.0).squeeze(drop=True)
     for index, axis in enumerate(namespace["axs"].flat):
@@ -13438,12 +13443,15 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     assert "import xarray as xr" in code
     assert "data.qsel(eV=0.0, eV_width=0.1)" in code
     assert "data.qsel(eV=0.0, eV_width=0.1).squeeze(drop=True)" not in code
-    assert "profile_scales = [0.5, 2.0]" in code
-    assert "profile_offsets = [1.0, -1.0]" in code
+    assert "profile_scales =" not in code
+    assert "profile_offsets =" not in code
+    assert "[0.5, 2.0]," in code
+    assert "[1.0, -1.0]," in code
     assert (
         "profiles = [\n    offset + scale * (profile / profile.max(skipna=True))"
     ) in code
-    assert "eplt.plot_slices(plot_maps[0]" in code
+    assert "plot_maps" not in code
+    assert "eplt.plot_slices(plot_map" in code
     assert "eV_width" not in code.split("eplt.plot_slices(", maxsplit=1)[1]
 
     namespace: dict[str, typing.Any] = {"data": data}

@@ -3261,7 +3261,7 @@ def _plot_slices_transformed_maps_code(
 
     map_count = max((key.map_index for key in keys), default=-1) + 1
     slice_values = list(operation.slice_values)
-    lines = ["plot_maps = ["]
+    map_lines: list[list[str]] = []
     for map_index in range(map_count):
         profile_indices = [
             index for index, key in enumerate(keys) if key.map_index == map_index
@@ -3269,15 +3269,26 @@ def _plot_slices_transformed_maps_code(
         if len(profile_indices) != len(slice_values):
             continue
         profile_items = ", ".join(f"profiles[{index}]" for index in profile_indices)
-        lines.append("    xr.concat(")
-        lines.append(f"        [{profile_items}],")
-        lines.append(
-            f"        dim=xr.IndexVariable({operation.slice_dim!r}, {slice_values!r}),"
+        map_lines.append(
+            [
+                "xr.concat(",
+                f"    [{profile_items}],",
+                f"    dim=xr.IndexVariable({operation.slice_dim!r}, {slice_values!r}),",
+                ")",
+            ]
         )
+    if len(map_lines) == 1:
+        lines = ["plot_map = " + map_lines[0][0]]
+        lines.extend(f"    {line}" for line in map_lines[0][1:-1])
+        lines.append(map_lines[0][-1])
+        return lines, "plot_map"
+    lines = ["plot_maps = ["]
+    for map_code in map_lines:
+        lines.append("    " + map_code[0])
+        lines.extend("    " + line for line in map_code[1:-1])
         lines.append("    ),")
     lines.append("]")
-    maps_code = "plot_maps[0]" if map_count == 1 else "plot_maps"
-    return lines, maps_code
+    return lines, "plot_maps"
 
 
 def _plot_slices_transformed_code_lines(
