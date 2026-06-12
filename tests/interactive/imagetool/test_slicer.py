@@ -395,6 +395,27 @@ def test_swap_axes_normalizes_legacy_short_cursor_state(qtbot) -> None:
     assert slicer.get_binned(0) == (False, True)
 
 
+def test_set_array_normalizes_missing_cursor_state(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("a", "b"),
+        coords={"a": np.arange(3), "b": np.arange(4)},
+    )
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+    slicer._bins.clear()
+    slicer._indices.clear()
+    slicer._values.clear()
+    slicer._binned.clear()
+
+    slicer.set_array(data.copy(deep=False), validate=False)
+
+    assert slicer.get_bins(0) == [1, 1]
+    assert slicer.get_indices(0) == [1, 1]
+    assert slicer.get_values(0) == [1, 1]
+    assert slicer.get_binned(0) == (False, False)
+
+
 def test_clear_dim_cache_resets_dimension_memos(qtbot) -> None:
     data = xr.DataArray(
         np.zeros((3, 4, 5), dtype=np.float32),
