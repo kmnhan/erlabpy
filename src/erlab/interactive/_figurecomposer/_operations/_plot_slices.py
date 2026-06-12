@@ -3202,7 +3202,11 @@ def _plot_slices_code(
 ) -> str | None:
     operation = _normalized_selection_operation(tool, operation)
     if operation.map_selections:
-        maps_code = "selected_maps"
+        maps_code = (
+            _selection_code(operation.map_selections[0])
+            if len(operation.map_selections) == 1
+            else "selected_maps"
+        )
     else:
         sources = [_valid_source_variable(source) for source in operation.sources]
         if not sources:
@@ -3307,6 +3311,8 @@ def _plot_slices_code_lines(
     if code is None:
         return []
     if not operation.map_selections:
+        return [code]
+    if len(operation.map_selections) == 1:
         return [code]
     lines = ["selected_maps = ["]
     lines.extend(

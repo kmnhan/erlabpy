@@ -4037,12 +4037,12 @@ def _transform_component(
     raise ValueError(f"Unknown transform component: {component}")
 
 
-def _transform_component_code(component: str) -> str:
+def _transform_component_code(component: str, *, axis_code: str = "ax") -> str:
     match component:
         case "data":
-            return "ax.transData"
+            return f"{axis_code}.transData"
         case "axes":
-            return "ax.transAxes"
+            return f"{axis_code}.transAxes"
         case "figure":
             return "fig.transFigure"
         case "dpi":
@@ -4092,7 +4092,7 @@ def _render_method_transform(
 
 
 def _method_transform_code(
-    operation: FigureOperationState, spec: MethodSpec
+    operation: FigureOperationState, spec: MethodSpec, *, axis_code: str = "ax"
 ) -> _RawCode | None:
     if not _method_has_transform_control(spec):
         return None
@@ -4100,20 +4100,24 @@ def _method_transform_code(
         case "data":
             return None
         case "axes":
-            return _RawCode("ax.transAxes")
+            return _RawCode(f"{axis_code}.transAxes")
         case "figure":
             return _RawCode("fig.transFigure")
         case "dpi":
             return _RawCode("fig.dpi_scale_trans")
         case "xaxis":
-            return _RawCode("ax.get_xaxis_transform()")
+            return _RawCode(f"{axis_code}.get_xaxis_transform()")
         case "yaxis":
-            return _RawCode("ax.get_yaxis_transform()")
+            return _RawCode(f"{axis_code}.get_yaxis_transform()")
         case "blend":
+            x_transform = _transform_component_code(
+                operation.method_transform_x, axis_code=axis_code
+            )
+            y_transform = _transform_component_code(
+                operation.method_transform_y, axis_code=axis_code
+            )
             return _RawCode(
-                "mtransforms.blended_transform_factory("
-                f"{_transform_component_code(operation.method_transform_x)}, "
-                f"{_transform_component_code(operation.method_transform_y)})"
+                f"mtransforms.blended_transform_factory({x_transform}, {y_transform})"
             )
         case "custom":
             if not operation.trusted:
@@ -4164,7 +4168,7 @@ def _code_args_kwargs(
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
-    axis_transform: str | None = None,
+    axis_code: str | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(_method_args(operation, spec, tool))
     kwargs = dict(spec.default_kwargs)
@@ -4178,8 +4182,10 @@ def _code_args_kwargs(
         and operation.text_values
     ):
         kwargs.setdefault(spec.text_values_kwarg, list(operation.text_values))
-    transform_code = _method_transform_code(operation, spec)
-    if axis_transform is not None and transform_code is not None:
+    transform_code = _method_transform_code(
+        operation, spec, axis_code=axis_code or "ax"
+    )
+    if axis_code is not None and transform_code is not None:
         kwargs["transform"] = transform_code
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
@@ -4259,9 +4265,13 @@ def _method_code(
     call_policy = _effective_call_policy(operation, spec)
     match call_policy:
         case MethodCallPolicy.BOUND_EACH_AXIS:
-            args, kwargs = _code_args_kwargs(
-                tool, operation, spec, axis_transform="ax.transAxes"
-            )
+            axis_code = _single_axis_code(tool, operation)
+            if axis_code is not None:
+                args, kwargs = _code_args_kwargs(
+                    tool, operation, spec, axis_code=axis_code
+                )
+                return [_call_code(f"{axis_code}.{spec.call_name}", args, kwargs)]
+            args, kwargs = _code_args_kwargs(tool, operation, spec, axis_code="ax")
             call = _call_code(f"ax.{spec.call_name}", args, kwargs)
             return [
                 f"for ax in {_axes_sequence_code(tool, operation.axes)}:",
@@ -4280,7 +4290,14 @@ def _method_code(
             kwargs["ax"] = _RawCode(axes_code)
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
         case MethodCallPolicy.EACH_AXIS_AX_KEYWORD:
-            args, kwargs = _code_args_kwargs(tool, operation, spec)
+            axis_code = _single_axis_code(tool, operation)
+            if axis_code is not None:
+                args, kwargs = _code_args_kwargs(
+                    tool, operation, spec, axis_code=axis_code
+                )
+                kwargs["ax"] = _RawCode(axis_code)
+                return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
+            args, kwargs = _code_args_kwargs(tool, operation, spec, axis_code="ax")
             kwargs["ax"] = _RawCode("ax")
             call = f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"
             return [
@@ -4297,6 +4314,22 @@ def _method_code(
         case MethodCallPolicy.PLAIN_CALL:
             args, kwargs = _code_args_kwargs(tool, operation, spec)
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
+
+
+def _single_axis_code(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> str | None:
+    if operation.method_transform == "custom":
+        return None
+    if operation.axes.expression:
+        return None
+    setup = tool._recipe.setup
+    if setup.layout_mode == "gridspec":
+        if len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids)) != 1:
+            return None
+    elif len(operation.axes.valid_axes(setup)) != 1:
+        return None
+    return _axes_code(tool, operation.axes, for_plot_slices=False)
 
 
 def _call_parts(args: Sequence[typing.Any], kwargs: dict[str, typing.Any]) -> str:

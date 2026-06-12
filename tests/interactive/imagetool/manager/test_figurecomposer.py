@@ -2162,6 +2162,18 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     assert selection_lines[0] == "selected_maps = ["
     assert any("eplt.plot_slices" in line for line in selection_lines)
+    single_selection_operation = FigureOperationState.plot_slices(
+        label="single_selection",
+        sources=("image",),
+        map_selections=(FigureDataSelectionState(source="image", qsel={"eV": 1.0}),),
+    )
+    single_selection_lines = figurecomposer_plot_slices._plot_slices_code_lines(
+        tool,
+        single_selection_operation,
+    )
+    assert len(single_selection_lines) == 1
+    assert "selected_maps" not in single_selection_lines[0]
+    assert "eplt.plot_slices(image.qsel(eV=1.0)" in single_selection_lines[0]
     assert (
         figurecomposer_plot_slices._plot_slices_code_lines(
             tool,
@@ -10060,20 +10072,25 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
 
     code = tool.generated_code()
     assert (
-        'ax.text(0.1, 0.9, "Panel", ha="left", va="top", transform=ax.transAxes)'
+        'axs[0, 0].text(0.1, 0.9, "Panel", ha="left", va="top", '
+        "transform=axs[0, 0].transAxes)"
     ) in code
-    assert 'ax.axvline(0.5, color="red", linestyle="--")' in code
-    assert "ax.axvspan(0.2, 0.4, alpha=0.25)" in code
-    assert 'ax.set_xticks((0.0, 1.0), ("left", "right"))' in code
-    assert 'ax.grid(True, which="major", axis="x")' in code
-    assert "ax.set_axis_off()" in code
-    assert 'ax.set_xscale("log")' in code
-    assert f'ax.set_yscale("{y_scale}")' in code
-    assert 'ax.set_title("Left title", loc="left", pad=2.0)' in code
-    assert 'ax.set_xlabel("Momentum", loc="right", labelpad=3.0)' in code
-    assert 'ax.set_ylabel("Energy", loc="top", labelpad=4.0)' in code
-    assert "ax.margins(x=0.1, y=0.2, tight=False)" in code
-    assert "ax.set_aspect(2.5, share=True)" in code
+    assert (
+        'for ax in axs.flat:\n    ax.axvline(0.5, color="red", linestyle="--")' in code
+    )
+    assert "axs[0, 1].axvspan(0.2, 0.4, alpha=0.25)" in code
+    assert 'axs[0, 1].set_xticks((0.0, 1.0), ("left", "right"))' in code
+    assert 'axs[0, 1].grid(True, which="major", axis="x")' in code
+    assert "axs[0, 0].set_axis_off()" in code
+    assert 'axs[0, 0].set_xscale("log")' in code
+    assert f'axs[0, 1].set_yscale("{y_scale}")' in code
+    assert 'axs[0, 0].set_title("Left title", loc="left", pad=2.0)' in code
+    assert 'axs[0, 0].set_xlabel("Momentum", loc="right", labelpad=3.0)' in code
+    assert 'axs[0, 1].set_ylabel("Energy", loc="top", labelpad=4.0)' in code
+    assert "axs[0, 0].margins(x=0.1, y=0.2, tight=False)" in code
+    assert "axs[0, 1].set_aspect(2.5, share=True)" in code
+    assert "for ax in (axs[0, 0],):" not in code
+    assert "for ax in (axs[0, 1],):" not in code
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
