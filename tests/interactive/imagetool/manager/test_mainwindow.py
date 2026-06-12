@@ -1553,6 +1553,41 @@ def test_remove_childtool_delete_shortcut(
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
 
 
+def test_remove_child_imagetool_delete_shortcut(
+    qtbot,
+    accept_dialog,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(_batch_data("child"), manager=False, execute=False),
+        )
+        child_uid = manager.add_imagetool_child(child_tool, 0, show=True, activate=True)
+        child = manager.get_imagetool(child_uid)
+
+        with qtbot.waitExposed(child):
+            child.activateWindow()
+            child.raise_()
+            child.setFocus()
+
+        assert child.remove_act.isVisible()
+
+        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        qtbot.wait_until(
+            lambda: child_uid not in manager._tool_graph.nodes, timeout=5000
+        )
+
+
 def test_manager_childtool_type_badge_only_for_tool_windows(
     qtbot,
     monkeypatch,

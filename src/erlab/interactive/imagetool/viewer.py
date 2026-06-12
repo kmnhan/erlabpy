@@ -2828,15 +2828,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
-                index = manager.index_from_slicer_area(self)
-                if index is not None:  # pragma: no branch
+                target = manager.target_from_slicer_area(self)
+                if target is not None:  # pragma: no branch
                     msg_box = QtWidgets.QMessageBox(self)
                     msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
                     msg_box.setText("Remove window?")
-                    msg_box.setInformativeText(
-                        f"The ImageTool window at index {index} will be removed. "
-                        "This cannot be undone."
-                    )
+                    if isinstance(target, int):
+                        informative_text = (
+                            f"The ImageTool window at index {target} will be removed. "
+                            "This cannot be undone."
+                        )
+                    else:
+                        informative_text = (
+                            "The current ImageTool window will be removed. "
+                            "This cannot be undone."
+                        )
+                    msg_box.setInformativeText(informative_text)
                     msg_box.setStandardButtons(
                         QtWidgets.QMessageBox.StandardButton.Yes
                         | QtWidgets.QMessageBox.StandardButton.Cancel
@@ -2844,9 +2851,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
                     if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-                        erlab.interactive.utils.single_shot(
-                            manager, 0, lambda: manager.remove_imagetool(index)
-                        )
+                        if isinstance(target, int):
+                            erlab.interactive.utils.single_shot(
+                                manager, 0, lambda: manager.remove_imagetool(target)
+                            )
+                        else:
+                            erlab.interactive.utils.single_shot(
+                                manager, 0, lambda: manager._remove_childtool(target)
+                            )
 
     def add_tool_window(
         self,

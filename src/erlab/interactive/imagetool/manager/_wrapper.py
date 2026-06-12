@@ -400,6 +400,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_source_data_replaced
             )
             value.slicer_area._in_manager = True
+            value.remove_act.setVisible(True)
             for plot in value.slicer_area.axes:
                 plot.ensure_manager_figure_actions()
             return
