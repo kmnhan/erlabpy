@@ -11,7 +11,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._code import _axes_code, _selection_code
+from erlab.interactive._figurecomposer._code import (
+    _axes_code,
+    _maybe_squeeze_drop_code,
+    _selection_code,
+)
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
@@ -498,6 +502,15 @@ def _plot_slices_panel_qsel_kwargs(
     return kwargs
 
 
+def _plot_slices_panel_profile_data(
+    data: xr.DataArray, operation: FigureOperationState, key: _PlotSlicesPanelKey
+) -> xr.DataArray:
+    kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
+    if kwargs:
+        return data.qsel(**kwargs)
+    return data
+
+
 def _plot_slices_line_profiles(
     tool: FigureComposerTool,
     operation: FigureOperationState,
@@ -512,13 +525,9 @@ def _plot_slices_line_profiles(
     for key in keys:
         if key.map_index >= len(maps):
             continue
-        kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
-        data = maps[key.map_index]
-        profile = (
-            data.qsel(**kwargs).squeeze(drop=True)
-            if kwargs
-            else data.squeeze(drop=True)
-        )
+        profile = _plot_slices_panel_profile_data(
+            maps[key.map_index], operation, key
+        ).squeeze(drop=True)
         if profile.ndim != 1:
             continue
         profiles.append(profile)
@@ -3230,12 +3239,16 @@ def _plot_slices_profile_source_codes(
 
 
 def _plot_slices_profile_code(
-    source_code: str, operation: FigureOperationState, key: _PlotSlicesPanelKey
+    source_code: str,
+    operation: FigureOperationState,
+    key: _PlotSlicesPanelKey,
+    profile_data: xr.DataArray,
 ) -> str:
     kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
     if not kwargs:
-        return f"{source_code}.squeeze(drop=True)"
-    return f"{source_code}.qsel({_code_kwargs(kwargs)}).squeeze(drop=True)"
+        return _maybe_squeeze_drop_code(source_code, profile_data)
+    code = f"{source_code}.qsel({_code_kwargs(kwargs)})"
+    return _maybe_squeeze_drop_code(code, profile_data)
 
 
 def _plot_slices_transformed_maps_code(
@@ -3271,14 +3284,15 @@ def _plot_slices_transformed_code_lines(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     operation = _normalized_selection_operation(tool, operation)
-    profiles, _ = _plot_slices_line_profiles(tool, operation)
+    maps = _operation_maps(tool, operation)
+    profiles, _ = _plot_slices_line_profiles(tool, operation, maps)
     source_codes = _plot_slices_profile_source_codes(operation)
     if not source_codes:
         return []
     keys = tuple(
         key
         for key in _plot_slices_panel_keys(tool, operation)
-        if key.map_index < len(source_codes)
+        if key.map_index < len(source_codes) and key.map_index < len(maps)
     )
     if not keys:
         return []
@@ -3286,7 +3300,12 @@ def _plot_slices_transformed_code_lines(
     lines = ["profiles = ["]
     lines.extend(
         "    "
-        + _plot_slices_profile_code(source_codes[key.map_index], operation, key)
+        + _plot_slices_profile_code(
+            source_codes[key.map_index],
+            operation,
+            key,
+            _plot_slices_panel_profile_data(maps[key.map_index], operation, key),
+        )
         + ","
         for key in keys
     )

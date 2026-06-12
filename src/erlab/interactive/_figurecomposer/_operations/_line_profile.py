@@ -6,7 +6,12 @@ import typing
 
 from qtpy import QtWidgets
 
-from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
+from erlab.interactive._figurecomposer._code import (
+    _axes_sequence_code,
+    _maybe_squeeze_drop_code,
+    _needs_squeeze_drop,
+    _selection_code,
+)
 from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
@@ -22,6 +27,7 @@ from erlab.interactive._figurecomposer._line_style import (
 )
 from erlab.interactive._figurecomposer._line_transform import (
     add_line_transform_controls,
+    profile_stack_transform_code,
     profile_transform_code_lines,
     transform_profiles,
 )
@@ -882,6 +888,41 @@ def _line_data_items(
     return profiles
 
 
+def _line_source_expression_and_data(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, xr.DataArray] | None:
+    if operation.line_source is None:
+        return None
+    data = tool._source_data.get(operation.line_source)
+    if data is None:
+        return None
+    data = _public_source_data(data)
+    code = _valid_source_variable(operation.line_source)
+    if operation.line_selection:
+        code = f"{code}.qsel({_code_kwargs(operation.line_selection)})"
+        data = data.qsel(operation.line_selection)
+    code = _maybe_squeeze_drop_code(code, data)
+    data = data.squeeze(drop=True)
+    if operation.line_y:
+        code = f"{code}[{operation.line_y!r}]"
+        data = data[operation.line_y]
+    for reduce_operation in _line_reduce_operations(operation):
+        code = reduce_operation.expression_code(code)
+        data = reduce_operation.apply(data, parent_data=data)
+    return code, data
+
+
+def _line_iter_profiles_need_squeeze(
+    line_data: xr.DataArray, operation: FigureOperationState
+) -> bool:
+    if operation.line_iter_dim is None or operation.line_iter_dim not in line_data.dims:
+        return False
+    return any(
+        _needs_squeeze_drop(profile)
+        for profile in line_data.transpose(operation.line_iter_dim, ...)
+    )
+
+
 def _reduced_line_iter_data(
     line_data: xr.DataArray, operation: FigureOperationState
 ) -> xr.DataArray:
@@ -978,47 +1019,90 @@ def _line_text_values(
 def _line_code(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:
     if operation.map_selections:
         return _line_selection_code(tool, operation)
-    if operation.line_source is None:
+    source_expression = _line_source_expression_and_data(tool, operation)
+    if source_expression is None:
         return []
-    source = _valid_source_variable(operation.line_source)
-    if operation.line_selection:
-        selection = _code_kwargs(operation.line_selection)
-        lines = [f"profile_data = {source}.qsel({selection}).squeeze(drop=True)"]
-    else:
-        lines = [f"profile_data = {source}.squeeze(drop=True)"]
-    if operation.line_y:
-        lines.append(f"profile_data = profile_data[{operation.line_y!r}]")
-    lines.extend(_line_reduce_code(operation, "profile_data"))
-    if operation.line_iter_dim:
-        transpose_code = f"profile_data.transpose({operation.line_iter_dim!r}, ...)"
+    source_code, line_data = source_expression
+    lines = [] if source_code == "profile_data" else [f"profile_data = {source_code}"]
+    profiles = _line_data_items(tool, operation)
+    axes_count = _selected_axes_count(tool, operation)
+    profile_count = len(profiles)
+    stack_transform_code = _line_stack_transform_code(
+        operation,
+        line_data=line_data,
+        axes_count=axes_count,
+        profile_count=profile_count,
+    )
+    if stack_transform_code is not None:
         lines.append(
-            f"profiles = [profile.squeeze(drop=True) for profile in {transpose_code}]"
+            "profiles = "
+            f"({stack_transform_code}).transpose({operation.line_iter_dim!r}, ...)"
         )
+        transform_profiles_in_code = False
+    elif operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
+        transpose_code = f"profile_data.transpose({operation.line_iter_dim!r}, ...)"
+        if _line_iter_profiles_need_squeeze(line_data, operation):
+            lines.append(
+                "profiles = ["
+                f"profile.squeeze(drop=True) for profile in {transpose_code}]"
+            )
+        else:
+            lines.append(f"profiles = list({transpose_code})")
+        transform_profiles_in_code = True
     else:
         lines.append("profiles = [profile_data]")
+        transform_profiles_in_code = True
     if operation.line_placement == "one_per_axis":
-        lines.extend(_one_profile_per_axis_code(tool, operation))
+        lines.extend(
+            _one_profile_per_axis_code(
+                tool,
+                operation,
+                transform_profiles_in_code=transform_profiles_in_code,
+                axes_count=axes_count,
+                profile_count=profile_count,
+            )
+        )
         return lines
-    lines.extend(_regular_line_code(tool, operation))
+    lines.extend(
+        _regular_line_code(
+            tool, operation, transform_profiles_in_code=transform_profiles_in_code
+        )
+    )
     return lines
 
 
-def _line_reduce_code(operation: FigureOperationState, input_name: str) -> list[str]:
-    if not _line_reduce_active(operation):
-        return []
-    return [
-        f"{input_name} = {reduce_operation.expression_code(input_name)}"
-        for reduce_operation in _line_reduce_operations(operation)
-    ]
+def _line_stack_transform_code(
+    operation: FigureOperationState,
+    *,
+    line_data: xr.DataArray,
+    axes_count: int | None,
+    profile_count: int,
+) -> str | None:
+    if axes_count is None:
+        return None
+    if (
+        operation.line_placement == "one_per_axis"
+        and profile_count == 1
+        and axes_count > 1
+    ):
+        return None
+    return profile_stack_transform_code(
+        operation, data_name="profile_data", line_data=line_data
+    )
 
 
 def _line_selection_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
+    selected_items = tuple(
+        (selection, selected)
+        for selection in operation.map_selections
+        if (selected := _selected_data(tool._source_data, selection)) is not None
+    )
     lines = ["profiles = ["]
     lines.extend(
-        f"    {_selection_code(selection)}.squeeze(drop=True),"
-        for selection in operation.map_selections
+        f"    {_maybe_squeeze_drop_code(_selection_code(selection), selected)},"
+        for selection, selected in selected_items
     )
     lines.append("]")
     if operation.line_placement == "one_per_axis":
@@ -1029,11 +1113,15 @@ def _line_selection_code(
 
 
 def _regular_line_code(
-    tool: FigureComposerTool, operation: FigureOperationState
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    transform_profiles_in_code: bool = True,
 ) -> list[str]:
     lines: list[str] = []
     profiles = _line_data_items(tool, operation)
-    lines.extend(profile_transform_code_lines(operation, profiles=profiles))
+    if transform_profiles_in_code:
+        lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["profile"]
     loop_values = ["profiles"]
     style_lines, kwargs_text = _line_style_code(
@@ -1082,8 +1170,7 @@ def _line_style_code(
     kwargs = [_code_kwargs(_line_profile_style_kwargs(operation))]
     if operation.line_labels:
         if len(operation.line_labels) == 1:
-            lines.append(f"profile_label = {operation.line_labels[0]!r}")
-            kwargs.append("label=profile_label")
+            kwargs.append(f"label={operation.line_labels[0]!r}")
         else:
             lines.append(f"profile_labels = {list(operation.line_labels)!r}")
             loop_names.append("label")
@@ -1093,8 +1180,7 @@ def _line_style_code(
     line_colors = operation.line_colors
     if line_colors:
         if len(line_colors) == 1:
-            lines.append(f"profile_color = {line_colors[0]!r}")
-            kwargs.append("color=profile_color")
+            kwargs.append(f"color={line_colors[0]!r}")
         else:
             lines.append(f"profile_colors = {list(line_colors)!r}")
             loop_names.append("color")
@@ -1104,18 +1190,26 @@ def _line_style_code(
 
 
 def _one_profile_per_axis_code(
-    tool: FigureComposerTool, operation: FigureOperationState
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    transform_profiles_in_code: bool = True,
+    axes_count: int | None = None,
+    profile_count: int | None = None,
 ) -> list[str]:
     lines: list[str] = []
     profiles = _line_data_items(tool, operation)
-    axes_count = _selected_axes_count(tool, operation)
-    profile_count = len(profiles)
+    if axes_count is None:
+        axes_count = _selected_axes_count(tool, operation)
+    if profile_count is None:
+        profile_count = len(profiles)
     lines.extend(
         _one_profile_per_axis_broadcast_code(
             tool, operation, axes_count=axes_count, profile_count=profile_count
         )
     )
-    lines.extend(profile_transform_code_lines(operation, profiles=profiles))
+    if transform_profiles_in_code:
+        lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["ax", "profile"]
     loop_values = ["target_axes", "profiles"]
     style_lines, kwargs_text = _line_style_code(

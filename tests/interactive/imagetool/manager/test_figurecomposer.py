@@ -1205,10 +1205,8 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
         }
     )
     assert _line_transform.profile_transform_code_lines(code_operation) == [
-        "profile_scale = 2.0",
-        "profile_offset = 1.0",
         "profiles = [",
-        "    profile_offset + profile_scale * profile",
+        "    1.0 + 2.0 * profile",
         "    for profile in profiles",
         "]",
     ]
@@ -11948,6 +11946,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     namespace: dict[str, typing.Any] = {"profile_data": profile_data}
     code = tool.generated_code()
     assert "ax.legend()" not in code
+    assert "profile_offsets =" not in code
+    assert "0.01 * profile_data['temperature'] + profile_data" in code
     exec(code, namespace)  # noqa: S102
     for index, line in enumerate(namespace["fig"].axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
@@ -11988,7 +11988,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     ]
 
     namespace = {"profile_data": profile_data}
-    exec(shared_label_tool.generated_code(), namespace)  # noqa: S102
+    shared_code = shared_label_tool.generated_code()
+    assert "profile_label =" not in shared_code
+    exec(shared_code, namespace)  # noqa: S102
     assert [line.get_label() for line in namespace["fig"].axes[0].lines] == [
         "shared",
         "shared",
@@ -12120,8 +12122,10 @@ def test_figure_composer_profile_reduce_codegen_executes(qtbot) -> None:
 
     code = tool.generated_code()
     assert "if len(target_axes)" not in code
-    assert 'profile_data = profile_data.coarsen(cut=2, boundary="trim").mean()' in code
-    assert "profile_data = profile_data.thin(cut=2)" in code
+    assert (
+        'profile_data = data.coarsen(cut=2, boundary="trim").mean().thin(cut=2)' in code
+    )
+    assert "profile_data = profile_data." not in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
     for index, axis in enumerate(namespace["axs"].flat):
@@ -13432,7 +13436,8 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
 
     code = tool.generated_code()
     assert "import xarray as xr" in code
-    assert "data.qsel(eV=0.0, eV_width=0.1).squeeze(drop=True)" in code
+    assert "data.qsel(eV=0.0, eV_width=0.1)" in code
+    assert "data.qsel(eV=0.0, eV_width=0.1).squeeze(drop=True)" not in code
     assert "profile_scales = [0.5, 2.0]" in code
     assert "profile_offsets = [1.0, -1.0]" in code
     assert (

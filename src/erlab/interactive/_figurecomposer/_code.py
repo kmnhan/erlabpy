@@ -28,6 +28,8 @@ from erlab.interactive._figurecomposer._sources import (
 from erlab.interactive._figurecomposer._text import _code_kwargs, _format_axes_tuple
 
 if typing.TYPE_CHECKING:
+    import xarray as xr
+
     from erlab.interactive._figurecomposer._state import (
         FigureAxesSelectionState,
         FigureDataSelectionState,
@@ -138,6 +140,16 @@ def _selection_code(selection: FigureDataSelectionState) -> str:
         else:
             mean_arg = erlab.interactive.utils._parse_single_arg(selection.mean_dims)
         code += f".qsel.mean({mean_arg})"
+    return code
+
+
+def _needs_squeeze_drop(data: xr.DataArray) -> bool:
+    return any(size == 1 for size in data.sizes.values())
+
+
+def _maybe_squeeze_drop_code(code: str, data: xr.DataArray) -> str:
+    if _needs_squeeze_drop(data):
+        return f"{code}.squeeze(drop=True)"
     return code
 
 

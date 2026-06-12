@@ -356,6 +356,75 @@ def profile_transform_code_lines(
     return lines
 
 
+def profile_stack_transform_code(
+    operation: FigureOperationState,
+    *,
+    data_name: str,
+    line_data: xr.DataArray,
+) -> str | None:
+    if not line_transform_active(operation):
+        return None
+    if operation.line_iter_dim is None or operation.line_iter_dim not in line_data.dims:
+        return None
+    profile_dims = tuple(
+        str(dim) for dim in line_data.dims if dim != operation.line_iter_dim
+    )
+    value_expr = _profile_stack_normalize_expression(
+        operation, data_name=data_name, profile_dims=profile_dims
+    )
+    if value_expr is None:
+        return None
+    scale_expr = _profile_stack_scale_expression(operation)
+    if operation.line_scales and scale_expr is None:
+        return None
+    offset_expr = _profile_stack_offset_expression(operation, data_name=data_name)
+    if line_uses_offsets(operation) and offset_expr is None:
+        return None
+    return _profile_transform_expression(
+        operation,
+        value_expr=value_expr,
+        scale_name=scale_expr,
+        offset_name=offset_expr,
+    )
+
+
+def _profile_stack_normalize_expression(
+    operation: FigureOperationState, *, data_name: str, profile_dims: Sequence[str]
+) -> str | None:
+    if operation.line_normalize == "none":
+        return data_name
+    if len(profile_dims) != 1:
+        return None
+    reducer = "max" if operation.line_normalize == "max" else "mean"
+    return f"{data_name} / {data_name}.{reducer}({profile_dims[0]!r}, skipna=True)"
+
+
+def _profile_stack_scale_expression(operation: FigureOperationState) -> str | None:
+    if not operation.line_scales:
+        return None
+    if len(operation.line_scales) == 1:
+        return repr(operation.line_scales[0])
+    return None
+
+
+def _profile_stack_offset_expression(
+    operation: FigureOperationState, *, data_name: str
+) -> str | None:
+    if not line_uses_offsets(operation):
+        return None
+    if operation.line_offset_source == "manual":
+        if len(operation.line_offsets) == 1:
+            return repr(operation.line_offsets[0])
+        return None
+    if operation.line_offset_source == "index":
+        return None
+    coord_name = line_offset_coordinate_name(operation)
+    offset_expr = f"{data_name}[{coord_name!r}]"
+    if operation.line_offset_scale != 1.0:
+        offset_expr = f"{operation.line_offset_scale!r} * {offset_expr}"
+    return offset_expr
+
+
 def _profile_scale_code(
     lines: list[str],
     operation: FigureOperationState,
@@ -365,8 +434,7 @@ def _profile_scale_code(
     if not operation.line_scales:
         return None
     if len(operation.line_scales) == 1:
-        lines.append(f"profile_scale = {operation.line_scales[0]!r}")
-        return "profile_scale"
+        return repr(operation.line_scales[0])
     lines.append(f"profile_scales = {list(operation.line_scales)!r}")
     loop_names.append("scale")
     loop_values.append("profile_scales")
@@ -385,8 +453,7 @@ def _profile_offset_code(
         return None
     if operation.line_offset_source == "manual":
         if len(operation.line_offsets) == 1:
-            lines.append(f"profile_offset = {operation.line_offsets[0]!r}")
-            return "profile_offset"
+            return repr(operation.line_offsets[0])
         lines.append(f"profile_offsets = {list(operation.line_offsets)!r}")
     elif operation.line_offset_source == "index":
         lines.extend(_offset_list_code("float(index)", operation, profiles_name))
@@ -406,8 +473,8 @@ def _offset_list_code(
     value_expr: str, operation: FigureOperationState, profiles_name: str
 ) -> list[str]:
     if operation.line_offset_scale != 1.0:
-        lines = [f"profile_offset_scale = {operation.line_offset_scale!r}"]
-        value_expr = f"profile_offset_scale * {value_expr}"
+        lines: list[str] = []
+        value_expr = f"{operation.line_offset_scale!r} * {value_expr}"
     else:
         lines = []
     if operation.line_offset_source == "index":
@@ -422,10 +489,12 @@ def _offset_list_code(
 def _profile_transform_expression(
     operation: FigureOperationState,
     *,
+    value_expr: str | None = None,
     scale_name: str | None,
     offset_name: str | None,
 ) -> str:
-    value_expr = _profile_normalize_expression(operation)
+    if value_expr is None:
+        value_expr = _profile_normalize_expression(operation)
     if scale_name is not None:
         if operation.line_normalize == "none":
             value_expr = f"{scale_name} * {value_expr}"
