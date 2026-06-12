@@ -1263,7 +1263,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.Qt.TextInteractionFlag.NoTextInteraction
         )
         shape_label.setContentsMargins(4, 0, 4, 0)
-        shape_label.setToolTip(repr(data))
+        shape_label.setToolTip(tooltip)
         if missing:
             palette = shape_label.palette()
             palette.setColor(

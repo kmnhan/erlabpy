@@ -558,6 +558,8 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     shape_widget = tool.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert shape_widget.text() == "<p>formatted shape</p>"
+    assert shape_widget.toolTip() == first_item.toolTip(0)
+    assert first_item.toolTip(1) == first_item.toolTip(0)
     assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
