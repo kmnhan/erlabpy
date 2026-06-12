@@ -2975,6 +2975,15 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         dims=("x", "y"),
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
+    dialogs: list[QtWidgets.QMessageBox] = []
+
+    def _record_dialog(
+        dialog: QtWidgets.QMessageBox,
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        dialogs.append(dialog)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", _record_dialog)
 
     with manager_context() as manager:
         manager.show()
@@ -3004,7 +3013,12 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         manager._set_metadata_node(wrapper)
         manager._copy_full_derivation_code()
         assert not copied
-        assert manager._status_bar.currentMessage()
+        assert len(dialogs) == 1
+        assert dialogs[0].icon() == QtWidgets.QMessageBox.Icon.Warning
+        assert dialogs[0].text()
+        assert dialogs[0].informativeText()
+        assert dialogs[0].detailedText()
+        assert "Run opaque code" in dialogs[0].detailedText()
 
 
 def test_manager_console_replacement_updates_provenance_and_descendants(

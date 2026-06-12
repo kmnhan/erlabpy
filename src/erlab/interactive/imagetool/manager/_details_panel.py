@@ -252,6 +252,43 @@ class _DetailsPanelController:
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
 
+    def _unavailable_replay_code_details(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        unavailable_labels: list[str] = []
+        for entry in node.derivation_entries[1:]:
+            if entry.code is not None:
+                continue
+            label = " ".join(entry.label.split())
+            if label and label not in unavailable_labels:
+                unavailable_labels.append(label)
+
+        if unavailable_labels:
+            return "\n".join(
+                (
+                    "The following recorded inputs or steps are not available as "
+                    "replayable code:",
+                    *(f"- {label}" for label in unavailable_labels),
+                )
+            )
+        return "The replay graph could not be emitted as Python code."
+
+    def _show_unavailable_replay_code_dialog(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> None:
+        msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Replay Code Unavailable")
+        msg_box.setText("Replay code cannot be copied for the selected result.")
+        msg_box.setInformativeText(
+            "The result has provenance, but at least one recorded input or step "
+            "cannot be converted to replayable Python, so nothing was copied."
+        )
+        msg_box.setDetailedText(self._unavailable_replay_code_details(node))
+        msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+
     def _copy_full_derivation_code(self) -> None:
         node = (
             None
@@ -262,9 +299,7 @@ class _DetailsPanelController:
             return
         code = node.derivation_code
         if not code:
-            self._manager._status_bar.showMessage(
-                "Replay code is unavailable for this result", 5000
-            )
+            self._show_unavailable_replay_code_dialog(node)
             return
         if provenance.uses_default_replay_input(code):
             load_source = self._manager._load_source_for_replay(node)
