@@ -233,6 +233,35 @@ def _plot_source_move_buttons(
     }
 
 
+def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
+    qtbot, monkeypatch
+) -> None:
+    records: list[tuple[str, dict[str, typing.Any]]] = []
+
+    def record_icon(name: str, **kwargs: typing.Any) -> QtGui.QIcon:
+        records.append((name, kwargs))
+        pixmap = QtGui.QPixmap(12, 12)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        return QtGui.QIcon(pixmap)
+
+    monkeypatch.setattr(erlab.interactive.utils.qtawesome, "icon", record_icon)
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    button = figurecomposer_plot_slices._PlotSourceMoveButton("up", parent)
+    palette = button.palette()
+    disabled_text = QtGui.QColor("#6f7782")
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.ButtonText,
+        disabled_text,
+    )
+    button.setPalette(palette)
+    button.setEnabled(False)
+
+    assert records[-1][0] == "mdi6.arrow-up"
+    assert records[-1][1]["color_disabled"] == disabled_text
+
+
 def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
     modules = (
         figurecomposer_custom_code,

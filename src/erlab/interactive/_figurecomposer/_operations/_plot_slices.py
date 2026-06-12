@@ -3516,6 +3516,47 @@ def _plot_source_row_names(
     return selected_sources + unselected_sources
 
 
+class _PlotSourceMoveButton(QtWidgets.QToolButton):
+    def __init__(
+        self,
+        direction: typing.Literal["up", "down"],
+        parent: QtWidgets.QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self._direction = direction
+        self._refresh_icon()
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if event is not None and event.type() in {
+            QtCore.QEvent.Type.ActivationChange,
+            QtCore.QEvent.Type.ApplicationPaletteChange,
+            QtCore.QEvent.Type.EnabledChange,
+            QtCore.QEvent.Type.PaletteChange,
+        }:
+            self._refresh_icon()
+        super().changeEvent(event)
+
+    def _refresh_icon(self) -> None:
+        icon_name = "mdi6.arrow-up" if self._direction == "up" else "mdi6.arrow-down"
+        palette = self.palette()
+        window = self.window()
+        color_group = (
+            QtGui.QPalette.ColorGroup.Active
+            if window is not None and window.isActiveWindow()
+            else QtGui.QPalette.ColorGroup.Inactive
+        )
+        self.setIcon(
+            erlab.interactive.utils.qtawesome.icon(
+                icon_name,
+                color=palette.color(color_group, QtGui.QPalette.ColorRole.ButtonText),
+                color_disabled=palette.color(
+                    QtGui.QPalette.ColorGroup.Disabled,
+                    QtGui.QPalette.ColorRole.ButtonText,
+                ),
+            )
+        )
+
+
 def _build_plot_source_row(
     tool: FigureComposerTool,
     operation: FigureOperationState,
@@ -3551,7 +3592,6 @@ def _build_plot_source_row(
         selector,
         source_name,
         "up",
-        QtCore.Qt.ArrowType.UpArrow,
         order_controls_enabled and selected_index > 0,
         "Move this input earlier in the maps argument.",
         lambda: _plot_source_move(tool, source_name, -1),
@@ -3561,7 +3601,6 @@ def _build_plot_source_row(
         selector,
         source_name,
         "down",
-        QtCore.Qt.ArrowType.DownArrow,
         order_controls_enabled
         and source_selected
         and selected_index < len(selected_sources) - 1,
@@ -3580,18 +3619,16 @@ def _plot_source_move_button(
     parent: QtWidgets.QWidget,
     source_name: str,
     direction: typing.Literal["up", "down"],
-    arrow: QtCore.Qt.ArrowType,
     enabled: bool,
     tooltip: str,
     clicked: Callable[[], None],
 ) -> QtWidgets.QToolButton:
-    button = QtWidgets.QToolButton(parent)
+    button = _PlotSourceMoveButton(direction, parent)
     button.setObjectName(
         f"figureComposerPlotSlicesSourceMove_{direction}_{source_name}"
     )
     button.setProperty("figure_source_name", source_name)
     button.setProperty("figure_source_move", direction)
-    button.setArrowType(arrow)
     button.setEnabled(enabled)
     button.setToolTip(tooltip)
     tool._connect_editor_signal(
