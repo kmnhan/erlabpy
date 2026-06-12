@@ -2878,6 +2878,55 @@ def test_figure_composer_selector_colors_use_widget_palette_group(qtbot) -> None
     )
 
 
+def test_figure_composer_axes_selector_add_pills_use_selector_color_roles(
+    qtbot, monkeypatch
+) -> None:
+    selector = figurecomposer_widgets._AxesSelectorWidget()
+    qtbot.addWidget(selector)
+    selector.resize(selector.sizeHint())
+    colors = figurecomposer_widgets._selector_colors(selector)
+
+    captured_rects: list[tuple[QtGui.QColor, QtGui.QColor]] = []
+
+    def record_selector_rect(
+        _painter: QtGui.QPainter,
+        _rect: QtCore.QRect,
+        *,
+        facecolor: QtGui.QColor,
+        edgecolor: QtGui.QColor,
+        linewidth: float = 1.0,
+        radius: float = 0.0,
+    ) -> None:
+        del linewidth, radius
+        captured_rects.append((QtGui.QColor(facecolor), QtGui.QColor(edgecolor)))
+
+    monkeypatch.setattr(
+        figurecomposer_widgets, "_draw_selector_rect", record_selector_rect
+    )
+    pixmap = QtGui.QPixmap(selector.size())
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        selector._draw_add_pill(painter, colors, "row")
+        selector._hovered_add_control = "row"
+        selector._draw_add_pill(painter, colors, "row")
+    finally:
+        painter.end()
+
+    idle_face = QtGui.QColor(colors.face)
+    idle_face.setAlpha(70)
+    idle_edge = QtGui.QColor(colors.border)
+    idle_edge.setAlpha(95)
+    hover_face = QtGui.QColor(colors.hover_face)
+    hover_face.setAlpha(190)
+    hover_edge = QtGui.QColor(colors.selection)
+    hover_edge.setAlpha(210)
+    assert [(color.getRgb(), edge.getRgb()) for color, edge in captured_rects] == [
+        (idle_face.getRgb(), idle_edge.getRgb()),
+        (hover_face.getRgb(), hover_edge.getRgb()),
+    ]
+
+
 def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> None:
     main_span = FigureGridSpecSpanState(
         row_start=0,

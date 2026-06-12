@@ -1323,10 +1323,8 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         if rect.isNull():
             return
         hovered = self._hovered_add_control == direction
-        face = _blend_qcolors(colors.face, colors.selection, 0.12 if hovered else 0.04)
-        edge = _blend_qcolors(
-            colors.border, colors.selection, 0.45 if hovered else 0.12
-        )
+        face = QtGui.QColor(colors.hover_face if hovered else colors.face)
+        edge = QtGui.QColor(colors.selection if hovered else colors.border)
         text = colors.selection if hovered else colors.muted_text
         face.setAlpha(190 if hovered else 70)
         edge.setAlpha(210 if hovered else 95)
