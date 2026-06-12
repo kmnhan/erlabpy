@@ -813,6 +813,51 @@ def test_batch_transform_placements(
                 )
 
 
+def test_batch_sortby_transform_replace(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = _batch_data("scan0").assign_coords(temperature=("x", [20.0, 10.0, 30.0]))
+    data1 = _batch_data("scan1", offset=100.0).assign_coords(
+        temperature=("x", [25.0, 5.0, 15.0])
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.SortByDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        for row in range(dialog.key_table.rowCount()):
+            item = dialog.key_table.item(row, 0)
+            if (
+                item is not None
+                and item.data(QtCore.Qt.ItemDataRole.UserRole) == "temperature"
+            ):
+                item.setCheckState(QtCore.Qt.CheckState.Checked)
+        dialog.ascending_combo.setCurrentIndex(
+            dialog.ascending_combo.findData(False, QtCore.Qt.ItemDataRole.UserRole)
+        )
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        assert manager.ntools == 2
+        for index, expected_data in enumerate(
+            (
+                data0.sortby("temperature", ascending=False),
+                data1.sortby("temperature", ascending=False),
+            )
+        ):
+            xarray.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data.rename(None),
+                expected_data.rename(None),
+            )
+
+
 def test_batch_filter_applies_in_place_only(
     qtbot,
     manager_context: Callable[
@@ -865,6 +910,46 @@ def test_batch_transform_preflight_failure_leaves_all_targets_unchanged(
             batch_manager=manager,
         )
         dialog.dim_checks["y"].setChecked(True)
+
+        assert not manager.apply_batch_transform_dialog(dialog, "replace")
+        assert messages
+        xarray.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area._data.rename(None),
+            data0.rename(None),
+        )
+        xarray.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area._data.rename(None),
+            data1.rename(None),
+        )
+
+
+def test_batch_sortby_preflight_failure_leaves_all_targets_unchanged(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    data0 = _batch_data("scan0").assign_coords(temperature=("x", [20.0, 10.0, 30.0]))
+    data1 = _batch_data("scan1", offset=100.0)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.SortByDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        for row in range(dialog.key_table.rowCount()):
+            item = dialog.key_table.item(row, 0)
+            if (
+                item is not None
+                and item.data(QtCore.Qt.ItemDataRole.UserRole) == "temperature"
+            ):
+                item.setCheckState(QtCore.Qt.CheckState.Checked)
 
         assert not manager.apply_batch_transform_dialog(dialog, "replace")
         assert messages

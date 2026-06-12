@@ -693,6 +693,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "text": "Interpolate…",
                         "triggered": self._interpolate,
                     },
+                    "sortByAct": {
+                        "text": "Sort By…",
+                        "triggered": self._sort_by,
+                    },
                     "leadingEdgeAct": {
                         "text": "Leading Edge…",
                         "triggered": self._leading_edge,
@@ -920,6 +924,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _interpolate(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.InterpolationDialog)
+
+    @QtCore.Slot()
+    def _sort_by(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SortByDialog)
 
     @QtCore.Slot()
     def _leading_edge(self) -> None:

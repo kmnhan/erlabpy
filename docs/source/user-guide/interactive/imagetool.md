@@ -323,6 +323,9 @@ script or notebook for reproducibility.
 - {guilabel}`Edit → Interpolate…` opens the {guilabel}`Interpolate` dialog. Choose one
   dimension, enter the target coordinate values, and interpolate with
   {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
+- {guilabel}`Edit → Sort By…` opens the {guilabel}`Sort By` dialog. Choose one or
+  more dimension or 1D coordinate keys, order them by priority, and sort with
+  {meth}`xarray.DataArray.sortby`.
 - {guilabel}`Edit → Leading Edge…` opens the {guilabel}`Leading Edge` dialog. Choose the
   dimension to extract the leading edge from, set the fraction of the curve maximum, and
   choose whether the edge is searched toward larger or smaller coordinate values with

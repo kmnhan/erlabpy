@@ -38,6 +38,7 @@ __all__ = [
     "SelOperation",
     "SelectCoordOperation",
     "SliceAlongPathOperation",
+    "SortByOperation",
     "SortCoordOrderOperation",
     "SqueezeOperation",
     "SwapDimsOperation",
@@ -391,6 +392,76 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
             "erlab.utils.array.sort_coord_order("
             f"{input_name}, {source_name}.coords.keys())"
         )
+
+
+class SortByOperation(ToolProvenanceOperation):
+    op: typing.Literal["sortby"] = "sortby"
+    batch_available: typing.ClassVar[bool] = True
+    variables: ProvenanceHashableTuple
+    ascending: bool = True
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "sortby"
+            or call.accessor_path
+            or len(call.args) > 1
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        ascending = kwargs.pop("ascending", True)
+        if not isinstance(ascending, bool):
+            return None
+        if call.args:
+            if "variables" in kwargs:
+                return None
+            variables = call.args[0]
+        else:
+            variables = kwargs.pop("variables", None)
+        if kwargs or variables is None:
+            return None
+        variables = tuple(variables) if isinstance(variables, list) else (variables,)
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(variables=variables, ascending=ascending)
+        return None
+
+    @pydantic.field_validator("variables", mode="before")
+    @classmethod
+    def _validate_variables(cls, value: typing.Any) -> tuple[Hashable, ...]:
+        value = decode_provenance_value(value)
+        if callable(value) or isinstance(value, xr.DataArray):
+            raise TypeError("sortby variables must be coordinate names")
+        if isinstance(value, str) or not isinstance(value, Sequence):
+            values = (value,)
+        else:
+            values = tuple(value)
+        if not values:
+            raise ValueError("sortby requires at least one variable")
+        if any(callable(item) or isinstance(item, xr.DataArray) for item in values):
+            raise TypeError("sortby variables must be coordinate names")
+        return typing.cast("tuple[Hashable, ...]", values)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        variables: Hashable | list[Hashable] = (
+            self.variables[0] if len(self.variables) == 1 else list(self.variables)
+        )
+        return data.sortby(variables, ascending=self.ascending)
+
+    def derivation_label(self) -> str:
+        label_kwargs = {"variables": self.variables, "ascending": self.ascending}
+        return f"Sort By({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        variables: Hashable | list[Hashable] = (
+            self.variables[0] if len(self.variables) == 1 else list(self.variables)
+        )
+        args = erlab.interactive.utils._parse_single_arg(variables)
+        if self.ascending:
+            return f"{input_name}.sortby({args})"
+        return f"{input_name}.sortby({args}, ascending=False)"
 
 
 class SelectCoordOperation(ToolProvenanceOperation):

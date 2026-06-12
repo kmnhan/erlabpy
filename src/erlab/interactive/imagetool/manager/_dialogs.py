@@ -49,6 +49,7 @@ _BATCH_OPERATION_CATEGORIES: tuple[tuple[str, tuple[_BatchDialogType, ...]], ...
             imagetool_dialogs.RotationDialog,
             imagetool_dialogs.AggregateDialog,
             imagetool_dialogs.InterpolationDialog,
+            imagetool_dialogs.SortByDialog,
             imagetool_dialogs.LeadingEdgeDialog,
             imagetool_dialogs.DivideByCoordDialog,
             imagetool_dialogs.CoarsenDialog,
