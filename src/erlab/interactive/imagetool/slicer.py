@@ -495,7 +495,7 @@ class ArraySlicer(QtCore.QObject):
         else:
             # Preserve cursor bin widths when the array is replaced, but rebuild the
             # derived boolean cache against the current axis order.
-            self._binned = [tuple(b != 1 for b in bins) for bins in self._bins]
+            self._normalize_cursor_axis_state()
         return reset
 
     @functools.cached_property
@@ -912,6 +912,48 @@ class ArraySlicer(QtCore.QObject):
         """Refresh the cached binned-state tuple after mutating bin widths."""
         self._binned[cursor] = tuple(b != 1 for b in self._bins[cursor])
 
+    def _normalize_cursor_axis_state(self) -> None:
+        center_indices = [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
+        if not self._bins:
+            self._bins.append([1] * self._obj.ndim)
+        cursor_count = len(self._bins)
+        del self._indices[cursor_count:]
+        del self._values[cursor_count:]
+        while len(self._indices) < cursor_count:
+            self._indices.append(list(center_indices))
+        while len(self._values) < cursor_count:
+            self._values.append(
+                [
+                    coord[index]
+                    for coord, index in zip(self.coords, center_indices, strict=True)
+                ]
+            )
+
+        for cursor in range(cursor_count):
+            bins = self._bins[cursor]
+            indices = self._indices[cursor]
+            values = self._values[cursor]
+            normalized_bins: list[int] = []
+            normalized_indices: list[int] = []
+            normalized_values: list[np.floating] = []
+            for axis in self._all_axes:
+                normalized_bins.append(int(bins[axis]) if axis < len(bins) else 1)
+                index_missing = axis >= len(indices)
+                index = center_indices[axis] if index_missing else int(indices[axis])
+                index_clamped = not 0 <= index < self._obj.shape[axis]
+                if index_clamped:
+                    index = center_indices[axis]
+                normalized_indices.append(index)
+                if index_missing or index_clamped or axis >= len(values):
+                    normalized_values.append(self.coords[axis][index])
+                else:
+                    normalized_values.append(values[axis])
+            self._bins[cursor] = normalized_bins
+            self._indices[cursor] = normalized_indices
+            self._values[cursor] = normalized_values
+
+        self._binned = [tuple(b != 1 for b in bins) for bins in self._bins]
+
     def _hidden_axes_for_disp(self, disp: Sequence[int]) -> tuple[int, ...]:
         """Return cached hidden axes for a given displayed-axis selection."""
         key = tuple(disp)
@@ -1162,6 +1204,7 @@ class ArraySlicer(QtCore.QObject):
                 f"axis indices {ax1} and {ax2} are incompatible with "
                 f"{self._obj.ndim}-dimensional data"
             )
+        self._normalize_cursor_axis_state()
         for i in range(self.n_cursors):
             self._bins[i][ax1], self._bins[i][ax2] = (
                 self._bins[i][ax2],
