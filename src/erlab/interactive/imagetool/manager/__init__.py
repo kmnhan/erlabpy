@@ -64,6 +64,7 @@ import shutil
 import sys
 import typing
 import warnings
+from dataclasses import dataclass
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -82,6 +83,7 @@ from erlab.interactive.imagetool.manager._server import (
     ImageToolManagerHandle,
     ImageToolManagerNotFoundError,
     ImageToolManagerRegistry,
+    _load_in_manager_startup,
     _unwatch_data,
     _watch_data,
     clear_default_manager,
@@ -116,6 +118,17 @@ _manager_instance: ImageToolManager | None = None
 
 _always_use_socket: bool = False
 """Internal flag to use sockets within same process for test coverage."""
+
+_STARTUP_FORWARD_TIMEOUT_MS = 1500
+_STARTUP_TARGET_NEW: typing.Literal["new"] = "new"
+_STARTUP_TARGET_CANCEL: typing.Literal["cancel"] = "cancel"
+
+
+@dataclass(frozen=True)
+class _StartupArgs:
+    files: list[pathlib.Path]
+    open_workspace_dialog: bool = False
+    force_new_manager: bool = False
 
 
 def watch_data(varname: str, uid: str, data, show: bool = False) -> None:
@@ -192,15 +205,17 @@ def _cleanup_update_tmp_dirs(settings) -> None:
     settings.setValue("update_tmp_dirs", "")
 
 
-def _parse_startup_args(args: Iterable[str]) -> tuple[list[pathlib.Path], bool]:
+def _parse_startup_args(args: Iterable[str]) -> _StartupArgs:
     file_args: list[pathlib.Path] = []
     open_workspace_dialog = False
+    force_new_manager = False
 
     for arg in args:
         if arg == _desktop.OPEN_WORKSPACE_DIALOG_ARG:
             open_workspace_dialog = True
             continue
         if arg == _desktop.NEW_MANAGER_WINDOW_ARG:
+            force_new_manager = True
             continue
         if arg.startswith("-"):
             continue
@@ -208,7 +223,166 @@ def _parse_startup_args(args: Iterable[str]) -> tuple[list[pathlib.Path], bool]:
         if path.exists():
             file_args.append(path)
 
-    return file_args, open_workspace_dialog
+    return _StartupArgs(
+        files=file_args,
+        open_workspace_dialog=open_workspace_dialog,
+        force_new_manager=force_new_manager,
+    )
+
+
+def _startup_path_is_workspace(path: pathlib.Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix == ".itws":
+        return True
+    if suffix != ".h5":
+        return False
+    try:
+        import h5py
+
+        with h5py.File(path, "r") as h5_file:
+            return (
+                "imagetool_workspace_schema_version" in h5_file.attrs
+                or h5_file.attrs.get("is_itool_workspace", 0) == 1
+            )
+    except Exception:
+        return False
+
+
+def _startup_pending_files(
+    file_open_event_files: list[pathlib.Path], startup_files: list[pathlib.Path]
+) -> list[pathlib.Path]:
+    pending: list[pathlib.Path] = []
+    seen: set[pathlib.Path] = set()
+    for path in [*file_open_event_files, *startup_files]:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        pending.append(path)
+        seen.add(key)
+    return pending
+
+
+def _choose_startup_manager_target(
+    selection_info: dict[str, object],
+    parent: QtWidgets.QWidget | None = None,
+) -> int | typing.Literal["new", "cancel"]:
+    dialog = QtWidgets.QDialog(parent)
+    dialog.setWindowTitle("Open Files")
+
+    layout = QtWidgets.QVBoxLayout(dialog)
+    layout.addWidget(
+        QtWidgets.QLabel(
+            "Choose where to open these files. Select an existing manager to add "
+            "them there, or open a new manager window."
+        )
+    )
+
+    target_list = QtWidgets.QListWidget(dialog)
+    target_list.setObjectName("manager_startup_target_list")
+    target_list.setSelectionMode(
+        QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+    )
+    layout.addWidget(target_list)
+
+    new_item = QtWidgets.QListWidgetItem("New Manager")
+    new_item.setData(QtCore.Qt.ItemDataRole.UserRole, _STARTUP_TARGET_NEW)
+    target_list.addItem(new_item)
+
+    managers_info = typing.cast("list[dict[str, object]]", selection_info["managers"])
+    for record in managers_info:
+        index = typing.cast("int", record["index"])
+        workspace_path = record.get("workspace_path")
+        label = (
+            f"Manager #{index} - {pathlib.Path(str(workspace_path)).name}"
+            if workspace_path
+            else f"Manager #{index} - Unsaved workspace"
+        )
+        tooltip_parts = [
+            f"Manager #{index}",
+            f"Endpoint: {record.get('host')}:{record.get('port')}",
+            f"Process ID: {record.get('pid')}",
+        ]
+        if workspace_path:
+            tooltip_parts.append(f"Workspace: {workspace_path}")
+
+        item = QtWidgets.QListWidgetItem(label)
+        item.setToolTip("\n".join(tooltip_parts))
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, index)
+        target_list.addItem(item)
+
+    target_list.setCurrentRow(0)
+
+    buttons = QtWidgets.QDialogButtonBox(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+        | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+        parent=dialog,
+    )
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    target_list.itemDoubleClicked.connect(lambda _item: dialog.accept())
+    layout.addWidget(buttons)
+
+    if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        return _STARTUP_TARGET_CANCEL
+    current_item = target_list.currentItem()
+    if current_item is None:
+        return _STARTUP_TARGET_CANCEL
+    target = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+    if target == _STARTUP_TARGET_NEW:
+        return _STARTUP_TARGET_NEW
+    return int(target)
+
+
+def _try_forward_startup_files(
+    paths: list[pathlib.Path],
+    *,
+    parent: QtWidgets.QWidget | None = None,
+) -> bool:
+    if not paths:
+        return False
+    if any(_startup_path_is_workspace(path) for path in paths):
+        return False
+
+    try:
+        selection_info = manager_selection_info(
+            lock_timeout_ms=_STARTUP_FORWARD_TIMEOUT_MS
+        )
+        resolved_index = selection_info.get("resolved_index")
+        if resolved_index is not None:
+            target: int | typing.Literal["new", "cancel"] = typing.cast(
+                "int", resolved_index
+            )
+        elif selection_info.get("needs_selection"):
+            target = _choose_startup_manager_target(selection_info, parent=parent)
+        else:
+            return False
+    except Exception:
+        logger.debug("Could not inspect live managers for startup file forwarding")
+        return False
+
+    if target == _STARTUP_TARGET_CANCEL:
+        return True
+    if target == _STARTUP_TARGET_NEW:
+        return False
+
+    try:
+        _load_in_manager_startup(
+            paths,
+            target=target,
+            timeout_ms=_STARTUP_FORWARD_TIMEOUT_MS,
+        )
+    except Exception:
+        logger.info(
+            "Could not forward startup files to ImageTool manager #%s",
+            target,
+            exc_info=True,
+            extra={"suppress_ui_alert": True},
+        )
+        return False
+    return True
 
 
 def main(execute: bool = True) -> None:
@@ -218,7 +392,7 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    startup_files, open_workspace_dialog = _parse_startup_args(sys.argv[1:])
+    startup_args = _parse_startup_args(sys.argv[1:])
     # Files passed as command-line arguments also handle opening files on Windows.
 
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
@@ -227,13 +401,12 @@ def main(execute: bool = True) -> None:
     qapp = typing.cast(
         "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
     )
+    startup_arg_files: list[pathlib.Path] = []
     if not qapp:
         qapp = _ManagerApp(sys.argv)
         qapp.setStyle("Fusion")
         qapp.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
-
-        if startup_files:
-            qapp._pending_files.extend(startup_files)
+        startup_arg_files = startup_args.files
 
     if not qapp.property("_erlab_itool_manager_configured") and (
         sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED
@@ -247,6 +420,21 @@ def main(execute: bool = True) -> None:
 
     configure_logging()
 
+    if isinstance(qapp, _ManagerApp) and _manager_instance is None:
+        qapp.processEvents()
+    file_open_event_files = (
+        qapp._pending_files.copy() if isinstance(qapp, _ManagerApp) else []
+    )
+    startup_files = _startup_pending_files(file_open_event_files, startup_arg_files)
+    if (
+        startup_files
+        and not startup_args.force_new_manager
+        and _try_forward_startup_files(startup_files)
+    ):
+        if isinstance(qapp, _ManagerApp):
+            qapp._pending_files.clear()
+        return
+
     _manager_instance = ImageToolManager()
     _manager_instance.show()
     _manager_instance.activateWindow()
@@ -254,13 +442,12 @@ def main(execute: bool = True) -> None:
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
         _desktop.install_macos_dock_menu(_manager_instance)
 
-    if isinstance(qapp, _ManagerApp):  # pragma: no cover
-        pending = qapp._pending_files.copy()
-        if pending:
-            _manager_instance._handle_dropped_files(pending)
+    if startup_files:  # pragma: no cover
+        _manager_instance._handle_dropped_files(startup_files)
+        if isinstance(qapp, _ManagerApp):
             qapp._pending_files.clear()
 
-    if open_workspace_dialog:
+    if startup_args.open_workspace_dialog:
         QtCore.QTimer.singleShot(0, _manager_instance.load)
 
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover

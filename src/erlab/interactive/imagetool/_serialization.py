@@ -13,6 +13,9 @@ if typing.TYPE_CHECKING:
 
 ITOOL_DATA_NAME: str = "<erlab-itool-data>"
 SAVED_TOOL_DATA_NAME: str = "<saved-tool-data>"
+TOOL_DATA_BLOB_NAME_ATTR: str = "tool_data_blob_name"
+SAVED_TOOL_DATA_REFERENCE_DIM: str = "<saved-tool-data-reference>"
+SAVED_TOOL_DATA_BLOB_DIM_PREFIX: str = "<saved-tool-data-blob-"
 
 # NetCDF stores non-dimension coordinate names in a whitespace-delimited
 # ``coordinates`` attribute.  A coord named "Fake Motor" cannot round-trip there,

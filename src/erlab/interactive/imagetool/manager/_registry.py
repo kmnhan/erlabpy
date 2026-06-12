@@ -46,6 +46,10 @@ class ImageToolManagerRegistryError(RuntimeError):
     """Raised when the live manager registry cannot be safely updated."""
 
 
+class ImageToolManagerRegistryLockError(ImageToolManagerRegistryError):
+    """Raised when the live manager registry lock cannot be acquired."""
+
+
 @dataclasses.dataclass(frozen=True)
 class _ManagerRecord:
     internal_id: str
@@ -122,12 +126,12 @@ _default_manager_index: int | None = (
 
 
 @contextlib.contextmanager
-def _registry_lock() -> Iterator[None]:
+def _registry_lock(timeout_ms: int = _LOCK_TIMEOUT_MS) -> Iterator[None]:
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock = QtCore.QLockFile(str(_LOCK_PATH))
     lock.setStaleLockTime(_LOCK_STALE_MS)
-    if not lock.tryLock(_LOCK_TIMEOUT_MS):
-        raise ImageToolManagerRegistryError(
+    if not lock.tryLock(timeout_ms):
+        raise ImageToolManagerRegistryLockError(
             f"Could not lock ImageTool manager registry: {lock.error()!s}"
         )
     try:
@@ -247,9 +251,11 @@ def _active_records_unlocked() -> list[_ManagerRecord]:
     return sorted(active, key=lambda record: record.index)
 
 
-def live_manager_records() -> tuple[_ManagerRecord, ...]:
+def live_manager_records(
+    *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> tuple[_ManagerRecord, ...]:
     """Return ready live managers, removing stale registry entries."""
-    with _registry_lock():
+    with _registry_lock(lock_timeout_ms):
         return tuple(
             record
             for record in _active_records_unlocked()
@@ -313,9 +319,10 @@ def refresh_manager_record(
     internal_id: str,
     *,
     workspace_path: str | None | object = _WORKSPACE_PATH_UNCHANGED,
+    lock_timeout_ms: int = _LOCK_TIMEOUT_MS,
 ) -> None:
     """Refresh a manager heartbeat."""
-    with _registry_lock():
+    with _registry_lock(lock_timeout_ms):
         records = _active_records_unlocked()
         refreshed: list[_ManagerRecord] = []
         changed = False
@@ -399,13 +406,15 @@ def clear_default_manager() -> None:
     _default_manager_index = None
 
 
-def resolve_manager_record(target: int | None = None) -> _ManagerRecord:
+def resolve_manager_record(
+    target: int | None = None, *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> _ManagerRecord:
     """Resolve a target index or client default to a live manager record."""
     global _default_manager_index
     if target is not None:
         target = _normalize_manager_index(target, label="target")
 
-    records = live_manager_records()
+    records = live_manager_records(lock_timeout_ms=lock_timeout_ms)
     if target is not None:
         for record in records:
             if record.index == target:
@@ -435,7 +444,9 @@ def resolve_manager_record(target: int | None = None) -> _ManagerRecord:
     )
 
 
-def manager_selection_info() -> dict[str, object]:
+def manager_selection_info(
+    *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+) -> dict[str, object]:
     """Return manager selection state for external clients.
 
     Returns
@@ -447,7 +458,7 @@ def manager_selection_info() -> dict[str, object]:
         ``"none"``, ``"single"``, ``"default"``, or ``"multiple"``.
     """
     global _default_manager_index
-    records = live_manager_records()
+    records = live_manager_records(lock_timeout_ms=lock_timeout_ms)
     default_index = _default_manager_index
     if default_index is not None and all(
         record.index != default_index for record in records

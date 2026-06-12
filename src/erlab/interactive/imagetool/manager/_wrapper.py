@@ -135,6 +135,35 @@ def _preview_from_imagetool(
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
 
 
+def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
+    fallback = (float("NaN"), QtGui.QPixmap())
+    dynamic_node = typing.cast("typing.Any", node)
+    try:
+        preview = dynamic_node._preview_image
+    except AttributeError:
+        preview = None
+    if (
+        isinstance(preview, tuple)
+        and len(preview) == 2
+        and isinstance(preview[1], QtGui.QPixmap)
+    ):
+        with contextlib.suppress(TypeError, ValueError):
+            return float(preview[0]), preview[1]
+
+    try:
+        imagetool = dynamic_node.imagetool
+    except (AttributeError, RuntimeError, ValueError):
+        return fallback
+    try:
+        return _preview_from_imagetool(
+            typing.cast("ImageTool | None", imagetool),
+            fallback[0],
+            fallback[1],
+        )
+    except (AttributeError, RuntimeError, ValueError):
+        return fallback
+
+
 @dataclass(frozen=True)
 class _MetadataField:
     label: str
@@ -371,6 +400,8 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_source_data_replaced
             )
             value.slicer_area._in_manager = True
+            for plot in value.slicer_area.axes:
+                plot.ensure_manager_figure_actions()
             return
 
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
@@ -389,7 +420,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()
-        if manager is None:
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
@@ -470,7 +501,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def _set_name(self, name: str, *, manual: bool) -> None:
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
-            self.manager.tree_view.refresh(self.uid)
+            if self.manager._is_figure_node(self):
+                self.manager._sync_figures_ui(select_uid=self.uid)
+            else:
+                self.manager.tree_view.refresh(self.uid)
             self.manager._mark_node_state_dirty(self.uid)
             return
         if self.imagetool is not None:
@@ -1211,8 +1245,14 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_tool_info_changed(self) -> None:
-        self.manager._mark_tool_info_dirty(self.uid)
-        self.manager._schedule_tool_metadata_update(self.uid)
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._mark_tool_info_dirty(self.uid)
+        manager._update_figure_gallery_icon(self.uid)
+        manager._schedule_tool_metadata_update(self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:

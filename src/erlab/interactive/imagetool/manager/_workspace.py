@@ -81,6 +81,9 @@ _WORKSPACE_BACKUP_GROUP_PREFIX = "__itws_backup_"
 _WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
 _WORKSPACE_ENCODED_ATTRS_ATTR = "_erlab_workspace_encoded_attrs"
 _WORKSPACE_ENCODED_ATTRS_VERSION = 1
+_TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
+_SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
+_SAVED_TOOL_DATA_BLOB_DIM_PREFIX = _serialization.SAVED_TOOL_DATA_BLOB_DIM_PREFIX
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):
@@ -447,12 +450,15 @@ def _workspace_root_keys(
                 str(item)
                 for item in raw_root_order
                 if str(item) not in root_keys
+                and str(item) != "figures"
                 and not _is_workspace_internal_group_name(item)
             )
     root_keys.extend(
         str(key)
         for key in tree
-        if str(key) not in root_keys and not _is_workspace_internal_group_name(key)
+        if str(key) not in root_keys
+        and str(key) != "figures"
+        and not _is_workspace_internal_group_name(key)
     )
     return root_keys
 
@@ -613,17 +619,38 @@ def _workspace_attr_value_writes_natively(value: typing.Any) -> bool:
     if isinstance(value, bool | int | float | complex):
         return True
     if isinstance(value, list | tuple):
-        return all(_workspace_attr_scalar_writes_natively(item) for item in value)
+        return _workspace_attr_sequence_writes_natively(value)
     return False
 
 
-def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
-    import numpy as np
+def _workspace_attr_sequence_writes_natively(
+    value: list[typing.Any] | tuple[typing.Any, ...],
+) -> bool:
+    if not value:
+        return True
+    if all(isinstance(item, str) for item in value):
+        return True
+    if all(
+        isinstance(item, bytes)
+        and b"\x00" not in item
+        and _workspace_bytes_are_utf8(item)
+        for item in value
+    ):
+        return True
+    return all(_workspace_attr_numeric_scalar_writes_natively(item) for item in value)
 
+
+def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
     if isinstance(value, str):
         return True
     if isinstance(value, bytes):
         return b"\x00" not in value and _workspace_bytes_are_utf8(value)
+    return _workspace_attr_numeric_scalar_writes_natively(value)
+
+
+def _workspace_attr_numeric_scalar_writes_natively(value: typing.Any) -> bool:
+    import numpy as np
+
     if isinstance(value, np.generic):
         return isinstance(value, (np.number, np.bool_))
     return isinstance(value, bool | int | float | complex)
@@ -1214,6 +1241,77 @@ def _workspace_h5py_create_dataset(
     return dataset
 
 
+def _workspace_h5py_tool_data_blob_dim(variable_name: str) -> str:
+    return f"{_SAVED_TOOL_DATA_BLOB_DIM_PREFIX}{variable_name.encode().hex()}>"
+
+
+def _workspace_h5py_dataarray_is_tool_reference(data_array: xr.DataArray) -> bool:
+    return (
+        data_array.ndim == 1
+        and data_array.dims == (_SAVED_TOOL_DATA_REFERENCE_DIM,)
+        and data_array.size == 0
+    )
+
+
+def _workspace_h5py_dataarray_is_tool_blob(data_array: xr.DataArray) -> bool:
+    return _TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs
+
+
+def _workspace_h5py_dataarray_is_independent_tool_item(
+    data_array: xr.DataArray,
+) -> bool:
+    return _workspace_h5py_dataarray_can_write(data_array) and (
+        _workspace_h5py_dataarray_is_tool_reference(data_array)
+        or _workspace_h5py_dataarray_is_tool_blob(data_array)
+    )
+
+
+def _workspace_h5py_dataset_independent_tool_variable(
+    dataset: typing.Any,
+    variable_name: str,
+    *,
+    exclude_attrs: Iterable[typing.Hashable],
+) -> xr.Variable | None:
+    import xarray as xr
+
+    if not _workspace_h5py_dataset_storage_supported(dataset):
+        return None
+    attrs = _h5py_attrs_to_dict(dataset.attrs, exclude=exclude_attrs)
+    if _TOOL_DATA_BLOB_NAME_ATTR in attrs:
+        dims = (_workspace_h5py_tool_data_blob_dim(variable_name),)
+    elif dataset.ndim == 1 and dataset.size == 0:
+        dims = (_SAVED_TOOL_DATA_REFERENCE_DIM,)
+    else:
+        return None
+    return xr.Variable(dims, _workspace_h5py_read_values(dataset), attrs)
+
+
+def _workspace_h5py_extra_tool_data_names(
+    ds: xr.Dataset, data_name: typing.Hashable
+) -> frozenset[typing.Hashable]:
+    if data_name != _serialization.SAVED_TOOL_DATA_NAME:
+        return frozenset()
+    return frozenset(
+        name
+        for name, data_array in ds.data_vars.items()
+        if name != data_name
+        and _workspace_h5py_dataarray_is_independent_tool_item(data_array)
+    )
+
+
+def _workspace_h5py_dataset_has_only_independent_tool_items(
+    ds: xr.Dataset, data_name: typing.Hashable
+) -> bool:
+    return (
+        data_name == _serialization.SAVED_TOOL_DATA_NAME
+        and not ds.coords
+        and all(
+            _workspace_h5py_dataarray_is_independent_tool_item(data_array)
+            for data_array in ds.data_vars.values()
+        )
+    )
+
+
 def _read_workspace_dataset_group_h5py(
     fname: str | os.PathLike[str],
     group_path: str,
@@ -1257,6 +1355,27 @@ def _read_workspace_dataset_group_h5py(
             data_name = next(iter(datasets))
         else:
             return None
+
+        if (
+            preferred_data_name == _serialization.SAVED_TOOL_DATA_NAME
+            and data_name == _serialization.SAVED_TOOL_DATA_NAME
+        ):
+            independent_data_vars: dict[typing.Hashable, xr.Variable] = {}
+            for variable_name, dataset in datasets.items():
+                variable = _workspace_h5py_dataset_independent_tool_variable(
+                    dataset,
+                    variable_name,
+                    exclude_attrs=internal_attrs,
+                )
+                if variable is None:
+                    break
+                independent_data_vars[variable_name] = variable
+            else:
+                if _serialization.SAVED_TOOL_DATA_NAME in independent_data_vars:
+                    return xr.Dataset(
+                        independent_data_vars,
+                        attrs=_h5py_attrs_to_dict(group.attrs),
+                    )
 
         def _dataset_dims(dataset: h5py.Dataset) -> tuple[str, ...] | None:
             dims: list[str] = []
@@ -1391,6 +1510,22 @@ def _read_workspace_dataset_group_h5py(
                 continue
             data_vars[variable_name] = coord_variable
 
+        if (
+            preferred_data_name == _serialization.SAVED_TOOL_DATA_NAME
+            and data_name == _serialization.SAVED_TOOL_DATA_NAME
+        ):
+            for variable_name, dataset in datasets.items():
+                if variable_name == data_name or variable_name in data_vars:
+                    continue
+                variable = _workspace_h5py_dataset_independent_tool_variable(
+                    dataset,
+                    variable_name,
+                    exclude_attrs=internal_attrs,
+                )
+                if variable is None:
+                    return None
+                data_vars[variable_name] = variable
+
         return _serialization.restore_private_coords(
             xr.Dataset(
                 data_vars,
@@ -1415,9 +1550,15 @@ def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
     data_name = _workspace_h5py_data_name(ds)
     if data_name is None:
         return False
+    if _workspace_h5py_dataset_has_only_independent_tool_items(ds, data_name):
+        return True
     private_data_names = set(_serialization.private_coord_variable_names(ds, data_name))
+    extra_data_names = _workspace_h5py_extra_tool_data_names(ds, data_name)
     if any(
-        name != data_name and name not in private_data_names for name in ds.data_vars
+        name != data_name
+        and name not in private_data_names
+        and name not in extra_data_names
+        for name in ds.data_vars
     ):
         return False
     data_array = ds[data_name]
@@ -1453,6 +1594,19 @@ def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
     return True
 
 
+def _write_workspace_independent_tool_items_h5py(
+    group: typing.Any,
+    ds: xr.Dataset,
+) -> bool:
+    for variable_name, data_array in ds.data_vars.items():
+        dataset = _workspace_h5py_create_dataset(
+            group, str(variable_name), data_array.variable
+        )
+        if dataset is None:
+            return False
+    return True
+
+
 def _write_workspace_dataset_group_h5py(
     fname: str | os.PathLike[str],
     group_path: str,
@@ -1482,6 +1636,11 @@ def _write_workspace_dataset_group_h5py(
         try:
             for key, value in ds.attrs.items():
                 group.attrs[key] = value
+            if _workspace_h5py_dataset_has_only_independent_tool_items(ds, data_name):
+                if not _write_workspace_independent_tool_items_h5py(group, ds):
+                    del parent[group_name]
+                    return False
+                return True
             data_array = ds[data_name]
             dim_scales = []
             dim_scales_by_name = {}
@@ -1573,6 +1732,14 @@ def _write_workspace_dataset_group_h5py(
                     private_dataset.attrs["_Netcdf4Dimid"] = np.int32(
                         private_coordinate_ids[0]
                     )
+            for extra_name in _workspace_h5py_extra_tool_data_names(ds, data_name):
+                extra_data = ds[extra_name]
+                extra_dataset = _workspace_h5py_create_dataset(
+                    group, str(extra_name), extra_data.variable
+                )
+                if extra_dataset is None:
+                    del parent[group_name]
+                    return False
         except Exception:
             del parent[group_name]
             return False

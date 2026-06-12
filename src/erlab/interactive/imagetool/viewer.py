@@ -2327,7 +2327,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Replaces the current manual limits with the given limits dictionary and updates
         all child axes accordingly.
         """
-        self.manual_limits = copy.deepcopy(manual_limits)
+        valid_dims = set(self.data.dims)
+        self.manual_limits = {
+            dim: copy.deepcopy(limits)
+            for dim, limits in manual_limits.items()
+            if dim in valid_dims
+        }
         for ax in self.axes:
             ax.update_manual_range()
 
@@ -2405,6 +2410,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         slice_dict: dict[Hashable, slice] = {}
         for k, v in self.manual_limits.items():
+            if k not in self.data.dims:
+                continue
             ax_idx = self.data.dims.index(k)
             sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
             bounds = (

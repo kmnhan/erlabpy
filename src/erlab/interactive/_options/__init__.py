@@ -11,6 +11,7 @@ import pyqtgraph.parametertree
 
 from erlab.interactive._options.parameters import (
     ColorListParameter,
+    StylesheetListParameter,
     _CustomColorMapParameter,
 )
 
@@ -20,6 +21,10 @@ pyqtgraph.parametertree.registerParameterType(
 
 pyqtgraph.parametertree.registerParameterType(
     "erlabpy_colormap", _CustomColorMapParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "matplotlib_stylesheets", StylesheetListParameter, override=True
 )
 
 __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)

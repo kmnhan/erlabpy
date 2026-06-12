@@ -274,3 +274,27 @@ def test_proportional_colorbar_iterable_axes_respects_index() -> None:
     assert cbar.mappable is image0
 
     plt.close(fig)
+
+
+def test_proportional_colorbar_uses_target_figure_when_pyplot_current_differs(
+    recwarn,
+) -> None:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    current_fig = plt.figure()
+    fig = Figure()
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot()
+    image = ax.imshow(np.arange(4).reshape(2, 2), cmap="viridis")
+
+    cbar = eplt.proportional_colorbar(ax=ax)
+
+    assert cbar.ax.figure is fig
+    assert cbar.mappable is image
+    assert not any(
+        "Adding colorbar to a different Figure" in str(warning.message)
+        for warning in recwarn
+    )
+
+    plt.close(current_fig)

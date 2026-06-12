@@ -198,7 +198,11 @@ class _LineageController:
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
-            self._manager.tree_view.refresh(dependent_uid)
+            if self._manager._is_figure_uid(dependent_uid):
+                self._manager._sync_figures_ui()
+                self._manager._update_info(uid=dependent_uid)
+            else:
+                self._manager.tree_view.refresh(dependent_uid)
             if self._manager._metadata_node_uid == dependent_uid:
                 self._manager._set_metadata_node(
                     self._manager._tool_graph.nodes[dependent_uid]
@@ -461,6 +465,8 @@ class _LineageController:
                 continue
             if node.provenance_spec is None:
                 continue
+            if node.tool_window is not None:
+                node.tool_window.rebase_source_node_uids(uid_map)
             rebased = provenance.rebase_script_input_node_uids(
                 node.provenance_spec,
                 uid_map,

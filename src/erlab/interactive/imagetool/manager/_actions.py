@@ -64,6 +64,17 @@ class _ActionsController:
         selected_tools = self._manager._selected_tool_uids()
         if len(selected_images) + len(selected_tools) == 1:
             target = selected_images[0] if selected_images else selected_tools[0]
+            if isinstance(target, str) and self._manager._is_figure_uid(target):
+                figure_list = getattr(self._manager, "figure_list", None)
+                if figure_list is None:
+                    return
+                for row in range(figure_list.count()):
+                    item = figure_list.item(row)
+                    if item is None:
+                        continue
+                    if item.data(QtCore.Qt.ItemDataRole.UserRole) == target:
+                        figure_list.editItem(item)
+                        return
             self._manager.tree_view.edit(
                 self._manager.tree_view._model._row_index(target)
             )
@@ -104,6 +115,10 @@ class _ActionsController:
 
             for uid in child_uids:
                 new_uid = self._manager.duplicate_childtool(uid)
+
+                if self._manager._is_figure_uid(new_uid):
+                    self._manager._select_figure_uid(new_uid)
+                    continue
 
                 qmodelindex = self._manager.tree_view._model._row_index(new_uid)
 
@@ -632,12 +647,17 @@ class _ActionsController:
                 )
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
-            parent_target = (
-                parent_override
-                if parent_override is not None
-                else self._manager._parent_node(node).uid
-            )
-            new_target = self._manager.add_childtool(tool.duplicate(), parent_target)
+            if node.parent_uid is None and self._manager._is_figure_node(node):
+                new_target = self._manager.add_figuretool(tool.duplicate())
+            else:
+                parent_target = (
+                    parent_override
+                    if parent_override is not None
+                    else self._manager._parent_node(node).uid
+                )
+                new_target = self._manager.add_childtool(
+                    tool.duplicate(), parent_target
+                )
 
         for child_uid in node._childtool_indices:
             self._manager._duplicate_subtree(child_uid, parent_override=new_target)
@@ -1299,6 +1319,15 @@ class _ActionsController:
         show
             Whether to show the tool window after adding it, by default `True`.
         """
+        if tool.manager_collection == "figures":
+            return self._manager.add_figuretool(
+                tool,
+                show=show,
+                uid=uid,
+                snapshot_token=snapshot_token,
+                created_time=created_time,
+            )
+
         parent = self._manager._node_for_target(index)
         node = _ManagedWindowNode(
             self._manager,
@@ -1324,6 +1353,8 @@ class _ActionsController:
         self._manager._register_child_node(node)
         self._manager.tree_view.childtool_added(node.uid, index)
         self._manager._mark_node_added(node.uid)
+        if self._manager._is_figure_node(node):
+            self._manager._sync_figures_ui(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid
@@ -1461,6 +1492,8 @@ class _ActionsController:
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
             self._manager._remove_childtool(uid)
             raise KeyError(f"No child tool with UID {uid} found")
+        if node.parent_uid is None:
+            return tool, -1
         return tool, self._manager._root_wrapper_for_uid(uid).index
 
     def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
@@ -1492,9 +1525,12 @@ class _ActionsController:
         """
         if uid not in self._manager._tool_graph.nodes:
             return
+        was_figure = self._manager._is_figure_uid(uid)
         self._manager._mark_removed_subtree_dirty(uid)
         self._manager.tree_view.childtool_removed(uid)
         self._manager._remove_uid_target(uid)
+        if was_figure:
+            self._manager._sync_figures_ui()
         self._manager._update_actions()
 
     def eventFilter(

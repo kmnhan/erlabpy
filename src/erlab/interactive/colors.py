@@ -90,6 +90,11 @@ class ColorMapComboBox(QtWidgets.QComboBox):
                 self.load_thumbnail(self.currentIndex())
         self.blockSignals(False)
 
+    def ensure_populated(self) -> None:
+        """Populate the colormap list before the combo box is shown."""
+        if not self._populated:
+            self._populate()
+
     def clear(self) -> None:
         with QtCore.QSignalBlocker(self):
             super().clear()

@@ -16,7 +16,7 @@ __all__ = [
 import contextlib
 import copy
 import typing
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
 import matplotlib
 import matplotlib.colorbar
@@ -642,6 +642,16 @@ def gradient_fill(
     return im
 
 
+_LINE_KWARG_ALIASES = {
+    "c": "color",
+    "ls": "linestyle",
+    "lw": "linewidth",
+    "ms": "markersize",
+    "mfc": "markerfacecolor",
+    "mec": "markeredgecolor",
+}
+
+
 def plot_slices(
     maps: xr.DataArray | Sequence[xr.DataArray],
     figsize: tuple[float, float] | None = None,
@@ -667,6 +677,10 @@ def plot_slices(
     norm: matplotlib.colors.Normalize
     | Iterable[matplotlib.colors.Normalize | Iterable[matplotlib.colors.Normalize]]
     | None = None,
+    line_kw: Mapping[str, typing.Any]
+    | Iterable[Mapping[str, typing.Any] | Iterable[Mapping[str, typing.Any]]]
+    | None = None,
+    line_order: typing.Literal["C", "F"] | None = None,
     order: typing.Literal["C", "F"] = "C",
     cmap_order: typing.Literal["C", "F"] = "C",
     norm_order: typing.Literal["C", "F"] | None = None,
@@ -744,13 +758,20 @@ def plot_slices(
     cmap
         If supplied a single `str` or :class:`matplotlib.colors.Colormap`, the colormap
         is applied to all axes. Otherwise, a nested sequence with the same shape as the
-        resulting axes can be provided to use different colormaps for different axes. If
-        the slices are 1D, this argument can be used to supply valid colors as line
-        colors for different slices.
+        resulting axes can be provided to use different colormaps for different axes.
     norm
         If supplied a single :class:`matplotlib.colors.Normalize`, the norm is applied
         to all axes. Otherwise, a nested sequence with the same shape as the resulting
         axes can be provided to use different norms for different axes.
+    line_kw
+        Extra keyword arguments passed to :meth:`matplotlib.axes.Axes.plot` for 1D
+        slices. Common aliases such as ``c``, ``ls``, ``lw``, ``ms``, ``mfc``, and
+        ``mec`` are supported. May be a single mapping, a flat sequence of per-panel
+        mappings, or a nested sequence matching the panel layout. Values in `line_kw`
+        override generic ``**values`` plot kwargs.
+    line_order
+        The order to flatten when given a nested or flat sequence for line styling.
+        Defaults to `cmap_order`.
     order
         Order to display the data. Effectively, this determines if each map is displayed
         along the same row or the same column. 'C' means to flatten in row-major
@@ -778,8 +799,9 @@ def plot_slices(
         A nested sequence of :class:`matplotlib.axes.Axes`. If supplied, the returned
         :class:`matplotlib.figure.Figure` is inferred from the first axes.
     **values
-        Key-value pair of cut location and bin widths. See examples. Remaining arguments
-        are passed onto :func:`plot_array`.
+        Key-value pair of cut location and bin widths. See examples. Remaining
+        arguments are passed onto :meth:`matplotlib.axes.Axes.plot` for 1D slices and
+        :func:`plot_array` for 2D slices.
 
     Returns
     -------
@@ -805,6 +827,9 @@ def plot_slices(
 
     if norm_order is None:
         norm_order = cmap_order
+
+    if line_order is None:
+        line_order = cmap_order
 
     if gradient_kw is None:
         gradient_kw = {}
@@ -851,6 +876,19 @@ def plot_slices(
 
     if len(plot_dims) not in (1, 2):
         raise ValueError("The data to plot must be 1D or 2D")
+
+    line_only_options = (
+        line_kw,
+        line_order if line_order != cmap_order else None,
+    )
+    for line_only_option in line_only_options:
+        if line_only_option is None:
+            continue
+        if isinstance(line_only_option, Mapping) and not line_only_option:
+            continue
+        if len(plot_dims) == 2:
+            raise ValueError("Line styling options only apply to 1D plot_slices output")
+        break
 
     if xlim is not None and not isinstance(xlim, Iterable):
         xlim = (-xlim, xlim)
@@ -954,13 +992,69 @@ def plot_slices(
                 cmap = cmap_name
 
             if len(plot_dims) == 1:
-                if cmap is not None:
-                    kwargs["color"] = cmap
-                    if auto_gradient_color:
-                        gradient_kw["color"] = cmap
+                line_kwargs = dict(kwargs)
+                for alias, canonical in _LINE_KWARG_ALIASES.items():
+                    if alias not in line_kwargs:
+                        continue
+                    value = line_kwargs.pop(alias)
+                    line_kwargs.setdefault(canonical, value)
+
+                panel_line_kw = line_kw
+                if panel_line_kw is not None and not isinstance(panel_line_kw, Mapping):
+                    line_kw_values = list(panel_line_kw)
+                    if not line_kw_values:
+                        panel_line_kw = None
+                    else:
+                        if line_order == "F":
+                            outer_index, inner_index = i, j
+                            outer_count = len(slice_levels)
+                            flat_index = (i * len(maps)) + j
+                        else:
+                            outer_index, inner_index = j, i
+                            outer_count = len(maps)
+                            flat_index = (j * len(slice_levels)) + i
+
+                        if len(line_kw_values) == outer_count and outer_index < len(
+                            line_kw_values
+                        ):
+                            panel_line_kw = line_kw_values[outer_index]
+                            if not isinstance(panel_line_kw, Mapping):
+                                inner_values = list(panel_line_kw)
+                                panel_line_kw = (
+                                    inner_values[inner_index]
+                                    if inner_index < len(inner_values)
+                                    else None
+                                )
+                        elif len(line_kw_values) == len(slice_levels) * len(
+                            maps
+                        ) and flat_index < len(line_kw_values):
+                            panel_line_kw = line_kw_values[flat_index]
+                        elif len(line_kw_values) == 1:
+                            panel_line_kw = line_kw_values[0]
+                        else:
+                            raise ValueError(
+                                "line_kw must be a mapping, a flat sequence of "
+                                "per-panel mappings, or a nested sequence matching "
+                                "the panel layout"
+                            )
+
+                if panel_line_kw is not None:
+                    if not isinstance(panel_line_kw, Mapping):
+                        raise TypeError("line_kw values must be mappings")
+                    panel_line_kwargs = dict(panel_line_kw)
+                    for alias, canonical in _LINE_KWARG_ALIASES.items():
+                        if alias not in panel_line_kwargs:
+                            continue
+                        value = panel_line_kwargs.pop(alias)
+                        panel_line_kwargs.setdefault(canonical, value)
+                    line_kwargs.update(panel_line_kwargs)
+
+                line_gradient_kw = dict(gradient_kw)
+                if auto_gradient_color and "color" in line_kwargs:
+                    line_gradient_kw["color"] = line_kwargs["color"]
 
                 if transpose:
-                    ax.plot(dat_sel.values, dat_sel[plot_dims[0]], **kwargs)
+                    ax.plot(dat_sel.values, dat_sel[plot_dims[0]], **line_kwargs)
                     ax.set_xlabel(dat_sel.name)
                     ax.set_ylabel(plot_dims[0])
 
@@ -970,17 +1064,20 @@ def plot_slices(
                             dat_sel[plot_dims[0]],
                             ax=ax,
                             transpose=True,
-                            **gradient_kw,
+                            **line_gradient_kw,
                         )
 
                 else:
-                    ax.plot(dat_sel[plot_dims[0]], dat_sel.values, **kwargs)
+                    ax.plot(dat_sel[plot_dims[0]], dat_sel.values, **line_kwargs)
                     ax.set_xlabel(plot_dims[0])
                     ax.set_ylabel(dat_sel.name)
 
                     if gradient:
                         gradient_fill(
-                            dat_sel[plot_dims[0]], dat_sel.values, ax=ax, **gradient_kw
+                            dat_sel[plot_dims[0]],
+                            dat_sel.values,
+                            ax=ax,
+                            **line_gradient_kw,
                         )
                 fancy_labels(ax)
 

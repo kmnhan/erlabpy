@@ -1703,6 +1703,196 @@ def test_tool_window_dataset_ignores_invalid_saved_provenance(
     assert "Ignoring invalid saved tool input provenance" in caplog.text
 
 
+def test_application_quit_requested_handles_missing_and_closing_app(
+    monkeypatch,
+) -> None:
+    class _ClosingApp:
+        def closingDown(self) -> bool:
+            return True
+
+        def property(self, _name: str) -> bool:
+            return False
+
+        def processEvents(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.QtWidgets.QApplication,
+        "instance",
+        staticmethod(lambda: None),
+    )
+    assert not erlab.interactive.utils._application_quit_requested()
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.QtWidgets.QApplication,
+        "instance",
+        staticmethod(_ClosingApp),
+    )
+    assert erlab.interactive.utils._application_quit_requested()
+
+
+def test_tool_window_rejects_invalid_reference_payload(qtbot) -> None:
+    class _PayloadTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray, payload: object) -> None:
+            super().__init__(data)
+            self._payload = payload
+
+        def _tool_data_reference_payload(
+            self, variable_name: str, data: xr.DataArray
+        ) -> dict[str, typing.Any] | None:
+            del variable_name, data
+            return typing.cast("dict[str, typing.Any] | None", self._payload)
+
+    data = xr.DataArray(np.arange(2.0), dims=("x",))
+
+    list_payload_tool = _PayloadTool(data, ["not", "a", "dict"])
+    qtbot.addWidget(list_payload_tool)
+    with pytest.raises(TypeError, match="must be a dictionary"):
+        list_payload_tool._reference_saved_tool_data(
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME, data
+        )
+
+    missing_kind_tool = _PayloadTool(data, {"kind": ""})
+    qtbot.addWidget(missing_kind_tool)
+    with pytest.raises(ValueError, match="non-empty kind"):
+        missing_kind_tool._reference_saved_tool_data(
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME, data
+        )
+
+
+def test_tool_window_rejects_invalid_persistence_data_items(qtbot) -> None:
+    class _BadItemsTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray, items: dict[str, xr.DataArray]) -> None:
+            super().__init__(data)
+            self._items = items
+
+        def _persistence_data_items(self) -> dict[str, xr.DataArray]:
+            return self._items
+
+    data = xr.DataArray(np.arange(2.0), dims=("x",))
+
+    missing_primary = _BadItemsTool(data, {"secondary": data})
+    qtbot.addWidget(missing_primary)
+    with pytest.raises(ValueError, match="must include"):
+        missing_primary.to_dataset()
+
+    empty_name = _BadItemsTool(
+        data,
+        {
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data,
+            "": data,
+        },
+    )
+    qtbot.addWidget(empty_name)
+    with pytest.raises(ValueError, match="non-empty"):
+        empty_name.to_dataset()
+
+
+def test_tool_window_rejects_invalid_saved_reference_metadata() -> None:
+    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
+    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = ["not-json"]
+    with pytest.raises(TypeError, match="JSON text"):
+        erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+
+    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps([])
+    with pytest.raises(TypeError, match="JSON object"):
+        erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+
+    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {"": {"kind": "manager_node"}}
+    )
+    with pytest.raises(TypeError, match="names must be strings"):
+        erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+
+    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {"data": "manager_node"}
+    )
+    with pytest.raises(TypeError, match="must be an object"):
+        erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+
+
+def test_tool_window_rejects_unreplayable_saved_source_reference() -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",))
+    tool = _PersistentTool(data)
+    ds = tool.to_dataset()
+
+    with pytest.raises(TypeError, match="missing source provenance"):
+        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
+
+    ds.attrs["tool_source_spec"] = json.dumps(None)
+    with pytest.raises(ValueError, match="not replayable"):
+        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
+
+    ds.attrs["tool_source_spec"] = json.dumps(
+        provenance.script(
+            provenance.ScriptCodeOperation(label="derive", code="out = data"),
+            start_label="Start from data",
+            active_name="out",
+        ).model_dump(mode="json")
+    )
+    with pytest.raises(TypeError, match="must be a live"):
+        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
+
+
+def test_tool_window_resolves_saved_reference_errors() -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",))
+    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data})
+
+    with pytest.raises(ValueError, match="parent data is unavailable"):
+        erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            {"kind": "parent_source"},
+            ds,
+            source_parent_data=None,
+            reference_resolver=None,
+        )
+
+    with pytest.raises(ValueError, match="no manager-node resolver"):
+        erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            {"kind": "manager_node"},
+            ds,
+            source_parent_data=None,
+            reference_resolver=None,
+        )
+
+    with pytest.raises(ValueError, match="could not be resolved"):
+        erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            {"kind": "manager_node", "node_uid": "missing"},
+            ds,
+            source_parent_data=None,
+            reference_resolver=lambda _reference: None,
+        )
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            {"kind": "unexpected"},
+            ds,
+            source_parent_data=None,
+            reference_resolver=None,
+        )
+
+
+def test_tool_window_rejects_references_to_missing_data_items() -> None:
+    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
+    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {"missing": {"kind": "manager_node", "node_uid": "missing"}}
+    )
+
+    with pytest.raises(ValueError, match="missing variable"):
+        erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+            ds,
+            source_parent_data=None,
+            reference_resolver=lambda _reference: xr.DataArray(1),
+        )
+
+    empty = xr.Dataset()
+    with pytest.raises(ValueError, match="missing primary tool data"):
+        erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+            empty,
+            source_parent_data=None,
+            reference_resolver=None,
+        )
+
+
 def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None:
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
@@ -1739,6 +1929,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self.figure_gallery_updates: list[str] = []
             self._tool_graph = _ManagerToolGraph()
 
         def _update_info(self, *, uid: str) -> None:
@@ -1772,6 +1963,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
+
+        def _update_figure_gallery_icon(self, uid: str) -> None:
+            self.figure_gallery_updates.append(uid)
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)
@@ -2164,6 +2358,11 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _child_node(self, uid: str) -> _ManagedWindowNode:
             return typing.cast("_ManagedWindowNode", self._tool_graph.nodes[uid])
+
+        def _is_figure_node(
+            self, _node: _ImageToolWrapper | _ManagedWindowNode
+        ) -> bool:
+            return False
 
         def rename_imagetool(self, index: int, value: object) -> None:
             self.renamed.append((index, value))

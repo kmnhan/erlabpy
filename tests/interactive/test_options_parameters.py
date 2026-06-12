@@ -1,6 +1,15 @@
 from qtpy import QtGui, QtWidgets
 
-from erlab.interactive._options.parameters import ColorListParameter, ColorListWidget
+import erlab.interactive._stylesheets
+from erlab.interactive._options.parameters import (
+    _STYLESHEET_AVAILABLE_ROLE,
+    _STYLESHEET_NAME_ROLE,
+    ColorListParameter,
+    ColorListWidget,
+    StylesheetListParameter,
+    StylesheetListWidget,
+    _stylesheet_names,
+)
 
 
 def test_colorlistwidget_initialization(qtbot):
@@ -59,3 +68,141 @@ def test_colorlistparameter_save_state() -> None:
     param = ColorListParameter(name="colors", value=[QtGui.QColor("#010203")])
     state = param.saveState()
     assert state["value"][0][:3] == (1, 2, 3)
+
+
+def test_stylesheetlistwidget_preserves_unavailable_styles(qtbot, monkeypatch):
+    monkeypatch.setattr(
+        "erlab.interactive._stylesheets.mpl_style.available",
+        ["classic", "ggplot"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: None,
+    )
+    widget = StylesheetListWidget(stylesheets=["classic", "missing-style"])
+    qtbot.addWidget(widget)
+
+    assert widget.get_stylesheets() == ["classic", "missing-style"]
+    assert widget.list_widget.item(1).data(_STYLESHEET_AVAILABLE_ROLE) is False
+    assert "unavailable" in widget.list_widget.item(1).toolTip()
+
+
+def test_stylesheet_names_normalizes_and_deduplicates_values() -> None:
+    assert _stylesheet_names(None) == []
+    assert _stylesheet_names(" classic, ggplot, classic ,, ") == [
+        "classic",
+        "ggplot",
+    ]
+    assert _stylesheet_names(("classic", "ggplot", "classic", 2)) == [
+        "classic",
+        "ggplot",
+        "2",
+    ]
+    assert _stylesheet_names(3) == ["3"]
+
+
+def test_stylesheetlistwidget_add_remove_and_reorder(qtbot, monkeypatch):
+    monkeypatch.setattr(
+        "erlab.interactive._stylesheets.mpl_style.available",
+        ["classic", "ggplot", "bmh"],
+    )
+    widget = StylesheetListWidget(stylesheets=["classic"])
+    qtbot.addWidget(widget)
+
+    widget.add_combo.setCurrentText("ggplot")
+    widget.add_stylesheet()
+    assert widget.get_stylesheets() == ["classic", "ggplot"]
+
+    widget.list_widget.setCurrentRow(1)
+    widget.move_selected_stylesheet(-1)
+    assert widget.get_stylesheets() == ["ggplot", "classic"]
+
+    widget.remove_selected_stylesheet()
+    assert widget.get_stylesheets() == ["classic"]
+
+
+def test_stylesheetlistwidget_ignores_invalid_actions_and_preserves_roles(
+    qtbot,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "erlab.interactive._stylesheets.mpl_style.available",
+        ["classic", "ggplot"],
+    )
+    widget = StylesheetListWidget(stylesheets=["classic", "ggplot"])
+    qtbot.addWidget(widget)
+
+    widget.list_widget.clearSelection()
+    widget.list_widget.setCurrentRow(-1)
+    assert widget.current_stylesheet() is None
+    widget.remove_selected_stylesheet()
+    widget.move_selected_stylesheet(-1)
+    assert widget.get_stylesheets() == ["classic", "ggplot"]
+    assert not widget.remove_button.isEnabled()
+    assert not widget.up_button.isEnabled()
+    assert not widget.down_button.isEnabled()
+
+    widget.add_combo.setCurrentText("")
+    widget.add_stylesheet()
+    widget.add_combo.setCurrentText("classic")
+    widget.add_stylesheet()
+    assert widget.get_stylesheets() == ["classic", "ggplot"]
+
+    widget.list_widget.setCurrentRow(0)
+    widget.move_selected_stylesheet(-1)
+    assert widget.get_stylesheets() == ["classic", "ggplot"]
+    widget.list_widget.setCurrentRow(1)
+    widget.move_selected_stylesheet(1)
+    assert widget.get_stylesheets() == ["classic", "ggplot"]
+
+    first_item = widget.list_widget.item(0)
+    assert first_item.data(_STYLESHEET_NAME_ROLE) == "classic"
+    assert first_item.data(_STYLESHEET_AVAILABLE_ROLE) is True
+
+    widget.set_stylesheets(["ggplot", "classic", "ggplot"])
+    assert widget.get_stylesheets() == ["ggplot", "classic"]
+
+
+def test_stylesheetlistwidget_loads_erlab_styles_on_popup(qtbot, monkeypatch):
+    calls: list[None] = []
+    monkeypatch.setattr(
+        "erlab.interactive._stylesheets.mpl_style.available",
+        ["classic"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: calls.append(None),
+    )
+    widget = StylesheetListWidget(stylesheets=[])
+    qtbot.addWidget(widget)
+
+    widget.add_combo.showPopup()
+    widget.add_combo.hidePopup()
+
+    assert calls == [None]
+
+
+def test_stylesheetlistwidget_rechecks_saved_styles_after_erlab_import(
+    qtbot, monkeypatch
+):
+    available = ["classic"]
+    monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: available.append("nature"),
+    )
+
+    widget = StylesheetListWidget(stylesheets=["nature"])
+    qtbot.addWidget(widget)
+
+    assert widget.list_widget.item(0).data(_STYLESHEET_AVAILABLE_ROLE) is True
+
+
+def test_stylesheetlistparameter_value_roundtrip() -> None:
+    param = StylesheetListParameter(
+        name="stylesheets", value=["classic", "missing-style"]
+    )
+    assert param.value() == ["classic", "missing-style"]

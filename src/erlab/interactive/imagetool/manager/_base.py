@@ -6,6 +6,7 @@ __all__ = ["_ImageToolManagerBase"]
 
 import threading
 import typing
+import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -30,6 +31,9 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
+    )
+    from erlab.interactive.imagetool.manager._heartbeat import (
+        _RegistryHeartbeatController,
     )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._lineage import _LineageController
@@ -90,8 +94,18 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     console: _ImageToolManagerJupyterConsole
     concat_action: QtGui.QAction
     compact_workspace_action: QtGui.QAction
+    create_figure_action: QtGui.QAction
     duplicate_action: QtGui.QAction
+    figure_list: QtWidgets.QListWidget
+    figure_tab: QtWidgets.QWidget
+    figure_view_button_group: QtWidgets.QButtonGroup
+    figure_view_controls: QtWidgets.QWidget
+    figure_view_gallery_button: QtWidgets.QToolButton
+    figure_view_list_button: QtWidgets.QToolButton
+    figure_gallery_size_combo: QtWidgets.QComboBox
+    figure_gallery_size_label: QtWidgets.QLabel
     hide_action: QtGui.QAction
+    left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
     main_splitter: QtWidgets.QSplitter
     metadata_derivation_list: QtWidgets.QListWidget
@@ -151,6 +165,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]]
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
     _recent_name_filter: str | None
+    _refreshing_figure_list: bool
+    _registry_heartbeat: _RegistryHeartbeatController
     _registry_heartbeat_timer: QtCore.QTimer
     _sigDataReplaced: QtCore.SignalInstance
     _sigReloadLinkers: QtCore.SignalInstance
@@ -210,6 +226,30 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         node = self._node_for_target(target)
         return node.is_imagetool
 
+    def _is_figure_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
+        return (
+            node.tool_window is not None
+            and node.tool_window.manager_collection == "figures"
+        )
+
+    def _is_figure_uid(self, uid: str) -> bool:
+        try:
+            node = self._child_node(uid)
+        except KeyError:
+            return False
+        return self._is_figure_node(node)
+
+    def _selected_figure_uids(self) -> list[str]:
+        figure_list = getattr(self, "figure_list", None)
+        if figure_list is None:
+            return []
+        output: list[str] = []
+        for item in figure_list.selectedItems():
+            uid = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(uid, str) and self._is_figure_uid(uid):
+                output.append(uid)
+        return output
+
     def _selected_imagetool_targets(self) -> list[int | str]:
         targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)
         targets.extend(
@@ -220,11 +260,22 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return targets
 
     def _selected_tool_uids(self) -> list[str]:
-        return [
+        selected = [
             uid
             for uid in self.tree_view.selected_childtool_uids
             if not self._is_imagetool_target(uid)
         ]
+        selected.extend(self._selected_figure_uids())
+        return selected
+
+    def _selected_figure_source_targets(self) -> list[int | str]:
+        targets: list[int | str] = list(self._selected_imagetool_targets())
+        targets.extend(
+            uid
+            for uid in self.tree_view.selected_childtool_uids
+            if not self._is_imagetool_target(uid) and not self._is_figure_uid(uid)
+        )
+        return targets
 
     def _selected_promotable_child_imagetool_uid(self) -> str | None:
         child_imagetool_uids = [
@@ -392,7 +443,12 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if signal is not None:
             signal.connect(self._mark_standalone_app_state_dirty)
 
+        widget_ref = weakref.ref(widget)
+
         def cleanup(_obj: QtCore.QObject | None = None) -> None:
+            current = self._standalone_app_windows.get(key)
+            if current is not None and current is not widget_ref():
+                return
             self._standalone_app_windows.pop(key, None)
             self._standalone_app_event_filters.pop(key, None)
 
@@ -434,7 +490,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             return
         if window_state.visible:
             widget.show()
+            _qt_state.restore_qt_window_state(widget, window_state)
         else:
+            _qt_state.restore_qt_window_state(widget, window_state)
             widget.hide()
         self._standalone_app_pending_states[key] = state
 

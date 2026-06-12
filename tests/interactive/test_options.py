@@ -2,7 +2,17 @@ import pytest
 from qtpy import QtWidgets
 
 from erlab.interactive._options import OptionDialog, options
+from erlab.interactive._options.core import OptionManager
 from erlab.interactive._options.schema import AppOptions
+
+
+@pytest.fixture(autouse=True)
+def isolated_interactive_options(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "ERLAB_INTERACTIVE_OPTIONS_PATH",
+        str(tmp_path / "interactive-options.ini"),
+    )
+    options.restore()
 
 
 @pytest.fixture
@@ -121,14 +131,33 @@ def test_options_get_set():
     options["io/workspace/compress"] = False
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
+    options["figure/stylesheets"] = ["classic", "missing-style"]
 
     # Check if the value was set correctly
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compress"] is False
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
+    assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert not options.model.io.workspace.compress
     assert not options.model.io.workspace.use_incremental
     assert options.model.io.workspace.incremental_save_on_remote
+    assert options.model.figure.stylesheets == ["classic", "missing-style"]
 
     options.restore()  # Reset settings after test
+
+
+def test_option_manager_uses_configured_settings_path(monkeypatch, tmp_path):
+    settings_path = tmp_path / "interactive-options.ini"
+    monkeypatch.setenv("ERLAB_INTERACTIVE_OPTIONS_PATH", str(settings_path))
+
+    isolated_options = OptionManager()
+    isolated_options["figure/stylesheets"] = ["classic", "missing-style"]
+
+    assert isolated_options["figure/stylesheets"] == ["classic", "missing-style"]
+    assert settings_path.exists()
+
+    other_settings_path = tmp_path / "other-options.ini"
+    monkeypatch.setenv("ERLAB_INTERACTIVE_OPTIONS_PATH", str(other_settings_path))
+
+    assert OptionManager()["figure/stylesheets"] == AppOptions().figure.stylesheets

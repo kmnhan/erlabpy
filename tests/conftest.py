@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import typing
+import uuid
 from collections.abc import Callable, Sequence
 
 import dask.distributed
@@ -54,6 +55,18 @@ DATA_KNOWN_HASH = "de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb7
 
 log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
+_TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if _TEST_OPTIONS_ENV_VAR not in os.environ:
+        settings_path = (
+            pathlib.Path(tempfile.gettempdir())
+            / f"erlabpy-test-interactive-options-{os.getpid()}-{uuid.uuid4().hex}.ini"
+        )
+        os.environ[_TEST_OPTIONS_ENV_VAR] = str(settings_path)
+        _TEST_INTERACTIVE_OPTIONS_PATHS.append(settings_path)
 
 
 def _load_ci_test_groups_module():
@@ -115,6 +128,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.serial)
         if is_compat_path(rel_path) or is_compat_nodeid(item.nodeid):
             item.add_marker(pytest.mark.compat)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    for settings_path in _TEST_INTERACTIVE_OPTIONS_PATHS:
+        with contextlib.suppress(OSError):
+            settings_path.unlink()
 
 
 @pytest.fixture(scope="session")

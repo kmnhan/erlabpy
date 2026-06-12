@@ -76,8 +76,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
   `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or `update_data` for
   contributor questions about adding new interactive tools.
-- Search `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
-  or `plot_bz` for plotting questions.
+- Search `Figure Composer`, `Append to Figure`,
+  `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`, or
+  `plot_bz` for plotting questions.
 
 ## Linking and Citation
 
@@ -108,6 +109,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   notebook synchronization is relevant.
 - Mention `%watch --restore` when a saved manager workspace contains disconnected
   watched rows that should reconnect to variables in an open notebook.
+- Mention Figure Composer when the user wants to create matplotlib figures from the GUI.
 
 ## Troubleshooting
 

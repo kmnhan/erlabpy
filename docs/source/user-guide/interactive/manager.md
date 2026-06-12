@@ -20,24 +20,34 @@
 
 :::
 
-{class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>` is
-the workspace for a full ImageTool analysis session. It keeps top-level ImageTool rows
-(ImageTools that are not child rows), tools opened from those ImageTools, and ImageTool
-windows opened from those tools in one tree. The manager also shows when a row created
-by another row needs to be updated because the ImageTool or tool that created it
-changed, and it can show code that repeats the selected steps in a notebook or script.
+{class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>` is an
+application for managing multiple ImageTool windows, analysis tools, and Matplotlib
+figures in one place. It is designed to keep your workflow organized when you are
+working with many windows at once. It also provides saving and loading sessions,
+synchronization with Jupyter notebooks, and a built-in IPython console for quick
+calculations and data exploration.
 
 (imagetool-manager-overview)=
 
 ## Why use the manager?
 
-- Launch and watch many ImageTool windows simultaneously without interrupting your notebook or script.
-- Keep nested ImageTool windows organized in a tree that shows their relationships and provenance.
-- Update tools and ImageTool windows when the ImageTool or tool that created them changes.
-- Link multiple ImageTools, duplicate them, or update their data in place in case of real-time data acquisition.
-- Save multiple windows and full hierarchies to a file, share them with collaborators, and reload them later to pick up right where you left off.
-- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, copy code that repeats GUI steps, and perform quick analyses in the GUI through a built-in IPython console.
-- Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
+- Launch and watch many ImageTool windows simultaneously without interrupting your
+  notebook or script.
+- Keep nested ImageTool windows organized in a tree that shows their relationships and
+  provenance.
+- Update tools and ImageTool windows automatically when the ImageTool or tool that
+  created them changes.
+- Link multiple ImageTools, duplicate them, or update their data in place in case of
+  real-time data acquisition.
+- Save multiple windows and full hierarchies to a file, share them with collaborators,
+  and reload them later to pick up right where you left off.
+- Keep track of the code and steps that led to the data in each ImageTool window.
+- Integration with Jupyter notebooks through the `%watch` magic, which creates windows
+  that stay synchronized with notebook variables.
+- Create Matplotlib figures from ImageTool data without writing code using the built-in
+  {ref}`Figure Composer <figure-composer>`.
+- Drag-and-drop files to open them quickly, or use the integrated data explorer to
+  browse preview data.
 
 (imagetool-manager-start)=
 
@@ -48,13 +58,14 @@ changed, and it can show code that repeats the selected steps in a notebook or s
   Run `itool-manager` in a terminal or command prompt window in the environment where
   ERLabPy is installed.
 
-- You can also install the manager as an application on your operating system. See
-  {ref}`imagetool-manager-standalone` for instructions.
+- You can also install the manager as an application on your operating system without
+  installing Python. See {ref}`imagetool-manager-standalone` for instructions.
 
 :::{note}
 
-Opening an ImageTool window for the very first time after installing may take a couple
-of minutes as caches are built. Subsequent launches will be much faster.
+Opening an ImageTool window and changing the bin widths for the very first time after
+installing may take a couple of minutes as caches are built. Subsequent launches will be
+much faster.
 
 :::
 
@@ -64,53 +75,76 @@ of minutes as caches are built. Subsequent launches will be much faster.
 
 Once the manager is running, you can open ImageTools in several ways:
 
-- {meth}`xarray.DataArray.qshow` or {func}`erlab.interactive.imagetool.itool` with `manager=True` sends windows to the only live manager or to the default manager for the current Python process. Pass an integer to target a specific manager index:
+- {meth}`xarray.DataArray.qshow` or {func}`erlab.interactive.imagetool.itool` with
+  `manager=True` sends windows to the manager:
 
   ```python
   data.qshow(manager=True)
-  data.qshow(manager=1)
   eri.itool([d1, d2], manager=True, replace=[1, 2])
   ```
 
   Pass `replace=` to update data in existing windows instead of creating new ones.
 
-- {ref}`ImageTool’s %itool magic command <imagetool-entry-points>` with the `--manager` (or `-m`) flag in an IPython session or Jupyter notebook.
+  :::{tip}
+
+  For working with multiple manager instances, see
+  {ref}`imagetool-manager-multiple-instances`.
+
+  :::
+
+- {ref}`ImageTool’s %itool magic command <imagetool-entry-points>` with the `--manager`
+  (or `-m`) flag in an IPython session or Jupyter notebook.
 
   ```python
   %itool -m darr
   %itool -m 1 darr
   ```
 
-- The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool window opened outside the manager. This action moves the active ImageTool to the manager.
+- The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool
+  window opened outside the manager. This action moves the active ImageTool to the
+  manager.
 
-- Use the manager’s {guilabel}`File → Add Data Files…` action to load data in a
-  new ImageTool.
+- Use the manager’s {guilabel}`File → Add Data Files…` action to load data in a new
+  ImageTool.
 
 - Drag and drop supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data. For
-  plugin loaders, expand {guilabel}`Loader Extensions` to set literal
-  {func}`erlab.io.extend_loader` options. The {guilabel}`name_map` and
-  {guilabel}`coordinate_attrs` rows also have buttons that inspect the first selected
+  data loader plugins loaders, expand {guilabel}`Loader Extensions` to set custom load
+  arguments, including {func}`erlab.io.extend_loader` options. The {guilabel}`name_map`
+  and {guilabel}`coordinate_attrs` rows have buttons that inspect the first selected
   file and help build the literal values interactively.
 
   :::{hint}
-  For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
+
+  For scans that are recorded across multiple files, drag and dropping any file in the
+  scan will automatically load and concatenate the entire scan. If you want to load only
+  the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the
+  dialog.
+
   :::
 
-- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening selected files in the manager.
-  Use the loader options button next to the loader selector to apply the same
-  `loader_extensions=` settings when opening selected files.
+- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or
+  {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening
+  selected files in the manager. Use the loader options button next to the loader
+  selector to apply the same `loader_extensions=` settings when opening selected files.
 
-- Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. Use `%watch -m 1 darr` to watch into manager `#1`. See {ref}`working-with-notebooks`.
+- Watch notebook variables with the `%watch` magic to create windows that stay
+  synchronized with your data structures. Use `%watch -m 1 darr` to watch into manager
+  `#1`. See {ref}`working-with-notebooks`.
 
   :::{tip}
-  This is the recommended way when you are working in notebooks, because it keeps your workflow connected to your code and automatically synchronizes changes in both directions.
+
+  This is the recommended way when you are working with notebooks, because it keeps your
+  workflow connected to your code and automatically synchronizes changes in both
+  directions.
+
   :::
 
-- For custom integration with other workflows, scripts can call {func}`erlab.interactive.imagetool.manager.show_in_manager` or {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see {ref}`imagetool-manager-automation`).
-
-When you open multiple DataArrays at once, the manager adds each window to the list without automatically showing them. To bring a window to the front, double-click its entry or select it and press {guilabel}`Show`.
+- For custom integration with other workflows, scripts can call
+  {func}`erlab.interactive.imagetool.manager.show_in_manager` or
+  {func}`erlab.interactive.imagetool.manager.load_in_manager` directly (see
+  {ref}`imagetool-manager-automation`).
 
 (imagetool-manager-multiple-instances)=
 
@@ -152,66 +186,117 @@ The left pane lists ImageTool windows, tools opened from ImageTool, and ImageToo
 windows opened from those tools. Top-level ImageTool windows use an index and optional
 data name (`index: name`). Rows derived from another row appear as child rows under the
 row that made them. Selecting entries populates the right pane with details, a steps
-list when available, and a preview of the main image.
+list, and a preview of the main image.
 
 :::{note}
-Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.
+
+Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over
+the list.
+
 :::
 
 Analysis tools and ImageTool windows opened from an ImageTool appear as child rows of
 the ImageTool that opened them.
 
-The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`, and right-click context menus:
+The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`,
+and right-click context menus:
 
-- {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely. These controls live in {guilabel}`File`.
+- {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove`
+
+  Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring
+  windows to the front, hide them, or remove them entirely. These controls live in
+  {guilabel}`File`.
+
   :::{note}
-  {kbd}`Ctrl+W` and {kbd}`Del` also works when analysis windows are focused, which is often more convenient than switching back to the manager.
+
+  {kbd}`Ctrl+W` and {kbd}`Del` also works when analysis windows are focused, which is
+  often more convenient than switching back to the manager.
+
   :::
-- {guilabel}`Rename` / {guilabel}`Duplicate` – Rename multiple selections at once or activate in-place editing for a single tool. {guilabel}`Duplicate` clones the currently selected windows, including their state.
-- {guilabel}`Reset Index` – Renumbers all windows from zero.
-- {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
-- {guilabel}`Offload to Workspace` – Reloads the data as dask-backed data from the workspace file, freeing up memory but slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it back into memory when needed.
-- {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
-- {guilabel}`Reload Data` – Recomputes selected data from its recorded source. For
-  file-backed ImageTools, this re-fetches data from disk and reapplies any recorded
-  operations. This is useful when conducting experiments, where you can repeat analysis
-  on a continually updated file source with a single click.
+
+- {guilabel}`Rename` / {guilabel}`Duplicate`
+
+  Rename multiple selections at once or activate in-place editing for a single tool.
+  {guilabel}`Duplicate` clones the currently selected windows, including their state.
+
+- {guilabel}`Reset Index`
+
+  Renumbers all windows from zero.
+
+- {guilabel}`Link` / {guilabel}`Unlink`
+
+  {kbd}`Ctrl+L` links the selected windows so they share cursors and slices;
+  {kbd}`Ctrl+Shift+L` removes the links.
+
+- {guilabel}`Offload to Workspace`
+
+  Reloads the data as dask-backed data from the workspace file, freeing up memory but
+  slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it
+  back into memory when needed.
+
+- {guilabel}`Concatenate`
+
+  Combine selected data with {func}`xarray.concat` and open the result in a new
+  ImageTool window.
+
+- {guilabel}`Figure`
+
+  Create a new {ref}`Figure Composer <figure-composer>` figure from the selected rows,
+  or append a new plotting step to an existing figure.
+
+- {guilabel}`Reload Data`
+
+  Recomputes selected data from its recorded source. For file-backed ImageTools, this
+  re-fetches data from disk and reapplies any recorded operations. This is useful when
+  conducting experiments, where you can repeat analysis on a continually updated file
+  source with a single click.
+
+  :::{note}
+
+  This action is also available inside each ImageTool window, and is associated with the
+  keyboard shortcut {kbd}`Ctrl+R` inside ImageTool windows.
+
+  :::
 
 Icons next to each entry indicate special states: linked windows share a colored badge,
 chunked Dask arrays show the dask icon, watched variables display their variable name,
-rows opened from another row can show the {guilabel}`Stale`,
-{guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
-{ref}`imagetool-manager-refresh`, and top-level results made from several ImageTools
-can show the {guilabel}`Changed` or {guilabel}`Missing` badges described
-in {ref}`imagetool-manager-derived-data`.
+rows opened from another row can show the state badges described in
+{ref}`imagetool-manager-refresh`, and results that depend on several ImageTools can show
+the {guilabel}`Changed` or {guilabel}`Missing` badges described in
+{ref}`imagetool-manager-derived-data`.
+
+(imagetool-manager-figure-composer)=
+
+## Creating Matplotlib figures
+
+Use {guilabel}`Figure` from the right-click context menu of one or more ImageTool rows
+to create a new figure in {ref}`Figure Composer <figure-composer>`. New figures will
+appear in a new {guilabel}`Figures` tab in the manager.
+
+See {ref}`Figure Composer <figure-composer>` for details.
 
 (imagetool-manager-workspace)=
 
 ## Saving and loading
 
 Windows in an ImageTool Manager instance can be saved to a workspace file (`.itws`),
-similar to how Igor Pro experiment files work. Pressing {kbd}`Ctrl+S` in any child
-window saves the entire manager workspace, including all windows and their state.
+similar to Igor Pro experiment files. Pressing {kbd}`Ctrl+S` in any child window saves
+the entire manager workspace, including all windows and their state.
 
 {guilabel}`File → Add Windows From Workspace…` lets you choose windows from another
-workspace to import into the current manager.
+workspace file to import into the current one.
 
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…`
-({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate
-your windows exactly as they were. Use {guilabel}`File → Open Recent` to reopen a
-recent workspace, or {guilabel}`Clear Menu` at the bottom of that submenu to remove
-the saved recent-workspace list. Share the file with collaborators and they will see
-the identical layout.
+({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate your
+windows exactly as they were. A list of recent workspaces is available in
+{guilabel}`File → Open Recent`.
 
-To check where the open manager is saved, choose
-{guilabel}`File → Workspace Properties` ({kbd}`Alt+Return`). The dialog shows the
-associated workspace path, basic file status, whether there are unsaved changes, and
-the number of open ImageTool windows. Use its buttons to copy the path or reveal the
-`.itws` file in your system file browser.
+To check where the open manager is saved, choose {guilabel}`File → Workspace Properties`
+({kbd}`Alt+Return`).
 
 Use {guilabel}`File → Offload to Workspace` to make the selected data lazy-loaded from
 the workspace file. This frees up memory but will slow down indexing and slicing. Use
-{guilabel}`Dask → Load Into Memory` in ImageTool to bring that data back into memory.
+{guilabel}`Dask → Load Into Memory` in ImageTool to bring it back into memory.
 
 If the workspace contains watched notebook variables, the watched rows reopen with
 their variable-name badges. The rows stay disconnected until a notebook defines the
@@ -225,16 +310,15 @@ matching variables and reconnects them, as described in
 When you are working in the manager, a new ImageTool window can appear as a child row
 under the tool or ImageTool that created it. A typical session looks like this:
 
-1. Open data in the manager, or watch a notebook variable, so it appears as an
-   ImageTool row.
-2. Launch {guilabel}`dtool`, {guilabel}`ktool`, or another tool from that ImageTool.
-3. Use {guilabel}`Open in ImageTool` from that tool.
+1. Open data in the manager with the methods described in {ref}`imagetool-manager-open`.
+2. Launch {guilabel}`dtool`, {guilabel}`ktool`, or any other tool from that ImageTool.
+3. Click {guilabel}`Open in ImageTool` in that tool.
 4. The new ImageTool window appears under the tool or ImageTool that made it instead
    of as an unrelated top-level window.
 
 That new ImageTool row remembers all of the information required to reproduce itself
 from the raw data. When its parent node updates, the manager can automatically mark it
-as out of date, update it, and show the steps and code in the side panel.
+as out of date, update it, and show the steps in the side panel.
 
 (imagetool-manager-result-placement)=
 
@@ -263,13 +347,13 @@ may no longer match it. The manager shows this with badges:
 
 Click the badge in the tree or the update banner inside the tool window to review the
 update. The {guilabel}`Automatic Updates…` dialog lets you apply a one-time update with
-{guilabel}`Update Now`, or turn automatic updates on or off and save that preference with
-{guilabel}`Save`. Saving only changes the automatic-update preference; it does not
+{guilabel}`Update Now`, or turn automatic updates on or off and save that preference
+with {guilabel}`Save`. Saving only changes the automatic-update preference; it does not
 refresh the current window immediately.
 
 Fitting tools can also take part in this flow. {guilabel}`ftool`, {guilabel}`goldtool`,
-and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabled,
-the tool reruns the same fit after compatible data from the ImageTool that opened it is
+and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabled, the
+tool reruns the same fit after compatible data from the ImageTool that opened it is
 updated.
 
 (imagetool-manager-derived-data)=
@@ -564,11 +648,6 @@ Later, in any notebook, retrieve the stored variable with `%store -r my_data` an
 ### Editor integration
 
 If you are using VS Code (or other editor that supports VS Code extensions), the dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) adds convenient features for working with the manager directly from notebooks. Search for `erlab` in the extensions panel of your editor to install it.
-
-Editor commands named {guilabel}`Reconnect Watched Variables` use the same restore
-workflow as `%watch --restore`: the notebook must define the watched
-{class}`xarray.DataArray` variables, and the open manager workspace supplies the saved
-watched row names.
 
 (imagetool-manager-automation)=
 

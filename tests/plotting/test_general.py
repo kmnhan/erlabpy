@@ -106,6 +106,11 @@ def test_plot_slices_general(monkeypatch) -> None:
     assert axes[0, 0].get_ylim() == (0.3, 0.7)
     plt.close()
 
+    fig, axes = plot_slices(maps, xlim=(0.2, None), ylim=(None, 0.7))
+    assert axes[0, 0].get_xlim()[0] == 0.2
+    assert axes[0, 0].get_ylim()[1] == 0.7
+    plt.close()
+
     # Test 3D slicing
     test_darr = xr.DataArray(
         np.random.default_rng(0).random((11, 11, 11)),
@@ -373,18 +378,185 @@ def test_plot_slices_with_crop_false_and_xlim_ylim():
     plt.close(fig)
 
 
-def test_plot_slices_with_1d_line_and_cmap_color():
+def test_plot_slices_with_1d_line_ignores_cmap_color():
     x = np.linspace(0, 1, 12)
     arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
-    fig, _axes = plot_slices(arr, cmap="red")
+    fig, axes = plot_slices(arr, cmap="viridis")
+    assert axes[0, 0].lines[0].get_color() != "viridis"
     plt.close(fig)
 
 
 def test_plot_slices_with_1d_gradient_auto_color():
     x = np.linspace(0, 1, 12)
     arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
-    fig, _axes = plot_slices(arr, gradient=True)
+    fig, axes = plot_slices(arr, gradient=True, line_kw={"color": "red"})
+    assert axes[0, 0].lines[0].get_color() == "red"
+    np.testing.assert_allclose(
+        axes[0, 0].images[0].cmap(1.0),
+        matplotlib.colors.to_rgba("red"),
+        rtol=1e-7,
+    )
     plt.close(fig)
+
+
+def test_plot_slices_with_1d_line_style_kwargs_and_aliases() -> None:
+    x = np.linspace(0, 1, 12)
+    arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
+    fig, axes = plot_slices(
+        arr,
+        color="red",
+        line_kw={
+            "c": "blue",
+            "ls": ":",
+            "lw": 1.5,
+            "marker": "o",
+            "ms": 6.0,
+            "mfc": "yellow",
+            "mec": "black",
+        },
+    )
+    line = axes[0, 0].lines[0]
+    assert line.get_color() == "blue"
+    assert line.get_linestyle() == ":"
+    assert line.get_linewidth() == 1.5
+    assert line.get_marker() == "o"
+    assert line.get_markersize() == 6.0
+    assert line.get_markerfacecolor() == "yellow"
+    assert line.get_markeredgecolor() == "black"
+    plt.close(fig)
+
+
+def test_plot_slices_with_1d_per_panel_line_styles() -> None:
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(
+        np.random.default_rng(1).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+
+    fig, axes = plot_slices(
+        [arr1, arr2],
+        y=[0.2, 0.4],
+        line_kw=(
+            (
+                {"color": "red", "linestyle": "-", "marker": "o"},
+                {"color": "blue", "linestyle": "--", "marker": "s"},
+            ),
+            (
+                {"color": "green", "linestyle": ":", "marker": "^"},
+                {"color": "black", "linestyle": "-.", "marker": "x"},
+            ),
+        ),
+        line_order="C",
+    )
+    assert axes[0, 0].lines[0].get_color() == "red"
+    assert axes[0, 1].lines[0].get_color() == "blue"
+    assert axes[1, 0].lines[0].get_color() == "green"
+    assert axes[1, 1].lines[0].get_color() == "black"
+    assert axes[0, 1].lines[0].get_linestyle() == "--"
+    assert axes[1, 0].lines[0].get_marker() == "^"
+    plt.close(fig)
+
+    fig, axes = plot_slices(
+        [arr1, arr2],
+        y=[0.2, 0.4],
+        order="F",
+        line_kw=(
+            {"color": "red"},
+            {"color": "blue"},
+            {"color": "green"},
+            {"color": "black"},
+        ),
+        line_order="F",
+    )
+    assert axes[0, 0].lines[0].get_color() == "red"
+    assert axes[0, 1].lines[0].get_color() == "blue"
+    assert axes[1, 0].lines[0].get_color() == "green"
+    assert axes[1, 1].lines[0].get_color() == "black"
+    plt.close(fig)
+
+
+def test_plot_slices_with_1d_flat_line_style_order_and_empty_values() -> None:
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(
+        np.random.default_rng(1).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+
+    fig, axes = plot_slices([arr1, arr2], y=[0.2, 0.4], line_kw=[])
+    assert axes[0, 0].lines
+    plt.close(fig)
+
+    fig, axes = plot_slices(
+        [arr1, arr2],
+        y=[0.2, 0.4],
+        line_kw=(
+            {"color": "red"},
+            {"color": "blue"},
+            {"color": "green"},
+            {"color": "black"},
+        ),
+        line_order="C",
+    )
+    assert axes[0, 0].lines[0].get_color() == "red"
+    assert axes[0, 1].lines[0].get_color() == "blue"
+    assert axes[1, 0].lines[0].get_color() == "green"
+    assert axes[1, 1].lines[0].get_color() == "black"
+    plt.close(fig)
+
+
+def test_plot_slices_with_1d_line_kwargs_aliases_from_plot_kwargs() -> None:
+    x = np.linspace(0, 1, 12)
+    arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
+    fig, axes = plot_slices(arr, c="red", lw=2.5)
+    line = axes[0, 0].lines[0]
+    assert line.get_color() == "red"
+    assert line.get_linewidth() == 2.5
+    plt.close(fig)
+
+
+def test_plot_slices_rejects_line_options_for_2d_output() -> None:
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    with pytest.raises(ValueError, match="Line styling options only apply to 1D"):
+        plot_slices(arr, line_kw={"lw": 2.0})
+
+
+def test_plot_slices_accepts_empty_line_kwargs_for_2d_output() -> None:
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(arr, line_kw={})
+    assert axes[0, 0].images
+    plt.close(fig)
+
+
+def test_plot_slices_rejects_invalid_1d_line_kw_shapes() -> None:
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+
+    with pytest.raises(TypeError, match="line_kw values must be mappings"):
+        plot_slices(arr, y=[0.2], line_kw=("red",))
+
+    with pytest.raises(ValueError, match="line_kw must be a mapping"):
+        plot_slices(
+            arr,
+            y=[0.2, 0.4],
+            line_kw=({"color": "red"}, {"color": "blue"}, {"color": "green"}),
+        )
 
 
 def test_plot_slices_with_2d_and_crop_and_limits():

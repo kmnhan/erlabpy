@@ -326,6 +326,55 @@ def test_batch_dialog_defensive_paths_and_launch(
         dialog._launch_selected_operation()
 
 
+def test_update_info_handles_legacy_imagetool_preview_attribute(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._tool_graph.root_wrappers[0]
+
+        def _missing_preview_attribute(_node) -> tuple[float, QtGui.QPixmap]:
+            raise AttributeError("_preview_image")
+
+        monkeypatch.setattr(
+            type(node), "_preview_image", property(_missing_preview_attribute)
+        )
+        select_tools(manager, [0])
+
+        manager._update_info()
+
+        assert manager.preview_widget.isVisible()
+
+
+def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+
+    preview.setPixmap(QtGui.QPixmap())
+    preview.setVisible(True)
+    preview.show()
+
+    assert not preview.isVisible()
+    assert preview.sizeHint() == QtCore.QSize(0, 0)
+    assert preview.minimumSizeHint() == QtCore.QSize(0, 0)
+
+    pixmap = QtGui.QPixmap(16, 8)
+    pixmap.fill(QtGui.QColor("red"))
+    preview.setPixmap(pixmap)
+    preview.setVisible(True)
+
+    assert preview.isVisible()
+
+
 def test_batch_action_transform_error_paths(
     qtbot,
     monkeypatch,

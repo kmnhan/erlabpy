@@ -659,8 +659,9 @@ def proportional_colorbar(
     if mappable is None:
         raise RuntimeError("No mappable was found to use for colorbar creation")
 
+    fig = _colorbar_figure(mappable, cax=cax, ax=ax)
     if mappable.colorbar is None:
-        plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
+        fig.colorbar(mappable, cax=cax, ax=ax, **kwargs)
         mappable.colorbar = typing.cast(
             "matplotlib.colorbar.Colorbar", mappable.colorbar
         )
@@ -672,8 +673,8 @@ def proportional_colorbar(
     kwargs.setdefault("cmap", mappable.cmap)
     kwargs.setdefault("norm", mappable.norm)
 
-    cbar = plt.colorbar(
-        mappable=mappable,
+    cbar = fig.colorbar(
+        mappable,
         cax=cax,
         ax=ax,
         spacing="proportional",
@@ -683,6 +684,37 @@ def proportional_colorbar(
     if fontsize is not None:
         cbar.ax.tick_params(labelsize=fontsize)
     return cbar
+
+
+def _colorbar_figure(
+    mappable: matplotlib.cm.ScalarMappable,
+    *,
+    cax: matplotlib.axes.Axes | None,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None,
+) -> typing.Any:
+    if cax is not None:
+        fig = cax.get_figure()
+        if fig is not None:
+            return fig
+
+    if ax is not None:
+        if isinstance(ax, Iterable):
+            axes = ax if isinstance(ax, np.ndarray) else np.array(ax, dtype=object)
+            for item in axes.flat:
+                fig = item.get_figure()
+                if fig is not None:
+                    return fig
+        else:
+            fig = ax.get_figure()
+            if fig is not None:
+                return fig
+
+    mappable_axes = getattr(mappable, "axes", None)
+    if mappable_axes is not None:
+        fig = mappable_axes.get_figure()
+        if fig is not None:
+            return fig
+    return plt.gcf()
 
 
 def _ez_inset(

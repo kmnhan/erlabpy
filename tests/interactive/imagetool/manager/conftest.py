@@ -7,6 +7,7 @@ import pytest
 import xarray as xr
 from qtpy import QtCore
 
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 
@@ -33,6 +34,7 @@ def isolated_recent_workspace_settings(
         return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
 
     _settings().clear()
+    monkeypatch.setattr(manager_mainwindow, "_manager_settings", _settings)
     monkeypatch.setattr(manager_widgets, "_manager_settings", _settings)
     monkeypatch.setattr(manager_workspace_io, "_manager_settings", _settings)
     return settings_path

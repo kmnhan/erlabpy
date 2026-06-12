@@ -36,6 +36,9 @@ code for reproducibility and batch processing.
   - {ref}`Manager opening and replacement paths <imagetool-manager-open>`
   - `data.qshow(manager=True)` and `eri.itool(data, manager=True)`, see
     {ref}`working-with-notebooks` for notebook-manager synchronization options.
+- - Build a Matplotlib figure
+  - {ref}`Figure Composer <figure-composer>`
+  - Matplotlib API and {mod}`erlab.plotting` functions
 - - Select a point or range from multidimensional data
   - {guilabel}`Edit → Select Data…` or the right-click context menu of each plot
   - {meth}`xarray.DataArray.qsel`, {meth}`xarray.DataArray.sel`, and

@@ -18,21 +18,41 @@ def _cache_directory() -> pathlib.Path:
     return path
 
 
-def _mpl_cache_directory() -> pathlib.Path:
-    path = _cache_directory() / "matplotlib"
+def _cache_subdirectory(name: str) -> pathlib.Path:
+    path = _cache_directory() / name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _configure_packaged_matplotlib_cache() -> None:
+def _mpl_cache_directory() -> pathlib.Path:
+    return _cache_subdirectory("matplotlib")
+
+
+def _numba_cache_directory() -> pathlib.Path:
+    return _cache_subdirectory("numba")
+
+
+def _pycache_directory() -> pathlib.Path:
+    return _cache_subdirectory("python-pycache")
+
+
+def _configure_packaged_runtime_caches() -> None:
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
     os.environ["MPLCONFIGDIR"] = str(_mpl_cache_directory())
+    numba_cache_dir = _numba_cache_directory()
+    os.environ["NUMBA_CACHE_DIR"] = str(numba_cache_dir)
+    if numba_config := sys.modules.get("numba.core.config"):
+        numba_config.__dict__["CACHE_DIR"] = str(numba_cache_dir)
+    pycache_dir = _pycache_directory()
+    os.environ["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    sys.pycache_prefix = str(pycache_dir)
+    sys.dont_write_bytecode = False
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    _configure_packaged_matplotlib_cache()
+    _configure_packaged_runtime_caches()
 
     from erlab.interactive.imagetool.manager import main
 

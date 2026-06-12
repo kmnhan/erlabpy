@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["_ManagerToolGraph"]
 
+import contextlib
 import typing
 
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -24,6 +25,7 @@ class _ManagerToolGraph:
         self.root_wrappers: dict[int, _ImageToolWrapper] = {}
         self.nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
         self.displayed_indices: list[int] = []
+        self.figure_uids: list[str] = []
         self._node_uid_counter: int = 0
 
     @property
@@ -95,6 +97,11 @@ class _ManagerToolGraph:
             node.uid, typing.cast("QtWidgets.QWidget", node.window)
         )
 
+    def register_figure(self, node: _ManagedWindowNode) -> None:
+        self.nodes[node.uid] = node
+        if node.uid not in self.figure_uids:
+            self.figure_uids.append(node.uid)
+
     def replace_child_references(
         self,
         uid: str,
@@ -111,6 +118,8 @@ class _ManagerToolGraph:
         node = self.nodes.pop(uid, None)
         if node is None:
             return None
+        with contextlib.suppress(ValueError):
+            self.figure_uids.remove(uid)
         if node.parent_uid is not None:
             parent = self.nodes.get(node.parent_uid)
             if parent is not None:
