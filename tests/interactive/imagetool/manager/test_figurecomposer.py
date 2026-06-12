@@ -13810,13 +13810,19 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert gradient_kwargs_edit is not None
     assert gradient_kwargs_edit.text() == 'color="C0", alpha=0.25'
 
-    tool.operation_list.setCurrentRow(2)
+    _select_operation_rows(tool, (2,))
     tool._select_step_section("line")
-    line_selection_edit = tool.findChild(
+    line_selection_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineSelectionEdit"
     )
     assert line_selection_edit is not None
     assert line_selection_edit.text() == "eV=0.0, eV_width=0.1"
+    line_selection_edit.setText("eV=slice(0.0, 1.0), kx=0.0")
+    line_selection_edit.editingFinished.emit()
+    assert tool.tool_status.operations[2].line_selection == {
+        "eV": slice(0.0, 1.0),
+        "kx": 0.0,
+    }
 
     tool.operation_list.setCurrentRow(3)
     tool._select_step_section("method")

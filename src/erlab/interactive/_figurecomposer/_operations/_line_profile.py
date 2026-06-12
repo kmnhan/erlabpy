@@ -281,14 +281,15 @@ def _build_line_editor(
     tool._connect_line_edit_finished(
         selection_edit,
         lambda text: tool._update_current_operation(
-            line_selection=_dict_from_text(text)
+            line_selection=_dict_from_text(text, allow_slice=True)
         ),
     )
     tool._add_form_row(
         tool.operation_editor_layout,
         "Data selection",
         selection_edit,
-        "Dict literal or keyword arguments used to select data.",
+        "Selection kwargs passed to qsel.\n"
+        "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
     iter_dim_options = [
