@@ -11706,6 +11706,47 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     offset_source_combo = line_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
+    reduce_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
+    )
+    assert offset_source_combo is not None
+    assert reduce_combo is not None
+    assert reduce_combo.currentText() == "Disabled"
+    assert (
+        line_page.findChild(
+            QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
+        )
+        is None
+    )
+    _activate_combo_text(reduce_combo, "Both")
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    line_page = tool.step_editor_stack.currentWidget()
+    coarsen_spin = line_page.findChild(
+        QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
+    )
+    thin_spin = line_page.findChild(
+        QtWidgets.QSpinBox, "figureComposerProfileReduceThinSpin"
+    )
+    assert tool.tool_status.operations[0].line_reduce == "both"
+    assert coarsen_spin is not None
+    assert coarsen_spin.value() == 2
+    assert thin_spin is not None
+    thin_spin.setValue(3)
+    assert tool.tool_status.operations[0].line_reduce_thin == 3
+    tool._replace_operation(0, operation)
+    tool._select_step_section("line")
+    line_page = tool.step_editor_stack.currentWidget()
+    offset_source_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
+    )
     assert offset_source_combo is not None
     assert (
         line_page.findChild(
@@ -12008,6 +12049,64 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
         ] + profile_operation.line_scales[index] * (profile / profile.max(skipna=True))
         np.testing.assert_allclose(line.get_xdata(), kx)
         np.testing.assert_allclose(line.get_ydata(), expected.values)
+
+
+def test_figure_composer_profile_reduce_codegen_executes(qtbot) -> None:
+    cut_values = np.arange(6.0)
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(cut_values.size * kx.size, dtype=float).reshape(
+            cut_values.size, kx.size
+        ),
+        dims=("cut", "kx"),
+        coords={"cut": cut_values, "kx": kx},
+        name="data",
+    )
+    operation = FigureOperationState.line(
+        label="reduced profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+    ).model_copy(
+        update={
+            "line_placement": "one_per_axis",
+            "line_x": "kx",
+            "line_iter_dim": "cut",
+            "line_reduce": "both",
+            "line_reduce_coarsen": 2,
+            "line_reduce_thin": 2,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    reduced = data.coarsen(cut=2, boundary="trim").mean().thin(cut=2)
+    profiles = figurecomposer_line_profile._line_data_items(tool, operation)
+    assert len(profiles) == 2
+    xr.testing.assert_identical(profiles[0], reduced.isel(cut=0))
+    xr.testing.assert_identical(profiles[1], reduced.isel(cut=1))
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    for index, axis in enumerate(fig.axes):
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), kx)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), profiles[index].values)
+
+    code = tool.generated_code()
+    assert 'profile_data = profile_data.coarsen(cut=2, boundary="trim").mean()' in code
+    assert "profile_data = profile_data.thin(cut=2)" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    for index, axis in enumerate(namespace["axs"].flat):
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), kx)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), profiles[index].values)
 
 
 def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
@@ -13812,7 +13911,12 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
 
     _select_operation_rows(tool, (2,))
     tool._select_step_section("line")
-    line_selection_edit = tool.step_editor_stack.currentWidget().findChild(
+    line_page = tool.step_editor_stack.currentWidget()
+    assert (
+        line_page.findChild(QtWidgets.QComboBox, "figureComposerProfileReduceCombo")
+        is None
+    )
+    line_selection_edit = line_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineSelectionEdit"
     )
     assert line_selection_edit is not None

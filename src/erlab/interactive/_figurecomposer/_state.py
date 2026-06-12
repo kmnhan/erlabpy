@@ -358,6 +358,9 @@ class FigureOperationState(pydantic.BaseModel):
     line_y: str | None = None
     line_selection: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     line_iter_dim: str | None = None
+    line_reduce: typing.Literal["disabled", "coarsen", "thin", "both"] = "disabled"
+    line_reduce_coarsen: int = pydantic.Field(default=2, ge=2)
+    line_reduce_thin: int = pydantic.Field(default=2, ge=2)
     line_normalize: typing.Literal["none", "max", "mean"] = "none"
     line_placement: typing.Literal["all_axes", "one_per_axis"] = "all_axes"
     line_values_axis: typing.Literal["x", "y"] = "y"

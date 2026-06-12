@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import typing
 
+from qtpy import QtWidgets
+
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
@@ -54,13 +56,13 @@ from erlab.interactive._figurecomposer._widgets import (
     _ColorLineEditWidget,
     _ColorListEditorWidget,
 )
+from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import matplotlib.axes
     import xarray as xr
-    from qtpy import QtWidgets
 
     from erlab.interactive._figurecomposer._state import FigureLimit
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -73,6 +75,13 @@ _LINE_PROFILE_STYLE_KEY_ALIASES = {
     "ms": "markersize",
     "mfc": "markerfacecolor",
     "mec": "markeredgecolor",
+}
+
+_LINE_REDUCE_TEXT = {
+    "disabled": "Disabled",
+    "coarsen": "Coarsen",
+    "thin": "Thin",
+    "both": "Both",
 }
 
 
@@ -88,6 +97,25 @@ def _line_placement_from_text(
     if text == "One profile per axis":
         return "one_per_axis"
     return "all_axes"
+
+
+def _line_reduce_text(reduce: str) -> str:
+    return _LINE_REDUCE_TEXT.get(reduce, _LINE_REDUCE_TEXT["disabled"])
+
+
+def _line_reduce_from_text(
+    text: str,
+) -> typing.Literal["disabled", "coarsen", "thin", "both"]:
+    for reduce, label in _LINE_REDUCE_TEXT.items():
+        if text == label:
+            return typing.cast(
+                "typing.Literal['disabled', 'coarsen', 'thin', 'both']", reduce
+            )
+    return "disabled"
+
+
+def _line_reduce_active(operation: FigureOperationState) -> bool:
+    return operation.line_iter_dim is not None and operation.line_reduce != "disabled"
 
 
 def _line_choice_data(
@@ -309,7 +337,7 @@ def _build_line_editor(
     iter_dim_combo = tool._combo(
         iter_dim_options,
         None if iter_dim_mixed else operation.line_iter_dim or "",
-        lambda text: tool._update_current_operation_rebuild(line_iter_dim=text or None),
+        lambda text: _update_current_line_iter_dim(tool, text),
         parent=page,
         mixed=iter_dim_mixed,
         enabled=iter_dim_options_match,
@@ -325,6 +353,8 @@ def _build_line_editor(
             else ""
         ),
     )
+    if _line_reduce_controls_visible(tool, operation):
+        _add_line_reduce_controls(tool, operation, page)
 
     placement_mixed = tool._batch_is_mixed(
         operation, lambda target: target.line_placement
@@ -377,6 +407,115 @@ def _build_line_editor(
         offset_coord_options=lambda target: _available_line_offset_coords(tool, target),
     )
     return [("line", "Line", page)]
+
+
+def _update_current_line_iter_dim(tool: FigureComposerTool, text: str) -> None:
+    updates: dict[str, typing.Any] = {"line_iter_dim": text or None}
+    if not text:
+        updates["line_reduce"] = "disabled"
+    tool._update_current_operation_rebuild(**updates)
+
+
+def _line_reduce_controls_visible(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> bool:
+    editable = tool._editable_operations()
+    if len(editable) > 1:
+        return all(target.line_iter_dim is not None for _index, target in editable)
+    return operation.line_iter_dim is not None
+
+
+def _add_line_reduce_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+) -> None:
+    reduce_mixed = tool._batch_is_mixed(operation, lambda target: target.line_reduce)
+    reduce_combo = tool._combo(
+        list(_LINE_REDUCE_TEXT.values()),
+        None if reduce_mixed else _line_reduce_text(operation.line_reduce),
+        lambda text: tool._update_current_operation_rebuild(
+            line_reduce=_line_reduce_from_text(text)
+        ),
+        parent=page,
+        mixed=reduce_mixed,
+    )
+    reduce_combo.setObjectName("figureComposerProfileReduceCombo")
+    reduce_combo.setToolTip(
+        "Reduce the One profile per axis before extracting profiles.\n"
+        "Coarsen averages neighboring coordinates.\n"
+        "Thin keeps every Nth coordinate."
+    )
+
+    row = QtWidgets.QWidget(page)
+    row_layout = QtWidgets.QHBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(6)
+    row_layout.addWidget(reduce_combo)
+    if not reduce_mixed and operation.line_reduce in {"coarsen", "both"}:
+        _add_line_reduce_factor_control(
+            tool,
+            operation,
+            page,
+            row_layout,
+            label="Coarsen",
+            field="line_reduce_coarsen",
+            object_name="figureComposerProfileReduceCoarsenSpin",
+            tooltip=(
+                "Number of coordinate points averaged into one profile.\n"
+                "Uses boundary='trim' and mean() on the coarsened data."
+            ),
+        )
+    if not reduce_mixed and operation.line_reduce in {"thin", "both"}:
+        _add_line_reduce_factor_control(
+            tool,
+            operation,
+            page,
+            row_layout,
+            label="Thin",
+            field="line_reduce_thin",
+            object_name="figureComposerProfileReduceThinSpin",
+            tooltip="Keep every Nth coordinate after any coarsening step.",
+        )
+    row_layout.addStretch(1)
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Reduce",
+        row,
+        "Reduce the One profile per axis before profile extraction.",
+    )
+
+
+def _add_line_reduce_factor_control(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QHBoxLayout,
+    *,
+    label: str,
+    field: typing.Literal["line_reduce_coarsen", "line_reduce_thin"],
+    object_name: str,
+    tooltip: str,
+) -> None:
+    factor_mixed = tool._batch_is_mixed(
+        operation, lambda target: getattr(target, field)
+    )
+    label_widget = QtWidgets.QLabel(label, page)
+    label_widget.setToolTip(tooltip)
+    spin = QtWidgets.QSpinBox(page)
+    spin.setRange(2, 1_000_000)
+    spin.setKeyboardTracking(False)
+    spin.setValue(int(getattr(operation, field)))
+    spin.setObjectName(object_name)
+    spin.setToolTip(tooltip)
+    tool._connect_value_signal(
+        spin,
+        spin.valueChanged,
+        int,
+        lambda value: tool._update_current_operation(**{field: value}),
+    )
+    layout.addWidget(label_widget)
+    layout.addWidget(tool._mixed_value_widget(spin, mixed=factor_mixed, parent=page))
 
 
 def _add_line_style_controls(
@@ -723,6 +862,7 @@ def _line_data_items(
         line_data = data.squeeze(drop=True)
         if operation.line_y:
             line_data = line_data[operation.line_y]
+        line_data = _reduced_line_iter_data(line_data, operation)
         if operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
             line_items = [
                 item.squeeze(drop=True)
@@ -739,6 +879,46 @@ def _line_data_items(
             continue
         profiles.append(line_data)
     return profiles
+
+
+def _reduced_line_iter_data(
+    line_data: xr.DataArray, operation: FigureOperationState
+) -> xr.DataArray:
+    if (
+        not _line_reduce_active(operation)
+        or operation.line_iter_dim not in line_data.dims
+    ):
+        return line_data
+    data = line_data
+    for reduce_operation in _line_reduce_operations(operation):
+        data = reduce_operation.apply(data, parent_data=data)
+    return data
+
+
+def _line_reduce_operations(
+    operation: FigureOperationState,
+) -> tuple[provenance.CoarsenOperation | provenance.ThinOperation, ...]:
+    if operation.line_iter_dim is None:
+        return ()
+    operations: list[provenance.CoarsenOperation | provenance.ThinOperation] = []
+    if operation.line_reduce in {"coarsen", "both"}:
+        operations.append(
+            provenance.CoarsenOperation(
+                dim={operation.line_iter_dim: operation.line_reduce_coarsen},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="mean",
+            )
+        )
+    if operation.line_reduce in {"thin", "both"}:
+        operations.append(
+            provenance.ThinOperation(
+                mode="per_dim",
+                factors={operation.line_iter_dim: operation.line_reduce_thin},
+            )
+        )
+    return tuple(operations)
 
 
 def _line_coordinate(line_data: xr.DataArray, dim: str | None) -> xr.DataArray:
@@ -807,6 +987,7 @@ def _line_code(tool: FigureComposerTool, operation: FigureOperationState) -> lis
         lines = [f"profile_data = {source}.squeeze(drop=True)"]
     if operation.line_y:
         lines.append(f"profile_data = profile_data[{operation.line_y!r}]")
+    lines.extend(_line_reduce_code(operation, "profile_data"))
     if operation.line_iter_dim:
         transpose_code = f"profile_data.transpose({operation.line_iter_dim!r}, ...)"
         lines.append(
@@ -819,6 +1000,15 @@ def _line_code(tool: FigureComposerTool, operation: FigureOperationState) -> lis
         return lines
     lines.extend(_regular_line_code(tool, operation))
     return lines
+
+
+def _line_reduce_code(operation: FigureOperationState, input_name: str) -> list[str]:
+    if not _line_reduce_active(operation):
+        return []
+    return [
+        f"{input_name} = {reduce_operation.expression_code(input_name)}"
+        for reduce_operation in _line_reduce_operations(operation)
+    ]
 
 
 def _line_selection_code(
