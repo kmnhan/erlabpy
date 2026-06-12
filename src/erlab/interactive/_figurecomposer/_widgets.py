@@ -290,11 +290,8 @@ def _color_tuple_from_text(text: str) -> tuple[str, ...]:
         except (SyntaxError, ValueError):
             pass
         else:
-            if isinstance(value, str):
-                return (value,)
             if isinstance(value, list | tuple):
                 return tuple(str(item) for item in value)
-            raise TypeError("Expected a color string, list, or tuple literal")
     return _top_level_comma_parts(stripped)
 
 

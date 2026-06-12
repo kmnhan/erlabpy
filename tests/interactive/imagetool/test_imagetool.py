@@ -1272,6 +1272,69 @@ def test_figure_composer_operation_updates_keep_independent_state() -> None:
     assert updates["extra_kwargs"] == {}
 
 
+def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
+    qtbot,
+) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    converted = ItoolPlotItem._figure_composer_plain_value(
+        {
+            "flag": np.bool_(True),
+            "count": np.int64(2),
+            "scale": np.float64(0.25),
+            "items": (np.int64(1), np.float64(2.5)),
+        }
+    )
+    assert converted == {
+        "flag": True,
+        "count": 2,
+        "scale": 0.25,
+        "items": (1, 2.5),
+    }
+
+    assert ItoolPlotItem._figure_composer_operation_updates({}) is None
+    assert ItoolPlotItem._figure_composer_norm_updates("not a call") is None
+    assert ItoolPlotItem._figure_composer_norm_updates("other.Norm(1)") is None
+    assert ItoolPlotItem._figure_composer_norm_updates("eplt.PowerNorm(1)") is None
+    norm_updates = ItoolPlotItem._figure_composer_norm_updates(
+        "eplt.CenteredPowerNorm(0.5, halfrange=1.0)"
+    )
+    assert norm_updates is not None
+    assert norm_updates["norm_name"] == "CenteredPowerNorm"
+    assert norm_updates["norm_gamma"] == pytest.approx(0.5)
+    assert norm_updates["halfrange"] == pytest.approx(1.0)
+
+    operation = main_image._figure_composer_plot_slices_operation(
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["alpha", "eV"],
+        qsel_kwargs={
+            "beta": [1.0, 2.0],
+            "beta_width": [0.25, 0.25],
+            "temperature": "base",
+        },
+    )
+    assert operation.slice_dim == "beta"
+    assert operation.slice_values == (1.0, 2.0)
+    assert operation.slice_width == pytest.approx(0.25)
+    assert operation.slice_kwargs == {"temperature": "base"}
+
+    varying_width_operation = main_image._figure_composer_plot_slices_operation(
+        source_name="data",
+        variable_dim="beta",
+        dim_order_plot=["alpha", "eV"],
+        qsel_kwargs={"beta": [1.0, 2.0], "beta_width": [0.25, 0.5]},
+    )
+    assert varying_width_operation.slice_dim == "beta"
+    assert varying_width_operation.slice_width is None
+    assert varying_width_operation.slice_kwargs == {"beta_width": [0.25, 0.5]}
+
+    win.close()
+
+
 def test_slicer_area_colormap_lut_matches_dense_powernorm(qtbot) -> None:
     kwargs = {
         "cmap": "magma",

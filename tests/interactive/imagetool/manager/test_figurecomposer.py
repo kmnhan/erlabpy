@@ -1219,6 +1219,94 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
             profiles=(profile,),
         )
 
+    stack_data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("cut", "kx"),
+        coords={"cut": [1.0, 2.0], "kx": [-1.0, 0.0, 1.0]},
+    )
+    stack_operation = FigureOperationState.line(
+        label="profile",
+        source="data",
+    ).model_copy(
+        update={
+            "line_iter_dim": "cut",
+            "line_normalize": "mean",
+            "line_scales": (0.5,),
+            "line_offset_source": "coordinate",
+            "line_offset_scale": 2.0,
+        }
+    )
+    assert _line_transform.profile_stack_transform_code(
+        stack_operation,
+        data_name="profile_data",
+        line_data=stack_data,
+    ) == (
+        "2.0 * profile_data['cut'] + "
+        "0.5 * (profile_data / profile_data.mean('kx', skipna=True))"
+    )
+    multi_dim_stack = xr.DataArray(
+        np.arange(12.0).reshape(2, 2, 3),
+        dims=("cut", "eV", "kx"),
+        coords={"cut": [1.0, 2.0], "eV": [0.0, 1.0], "kx": [-1.0, 0.0, 1.0]},
+    )
+    assert (
+        _line_transform.profile_stack_transform_code(
+            stack_operation,
+            data_name="profile_data",
+            line_data=multi_dim_stack,
+        )
+        is None
+    )
+    stack_code_operation = code_operation.model_copy(update={"line_iter_dim": "cut"})
+    assert (
+        _line_transform.profile_stack_transform_code(
+            stack_code_operation,
+            data_name="profile_data",
+            line_data=stack_data,
+        )
+        == "1.0 + 2.0 * profile_data"
+    )
+    manual_multi_offset = code_operation.model_copy(
+        update={"line_scales": (), "line_offsets": (1.0, 2.0)}
+    )
+    assert (
+        _line_transform.profile_stack_transform_code(
+            manual_multi_offset,
+            data_name="profile_data",
+            line_data=stack_data,
+        )
+        is None
+    )
+    assert _line_transform.profile_transform_code_lines(manual_multi_offset) == [
+        "profiles = [",
+        "    offset + profile",
+        "    for profile, offset in zip(",
+        "        profiles,",
+        "        [1.0, 2.0],",
+        "        strict=True,",
+        "    )",
+        "]",
+    ]
+    index_offset = code_operation.model_copy(
+        update={
+            "line_scales": (),
+            "line_offsets": (),
+            "line_offset_source": "index",
+            "line_offset_scale": 3.0,
+        }
+    )
+    assert (
+        _line_transform.profile_stack_transform_code(
+            index_offset,
+            data_name="profile_data",
+            line_data=stack_data,
+        )
+        is None
+    )
+    assert _line_transform.profile_transform_code_lines(index_offset)[4] == (
+        "        [3.0 * float(index) for index in range(len(profiles))],"
+    )
+
 
 def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> None:
     data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
@@ -1712,6 +1800,7 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     tool = FigureComposerTool(
         source,
         recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
             sources=(FigureSourceState(name="data", label="line_map"),),
             primary_source="data",
         ),
@@ -1804,6 +1893,61 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     assert set(
         figurecomposer_plot_slices._available_plot_slices_offset_coords(tool, operation)
     ) >= {"eV", "temperature"}
+
+    code_operation = operation.model_copy(
+        update={"axes": FigureAxesSelectionState(axes=((0, 0), (0, 1)))}
+    )
+    fig, axs = plt.subplots(1, 2, squeeze=False)
+    namespace: dict[str, typing.Any] = {
+        "data": source,
+        "eplt": eplt,
+        "xr": xr,
+        "axs": axs,
+    }
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="In a future version of xarray the default value for coords",
+            category=FutureWarning,
+        )
+        exec(  # noqa: S102
+            "\n".join(
+                figurecomposer_plot_slices._plot_slices_transformed_code_lines(
+                    tool, code_operation
+                )
+            ),
+            namespace,
+        )
+    assert len(axs[0, 0].lines) == 1
+    assert len(axs[0, 1].lines) == 1
+    plt.close(fig)
+
+    single_panel_operation = operation.model_copy(update={"slice_values": (0.0,)})
+    assert (
+        figurecomposer_plot_slices._panel_cmap_argument(tool, single_panel_operation)
+        == "magma"
+    )
+    single_norm = figurecomposer_plot_slices._panel_norm_argument(
+        tool, single_panel_operation
+    )
+    assert isinstance(single_norm, mpl.colors.Normalize)
+    assert figurecomposer_plot_slices._panel_line_kw_argument(
+        tool, single_panel_operation
+    ) == {"linewidth": 1.5, "color": "red"}
+
+    no_override_operation = operation.model_copy(
+        update={"panel_styles_enabled": False, "panel_styles": ()}
+    )
+    assert (
+        figurecomposer_plot_slices._panel_norm_argument(tool, no_override_operation)
+        is None
+    )
+    assert (
+        figurecomposer_plot_slices._panel_norm_code(tool, no_override_operation) is None
+    )
+    assert figurecomposer_plot_slices._panel_line_kw_argument(
+        tool, no_override_operation
+    ) == {"linewidth": 1.5}
 
     same_cmap_operation = operation.model_copy(
         update={
@@ -2678,6 +2822,7 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         figurecomposer_widgets._qcolor_from_mpl_color_text("[1.0, 0.0, 0.0]")
         is not None
     )
+    assert figurecomposer_widgets._qcolor_from_mpl_color_text("") is None
     assert figurecomposer_widgets._qcolor_from_mpl_color_text("[bad") is None
     assert figurecomposer_widgets._top_level_comma_parts(
         "red, (0, 1, 0), 'blue, still blue', [0, 0, 1]"
@@ -2691,7 +2836,18 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         "red",
         "blue",
     )
+    assert figurecomposer_widgets._color_tuple_from_text("[bad") == ("[bad",)
     assert figurecomposer_widgets._color_tuple_from_text("[1]") == ("1",)
+    with monkeypatch.context() as context:
+        context.setattr(
+            figurecomposer_widgets, "_qcolor_from_mpl_color_value", lambda _value: None
+        )
+        assert figurecomposer_widgets._default_mpl_line_color().getRgb() == (
+            0,
+            0,
+            0,
+            255,
+        )
 
     inherited_edit = figurecomposer_widgets._ColorLineEditWidget(
         "",
@@ -2738,6 +2894,23 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         )
         color_edit.color_button._choose_color()
     assert color_edit.text() == "#010203"
+    color_edit.color_button.setColor(typing.cast("QtGui.QColor", object()))
+    assert color_edit.color_button.color().getRgb() == opaque.getRgb()
+    with monkeypatch.context() as context:
+        context.setattr(
+            QtWidgets.QColorDialog,
+            "getColor",
+            lambda *_args, **_kwargs: QtGui.QColor(),
+        )
+        color_edit.color_button._choose_color()
+    assert color_edit.text() == "#010203"
+    color_edit.color_button._dialog_open = True
+    color_edit.color_button._choose_color()
+    color_edit.color_button._dialog_open = False
+
+    button_pixmap = QtGui.QPixmap(color_edit.color_button.sizeHint())
+    button_pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    color_edit.color_button.render(button_pixmap)
 
     deleted_edit = figurecomposer_widgets._ColorLineEditWidget("tab:red")
     qtbot.addWidget(deleted_edit)
@@ -2761,6 +2934,11 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     assert all(edit.toolTip() == "Profile colors" for edit in color_list._row_editors())
     color_list.setMixedPlaceholder("(multiple values)")
     assert color_list.batchUnchanged()
+    color_list._syncing = True
+    color_list._main_text_finished()
+    color_list._set_colors_from_structure_change(("yellow",))
+    color_list._syncing = False
+    assert changed == []
     color_list.main_edit.setText("green, (0, 0, 1)")
     color_list.main_edit.setModified(True)
     color_list._main_text_finished()
@@ -2786,8 +2964,15 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         color_list._set_colors_from_structure_change(("black", "white"))
         assert color_list._row_rebuild_pending
         assert color_list._row_editors()[0] is first_editor
+        color_list._queue_rebuild_rows(("black", "white", "red"))
+        assert color_list._pending_row_rebuild_colors == ("black", "white", "red")
     color_list._run_pending_row_rebuild()
-    assert len(color_list._row_editors()) == 2
+    assert len(color_list._row_editors()) == 3
+    color_list._pending_row_rebuild_colors = None
+    color_list._run_pending_row_rebuild()
+    assert len(color_list._row_editors()) == 3
+    color_list._rows_layout.addSpacerItem(QtWidgets.QSpacerItem(1, 1))
+    assert len(color_list._row_editors()) == 3
 
     color_list._syncing = True
     color_list._set_colors_from_rows(("white",))
@@ -7185,9 +7370,13 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
     toolbar._actions["edit_parameters"].trigger()
 
     assert calls == ["export", "subplots", "axes"]
+    assert figurecomposer_widgets._noop_toolbar_callback() is None
+    toolbar.changeEvent(QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
+    for action_id in ("pan", "zoom", "copy_figure_to_clipboard"):
+        assert not toolbar._actions[action_id].icon().isNull()
 
 
-def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot) -> None:
+def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
@@ -7202,6 +7391,16 @@ def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot) -> None:
     assert not copied.isNull()
     assert copied.size().width() > 0
     assert copied.size().height() > 0
+
+    clipboard.clear()
+    with monkeypatch.context() as context:
+        context.setattr(tool.figure_window.canvas, "grab", lambda: QtGui.QPixmap())
+        tool.figure_window.toolbar._actions["copy_figure_to_clipboard"].trigger()
+    assert clipboard.pixmap().isNull()
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+        tool.figure_window.toolbar._actions["copy_figure_to_clipboard"].trigger()
 
 
 def test_figure_composer_subplots_adjust_helpers_repair_invalid_pairs() -> None:
@@ -12193,6 +12392,16 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
         np.testing.assert_allclose(
             line.get_ydata(), data.isel(cut=index).values + index
         )
+    figurecomposer_rendering._render_into_figure(
+        many_profiles_tool, many_profiles_tool.figure, sync_visible=False
+    )
+    rendered_lines = many_profiles_tool.figure.axes[0].lines
+    assert len(rendered_lines) == 3
+    for index, line in enumerate(rendered_lines):
+        np.testing.assert_allclose(line.get_xdata(), kx)
+        np.testing.assert_allclose(
+            line.get_ydata(), data.isel(cut=index).values + index
+        )
 
     single_profile_operation = FigureOperationState.line(
         label="profile",
@@ -12226,6 +12435,14 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
     exec(single_profile_code, namespace)  # noqa: S102
     profile = data.qsel(cut=1.0).squeeze(drop=True)
     for index, axis in enumerate(namespace["axs"].flat):
+        assert len(axis.lines) == 1
+        assert axis.get_xlim() == pytest.approx((-0.5, 0.5))
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), kx)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), profile.values + index)
+    figurecomposer_rendering._render_into_figure(
+        single_profile_tool, single_profile_tool.figure, sync_visible=False
+    )
+    for index, axis in enumerate(single_profile_tool.figure.axes):
         assert len(axis.lines) == 1
         assert axis.get_xlim() == pytest.approx((-0.5, 0.5))
         np.testing.assert_allclose(axis.lines[0].get_xdata(), kx)
@@ -12308,6 +12525,80 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     )
     line_action.trigger()
     assert unseeded_tool.tool_status.operations[-1].line_placement == "all_axes"
+
+
+def test_figure_composer_regular_line_profiles_render_on_each_selected_axis(
+    qtbot,
+) -> None:
+    cut_values = np.array([0.0, 1.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(cut_values.size * kx.size, dtype=float).reshape(
+            cut_values.size, kx.size
+        ),
+        dims=("cut", "kx"),
+        coords={"cut": cut_values, "kx": kx},
+        name="data",
+    )
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_iter_dim": "cut",
+            "line_values_axis": "x",
+            "line_labels": ("low", "high"),
+            "line_colors": ("red", "blue"),
+            "line_scales": (2.0,),
+            "ylim": (-1.5, 1.5),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    for axis in fig.axes:
+        assert len(axis.lines) == 2
+        assert axis.get_ylim() == pytest.approx((-1.5, 1.5))
+        for index, line in enumerate(axis.lines):
+            np.testing.assert_allclose(
+                line.get_xdata(), 2.0 * data.isel(cut=index).values
+            )
+            np.testing.assert_allclose(line.get_ydata(), kx)
+            assert line.get_label() == ("low", "high")[index]
+            assert line.get_color() == ("red", "blue")[index]
+
+    code = tool.generated_code()
+    assert "for ax in" in code
+    assert "ax.plot(profile, profile['kx']" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    for axis in namespace["fig"].axes:
+        assert len(axis.lines) == 2
+        for index, line in enumerate(axis.lines):
+            np.testing.assert_allclose(
+                line.get_xdata(), 2.0 * data.isel(cut=index).values
+            )
+            np.testing.assert_allclose(line.get_ydata(), kx)
+
+    test_fig = Figure()
+    test_axis = test_fig.subplots()
+    with pytest.warns(UserWarning, match="identical low and high xlims"):
+        figurecomposer_line_profile._set_axis_xlim(test_axis, 1.0)
+    figurecomposer_line_profile._set_axis_ylim(test_axis, 2.0)
+    assert test_axis.get_xlim()[0] < 1.0 < test_axis.get_xlim()[1]
+    assert test_axis.get_ylim()[0] == pytest.approx(2.0)
 
 
 def test_figure_composer_line_labels_auto_add_axes_legend_step(
