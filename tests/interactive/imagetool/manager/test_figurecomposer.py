@@ -11648,6 +11648,7 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
     one_per_axis_lines = figurecomposer_line_profile._line_code(
         tool, operation.model_copy(update={"line_placement": "one_per_axis"})
     )
+    assert not any("if len(target_axes)" in line for line in one_per_axis_lines)
     assert any(line.startswith("target_axes = list(") for line in one_per_axis_lines)
     assert any("ax.plot(profile, profile['kx']" in line for line in one_per_axis_lines)
     assert one_per_axis_lines[-1] == "    ax.set(xlim=(-2.0, 2.0), ylim=(0.0, 20.0))"
@@ -12028,6 +12029,7 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
     qtbot.addWidget(tool)
 
     code = tool.generated_code()
+    assert "if len(target_axes)" not in code
     assert "profiles =" in code
     assert "profile_scales = [0.1, 0.2, 0.3]" in code
     assert "profile_offsets = [-0.2, 0.0, 0.2]" in code
@@ -12100,6 +12102,7 @@ def test_figure_composer_profile_reduce_codegen_executes(qtbot) -> None:
         np.testing.assert_allclose(axis.lines[0].get_ydata(), profiles[index].values)
 
     code = tool.generated_code()
+    assert "if len(target_axes)" not in code
     assert 'profile_data = profile_data.coarsen(cut=2, boundary="trim").mean()' in code
     assert "profile_data = profile_data.thin(cut=2)" in code
     namespace: dict[str, typing.Any] = {"data": data}
@@ -12148,7 +12151,10 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
     qtbot.addWidget(many_profiles_tool)
 
     namespace: dict[str, typing.Any] = {"data": data}
-    exec(many_profiles_tool.generated_code(), namespace)  # noqa: S102
+    many_profiles_code = many_profiles_tool.generated_code()
+    assert "if len(target_axes)" not in many_profiles_code
+    assert "target_axes = list((axs[0, 0],)) * 3" in many_profiles_code
+    exec(many_profiles_code, namespace)  # noqa: S102
     lines = namespace["fig"].axes[0].lines
     assert len(lines) == 3
     assert namespace["fig"].axes[0].get_xlim() == pytest.approx((-0.5, 0.5))
@@ -12183,7 +12189,10 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
     qtbot.addWidget(single_profile_tool)
 
     namespace = {"data": data}
-    exec(single_profile_tool.generated_code(), namespace)  # noqa: S102
+    single_profile_code = single_profile_tool.generated_code()
+    assert "if len(target_axes)" not in single_profile_code
+    assert "profiles = profiles * 3" in single_profile_code
+    exec(single_profile_code, namespace)  # noqa: S102
     profile = data.qsel(cut=1.0).squeeze(drop=True)
     for index, axis in enumerate(namespace["axs"].flat):
         assert len(axis.lines) == 1

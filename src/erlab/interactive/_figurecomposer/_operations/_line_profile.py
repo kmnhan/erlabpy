@@ -7,6 +7,7 @@ import typing
 from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
+from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_DEFAULT_LABEL,
@@ -1106,12 +1107,14 @@ def _one_profile_per_axis_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     lines: list[str] = []
-    lines.append(f"target_axes = list({_axes_sequence_code(tool, operation.axes)})")
-    lines.append("if len(target_axes) == 1 and len(profiles) > 1:")
-    lines.append("    target_axes = target_axes * len(profiles)")
-    lines.append("elif len(profiles) == 1 and len(target_axes) > 1:")
-    lines.append("    profiles = profiles * len(target_axes)")
     profiles = _line_data_items(tool, operation)
+    axes_count = _selected_axes_count(tool, operation)
+    profile_count = len(profiles)
+    lines.extend(
+        _one_profile_per_axis_broadcast_code(
+            tool, operation, axes_count=axes_count, profile_count=profile_count
+        )
+    )
     lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["ax", "profile"]
     loop_values = ["target_axes", "profiles"]
@@ -1138,6 +1141,41 @@ def _one_profile_per_axis_code(
     lines.append(f"    ax.plot({call_args})")
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
+    return lines
+
+
+def _selected_axes_count(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> int | None:
+    if operation.axes.expression:
+        return None
+    setup = tool._recipe.setup
+    if setup.layout_mode == "gridspec":
+        return len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids))
+    return len(operation.axes.valid_axes(setup))
+
+
+def _one_profile_per_axis_broadcast_code(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    axes_count: int | None,
+    profile_count: int,
+) -> list[str]:
+    axes_code = _axes_sequence_code(tool, operation.axes)
+    if axes_count is None:
+        return [
+            f"target_axes = list({axes_code})",
+            "if len(target_axes) == 1 and len(profiles) > 1:",
+            "    target_axes = target_axes * len(profiles)",
+            "elif len(profiles) == 1 and len(target_axes) > 1:",
+            "    profiles = profiles * len(target_axes)",
+        ]
+    lines = [f"target_axes = list({axes_code})"]
+    if axes_count == 1 and profile_count > 1:
+        lines[0] += f" * {profile_count}"
+    elif profile_count == 1 and axes_count > 1:
+        lines.append(f"profiles = profiles * {axes_count}")
     return lines
 
 
