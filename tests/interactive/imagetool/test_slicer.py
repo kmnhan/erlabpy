@@ -371,6 +371,30 @@ def test_swap_axes_rejects_axes_outside_data_dimensions(qtbot) -> None:
         slicer.swap_axes(0, 2)
 
 
+def test_swap_axes_normalizes_legacy_short_cursor_state(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("a", "b"),
+        coords={"a": np.arange(3), "b": np.arange(4)},
+    )
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+    slicer.set_bin(0, 0, 3, update=False)
+    slicer.set_index(0, 0, 2, update=False)
+    slicer._bins[0] = slicer._bins[0][:1]
+    slicer._indices[0][1] = 99
+    slicer._values[0][1] = np.float64(99.0)
+    slicer._binned[0] = slicer._binned[0][:1]
+
+    slicer.swap_axes(0, 1)
+
+    assert slicer._obj.dims == ("b", "a")
+    assert slicer.get_bins(0) == [1, 3]
+    assert slicer.get_indices(0) == [1, 2]
+    assert slicer.get_values(0) == [1, 2]
+    assert slicer.get_binned(0) == (False, True)
+
+
 def test_clear_dim_cache_resets_dimension_memos(qtbot) -> None:
     data = xr.DataArray(
         np.zeros((3, 4, 5), dtype=np.float32),
@@ -421,6 +445,27 @@ def test_state_restore_rebuilds_layout_caches_before_cursor_restore(qtbot) -> No
     assert slicer._nonuniform_axes == [0]
     assert slicer._nonuniform_axes_set == {0}
     assert slicer._dim_indices[slicer._obj.dims[0]] == 0
+    assert slicer.get_indices(0) == saved_state["indices"][0]
+    np.testing.assert_allclose(slicer.get_values(0), saved_state["values"][0])
+
+
+def test_state_restore_preserves_valid_off_grid_cursor_values(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(3, dtype=np.float32),
+            "y": np.arange(4, dtype=np.float32),
+        },
+    )
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+    slicer.set_value(0, 1, 1.2, update=False)
+    saved_state = slicer.state
+
+    slicer.swap_axes(0, 1)
+    slicer.state = saved_state
+
     assert slicer.get_indices(0) == saved_state["indices"][0]
     np.testing.assert_allclose(slicer.get_values(0), saved_state["values"][0])
 
