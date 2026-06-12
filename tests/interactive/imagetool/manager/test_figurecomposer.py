@@ -15218,6 +15218,16 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    dialogs: list[QtWidgets.QMessageBox] = []
+
+    def _record_dialog(
+        dialog: QtWidgets.QMessageBox,
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        dialogs.append(dialog)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", _record_dialog)
+
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -15245,7 +15255,11 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert not copied
-        assert manager._status_bar.currentMessage()
+        assert len(dialogs) == 1
+        assert dialogs[0].icon() == QtWidgets.QMessageBox.Icon.Warning
+        assert dialogs[0].text()
+        assert dialogs[0].informativeText()
+        assert dialogs[0].detailedText()
 
 
 def test_manager_figure_action_new_target_creates_second_figure(
