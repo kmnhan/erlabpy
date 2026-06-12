@@ -1121,6 +1121,13 @@ def _regular_line_code(
 ) -> list[str]:
     lines: list[str] = []
     profiles = _line_data_items(tool, operation)
+    if _selected_axes_count(tool, operation) == 1:
+        return _regular_line_single_axis_code(
+            tool,
+            operation,
+            profiles=profiles,
+            transform_profiles_in_code=transform_profiles_in_code,
+        )
     if transform_profiles_in_code:
         lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["profile"]
@@ -1148,6 +1155,44 @@ def _regular_line_code(
         lines.append(f"        profile.plot({call_args})")
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
+    return lines
+
+
+def _regular_line_single_axis_code(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    profiles: list[xr.DataArray],
+    transform_profiles_in_code: bool,
+) -> list[str]:
+    lines: list[str] = []
+    if transform_profiles_in_code:
+        lines.extend(profile_transform_code_lines(operation, profiles=profiles))
+    loop_names = ["profile"]
+    loop_values = ["profiles"]
+    style_lines, kwargs_text = _line_style_code(
+        operation,
+        loop_names=loop_names,
+        loop_values=loop_values,
+    )
+    lines.extend(style_lines)
+    axis_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+    coordinate = _line_coordinate_code(operation)
+    lines.extend(_loop_header_lines(loop_names, loop_values))
+    if operation.line_values_axis == "x":
+        call_args = f"profile, {coordinate}"
+        if kwargs_text:
+            call_args += f", {kwargs_text}"
+        lines.append(f"    {axis_code}.plot({call_args})")
+    else:
+        call_args = f"ax={axis_code}"
+        if operation.line_x:
+            call_args += f", x={operation.line_x!r}"
+        if kwargs_text:
+            call_args += f", {kwargs_text}"
+        lines.append(f"    profile.plot({call_args})")
+    if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
+        lines.append(axes_limits_code)
     return lines
 
 

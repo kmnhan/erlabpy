@@ -11947,6 +11947,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert "ax.legend()" not in code
     assert "profile_offsets =" not in code
     assert "0.01 * profile_data['temperature'] + profile_data" in code
+    assert "for ax in" not in code
+    assert "profile.plot(ax=axs[0, 0]" in code
     exec(code, namespace)  # noqa: S102
     for index, line in enumerate(namespace["fig"].axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
