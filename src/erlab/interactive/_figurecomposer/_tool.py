@@ -1043,7 +1043,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         layout_row_label.setObjectName("figureComposerLayoutControls")
         layout_row_label.setToolTip(
             "Creation-time Matplotlib layout engine.\n"
-            "Default omits the layout argument; none passes layout='none'."
+            "Default omits the layout argument.\n"
+            "None passes layout='none'."
         )
         layout_row_label.setBuddy(self.layout_combo)
         layout_row_label.setAlignment(
@@ -1051,7 +1052,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.layout_combo.setToolTip(
             "Creation-time Matplotlib layout engine.\n"
-            "Default omits the layout argument; none passes layout='none'.",
+            "Default omits the layout argument.\n"
+            "None passes layout='none'.",
         )
         setup_layout.addWidget(layout_row_label, 6, 0, 1, 2)
         setup_layout.addWidget(self.layout_combo, 6, 2, 1, 3)

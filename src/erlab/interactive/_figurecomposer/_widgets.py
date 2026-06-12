@@ -1071,8 +1071,10 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.setToolTip(
-            "Click an axis to target it. Shift-click selects a range; "
-            "Ctrl/Cmd-click toggles one axis; drag selects a rectangular range."
+            "Click an axis to target it.\n"
+            "Shift-click selects a range.\n"
+            "Ctrl/Cmd-click toggles one axis.\n"
+            "Drag selects a rectangular range."
         )
 
     def sizeHint(self) -> QtCore.QSize:
@@ -1479,7 +1481,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             self.setToolTip(
                 "Click an axis to target it.\n"
                 "Shift-click selects a contiguous display range.\n"
-                "Ctrl/Cmd-click toggles one axis; drag selects visible axes."
+                "Ctrl/Cmd-click toggles one axis.\n"
+                "Drag selects visible axes."
             )
 
     def sizeHint(self) -> QtCore.QSize:
