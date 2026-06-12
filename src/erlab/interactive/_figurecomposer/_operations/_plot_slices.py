@@ -561,8 +561,8 @@ def _plot_slices_transformed_maps(
         transformed_maps.append(
             xr.concat(
                 ordered_profiles,
-                dim=xr.IndexVariable(operation.slice_dim, slice_values),
-            )
+                dim=operation.slice_dim,
+            ).assign_coords({operation.slice_dim: slice_values})
         )
     return transformed_maps
 
@@ -3261,6 +3261,10 @@ def _plot_slices_transformed_maps_code(
 
     map_count = max((key.map_index for key in keys), default=-1) + 1
     slice_values = list(operation.slice_values)
+    dim_code = erlab.interactive.utils._parse_single_arg(operation.slice_dim)
+    coords_code = erlab.interactive.utils._parse_single_arg(
+        {operation.slice_dim: slice_values}
+    )
     map_lines: list[list[str]] = []
     for map_index in range(map_count):
         profile_indices = [
@@ -3273,22 +3277,31 @@ def _plot_slices_transformed_maps_code(
             [
                 "xr.concat(",
                 f"    [{profile_items}],",
-                f"    dim=xr.IndexVariable({operation.slice_dim!r}, {slice_values!r}),",
-                ")",
+                f"    dim={dim_code},",
+                f").assign_coords({coords_code})",
             ]
         )
     if len(map_lines) == 1:
-        lines = ["plot_map = " + map_lines[0][0]]
-        lines.extend(f"    {line}" for line in map_lines[0][1:-1])
-        lines.append(map_lines[0][-1])
-        return lines, "plot_map"
+        return [], "\n".join(map_lines[0])
     lines = ["plot_maps = ["]
     for map_code in map_lines:
         lines.append("    " + map_code[0])
         lines.extend("    " + line for line in map_code[1:-1])
-        lines.append("    ),")
+        lines.append("    " + map_code[-1] + ",")
     lines.append("]")
     return lines, "plot_maps"
+
+
+def _plot_slices_call_lines(maps_code: str, kwargs_text: str) -> list[str]:
+    if "\n" not in maps_code:
+        return [f"eplt.plot_slices({maps_code}, {kwargs_text})"]
+    lines = ["eplt.plot_slices("]
+    maps_lines = maps_code.splitlines()
+    lines.extend(f"    {line}" for line in maps_lines[:-1])
+    lines.append(f"    {maps_lines[-1]},")
+    lines.append(f"    {kwargs_text},")
+    lines.append(")")
+    return lines
 
 
 def _plot_slices_transformed_code_lines(
@@ -3328,7 +3341,7 @@ def _plot_slices_transformed_code_lines(
     kwargs = _plot_slices_transformed_code_kwargs(tool, operation)
     kwargs["axes"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=True))
     kwargs_text = _code_kwargs(kwargs)
-    lines.append(f"eplt.plot_slices({maps_code}, {kwargs_text})")
+    lines.extend(_plot_slices_call_lines(maps_code, kwargs_text))
     return lines
 
 

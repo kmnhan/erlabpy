@@ -13452,8 +13452,12 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     assert (
         "profiles = [\n    offset + scale * (profile / profile.max(skipna=True))"
     ) in code
+    assert "xr.IndexVariable" not in code
+    assert "plot_map =" not in code
     assert "plot_maps" not in code
-    assert "eplt.plot_slices(plot_map" in code
+    assert "eplt.plot_slices(\n    xr.concat(" in code
+    assert 'dim="eV"' in code
+    assert '.assign_coords({"eV": [0.0, 1.0]})' in code
     assert "eV_width" not in code.split("eplt.plot_slices(", maxsplit=1)[1]
 
     namespace: dict[str, typing.Any] = {"data": data}
