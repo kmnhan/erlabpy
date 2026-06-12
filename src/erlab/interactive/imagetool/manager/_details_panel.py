@@ -115,13 +115,14 @@ class _DetailsPanelController:
                 value_label.setAlignment(
                     QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
                 )
-                if field.wrap:
-                    size_policy = QtWidgets.QSizePolicy(
-                        QtWidgets.QSizePolicy.Policy.Expanding,
-                        QtWidgets.QSizePolicy.Policy.Preferred,
-                    )
-                    size_policy.setHeightForWidth(True)
-                    value_label.setSizePolicy(size_policy)
+                size_policy = QtWidgets.QSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding
+                    if field.wrap
+                    else QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Preferred,
+                )
+                size_policy.setHeightForWidth(field.wrap)
+                value_label.setSizePolicy(size_policy)
             if field.monospace:
                 value_label.setFont(self._manager._metadata_monospace_font)
             self._manager.metadata_details_layout.addWidget(key_label, row, 0)

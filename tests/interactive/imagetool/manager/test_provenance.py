@@ -119,6 +119,44 @@ def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:
     assert clicks == [None]
 
 
+def test_manager_metadata_added_label_does_not_force_splitter_width(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    long_time = "2024-01-02 03:04:05 Pacific Daylight Time (-0700)"
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._set_metadata_fields(
+            [
+                manager_wrapper._MetadataField(
+                    "Added",
+                    long_time,
+                    monospace=True,
+                )
+            ]
+        )
+        manager._update_metadata_pane()
+
+        label = manager._metadata_detail_labels["Added"]
+        assert label.text() == long_time
+        assert label.toolTip() == long_time
+        assert label.textInteractionFlags() == (
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        assert (
+            label.sizePolicy().horizontalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Ignored
+        )
+        assert manager.metadata_details_widget.minimumSizeHint().width() < (
+            label.fontMetrics().horizontalAdvance(long_time)
+        )
+
+
 def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
     paths = [
         tmp_path / "scan_a.h5",
