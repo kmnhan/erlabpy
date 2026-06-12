@@ -49,11 +49,8 @@ def test_manager_selection_info_single_manager(
         workspace_path = tmp_path / "selected.itws"
         manager._adopt_workspace_path(workspace_path)
         qtbot.waitUntil(
-            lambda: (
-                manager_mod.manager_selection_info()["managers"][0]["workspace_path"]
-                == str(workspace_path.resolve())
-            ),
-            timeout=2000,
+            lambda: not manager._registry_heartbeat.is_busy,
+            timeout=5000,
         )
         info = manager_mod.manager_selection_info()
         assert info["managers"][0]["workspace_path"] == str(workspace_path.resolve())
