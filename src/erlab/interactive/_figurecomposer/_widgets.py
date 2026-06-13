@@ -32,7 +32,9 @@ from erlab.interactive._figurecomposer._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
+
+    from matplotlib.backend_bases import Event
 
     from erlab.interactive._figurecomposer._state import FigureSubplotsState
 
@@ -788,10 +790,10 @@ def _mappable_clim(mappable: object) -> tuple[float, float] | None:
 class _FigureComposerNavigationToolbar(NavigationToolbar):
     """Navigation toolbar that routes composer actions through recipe edits."""
 
-    toolitems = tuple(
+    toolitems = [  # noqa: RUF012 - Matplotlib expects toolbar items on the class.
         _SHOW_COMPOSER_TOOLITEM if item[3] == "home" else item
         for item in NavigationToolbar.toolitems
-    )
+    ]
 
     def __init__(
         self,
@@ -918,7 +920,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         self.set_history_buttons()
 
     def _capture_navigation_views(
-        self, axes: typing.Iterable[object]
+        self, axes: Iterable[object]
     ) -> dict[object, tuple[tuple[float, float], tuple[float, float]]]:
         views: dict[object, tuple[tuple[float, float], tuple[float, float]]] = {}
         for axis in axes:
@@ -930,7 +932,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         return views
 
     def _capture_colorbar_clims(
-        self, axes: typing.Iterable[object]
+        self, axes: Iterable[object]
     ) -> dict[object, tuple[float, float]]:
         clims: dict[object, tuple[float, float]] = {}
         for axis in axes:
@@ -974,7 +976,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
             self._colorbar_callback(changes)
         self.set_history_buttons()
 
-    def press_pan(self, event: object) -> None:
+    def press_pan(self, event: Event) -> None:
         super().press_pan(event)
         pan_info = getattr(self, "_pan_info", None)
         self._navigation_press_views = (
@@ -984,7 +986,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
             {} if pan_info is None else self._capture_colorbar_clims(pan_info.axes)
         )
 
-    def release_pan(self, event: object) -> None:
+    def release_pan(self, event: Event) -> None:
         before = dict(self._navigation_press_views)
         colorbar_before = dict(self._colorbar_press_clims)
         self._navigation_press_views = {}
@@ -993,7 +995,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         self._commit_navigation_views(before)
         self._commit_colorbar_clims(colorbar_before)
 
-    def press_zoom(self, event: object) -> None:
+    def press_zoom(self, event: Event) -> None:
         super().press_zoom(event)
         zoom_info = getattr(self, "_zoom_info", None)
         self._navigation_press_views = (
@@ -1003,7 +1005,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
             {} if zoom_info is None else self._capture_colorbar_clims(zoom_info.axes)
         )
 
-    def release_zoom(self, event: object) -> None:
+    def release_zoom(self, event: Event) -> None:
         before = dict(self._navigation_press_views)
         colorbar_before = dict(self._colorbar_press_clims)
         self._navigation_press_views = {}

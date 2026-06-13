@@ -1388,6 +1388,7 @@ def _set_operations(
         tool._update_operation_editor_safely()
     _render_preview(tool)
     tool.sigInfoChanged.emit()
+    tool._write_state()
 
 
 def _layout_axes(tool: FigureComposerTool) -> np.ndarray | dict[str, Axes] | None:

@@ -563,11 +563,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     return FigureAxesSelectionState(axes_ids=(str(axes_id),))
             return None
         shape = getattr(layout_axes, "shape", ())
-        if len(shape) != 2:
+        if not isinstance(shape, tuple) or len(shape) != 2:
             return None
-        for row in range(shape[0]):
-            for col in range(shape[1]):
-                if layout_axes[row, col] is axis:
+        row_count, column_count = typing.cast("tuple[int, int]", shape)
+        layout_array = typing.cast("typing.Any", layout_axes)
+        for row in range(row_count):
+            for col in range(column_count):
+                if layout_array[row, col] is axis:
                     return FigureAxesSelectionState(axes=((row, col),))
         return None
 

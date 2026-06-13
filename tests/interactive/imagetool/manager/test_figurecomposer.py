@@ -8085,6 +8085,7 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
     assert new_index == 2
     assert not tool.tool_status.operations[new_index].enabled
 
+    tool._reset_history_stack()
     figurecomposer_toolbar_dialogs._set_method_operation_enabled(
         tool,
         FigureMethodFamily.AXES,
@@ -8092,6 +8093,14 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
         axes=FigureAxesSelectionState(axes=((0, 1),)),
         enabled=True,
     )
+    assert tool.tool_status.operations[new_index].enabled
+    assert tool.undoable
+
+    tool.undo()
+    assert not tool.tool_status.operations[new_index].enabled
+    assert tool.redoable
+
+    tool.redo()
     assert tool.tool_status.operations[new_index].enabled
 
     slices_id = slices.operation_id
