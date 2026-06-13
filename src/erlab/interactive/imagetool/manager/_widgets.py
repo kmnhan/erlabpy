@@ -255,12 +255,8 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.value_labels: dict[str, QtWidgets.QLabel] = {}
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(8)
 
         header_layout = QtWidgets.QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
         layout.addLayout(header_layout)
 
         icon_label = QtWidgets.QLabel(self)
@@ -271,15 +267,13 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             if style is None
             else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
-        icon_label.setPixmap(icon.pixmap(24, 24))
+        icon_label.setPixmap(icon.pixmap(32, 32))
         icon_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
         )
         header_layout.addWidget(icon_label, 0)
 
         title_layout = QtWidgets.QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(2)
         header_layout.addLayout(title_layout, 1)
 
         title_label = QtWidgets.QLabel(details.path.name, self)
@@ -301,9 +295,6 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
-        details_layout.setContentsMargins(32, 0, 0, 0)
-        details_layout.setHorizontalSpacing(10)
-        details_layout.setVerticalSpacing(4)
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
@@ -359,8 +350,10 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         )
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
-        self.adjustSize()
-        self.setFixedSize(self.size())
+        target_width = max(self.minimumWidth(), self.sizeHint().width())
+        self.resize(target_width, self.minimumSizeHint().height())
+        target_height = self.height()
+        self.setFixedSize(target_width, target_height)
 
     def _add_detail(
         self,
@@ -473,12 +466,8 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.reveal_button: QtWidgets.QAbstractButton | None = None
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(8)
 
         header_layout = QtWidgets.QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
         layout.addLayout(header_layout)
 
         icon_label = QtWidgets.QLabel(self)
@@ -489,15 +478,13 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
             if style is None
             else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
-        icon_label.setPixmap(icon.pixmap(24, 24))
+        icon_label.setPixmap(icon.pixmap(32, 32))
         icon_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
         )
         header_layout.addWidget(icon_label, 0)
 
         title_layout = QtWidgets.QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(2)
         header_layout.addLayout(title_layout, 1)
 
         title_label = QtWidgets.QLabel(workspace_name, self)
@@ -521,9 +508,6 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
-        details_layout.setContentsMargins(32, 0, 0, 0)
-        details_layout.setHorizontalSpacing(10)
-        details_layout.setVerticalSpacing(4)
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
@@ -627,8 +611,10 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         )
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
-        self.adjustSize()
-        self.setFixedSize(self.size())
+        target_width = max(self.minimumWidth(), self.sizeHint().width())
+        self.resize(target_width, self.minimumSizeHint().height())
+        target_height = self.height()
+        self.setFixedSize(target_width, target_height)
 
     @staticmethod
     def _status_text(

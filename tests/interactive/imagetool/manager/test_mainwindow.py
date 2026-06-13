@@ -1196,6 +1196,8 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert not dialog.findChildren(QtWidgets.QLineEdit)
     assert not dialog.findChildren(QtWidgets.QPlainTextEdit)
     assert dialog.minimumSize() == dialog.maximumSize()
+    assert dialog.height() == dialog.minimumSizeHint().height()
+    assert dialog.height() <= dialog.sizeHint().height()
 
     path_label = dialog.findChild(
         QtWidgets.QLabel, "manager_load_source_path_value_label"
@@ -1258,6 +1260,8 @@ def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> No
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
     assert dialog.minimumSize() == dialog.maximumSize()
+    assert dialog.height() == dialog.minimumSizeHint().height()
+    assert dialog.height() <= dialog.sizeHint().height()
     assert dialog.value_labels["open_windows"].text() == "3"
     assert dialog.value_labels["size"].text()
     assert dialog.value_labels["modified"].text()
