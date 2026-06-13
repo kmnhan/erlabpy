@@ -527,11 +527,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
-        self.show_action.setShortcut(
-            "Return"
-            if sys.platform == "darwin"
-            else QtGui.QKeySequence.StandardKey.InsertParagraphSeparator
-        )
         self.show_action.setToolTip("Show selected windows")
 
         self.hide_action = QtWidgets.QAction("Hide", self)
@@ -883,6 +878,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.tree_view = _ImageToolWrapperTreeView(self)
         self.tree_view.setObjectName("manager_data_tree_view")
+        self._install_selection_shortcuts(self.tree_view)
         self.tree_view._selection_model.selectionChanged.connect(self._update_actions)
         self.tree_view._selection_model.selectionChanged.connect(self._update_info)
         self.tree_view._selection_model.selectionChanged.connect(
@@ -1288,9 +1284,28 @@ class ImageToolManager(_ImageToolManagerBase):
         self.figure_list.itemChanged.connect(self._figure_item_changed)
         self.figure_list.itemDoubleClicked.connect(self._show_figure_item)
         self.figure_list.customContextMenuRequested.connect(self._show_figure_menu)
+        self._install_selection_shortcuts(self.figure_list)
         figure_layout.addWidget(self.figure_list)
         self._apply_figure_view_controls()
         self._apply_figure_list_view_configuration()
+
+    def _install_selection_shortcuts(self, widget: QtWidgets.QWidget) -> None:
+        def add_shortcut(
+            sequence: str,
+            callback: Callable[[], None],
+        ) -> None:
+            shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(sequence), widget)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(callback)
+
+        if sys.platform == "darwin":
+            add_shortcut("Return", self.rename_selected)
+            add_shortcut("Enter", self.rename_selected)
+            add_shortcut("Ctrl+Down", self.show_selected)
+        else:
+            add_shortcut("F2", self.rename_selected)
+            add_shortcut("Return", self.show_selected)
+            add_shortcut("Enter", self.show_selected)
 
     def _destroy_figures_ui(self) -> None:
         figure_tab = getattr(self, "figure_tab", None)
