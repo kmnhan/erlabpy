@@ -4052,6 +4052,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         preceding_widgets = (
             self.add_step_button,
             self.copy_operation_button,
+            self.cut_operation_button,
             self.paste_operation_button,
             self.duplicate_operation_button,
             self.move_operation_up_button,

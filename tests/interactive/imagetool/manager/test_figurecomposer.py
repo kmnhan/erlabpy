@@ -8563,6 +8563,19 @@ def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
     assert all(
         button.focusPolicy() == QtCore.Qt.FocusPolicy.StrongFocus for button in buttons
     )
+    step_action_buttons = (
+        tool.add_step_button,
+        tool.copy_operation_button,
+        tool.cut_operation_button,
+        tool.paste_operation_button,
+        tool.duplicate_operation_button,
+        tool.move_operation_up_button,
+        tool.move_operation_down_button,
+        tool.remove_operation_button,
+        tool.operation_list,
+    )
+    for index, button in enumerate(step_action_buttons[:-1]):
+        assert button.nextInFocusChain() is step_action_buttons[index + 1]
     for index, button in enumerate(buttons[:-1]):
         assert button.nextInFocusChain() is buttons[index + 1]
 
