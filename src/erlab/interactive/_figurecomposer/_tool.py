@@ -71,6 +71,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     StepSection,
 )
 from erlab.interactive._figurecomposer._rendering import (
+    _live_layout_axes,
     _render_into_figure,
     _render_preview,
     _rendered_output_figure,
@@ -90,6 +91,8 @@ from erlab.interactive._figurecomposer._state import (
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
     FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureOperationKind,
     FigureOperationState,
     FigureRecipeState,
     FigureSourceState,
@@ -276,6 +279,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 export_callback=lambda: self.export_figure(),
                 subplot_adjust_callback=lambda: self._show_subplot_adjust_dialog(),
                 axes_customize_callback=lambda: self._show_axes_customize_dialog(),
+                show_composer_callback=lambda: self._show_composer_from_figure_window(),
+                navigation_callback=self._figure_window_navigation_changed,
+                undo_callback=self.undo,
+                redo_callback=self.redo,
+                undoable_callback=lambda: self.undoable,
+                redoable_callback=lambda: self.redoable,
             )
             window_ref = weakref.ref(self._figure_window)
             tool_ref = weakref.ref(self)
@@ -304,6 +313,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if window is not None and self._figure_window is window:
             self._figure_window = None
 
+    def _update_history_actions(self) -> None:
+        super()._update_history_actions()
+        window = getattr(self, "_figure_window", None)
+        if window is not None and erlab.interactive.utils.qt_is_valid(window):
+            window.toolbar.set_history_buttons()
+
     def _disconnect_figure_window(self, window: _FigureComposerDisplayWindow) -> None:
         with contextlib.suppress(TypeError, RuntimeError):
             window.sigCanvasSizeChanged.disconnect(
@@ -320,6 +335,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def _show_figure_window_requested(self) -> None:
         self._request_show_figure_window(activate=True)
+
+    def _show_composer_from_figure_window(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
 
     def show_figure_window(self, *, activate: bool = True) -> None:
         self.figure_window.show_for_setup(
@@ -364,6 +389,117 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             width_inches, height_inches, draw=False, emit_info=False
         ):
             self._queue_figure_resize_render()
+
+    def _figure_window_navigation_changed(
+        self, changes: Mapping[object, tuple[bool, bool]]
+    ) -> None:
+        if self._updating_controls or self._rendering:
+            return
+        layout_axes = _live_layout_axes(self)
+        if layout_axes is None:
+            return
+
+        operations = list(self._recipe.operations)
+        changed_operation_ids: set[str] = set()
+        changed = False
+        for axis, (x_changed, y_changed) in changes.items():
+            selection = self._navigation_axis_selection(layout_axes, axis)
+            if selection is None:
+                continue
+            for method_name, limits in self._navigation_axis_limit_updates(
+                axis, x_changed=x_changed, y_changed=y_changed
+            ):
+                index = self._matching_navigation_limit_operation_index(
+                    operations, method_name, selection
+                )
+                updated = FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name=method_name,
+                    axes=selection,
+                    args=limits,
+                )
+                if index is None:
+                    operations.append(updated)
+                    changed_operation_ids.add(updated.operation_id)
+                    changed = True
+                    continue
+                previous = operations[index]
+                updated = previous.model_copy(update={"method_args": limits})
+                if previous.model_dump() == updated.model_dump():
+                    continue
+                operations[index] = updated
+                changed_operation_ids.add(updated.operation_id)
+                changed = True
+        if not changed:
+            return
+
+        current = self._current_operation()
+        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._refresh_operation_list()
+        if current is not None and current[0] < len(operations):
+            self._set_current_operation_row_silent(current[0])
+        current_operation = self._current_operation()
+        self._sync_axes_selector()
+        self._update_step_action_buttons()
+        self._refresh_step_section_button_texts()
+        self._update_source_status(current_operation[1] if current_operation else None)
+        if current_operation is not None and (
+            current_operation[1].operation_id in changed_operation_ids
+        ):
+            self._update_operation_editor_safely()
+        self._mark_preview_pixmap_stale()
+        self.sigInfoChanged.emit()
+        self._write_state()
+
+    def _navigation_axis_selection(
+        self,
+        layout_axes: object,
+        axis: object,
+    ) -> FigureAxesSelectionState | None:
+        if isinstance(layout_axes, dict):
+            for axes_id, candidate in layout_axes.items():
+                if candidate is axis:
+                    return FigureAxesSelectionState(axes_ids=(str(axes_id),))
+            return None
+        shape = getattr(layout_axes, "shape", ())
+        if len(shape) != 2:
+            return None
+        for row in range(shape[0]):
+            for col in range(shape[1]):
+                if layout_axes[row, col] is axis:
+                    return FigureAxesSelectionState(axes=((row, col),))
+        return None
+
+    @staticmethod
+    def _navigation_axis_limit_updates(
+        axis: object, *, x_changed: bool, y_changed: bool
+    ) -> tuple[tuple[str, tuple[float, float]], ...]:
+        updates: list[tuple[str, tuple[float, float]]] = []
+        if x_changed and hasattr(axis, "get_xlim"):
+            xlim = typing.cast("typing.Any", axis).get_xlim()
+            updates.append(("set_xlim", (float(xlim[0]), float(xlim[1]))))
+        if y_changed and hasattr(axis, "get_ylim"):
+            ylim = typing.cast("typing.Any", axis).get_ylim()
+            updates.append(("set_ylim", (float(ylim[0]), float(ylim[1]))))
+        return tuple(updates)
+
+    @staticmethod
+    def _matching_navigation_limit_operation_index(
+        operations: Sequence[FigureOperationState],
+        method_name: str,
+        selection: FigureAxesSelectionState,
+    ) -> int | None:
+        selection_payload = selection.model_dump()
+        for index in range(len(operations) - 1, -1, -1):
+            operation = operations[index]
+            if (
+                operation.kind == FigureOperationKind.METHOD
+                and operation.method_family == FigureMethodFamily.AXES
+                and operation.method_name == method_name
+                and operation.axes.model_dump() == selection_payload
+            ):
+                return index
+        return None
 
     def _queue_figure_resize_render(self) -> None:
         self._figure_resize_render_generation += 1

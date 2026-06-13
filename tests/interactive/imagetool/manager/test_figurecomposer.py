@@ -4084,6 +4084,29 @@ def test_figure_composer_hide_cancels_deferred_figure_window(
     assert calls == []
 
 
+def test_figure_composer_show_composer_from_figure_window(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+
+    calls: list[str] = []
+    monkeypatch.setattr(tool, "isMinimized", lambda: False)
+    monkeypatch.setattr(tool, "show", lambda: calls.append("show"))
+    monkeypatch.setattr(tool, "raise_", lambda: calls.append("raise"))
+    monkeypatch.setattr(tool, "activateWindow", lambda: calls.append("activate"))
+
+    tool._show_composer_from_figure_window()
+
+    assert calls == ["show", "raise", "activate"]
+
+    calls.clear()
+    monkeypatch.setattr(tool, "isMinimized", lambda: True)
+    monkeypatch.setattr(tool, "showNormal", lambda: calls.append("showNormal"))
+
+    tool._show_composer_from_figure_window()
+
+    assert calls == ["showNormal", "raise", "activate"]
+
+
 def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         "erlab.interactive._figurecomposer._tool._render_preview",
@@ -4556,6 +4579,79 @@ def test_figure_composer_undo_redo_setup_state(qtbot) -> None:
 
     tool.redo()
     assert tool.tool_status.setup.nrows == initial.setup.nrows + 1
+
+
+def test_figure_composer_navigation_updates_recipe_limits(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    qtbot.addWidget(tool.figure_window)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    tool.canvas.draw()
+    tool._reset_history_stack()
+
+    initial = tool.tool_status
+    layout_axes = figurecomposer_rendering._live_layout_axes(tool)
+    assert layout_axes is not None
+    axis = figurecomposer_rendering._iter_axes(layout_axes)[0]
+    axis.set_xlim(0.25, 0.75)
+
+    tool._figure_window_navigation_changed({axis: (True, False)})
+
+    operation = tool.tool_status.operations[-1]
+    assert operation.kind == FigureOperationKind.METHOD
+    assert operation.method_family == FigureMethodFamily.AXES
+    assert operation.method_name == "set_xlim"
+    assert operation.method_args == pytest.approx((0.25, 0.75))
+    assert operation.axes == FigureAxesSelectionState(axes=((0, 0),))
+
+    toolbar = tool.figure_window.toolbar
+    assert toolbar._actions["back"].isEnabled()
+    assert not toolbar._actions["forward"].isEnabled()
+
+    toolbar.back()
+
+    assert tool.tool_status == initial
+    assert not toolbar._actions["back"].isEnabled()
+    assert toolbar._actions["forward"].isEnabled()
+
+    toolbar.forward()
+
+    assert tool.tool_status.operations[-1].method_name == "set_xlim"
+    assert tool.tool_status.operations[-1].method_args == pytest.approx((0.25, 0.75))
+
+
+def test_figure_composer_navigation_ignores_colorbar_axes(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_slices(
+        label="data",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"colorbar": "right"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    qtbot.addWidget(tool.figure_window)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    tool.canvas.draw()
+    tool._reset_history_stack()
+
+    colorbar_axes = [axis for axis in tool.figure.axes if hasattr(axis, "_colorbar")]
+    assert colorbar_axes
+
+    initial = tool.tool_status
+    colorbar_axes[0].set_ylim(0.2, 0.8)
+    tool._figure_window_navigation_changed({colorbar_axes[0]: (False, True)})
+
+    assert tool.tool_status == initial
+    assert not tool.undoable
 
 
 def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
@@ -7359,8 +7455,9 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
     toolbar = tool.figure_window.toolbar
 
     assert toolbar.objectName() == "figureComposerNavigationToolbar"
+    assert "home" not in toolbar._actions
     for action_id in (
-        "home",
+        "show_composer",
         "back",
         "forward",
         "pan",
@@ -7374,6 +7471,17 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
         assert action.objectName() == f"figureComposerToolbar_{action_id}"
         assert not action.icon().isNull()
 
+    undo_action = toolbar._actions["back"]
+    redo_action = toolbar._actions["forward"]
+    assert undo_action.shortcut() in QtGui.QKeySequence.keyBindings(
+        QtGui.QKeySequence.StandardKey.Undo
+    )
+    assert redo_action.shortcut() in QtGui.QKeySequence.keyBindings(
+        QtGui.QKeySequence.StandardKey.Redo
+    )
+    assert undo_action.shortcutContext() == QtCore.Qt.ShortcutContext.WindowShortcut
+    assert redo_action.shortcutContext() == QtCore.Qt.ShortcutContext.WindowShortcut
+
     calls: list[str] = []
     monkeypatch.setattr(tool, "export_figure", lambda: calls.append("export"))
     monkeypatch.setattr(
@@ -7382,15 +7490,21 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
     monkeypatch.setattr(
         tool, "_show_axes_customize_dialog", lambda: calls.append("axes")
     )
+    monkeypatch.setattr(
+        tool,
+        "_show_composer_from_figure_window",
+        lambda: calls.append("composer"),
+    )
 
+    toolbar._actions["show_composer"].trigger()
     toolbar._actions["save_figure"].trigger()
     toolbar._actions["configure_subplots"].trigger()
     toolbar._actions["edit_parameters"].trigger()
 
-    assert calls == ["export", "subplots", "axes"]
+    assert calls == ["composer", "export", "subplots", "axes"]
     assert figurecomposer_widgets._noop_toolbar_callback() is None
     toolbar.changeEvent(QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
-    for action_id in ("pan", "zoom", "copy_figure_to_clipboard"):
+    for action_id in ("show_composer", "pan", "zoom", "copy_figure_to_clipboard"):
         assert not toolbar._actions[action_id].icon().isNull()
 
 
