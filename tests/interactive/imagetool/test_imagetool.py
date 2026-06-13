@@ -7027,6 +7027,117 @@ def test_itool_sortby_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((4, 3)).astype(float),
+        dims=("x", "y"),
+        coords={
+            "x": np.array([2.0, 0.0, 1.0, 3.0]),
+            "y": np.arange(3),
+            "temperature": ("x", [20.0, 10.0, 15.0, 5.0]),
+            "sample_id": 1,
+            "mesh": (("x", "y"), np.ones((4, 3))),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    restore_nonuniform_dims = erlab.interactive.imagetool.slicer.restore_nonuniform_dims
+
+    def restore_transposed(source: xr.DataArray) -> xr.DataArray:
+        return restore_nonuniform_dims(source).transpose("y", "x")
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.slicer,
+        "restore_nonuniform_dims",
+        restore_transposed,
+    )
+
+    dialog = SortByDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    keys = [
+        item.data(QtCore.Qt.ItemDataRole.UserRole)
+        for row in range(dialog.key_table.rowCount())
+        if (item := dialog.key_table.item(row, 0)) is not None
+    ]
+
+    assert keys[:2] == ["x", "y"]
+    assert "temperature" in keys
+    assert "sample_id" not in keys
+    assert "mesh" not in keys
+
+    dialog.close()
+    win.close()
+
+
+def test_sortby_dialog_key_table_order_and_empty_items(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((4, 3)).astype(float),
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0, 2.0, 3.0],
+            "y": [0.0, 1.0, 2.0],
+            "temperature": ("x", [20.0, 10.0, 15.0, 5.0]),
+            "pressure": ("x", [3.0, 1.0, 2.0, 4.0]),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SortByDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    def table_keys() -> list[collections.abc.Hashable]:
+        return [
+            item.data(QtCore.Qt.ItemDataRole.UserRole)
+            for row in range(dialog.key_table.rowCount())
+            if (item := dialog.key_table.item(row, 0)) is not None
+        ]
+
+    initial_keys = table_keys()
+    assert initial_keys[:4] == ["x", "y", "temperature", "pressure"]
+    with pytest.raises(ValueError, match="No sort keys selected"):
+        dialog.source_transform_operation()
+
+    removed_item = dialog.key_table.takeItem(0, 0)
+    assert removed_item is not None
+    assert dialog._sort_keys == ()
+    dialog.key_table.setItem(0, 0, removed_item)
+
+    dialog.key_table.selectRow(0)
+    dialog._move_selected_row(-1)
+    assert table_keys() == initial_keys
+
+    dialog.key_table.selectRow(initial_keys.index("temperature"))
+    dialog._move_selected_row(-1)
+    assert table_keys()[:4] == ["x", "temperature", "y", "pressure"]
+    dialog._move_selected_row(1)
+    assert table_keys() == initial_keys
+
+    dialog.key_table.selectRow(dialog.key_table.rowCount() - 1)
+    dialog._move_selected_row(1)
+    assert table_keys() == initial_keys
+
+    for key in ("y", "temperature"):
+        item = dialog.key_table.item(table_keys().index(key), 0)
+        assert item is not None
+        item.setCheckState(QtCore.Qt.CheckState.Checked)
+    dialog.key_table.selectRow(table_keys().index("temperature"))
+    dialog._move_selected_row(-1)
+    operation = dialog.source_transform_operation()
+    assert operation.variables == ("temperature", "y")
+
+    empty_item_dialog = SortByDialog(win.slicer_area)
+    qtbot.addWidget(empty_item_dialog)
+    empty_item_dialog.key_table.selectRow(1)
+    assert empty_item_dialog.key_table.takeItem(1, 0) is not None
+    empty_item_dialog._move_selected_row(-1)
+
+    empty_item_dialog.close()
+    dialog.close()
+    win.close()
+
+
 def test_sortby_dialog_accept_requires_key(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(6).reshape((2, 3)).astype(float),
@@ -7048,6 +7159,8 @@ def test_sortby_dialog_accept_requires_key(qtbot, monkeypatch) -> None:
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", record_warning)
 
+    with pytest.raises(ValueError, match="No sort keys selected"):
+        dialog.source_transform_operation()
     dialog.accept()
 
     assert warnings_shown

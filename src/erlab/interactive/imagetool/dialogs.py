@@ -1525,7 +1525,8 @@ class SortByDialog(DataTransformDialog):
             item.setCheckState(QtCore.Qt.CheckState.Unchecked)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
             self.key_table.setItem(row, 0, item)
-        if self.key_table.rowCount() != 0:
+        # ImageTool data always contributes at least one dimension-backed sort key.
+        if self.key_table.rowCount() != 0:  # pragma: no branch
             self.key_table.selectRow(0)
 
         header = typing.cast("QtWidgets.QHeaderView", self.key_table.horizontalHeader())
