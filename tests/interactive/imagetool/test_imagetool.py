@@ -5038,6 +5038,37 @@ def test_itool_guidelines_start_at_active_cursor(qtbot) -> None:
     win.close()
 
 
+def test_itool_guidelines_draw_above_all_cursors(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    plot_item = area.main_image
+
+    area.add_cursor()
+    plot_item.set_guidelines(2)
+    area.add_cursor()
+
+    cursor_z_values = [
+        item.zValue()
+        for item_dict in (*plot_item.cursor_lines, *plot_item.cursor_spans)
+        for item in item_dict.values()
+    ]
+
+    assert cursor_z_values
+    assert all(
+        guideline_item.zValue() > max(cursor_z_values)
+        for guideline_item in plot_item._guidelines_items
+    )
+
+    win.close()
+
+
 def test_itool_guidelines_follow_active_cursor(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
