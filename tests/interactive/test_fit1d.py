@@ -57,6 +57,49 @@ def _fit_result_dataset(params: lmfit.Parameters, *, nfev: int = 1) -> xr.Datase
     return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
 
 
+@pytest.mark.parametrize(
+    "load",
+    [
+        pytest.param(lambda: object(), id="no-model"),
+        pytest.param(
+            lambda: xr.Dataset(
+                {
+                    "modelfit_results": xr.DataArray(
+                        np.empty((0,), dtype=object), dims=("empty",)
+                    )
+                }
+            ),
+            id="empty-result",
+        ),
+    ],
+)
+def test_lmfit_ftool_restore_rejects_missing_restored_model(load) -> None:
+    with pytest.raises(TypeError, match="Restored lmfit model is missing"):
+        fit1d._load_lmfit_for_ftool_restore(load)
+
+
+def test_lmfit_ftool_restore_rejects_non_callable_model_func() -> None:
+    class BadModel:
+        func = None
+
+    with pytest.raises(TypeError, match="non-callable function"):
+        fit1d._load_lmfit_for_ftool_restore(BadModel)
+
+
+def test_lmfit_ftool_restore_rejects_non_iterable_params() -> None:
+    model = lmfit.models.LinearModel()
+
+    with pytest.raises(TypeError, match="parameters are not iterable"):
+        fit1d._load_lmfit_for_ftool_restore(lambda: model, params=object())
+
+
+def test_lmfit_ftool_restore_rejects_incompatible_params() -> None:
+    model = lmfit.models.LinearModel()
+
+    with pytest.raises(ValueError, match="missing saved parameters"):
+        fit1d._load_lmfit_for_ftool_restore(lambda: model, params=[])
+
+
 def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
     x = np.linspace(1.0, -1.0, 21)
     data = xr.DataArray(np.exp(-(x**2)), dims=("x",), coords={"x": x})
