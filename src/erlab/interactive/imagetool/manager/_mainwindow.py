@@ -1298,7 +1298,7 @@ class ImageToolManager(_ImageToolManagerBase):
             shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(callback)
 
-        if sys.platform == "darwin":  # pragma: no cover
+        if sys.platform == "darwin":
             add_shortcut("Return", self.rename_selected)
             add_shortcut("Enter", self.rename_selected)
             add_shortcut("Ctrl+Down", self.show_selected)
