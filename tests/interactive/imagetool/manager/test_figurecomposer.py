@@ -7905,6 +7905,80 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     assert first_axes_id not in status_text
 
 
+def test_figure_composer_gridspec_axes_selector_click_keeps_surviving_removed_target(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    span_00 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    span_01 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=1,
+                        ncols=2,
+                        axes=(
+                            FigureGridSpecAxesState(
+                                axes_id="ax0",
+                                span=span_00,
+                            ),
+                            FigureGridSpecAxesState(
+                                axes_id="ax1",
+                                span=span_01,
+                            ),
+                        ),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes_ids=("ax0", "ax1")),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool._select_step_section("axes")
+    tool._sync_axes_selector()
+
+    tool.gridspec_layout_widget.set_selected_region("ax1")
+    tool._gridspec_delete_selected_region()
+    tool._sync_axes_selector()
+    tool.gridspec_axes_selector.resize(tool.gridspec_axes_selector.sizeHint())
+
+    assert tool.tool_status.operations[0].axes.axes_ids == ("ax0", "ax1")
+    assert tool.gridspec_axes_selector.selected_axes_ids() == ("ax0",)
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+    qtbot.mouseClick(
+        tool.gridspec_axes_selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=tool.gridspec_axes_selector.axis_rect("ax0").center(),
+    )
+
+    assert tool.tool_status.operations[0].axes.axes_ids == ("ax0",)
+    assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+
 def test_figure_composer_gridspec_delete_selects_nearby_axes(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     left_axis = FigureGridSpecAxesState(
@@ -16237,6 +16311,51 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     assert tool.tool_status.operations[0].axes.axes == ((0, 0), (0, 1))
     assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
     assert "axes=axs" in tool.generated_code()
+
+
+def test_figure_composer_axes_selector_click_keeps_surviving_removed_axes_target(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0), (1, 1))),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.nrows_spin.setValue(1)
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool._select_step_section("axes")
+    tool.axes_selector.resize(tool.axes_selector.sizeHint())
+
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0), (1, 1))
+    assert tool.axes_selector.selected_axes() == ((0, 0),)
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+    qtbot.mouseClick(
+        tool.axes_selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=tool.axes_selector.cell_rect((0, 0)).center(),
+    )
+
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0),)
+    assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
 
 
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(

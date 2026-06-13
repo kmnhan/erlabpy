@@ -1469,7 +1469,10 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             self._drag_origin = axis
         if not shift:
             self._anchor_axis = axis
+        previous_selection = self._selected_axes
         self.set_selected_axes(tuple(selected), emit=True)
+        if self._selected_axes == previous_selection:
+            self.sigSelectionChanged.emit(self.selected_axes())
         event.accept()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:
@@ -1869,7 +1872,10 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         else:
             selected = {axis_id}
             self._anchor_axis_id = axis_id
+        previous_selection = self._selected_axes
         self.set_selected_axes_ids(tuple(selected), emit=True)
+        if self._selected_axes == previous_selection:
+            self.sigSelectionChanged.emit(self.selected_axes_ids())
         event.accept()
 
     def _edit_mouse_press(self, event: QtGui.QMouseEvent) -> None:
