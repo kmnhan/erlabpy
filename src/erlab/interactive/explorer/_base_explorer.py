@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import stat
 import sys
 import time
 import traceback
@@ -81,6 +82,7 @@ class _FileSystem:
     def __init__(self, path: str | os.PathLike, show_hidden: bool = False) -> None:
         self._path = pathlib.Path(path)
         self._children: list[_FileSystem] | None = None
+        self._children_error: OSError | None = None
 
         self._show_hidden = show_hidden
 
@@ -93,6 +95,7 @@ class _FileSystem:
     def path(self, path: str | os.PathLike) -> None:
         self._path = pathlib.Path(path)
         self._children = None
+        self._children_error = None
 
     @property
     def show_hidden(self) -> bool:
@@ -103,6 +106,7 @@ class _FileSystem:
     def show_hidden(self, show: bool) -> None:
         self._show_hidden = show
         self._children = None
+        self._children_error = None
 
     @property
     def has_children(self) -> bool:
@@ -117,11 +121,16 @@ class _FileSystem:
     def children(self) -> list[_FileSystem]:
         """List of children of the file system.
 
-        This property is undefined if the file system has no children.
+        Returns an empty list when the path is not a readable directory.
         """
         if self._children is None:
             self.reload()
         return typing.cast("list[_FileSystem]", self._children)
+
+    @property
+    def children_error(self) -> OSError | None:
+        """Error raised while loading children, if any."""
+        return self._children_error
 
     @property
     def can_fetch_children(self) -> bool:
@@ -130,12 +139,21 @@ class _FileSystem:
 
     def reload(self) -> None:
         """Reload the children of the file system."""
-        if self.has_children:
-            self._children = []
-            for p in self.path.iterdir():
+        self._children = []
+        self._children_error = None
+        if not self.has_children:
+            return
+        children: list[_FileSystem] = []
+        try:
+            paths = self.path.iterdir()
+            for p in paths:
                 if not self.show_hidden and p.name.startswith("."):
                     continue
-                self._children.append(_FileSystem(p))
+                children.append(_FileSystem(p))
+        except OSError as exc:
+            self._children_error = exc
+        else:
+            self._children = children
 
     def __getitem__(self, key: str) -> _FileSystem:
         """Get a child of the file system by its name."""
@@ -215,27 +233,40 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
 
     def file_info(self, index: QtCore.QModelIndex) -> QtCore.QFileInfo:
         """Get the :class:`QtCore.QFileInfo` of the file at given index."""
-        return QtCore.QFileInfo(self.file_path(index))
+        return self._file_info_for_path(self.get_fs(index).path)
 
     def mime_type(self, index: QtCore.QModelIndex) -> str:
-        file_info = self.file_info(index)
-        if file_info.suffix() in _IGOR_PRO_MIME_TYPES:
-            mime: str = _IGOR_PRO_MIME_TYPES[file_info.suffix()]
+        return self._mime_type_for_path(self.get_fs(index).path)
 
+    @staticmethod
+    def _file_info_for_path(path: pathlib.Path) -> QtCore.QFileInfo:
+        return QtCore.QFileInfo(str(path))
+
+    def _mime_type_for_path(self, path: pathlib.Path) -> str:
+        suffix = path.suffix.removeprefix(".")
+        if suffix in _IGOR_PRO_MIME_TYPES:
+            mime: str = _IGOR_PRO_MIME_TYPES[suffix]
         else:
             mime = self._mime_database.mimeTypeForFile(
-                file_info, QtCore.QMimeDatabase.MatchMode.MatchExtension
+                self._file_info_for_path(path),
+                QtCore.QMimeDatabase.MatchMode.MatchExtension,
             ).comment()
-
         return _TRANSLATE_MIME_TYPES.get(mime, mime)
+
+    @staticmethod
+    def _stat_path(path: pathlib.Path) -> os.stat_result | None:
+        try:
+            return path.stat()
+        except OSError:
+            return None
 
     def date_modified(self, index: QtCore.QModelIndex) -> str:
         """Get the date modified of the file at the index."""
-        path: pathlib.Path = index.internalPointer().path
-        if path.exists():
+        stat_result = self._stat_path(self.get_fs(index).path)
+        if stat_result is not None:
             return time.strftime(
                 "%Y-%m-%d %H:%M:%S",
-                time.localtime(os.path.getmtime(path)),
+                time.localtime(stat_result.st_mtime),
             )
         return ""
 
@@ -349,11 +380,10 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
                 case 0:
                     return item.path.name
                 case 1:
-                    if item.path.is_dir() or not item.path.exists():
+                    stat_result = self._stat_path(item.path)
+                    if stat_result is None or stat.S_ISDIR(stat_result.st_mode):
                         return "--"
-                    return erlab.utils.formatting.format_nbytes(
-                        os.path.getsize(item.path)
-                    )
+                    return erlab.utils.formatting.format_nbytes(stat_result.st_size)
                 case 2:
                     return self.mime_type(index)
                 case 3:
@@ -420,13 +450,19 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
             return item.path.name.casefold()
 
         def size_key(item: _FileSystem) -> int:
-            return os.path.getsize(item.path) if item.path.is_file() else -1
+            stat_result = self._stat_path(item.path)
+            if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
+                return -1
+            return stat_result.st_size
 
         def type_key(item: _FileSystem) -> str:
-            return self.mime_type(self._find_index(item)).casefold()
+            return self._mime_type_for_path(item.path).casefold()
 
         def date_key(item: _FileSystem) -> float:
-            return os.path.getmtime(item.path) if item.path.exists() else 0
+            stat_result = self._stat_path(item.path)
+            if stat_result is None:
+                return 0
+            return stat_result.st_mtime
 
         return [name_key, size_key, type_key, date_key][column]
 
@@ -828,6 +864,17 @@ class _DataExplorer(QtWidgets.QMainWindow):
     )
     TEXT_MULTIPLE_SELECTED: str = "Multiple files selected"
     TEXT_LOADING: str = "Loading..."
+    TEXT_DIRECTORY_UNAVAILABLE: str = (
+        "The current folder is not available:\n"
+        "{path}\n\n"
+        "Reconnect the drive or choose another folder."
+    )
+    TEXT_DIRECTORY_UNREADABLE: str = (
+        "The current folder cannot be read:\n"
+        "{path}\n\n"
+        "{error}\n\n"
+        "Check permissions or choose another folder."
+    )
 
     sigDirectoryChanged = QtCore.Signal(str)
     sigCloseRequested = QtCore.Signal(object)
@@ -1207,6 +1254,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
             dir_name = dir_path.name or str(dir_path)
             self.setWindowTitle(f"Data Explorer — {dir_name}")
         self.sigDirectoryChanged.emit(str(dir_path))
+        if not self._current_selection:
+            self._show_empty_selection_state()
         self._emit_workspace_state_changed()
 
     @QtCore.Slot()
@@ -1241,6 +1290,25 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _up_to_date(self) -> bool:
         """Whether the displayed file info is up to date."""
         return set(self._displayed_selection) == set(self._current_selection)
+
+    def _current_directory_notice(self) -> str | None:
+        file_system = self._fs_model.file_system
+        dir_path = file_system.path
+        if dir_path.is_dir():
+            _ = file_system.children
+            if file_system.children_error is None:
+                return None
+            return self.TEXT_DIRECTORY_UNREADABLE.format(
+                path=dir_path, error=file_system.children_error
+            )
+        return self.TEXT_DIRECTORY_UNAVAILABLE.format(path=dir_path)
+
+    def _show_empty_selection_state(self) -> None:
+        self._preview.setVisible(False)
+        self._text_edit.setText(
+            self._current_directory_notice() or self.TEXT_NONE_SELECTED
+        )
+        self._displayed_selection = []
 
     @QtCore.Slot()
     def _choose_directory(self) -> None:
@@ -1320,11 +1388,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
             self._threadpool.start(worker)
 
         else:
-            self._preview.setVisible(False)
-            self._text_edit.setText(
-                self.TEXT_NONE_SELECTED if n_sel == 0 else self.TEXT_MULTIPLE_SELECTED
-            )
-            self._displayed_selection = selected_files
+            if n_sel == 0:
+                self._show_empty_selection_state()
+            else:
+                self._preview.setVisible(False)
+                self._text_edit.setText(self.TEXT_MULTIPLE_SELECTED)
+                self._displayed_selection = selected_files
 
     @QtCore.Slot()
     def _show_loading_text_if_needed(self) -> None:

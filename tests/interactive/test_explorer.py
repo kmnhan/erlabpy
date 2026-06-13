@@ -6,8 +6,10 @@ from qtpy import QtCore, QtGui
 
 import erlab
 from erlab.interactive.explorer._base_explorer import (
+    _IGOR_PRO_MIME_TYPES,
     DataExplorerTabState,
     _DataExplorer,
+    _FileSystem,
     _ReprFetcher,
 )
 from erlab.interactive.explorer._tabbed_explorer import (
@@ -288,6 +290,98 @@ def test_explorer_workspace_state_restores_selection(
     assert set(file_paths).issubset(explorer._current_selection)
     assert missing_path not in explorer._current_selection
     assert not explorer._model_index_for_path(missing_path).isValid()
+
+
+def test_explorer_workspace_state_missing_root_is_empty(
+    qtbot,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="example")
+    qtbot.addWidget(explorer)
+
+    missing_root = tmp_path / "disconnected-share"
+    missing_path = missing_root / "data_001.h5"
+    explorer.restore_workspace_state(
+        DataExplorerTabState(
+            root_path=str(missing_root),
+            loader_name="example",
+            selected_paths=(str(missing_path),),
+        )
+    )
+    qtbot.wait(10)
+
+    assert explorer.current_directory == missing_root
+    assert explorer._tree_view.model().rowCount() == 0
+    assert explorer.workspace_state_payload()["root_path"] == str(missing_root)
+    assert explorer._current_selection == []
+    assert not explorer._model_index_for_path(missing_path).isValid()
+
+
+def test_explorer_filesystem_read_error_stays_empty(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    read_error = OSError("network drive unavailable")
+    original_iterdir = pathlib.Path.iterdir
+
+    def _iterdir(path: pathlib.Path):
+        if path == tmp_path:
+            raise read_error
+        return original_iterdir(path)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", _iterdir)
+
+    file_system = _FileSystem(tmp_path)
+    file_system.reload()
+
+    assert file_system.children == []
+    assert file_system.children_error is read_error
+
+
+def test_explorer_metadata_helpers_handle_edge_paths(
+    qtbot,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="example")
+    qtbot.addWidget(explorer)
+    model = explorer._fs_model
+
+    missing_path = tmp_path / "missing.h5"
+    missing_item = _FileSystem(missing_path)
+
+    assert model._stat_path(missing_path) is None
+    assert model.data(model.createIndex(0, 1, missing_item)) == "--"
+    assert model.date_modified(model.createIndex(0, 3, missing_item)) == ""
+    assert model._get_sort_key_func(1)(missing_item) == -1
+    assert model._get_sort_key_func(3)(missing_item) == 0
+    assert (
+        model._mime_type_for_path(tmp_path / "packed.pxt")
+        == _IGOR_PRO_MIME_TYPES["pxt"]
+    )
+
+    model.file_system._children = []
+    model.file_system._children_error = OSError("permission denied")
+    assert explorer._current_directory_notice() is not None
+
+
+def test_explorer_type_sort_uses_file_paths(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    qtbot.wait_until(lambda: explorer._tree_view.model().rowCount() > 0)
+
+    def _fail_find_index(_item):
+        raise AssertionError("type sorting should not walk model indexes")
+
+    monkeypatch.setattr(explorer._fs_model, "_find_index", _fail_find_index)
+
+    explorer._tree_view.sortByColumn(2, QtCore.Qt.SortOrder.AscendingOrder)
 
 
 def test_explorer_loader_options_dialog_updates_kwargs(
