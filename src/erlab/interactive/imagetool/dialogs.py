@@ -40,6 +40,7 @@ __all__ = [
     "RenameDimsCoordsDialog",
     "RotationDialog",
     "SelectionDialog",
+    "SortByDialog",
     "SwapDimsDialog",
     "SymmetrizeDialog",
     "SymmetrizeNfoldDialog",
@@ -1458,6 +1459,153 @@ class InterpolationDialog(DataTransformDialog):
             )
             return
 
+        super().accept()
+
+
+class SortByDialog(DataTransformDialog):
+    title = "Sort By"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (provenance.SortByOperation,)
+
+    def setup_widgets(self) -> None:
+        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        public_dims = tuple(
+            dim.removesuffix("_idx")
+            if isinstance(dim, str) and dim.endswith("_idx")
+            else dim
+            for dim in self.slicer_area.data.dims
+        )
+        if tuple(source_data.dims) != public_dims and set(source_data.dims) == set(
+            public_dims
+        ):
+            source_data = source_data.transpose(*public_dims)
+
+        sort_keys: list[Hashable] = list(source_data.dims)
+        for name, coord in source_data.coords.items():
+            if name in sort_keys:
+                continue
+            if (
+                coord.ndim == 1
+                and len(coord.dims) == 1
+                and coord.dims[0] in source_data.dims
+            ):
+                sort_keys.append(name)
+
+        key_group = QtWidgets.QGroupBox("Sort Keys")
+        key_layout = QtWidgets.QVBoxLayout()
+        key_group.setLayout(key_layout)
+
+        self.key_table = QtWidgets.QTableWidget()
+        self.key_table.setObjectName("sortby_key_table")
+        self.key_table.setColumnCount(1)
+        self.key_table.setHorizontalHeaderLabels(["Coordinate"])
+        self.key_table.setRowCount(len(sort_keys))
+        self.key_table.setAlternatingRowColors(True)
+        self.key_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.key_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.key_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+
+        item_flags = (
+            QtCore.Qt.ItemFlag.ItemIsUserCheckable
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsEnabled
+        )
+        for row, key in enumerate(sort_keys):
+            item = QtWidgets.QTableWidgetItem(str(key))
+            item.setFlags(item_flags)
+            item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+            self.key_table.setItem(row, 0, item)
+        # ImageTool data always contributes at least one dimension-backed sort key.
+        if self.key_table.rowCount() != 0:  # pragma: no branch
+            self.key_table.selectRow(0)
+
+        header = typing.cast("QtWidgets.QHeaderView", self.key_table.horizontalHeader())
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.key_table.resizeRowsToContents()
+
+        move_layout = QtWidgets.QHBoxLayout()
+        self.move_up_button = QtWidgets.QPushButton("Move Up")
+        self.move_up_button.setObjectName("sortby_move_up_button")
+        self.move_down_button = QtWidgets.QPushButton("Move Down")
+        self.move_down_button.setObjectName("sortby_move_down_button")
+        self.move_up_button.clicked.connect(lambda: self._move_selected_row(-1))
+        self.move_down_button.clicked.connect(lambda: self._move_selected_row(1))
+        move_layout.addWidget(self.move_up_button)
+        move_layout.addWidget(self.move_down_button)
+
+        key_layout.addWidget(self.key_table)
+        key_layout.addLayout(move_layout)
+
+        self.ascending_combo = QtWidgets.QComboBox()
+        self.ascending_combo.setObjectName("sortby_direction_combo")
+        self.ascending_combo.addItem("Ascending", userData=True)
+        self.ascending_combo.addItem("Descending", userData=False)
+
+        self.layout_.addRow(key_group)
+        self.layout_.addRow("Direction", self.ascending_combo)
+
+    @property
+    def _sort_keys(self) -> tuple[Hashable, ...]:
+        keys: list[Hashable] = []
+        for row in range(self.key_table.rowCount()):
+            item = self.key_table.item(row, 0)
+            if item is None:
+                continue
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                keys.append(
+                    typing.cast(
+                        "Hashable",
+                        item.data(QtCore.Qt.ItemDataRole.UserRole),
+                    )
+                )
+        return tuple(keys)
+
+    @QtCore.Slot()
+    def _move_selected_row(self, offset: int) -> None:
+        row = self.key_table.currentRow()
+        target_row = row + offset
+        if row < 0 or target_row < 0 or target_row >= self.key_table.rowCount():
+            return
+        item = self.key_table.takeItem(row, 0)
+        target_item = self.key_table.takeItem(target_row, 0)
+        if item is None or target_item is None:
+            return
+        self.key_table.setItem(row, 0, target_item)
+        self.key_table.setItem(target_row, 0, item)
+        self.key_table.selectRow(target_row)
+
+    def source_transform_operation(
+        self,
+    ) -> provenance.SortByOperation:
+        sort_keys = self._sort_keys
+        if not sort_keys:
+            raise ValueError("No sort keys selected")
+        return provenance.SortByOperation(
+            variables=sort_keys,
+            ascending=bool(
+                self.ascending_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+            ),
+        )
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self._sort_keys:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Sort Keys Selected",
+                "Choose at least one coordinate to sort by.",
+            )
+            return
         super().accept()
 
 

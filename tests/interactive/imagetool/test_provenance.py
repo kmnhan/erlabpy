@@ -3236,6 +3236,157 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
     )
 
 
+def test_sortby_operation_apply_code_and_console_calls() -> None:
+    tuple_key = ("beta", 0)
+    data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("x", "y"),
+        coords={
+            "x": [2.0, 1.0, 2.0, 0.0],
+            "y": [0.0, 1.0, 2.0],
+            "sample temp": ("x", [20.0, 10.0, 15.0, 30.0]),
+        },
+        name="scan",
+    )
+    tuple_key_data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={
+            "x": [0.0, 1.0, 2.0, 3.0],
+            tuple_key: ("x", [20.0, 10.0, 15.0, 30.0]),
+        },
+        name="tuple_coord_scan",
+    )
+
+    single = provenance.SortByOperation(variables=("x",))
+    multi = provenance.SortByOperation(
+        variables=("x", "sample temp"),
+        ascending=False,
+    )
+    non_identifier = provenance.SortByOperation(variables=("sample temp",))
+    tuple_key_operation = provenance.SortByOperation(variables=(tuple_key,))
+
+    assert provenance.SortByOperation(variables="x") == single
+    with pytest.raises(TypeError, match="sortby variables must be coordinate names"):
+        provenance.SortByOperation(variables=lambda darr: darr.x)
+    assert multi.derivation_label().startswith("Sort By(")
+    for operation in (single, multi, tuple_key_operation):
+        assert (
+            provenance.parse_tool_provenance_operation(
+                operation.model_dump(mode="json")
+            )
+            == operation
+        )
+
+    xr.testing.assert_identical(single.apply(data, parent_data=data), data.sortby("x"))
+    xr.testing.assert_identical(
+        multi.apply(data, parent_data=data),
+        data.sortby(["x", "sample temp"], ascending=False),
+    )
+    xr.testing.assert_identical(
+        non_identifier.apply(data, parent_data=data),
+        data.sortby("sample temp"),
+    )
+    xr.testing.assert_identical(
+        tuple_key_operation.apply(tuple_key_data, parent_data=tuple_key_data),
+        tuple_key_data.sortby(tuple_key),
+    )
+
+    code = f"derived = {multi.expression_code('data')}"
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"],
+        data.sortby(["x", "sample temp"], ascending=False),
+    )
+    code = f"derived = {tuple_key_operation.expression_code('data')}"
+    namespace = _exec_generated_code(code, {"data": tuple_key_data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], tuple_key_data.sortby(tuple_key))
+
+    assert (
+        provenance.operation_from_console_call(
+            provenance.ConsoleCall(
+                dataarray_method="sortby",
+                args=("x",),
+                display_code='data.sortby("x")',
+                has_extra_tracked_inputs=False,
+                receiver_data=data,
+            )
+        )
+        == single
+    )
+    assert (
+        provenance.operation_from_console_call(
+            provenance.ConsoleCall(
+                dataarray_method="sortby",
+                kwargs={"variables": ["x", "sample temp"], "ascending": False},
+                display_code=(
+                    'data.sortby(variables=["x", "sample temp"], ascending=False)'
+                ),
+                has_extra_tracked_inputs=False,
+                receiver_data=data,
+            )
+        )
+        == multi
+    )
+    assert (
+        provenance.operation_from_console_call(
+            provenance.ConsoleCall(
+                dataarray_method="sortby",
+                args=(tuple_key,),
+                display_code="data.sortby(('beta', 0))",
+                has_extra_tracked_inputs=False,
+                receiver_data=tuple_key_data,
+            )
+        )
+        == tuple_key_operation
+    )
+
+    for args, kwargs in (
+        ((), {"variables": "x", "ascending": "false"}),
+        (("x",), {"variables": "y"}),
+        ((), {}),
+    ):
+        assert (
+            provenance.SortByOperation.from_console_call(
+                provenance.ConsoleCall(
+                    dataarray_method="sortby",
+                    args=args,
+                    kwargs=kwargs,
+                    display_code="data.sortby(...)",
+                    has_extra_tracked_inputs=False,
+                    receiver_data=data,
+                )
+            )
+            is None
+        )
+
+    for variables in (lambda darr: darr.x, data.x, [lambda darr: darr.x], [data.x], []):
+        assert (
+            provenance.SortByOperation.from_console_call(
+                provenance.ConsoleCall(
+                    dataarray_method="sortby",
+                    args=(variables,),
+                    display_code="data.sortby(...)",
+                    has_extra_tracked_inputs=False,
+                    receiver_data=data,
+                )
+            )
+            is None
+        )
+    assert (
+        provenance.SortByOperation.from_console_call(
+            provenance.ConsoleCall(
+                dataarray_method="sortby",
+                args=("x",),
+                display_code='data.sortby("x")',
+                has_extra_tracked_inputs=True,
+                receiver_data=data,
+            )
+        )
+        is None
+    )
+
+
 def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
 
     assert provenance._console_values_equal(np.nan, np.nan)
