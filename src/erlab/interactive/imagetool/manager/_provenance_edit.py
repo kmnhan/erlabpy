@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import pathlib
 import traceback
 import typing
@@ -17,6 +18,8 @@ from erlab.interactive.imagetool._load_source import (
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
     import xarray as xr
 
     from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -25,6 +28,24 @@ if typing.TYPE_CHECKING:
         _ImageToolWrapper,
         _ManagedWindowNode,
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class _FileLoadBatchPeer:
+    node: _ImageToolWrapper | _ManagedWindowNode
+    scope: typing.Literal["display", "source"]
+    spec: provenance.ToolProvenanceSpec
+    original_path: pathlib.Path
+    loader_summary: str
+
+
+@dataclasses.dataclass(frozen=True)
+class _ValidatedProvenanceEdit:
+    node: _ImageToolWrapper | _ManagedWindowNode
+    scope: typing.Literal["display", "source"]
+    data: xr.DataArray
+    spec: provenance.ToolProvenanceSpec
+    filter_operation: provenance.ToolProvenanceOperation | None
 
 
 def _parse_loader_kwargs(text: str) -> dict[str, typing.Any]:
@@ -55,11 +76,16 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self,
         load_source: provenance.FileLoadSource,
         parent: QtWidgets.QWidget,
+        *,
+        batch_peers: Sequence[_FileLoadBatchPeer] = (),
     ) -> None:
         super().__init__(parent)
         self.setObjectName("managerProvenanceFileLoadEditDialog")
         self.setWindowTitle("Edit File Load")
         self.setModal(True)
+        self._original_path = pathlib.Path(load_source.path).expanduser()
+        self._batch_peers = tuple(batch_peers)
+        self._batch_peers_by_uid = {peer.node.uid: peer for peer in self._batch_peers}
         replay_call = load_source.replay_call
         self._selection = (
             provenance.FileDataSelection(kind="dataarray")
@@ -139,6 +165,51 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self.loader_label.setObjectName("managerProvenanceLoaderEdit")
         layout.addWidget(self.loader_options)
 
+        self.batch_apply_check = QtWidgets.QCheckBox(
+            "Also apply to matching file loads",
+            self,
+        )
+        self.batch_apply_check.setObjectName("managerProvenanceBatchApplyCheck")
+        self.batch_apply_check.setEnabled(bool(self._batch_peers))
+        layout.addWidget(self.batch_apply_check)
+
+        self.batch_note = QtWidgets.QLabel(
+            "No other matching file loads found",
+            self,
+        )
+        self.batch_note.setObjectName("managerProvenanceBatchNote")
+        self.batch_note.setVisible(not self._batch_peers)
+        layout.addWidget(self.batch_note)
+
+        self.batch_peer_tree = QtWidgets.QTreeWidget(self)
+        self.batch_peer_tree.setObjectName("managerProvenanceBatchPeerTree")
+        self.batch_peer_tree.setColumnCount(4)
+        self.batch_peer_tree.setHeaderLabels(
+            ["Tool", "Original Path", "New Path", "Loader"]
+        )
+        self.batch_peer_tree.setRootIsDecorated(False)
+        self.batch_peer_tree.setUniformRowHeights(True)
+        self.batch_peer_tree.setVisible(False)
+        self.batch_peer_tree.setMinimumHeight(120)
+        for peer in self._batch_peers:
+            item = QtWidgets.QTreeWidgetItem(
+                [
+                    peer.node.display_text,
+                    str(peer.original_path),
+                    str(self._peer_path(peer)),
+                    peer.loader_summary,
+                ]
+            )
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, peer.node.uid)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+            self.batch_peer_tree.addTopLevelItem(item)
+        self.batch_peer_tree.resizeColumnToContents(0)
+        self.batch_peer_tree.resizeColumnToContents(1)
+        layout.addWidget(self.batch_peer_tree)
+        self.batch_apply_check.toggled.connect(self.batch_peer_tree.setVisible)
+        self.path_edit.textChanged.connect(self._update_batch_peer_paths)
+
         self.button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
@@ -152,16 +223,60 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
     def file_path(self) -> pathlib.Path:
         return pathlib.Path(self.path_edit.text()).expanduser()
 
+    def selected_batch_peers(self) -> tuple[_FileLoadBatchPeer, ...]:
+        if not self.batch_apply_check.isChecked():
+            return ()
+        peers: list[_FileLoadBatchPeer] = []
+        for row in range(self.batch_peer_tree.topLevelItemCount()):
+            item = self.batch_peer_tree.topLevelItem(row)
+            if item is None:
+                continue
+            if item.checkState(0) == QtCore.Qt.CheckState.Checked:
+                uid = typing.cast("str", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
+                if uid in self._batch_peers_by_uid:
+                    peers.append(self._batch_peers_by_uid[uid])
+        return tuple(peers)
+
     def provenance_spec(
         self,
         *,
         active_name: str,
         replay_stages: tuple[provenance.ReplayStage, ...],
     ) -> provenance.ToolProvenanceSpec:
+        return self._provenance_spec_for(
+            path=self.file_path(),
+            selection=self._selection,
+            active_name=active_name,
+            replay_stages=replay_stages,
+        )
+
+    def peer_provenance_spec(
+        self,
+        peer: _FileLoadBatchPeer,
+    ) -> provenance.ToolProvenanceSpec:
+        load_source = peer.spec.file_load_source
+        replay_call = None if load_source is None else load_source.replay_call
+        if replay_call is None:
+            raise RuntimeError("Matching file load is no longer replayable")
+        return self._provenance_spec_for(
+            path=self._peer_path(peer),
+            selection=replay_call.selection,
+            active_name=peer.spec.active_name or "derived",
+            replay_stages=peer.spec.replay_stages,
+        )
+
+    def _provenance_spec_for(
+        self,
+        *,
+        path: pathlib.Path,
+        selection: provenance.FileDataSelection,
+        active_name: str,
+        replay_stages: tuple[provenance.ReplayStage, ...],
+    ) -> provenance.ToolProvenanceSpec:
         _filter_name, func, kwargs = self.loader_options.checked_filter()
         spec = _load_provenance_from_file_details(
-            self.file_path(),
-            (func, kwargs, self._selection),
+            path,
+            (func, kwargs, selection),
         )
         if spec is None:
             raise RuntimeError("Selected loader cannot be replayed")
@@ -171,6 +286,22 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                 "replay_stages": replay_stages,
             }
         )
+
+    def _peer_path(self, peer: _FileLoadBatchPeer) -> pathlib.Path:
+        path = self.file_path()
+        if _normalized_path(path) == _normalized_path(self._original_path):
+            return peer.original_path
+        return path.parent / f"{peer.original_path.stem}{path.suffix}"
+
+    @QtCore.Slot()
+    def _update_batch_peer_paths(self) -> None:
+        for row in range(self.batch_peer_tree.topLevelItemCount()):
+            item = self.batch_peer_tree.topLevelItem(row)
+            if item is None:
+                continue
+            uid = typing.cast("str", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
+            if uid in self._batch_peers_by_uid:
+                item.setText(2, str(self._peer_path(self._batch_peers_by_uid[uid])))
 
     @QtCore.Slot()
     def _browse(self) -> None:
@@ -191,7 +322,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
 
 def _iter_dialog_classes(
     cls: type[dialogs._DataManipulationDialog],
-) -> typing.Iterator[type[dialogs._DataManipulationDialog]]:
+) -> Iterator[type[dialogs._DataManipulationDialog]]:
     for subclass in cls.__subclasses__():
         yield subclass
         yield from _iter_dialog_classes(subclass)
@@ -394,14 +525,39 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None or spec.kind != "file" or spec.file_load_source is None:
             raise RuntimeError("Selected row is not a file load step")
-        dialog = _FileLoadEditDialog(spec.file_load_source, self._manager)
+        dialog = _FileLoadEditDialog(
+            spec.file_load_source,
+            self._manager,
+            batch_peers=self._file_load_batch_peers(node, spec),
+        )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
         candidate = dialog.provenance_spec(
             active_name=spec.active_name or "derived",
             replay_stages=spec.replay_stages,
         )
-        self._validate_and_replace(node, row.scope, candidate)
+        validated_edits = [
+            self._validated_edit(node, row.scope, candidate),
+        ]
+        failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
+        for peer in dialog.selected_batch_peers():
+            try:
+                validated_edits.append(
+                    self._validated_edit(
+                        peer.node,
+                        peer.scope,
+                        dialog.peer_provenance_spec(peer),
+                    )
+                )
+            except Exception as exc:
+                failures.append((peer, exc))
+        if failures and not self._confirm_apply_valid_batch(
+            valid_peer_count=len(validated_edits) - 1,
+            failures=failures,
+        ):
+            return
+        for edit in validated_edits:
+            self._apply_validated_edit(edit)
 
     def _edit_operation_row(
         self,
@@ -494,6 +650,14 @@ class _ProvenanceEditController:
         scope: typing.Literal["display", "source"],
         candidate: provenance.ToolProvenanceSpec,
     ) -> None:
+        self._apply_validated_edit(self._validated_edit(node, scope, candidate))
+
+    def _validated_edit(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> _ValidatedProvenanceEdit:
         candidate_data, candidate = self._replay_candidate_result(
             node,
             scope,
@@ -508,14 +672,72 @@ class _ProvenanceEditController:
                 scope,
                 base_candidate,
             )
-        self._replace_node_data(
-            node,
-            scope,
-            source_data,
-            base_candidate,
-            filter_operation,
+        return _ValidatedProvenanceEdit(
+            node=node,
+            scope=scope,
+            data=source_data,
+            spec=base_candidate,
+            filter_operation=filter_operation,
         )
-        self._manager._update_info(uid=node.uid)
+
+    def _apply_validated_edit(self, edit: _ValidatedProvenanceEdit) -> None:
+        self._replace_node_data(
+            edit.node,
+            edit.scope,
+            edit.data,
+            edit.spec,
+            edit.filter_operation,
+        )
+        self._manager._update_info(uid=edit.node.uid)
+
+    def _file_load_batch_peers(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: provenance.ToolProvenanceSpec,
+    ) -> tuple[_FileLoadBatchPeer, ...]:
+        load_source = spec.file_load_source
+        replay_call = None if load_source is None else load_source.replay_call
+        if load_source is None or replay_call is None:
+            return ()
+        source_folder = _normalized_path(pathlib.Path(load_source.path).parent)
+        peers: list[_FileLoadBatchPeer] = []
+        for peer_node in self._manager._tool_graph.nodes.values():
+            if (
+                peer_node.uid == node.uid
+                or not peer_node.is_imagetool
+                or peer_node.imagetool is None
+                or (
+                    peer_node.parent_uid is not None
+                    and peer_node.source_spec is not None
+                )
+            ):
+                continue
+            peer_spec = peer_node.displayed_provenance_spec
+            if peer_spec is None or peer_spec.kind != "file":
+                continue
+            peer_load_source = peer_spec.file_load_source
+            peer_replay_call = (
+                None if peer_load_source is None else peer_load_source.replay_call
+            )
+            if peer_load_source is None or peer_replay_call is None:
+                continue
+            if (
+                _normalized_path(pathlib.Path(peer_load_source.path).parent)
+                != source_folder
+            ):
+                continue
+            if not _same_replay_loader(replay_call, peer_replay_call):
+                continue
+            peers.append(
+                _FileLoadBatchPeer(
+                    node=peer_node,
+                    scope="display",
+                    spec=peer_spec,
+                    original_path=pathlib.Path(peer_load_source.path).expanduser(),
+                    loader_summary=_loader_summary(peer_load_source),
+                )
+            )
+        return tuple(peers)
 
     def _replay_candidate(
         self,
@@ -700,6 +922,46 @@ class _ProvenanceEditController:
         )
         dialog.exec()
 
+    def _confirm_apply_valid_batch(
+        self,
+        *,
+        valid_peer_count: int,
+        failures: Sequence[tuple[_FileLoadBatchPeer, Exception]],
+    ) -> bool:
+        details: list[str] = []
+        for peer, exc in failures:
+            details.append(f"{peer.node.display_text}\n{peer.original_path}")
+            details.append(
+                "".join(traceback.TracebackException.from_exception(exc).format())
+            )
+        valid_peer_text = (
+            f" and {valid_peer_count} matching ImageTool(s)" if valid_peer_count else ""
+        )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title="Some File Load Edits Failed",
+            text="Some matching ImageTools could not be updated.",
+            informative_text=(
+                f"The current ImageTool{valid_peer_text} "
+                "can be updated. Failed ImageTools will be left unchanged."
+            ),
+            detailed_text=erlab.interactive.utils._format_traceback(
+                "\n\n".join(details)
+            ),
+            buttons=(
+                QtWidgets.QDialogButtonBox.StandardButton.Yes
+                | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            ),
+            default_button=QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        apply_button = dialog._button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Yes
+        )
+        if apply_button is not None:
+            apply_button.setText("Apply Valid Tools")
+        return dialog.exec() == int(QtWidgets.QDialog.DialogCode.Accepted)
+
 
 def _replay_warning_details(
     replay_warnings: list[warnings.WarningMessage],
@@ -713,3 +975,28 @@ def _replay_warning_details(
         indented_message = "\n  ".join(message.splitlines())
         lines.append(f"- {category_name}: {indented_message}")
     return "\n".join(lines)
+
+
+def _normalized_path(path: pathlib.Path) -> pathlib.Path:
+    try:
+        return path.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return path.expanduser().absolute()
+
+
+def _same_replay_loader(
+    left: provenance.FileReplayCall,
+    right: provenance.FileReplayCall,
+) -> bool:
+    return (
+        left.kind == right.kind
+        and left.target == right.target
+        and provenance.encode_provenance_value(left.kwargs)
+        == provenance.encode_provenance_value(right.kwargs)
+    )
+
+
+def _loader_summary(load_source: provenance.FileLoadSource) -> str:
+    if not load_source.kwargs_text or load_source.kwargs_text == "(none)":
+        return load_source.loader_text
+    return f"{load_source.loader_text} ({load_source.kwargs_text})"
