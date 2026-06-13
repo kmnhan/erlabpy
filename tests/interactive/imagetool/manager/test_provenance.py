@@ -1543,40 +1543,81 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         )
 
         child.param_plot_combo.setCurrentIndex(0)
-        param_name = child.param_plot_combo.currentText()
-        assert param_name
+        first_param_name = child.param_plot_combo.currentText()
+        assert first_param_name
+        first_values = child._param_plot_dataarray(first_param_name, stderr=False)
+        second_param_name = ""
+        second_values = None
+        for index in range(1, child.param_plot_combo.count()):
+            candidate = child.param_plot_combo.itemText(index)
+            candidate_values = child._param_plot_dataarray(candidate, stderr=False)
+            if not candidate_values.identical(first_values):
+                second_param_name = candidate
+                second_values = candidate_values
+                break
+        assert second_param_name
+        assert second_values is not None
 
         child.param_plot._show_parameter_values()
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
 
-        child.param_plot._show_parameter_stderr()
+        child.param_plot_combo.setCurrentText(second_param_name)
+        child.param_plot._show_parameter_values()
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2, timeout=5000)
 
-        values_uid, stderr_uid = child_node._childtool_indices
-        values_node = manager._child_node(values_uid)
+        child.param_plot_combo.setCurrentText(first_param_name)
+        child.param_plot._show_parameter_stderr()
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 3, timeout=5000)
+
+        first_values_uid, second_values_uid, stderr_uid = child_node._childtool_indices
+        first_values_node = manager._child_node(first_values_uid)
+        second_values_node = manager._child_node(second_values_uid)
         stderr_node = manager._child_node(stderr_uid)
         assert manager.ntools == 1
-        assert values_node.parent_uid == child_uid
+        assert first_values_node.parent_uid == child_uid
+        assert second_values_node.parent_uid == child_uid
         assert stderr_node.parent_uid == child_uid
-        assert values_node.output_id == "fit2d.param_plot.values"
-        assert stderr_node.output_id == "fit2d.param_plot.stderr"
-        assert values_node.source_spec is None
-        assert values_node.provenance_spec is not None
+        assert first_values_node.output_id == Fit2DTool._parameter_output_id(
+            Fit2DTool.Output.PARAMETER_VALUES, first_param_name
+        )
+        assert second_values_node.output_id == Fit2DTool._parameter_output_id(
+            Fit2DTool.Output.PARAMETER_VALUES, second_param_name
+        )
+        assert stderr_node.output_id == Fit2DTool._parameter_output_id(
+            Fit2DTool.Output.PARAMETER_STDERR, first_param_name
+        )
+        assert first_values_node.source_spec is None
+        assert first_values_node.provenance_spec is not None
+        assert second_values_node.source_spec is None
+        assert second_values_node.provenance_spec is not None
         assert stderr_node.source_spec is None
         assert stderr_node.provenance_spec is not None
+        xr.testing.assert_identical(fetch(first_values_uid), first_values)
+        xr.testing.assert_identical(fetch(second_values_uid), second_values)
         xr.testing.assert_identical(
-            fetch(values_uid), child._param_plot_dataarray(param_name, stderr=False)
+            fetch(stderr_uid),
+            child._param_plot_dataarray(first_param_name, stderr=True),
         )
-        xr.testing.assert_identical(
-            fetch(stderr_uid), child._param_plot_dataarray(param_name, stderr=True)
+        child.param_plot_combo.setCurrentText(second_param_name)
+        assert first_values_node._update_from_parent_source()
+        xr.testing.assert_identical(fetch(first_values_uid), first_values)
+        assert not fetch(first_values_uid).identical(second_values)
+
+        values_code = copy_full_code_for_uid(monkeypatch, manager, first_values_uid)
+        second_values_code = copy_full_code_for_uid(
+            monkeypatch, manager, second_values_uid
         )
-        values_code = copy_full_code_for_uid(monkeypatch, manager, values_uid)
         stderr_code = copy_full_code_for_uid(monkeypatch, manager, stderr_uid)
         assert "prepared_parent = data + 1" in values_code
+        assert "prepared_parent = data + 1" in second_values_code
         assert "prepared_parent = data + 1" in stderr_code
-        assert ".modelfit_coefficients.sel(param=" in values_code
-        assert ".modelfit_stderr.sel(param=" in stderr_code
+        assert f".modelfit_coefficients.sel(param={first_param_name!r})" in values_code
+        assert (
+            f".modelfit_coefficients.sel(param={second_param_name!r})"
+            in second_values_code
+        )
+        assert f".modelfit_stderr.sel(param={first_param_name!r})" in stderr_code
 
 
 def test_manager_output_refresh_updates_stale_parent_source(

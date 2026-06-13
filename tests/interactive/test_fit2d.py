@@ -12,6 +12,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.imagetool import provenance
 from tests._qt_helpers import signal_receiver_count
 
 
@@ -1418,8 +1419,8 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
         f"{center_name}_stderr",
     ]
     assert [output_id for _, output_id in shown] == [
-        Fit2DTool.Output.PARAMETER_VALUES,
-        Fit2DTool.Output.PARAMETER_STDERR,
+        Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_VALUES, center_name),
+        Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_STDERR, center_name),
     ]
 
 
@@ -1447,6 +1448,12 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     stderr = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR)
     assert values is not None
     assert stderr is not None
+    values_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES, center_name
+    )
+    stderr_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_STDERR, center_name
+    )
 
     values_spec = win.output_imagetool_provenance(
         Fit2DTool.Output.PARAMETER_VALUES, values
@@ -1468,6 +1475,93 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert ".modelfit_stderr.sel(param='p0_center')" in stderr_code
     assert ".rename(" not in values_code
     assert ".rename(" not in stderr_code
+
+    win.param_plot_combo.setCurrentText("p0_width")
+    bound_values = win.output_imagetool_data(values_output_id)
+    bound_stderr = win.output_imagetool_data(stderr_output_id)
+    assert bound_values is not None
+    assert bound_stderr is not None
+    xr.testing.assert_identical(bound_values, values)
+    xr.testing.assert_identical(bound_stderr, stderr)
+
+    bound_values_spec = win.output_imagetool_provenance(values_output_id, bound_values)
+    assert bound_values_spec is not None
+    bound_values_code = bound_values_spec.display_code()
+    assert bound_values_code is not None
+    assert ".modelfit_coefficients.sel(param='p0_center')" in bound_values_code
+    assert ".modelfit_coefficients.sel(param='p0_width')" not in bound_values_code
+
+    malformed_id = f"{Fit2DTool.Output.PARAMETER_VALUES.value}:"
+    missing_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES, "does_not_exist"
+    )
+    assert win.output_imagetool_data(malformed_id) is None
+    assert win.output_imagetool_data(missing_id) is None
+    assert win.output_imagetool_provenance(malformed_id, values) is None
+    assert win.output_imagetool_provenance(missing_id, values) is None
+
+
+def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    center_name = "p0_center"
+    params = win._params.copy()
+    params[center_name].set(value=0.1)
+    params[center_name].stderr = 0.01
+    win._params_full = [params.copy() for _ in range(len(win._params_full))]
+    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    win.param_plot_combo.setCurrentText(center_name)
+
+    with pytest.raises(ValueError, match="Fit2DTool parameter output"):
+        Fit2DTool._parameter_output_id("not-an-output", center_name)  # type: ignore[arg-type]
+    assert Fit2DTool._parameter_output_parts("other.output") is None
+    with pytest.raises(ValueError, match="does not define ImageTool output"):
+        win._image_output_definition("other.output")
+
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    assert values is not None
+    values_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES, center_name
+    )
+
+    with pytest.raises(ValueError, match="does not define ImageTool output"):
+        win.output_imagetool_data("other.output")
+    with pytest.raises(ValueError, match="does not define ImageTool output"):
+        win.output_imagetool_provenance("other.output", values)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(win, "_full_fit_expression", lambda **_kwargs: "")
+        assert win.output_imagetool_provenance(values_output_id, values) is None
+
+    direct_input = provenance.script(
+        start_label="Start from watched data",
+        seed_code="derived = watched_data",
+        active_name="derived",
+    )
+    win.set_input_provenance_spec(direct_input)
+    direct_spec = win.output_imagetool_provenance(values_output_id, values)
+    assert direct_spec is not None
+    assert direct_spec.start_label == "Start from watched data"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provenance, "to_replay_provenance_spec", lambda _spec: None)
+        with pytest.raises(RuntimeError, match="Could not convert local provenance"):
+            win.output_imagetool_provenance(values_output_id, values)
+
+    win.param_plot_combo.clear()
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR) is None
+    assert (
+        win.output_imagetool_provenance(Fit2DTool.Output.PARAMETER_VALUES, values)
+        is None
+    )
+    assert (
+        win.output_imagetool_provenance(Fit2DTool.Output.PARAMETER_STDERR, values)
+        is None
+    )
 
 
 def test_fit2d_show_dataarray_in_itool_uses_detached_launcher(
