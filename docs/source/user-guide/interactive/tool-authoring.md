@@ -128,7 +128,10 @@ A real example is `Fit2DTool`:
 
 - `Fit2DTool.Output.PARAMETER_VALUES` and `Fit2DTool.Output.PARAMETER_STDERR` are
   declared in `IMAGE_TOOL_OUTPUTS`, so those parameter plots become ImageTool
-  windows as child rows of the fit tool, with persisted `output_id`s.
+  windows as child rows of the fit tool. Each persisted `output_id` records both
+  the output kind and the selected parameter, so refreshing the child window keeps it
+  tied to that parameter even if the fit tool's parameter plot later shows another
+  parameter.
 - `Fit2DTool._show_dataarray_in_itool()` also has a generic path for arbitrary
   `DataArray`s that are not declared outputs. In the manager, that path opens a fresh
   independent top-level ImageTool window each time. Outside the manager, it opens a

@@ -1418,8 +1418,8 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
         f"{center_name}_stderr",
     ]
     assert [output_id for _, output_id in shown] == [
-        Fit2DTool.Output.PARAMETER_VALUES,
-        Fit2DTool.Output.PARAMETER_STDERR,
+        Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_VALUES, center_name),
+        Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_STDERR, center_name),
     ]
 
 
@@ -1447,6 +1447,12 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     stderr = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR)
     assert values is not None
     assert stderr is not None
+    values_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES, center_name
+    )
+    stderr_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_STDERR, center_name
+    )
 
     values_spec = win.output_imagetool_provenance(
         Fit2DTool.Output.PARAMETER_VALUES, values
@@ -1468,6 +1474,30 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert ".modelfit_stderr.sel(param='p0_center')" in stderr_code
     assert ".rename(" not in values_code
     assert ".rename(" not in stderr_code
+
+    win.param_plot_combo.setCurrentText("p0_width")
+    bound_values = win.output_imagetool_data(values_output_id)
+    bound_stderr = win.output_imagetool_data(stderr_output_id)
+    assert bound_values is not None
+    assert bound_stderr is not None
+    xr.testing.assert_identical(bound_values, values)
+    xr.testing.assert_identical(bound_stderr, stderr)
+
+    bound_values_spec = win.output_imagetool_provenance(values_output_id, bound_values)
+    assert bound_values_spec is not None
+    bound_values_code = bound_values_spec.display_code()
+    assert bound_values_code is not None
+    assert ".modelfit_coefficients.sel(param='p0_center')" in bound_values_code
+    assert ".modelfit_coefficients.sel(param='p0_width')" not in bound_values_code
+
+    malformed_id = f"{Fit2DTool.Output.PARAMETER_VALUES.value}:"
+    missing_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES, "does_not_exist"
+    )
+    assert win.output_imagetool_data(malformed_id) is None
+    assert win.output_imagetool_data(missing_id) is None
+    assert win.output_imagetool_provenance(malformed_id, values) is None
+    assert win.output_imagetool_provenance(missing_id, values) is None
 
 
 def test_fit2d_show_dataarray_in_itool_uses_detached_launcher(
