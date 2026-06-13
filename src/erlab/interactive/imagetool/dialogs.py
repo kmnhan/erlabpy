@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 import contextlib
 import math
+import operator
 import typing
 import weakref
+from collections.abc import Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -59,6 +61,22 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.viewer_state import ColorMapState
 
 _GAUSSIAN_FWHM_FACTOR: float = 2 * math.sqrt(2 * math.log(2))
+
+
+def _set_combo_data(combo: QtWidgets.QComboBox, value: typing.Any) -> bool:
+    index = combo.findData(value, QtCore.Qt.ItemDataRole.UserRole)
+    if index < 0:
+        return False
+    combo.setCurrentIndex(index)
+    return True
+
+
+def _set_combo_text(combo: QtWidgets.QComboBox, value: str) -> bool:
+    index = combo.findText(value)
+    if index < 0:
+        return False
+    combo.setCurrentIndex(index)
+    return True
 
 
 class _DataManipulationDialog(QtWidgets.QDialog):
@@ -354,6 +372,13 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
     ) -> provenance.ToolProvenanceOperation | None:
         return None
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        """Restore widgets from a transform operation when supported."""
+        del operation
 
     def source_spec_for_data(
         self,
@@ -867,11 +892,30 @@ class RotationDialog(DataTransformDialog):
     ) -> provenance.ToolProvenanceOperation:
         return provenance.RotateOperation(**self._rotate_params)
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.RotateOperation):
+            return
+        if tuple(operation.axes) != tuple(
+            self.slicer_area.main_image.axis_dims_uniform
+        ):
+            raise ValueError("Rotation axes are not currently visible")
+        self.angle_spin.setValue(float(operation.angle))
+        for spin, value in zip(self.center_spins, operation.center, strict=True):
+            spin.setValue(float(value))
+        self.reshape_check.setChecked(operation.reshape)
+        self.order_spin.setValue(int(operation.order))
+
 
 class AggregateDialog(DataTransformDialog):
     title = "Aggregate Over Dimensions"
     enable_copy = True
-    operation_types = (provenance.QSelAggregationOperation,)
+    operation_types = (
+        provenance.AverageOperation,
+        provenance.QSelAggregationOperation,
+    )
 
     _REDUCERS: typing.ClassVar[dict[str, str]] = {
         "mean": "Mean",
@@ -918,6 +962,27 @@ class AggregateDialog(DataTransformDialog):
             dims=self._target_dims,
             func=self._reducer,
         )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if isinstance(operation, provenance.AverageOperation):
+            dims = operation.dims
+            func = "mean"
+        elif isinstance(operation, provenance.QSelAggregationOperation):
+            dims = operation.dims
+            func = operation.func
+        else:
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim in dims:
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+        if not _set_combo_data(self.reducer_combo, func):
+            raise ValueError(f"Reducer {func!r} is not available")
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -1039,6 +1104,28 @@ class _SelectionRow:
         self.stop_stack.addWidget(self.value_stop_spin)
         self.stop_stack.addWidget(self.index_stop_spin)
 
+        self.step_widget = QtWidgets.QWidget()
+        self.step_widget.setToolTip(
+            "For range selections, include every Nth item in the selected range."
+        )
+        step_layout = QtWidgets.QHBoxLayout(self.step_widget)
+        step_layout.setContentsMargins(0, 0, 0, 0)
+        step_layout.setSpacing(3)
+        self.step_check = QtWidgets.QCheckBox()
+        self.step_check.setObjectName(f"selection_step_enabled_{axis}")
+        self.step_check.setToolTip(self.step_widget.toolTip())
+        self.step_spin = erlab.interactive.utils.BetterSpinBox(
+            integer=True,
+            compact=False,
+            minimum=1,
+            maximum=max(1, data.sizes[dim]),
+            value=1,
+        )
+        self.step_spin.setObjectName(f"selection_step_{axis}")
+        self.step_spin.setToolTip(self.step_widget.toolTip())
+        step_layout.addWidget(self.step_check)
+        step_layout.addWidget(self.step_spin)
+
         self.width_widget = QtWidgets.QWidget()
         self.width_widget.setToolTip(
             "For point qsel selections, include nearby coordinate values within "
@@ -1070,6 +1157,7 @@ class _SelectionRow:
             self.kind_combo,
             self.start_stack,
             self.stop_stack,
+            self.step_widget,
             self.width_widget,
         )
         for column, widget in enumerate(widgets):
@@ -1083,6 +1171,8 @@ class _SelectionRow:
             self.index_stop_spin,
             self.value_start_spin,
             self.value_stop_spin,
+            self.step_check,
+            self.step_spin,
             self.width_check,
             self.width_spin,
         ):
@@ -1095,6 +1185,7 @@ class _SelectionRow:
 
         self.method_combo.currentIndexChanged.connect(self.sync_widgets)
         self.kind_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.step_check.toggled.connect(self.sync_widgets)
         self.width_check.toggled.connect(self.sync_widgets)
         self.sync_widgets()
 
@@ -1120,10 +1211,17 @@ class _SelectionRow:
         self.start_stack.setCurrentIndex(1 if is_index else 0)
         self.stop_stack.setCurrentIndex(1 if is_index else 0)
         self.stop_stack.setEnabled(is_range)
+        self.step_widget.setEnabled(is_range)
+        self.step_spin.setEnabled(is_range and self.step_check.isChecked())
         self.width_widget.setEnabled(is_qsel and not is_range)
         self.width_spin.setEnabled(
             is_qsel and not is_range and self.width_check.isChecked()
         )
+
+    def _step_value(self) -> int | None:
+        if self.kind != "range" or not self.step_check.isChecked():
+            return None
+        return int(self.step_spin.value())
 
     def indexer(self) -> tuple[Hashable, typing.Any]:
         if self.method == "isel":
@@ -1131,7 +1229,9 @@ class _SelectionRow:
             if self.kind == "point":
                 return self.dim, start
             stop = int(self.index_stop_spin.value())
-            return self.dim, slice(min(start, stop), max(start, stop))
+            return self.dim, slice(
+                min(start, stop), max(start, stop), self._step_value()
+            )
 
         start = float(self.value_start_spin.value())
         if self.kind == "point":
@@ -1139,8 +1239,10 @@ class _SelectionRow:
 
         stop = float(self.value_stop_spin.value())
         if self._coord_ascending:
-            return self.dim, slice(min(start, stop), max(start, stop))
-        return self.dim, slice(max(start, stop), min(start, stop))
+            return self.dim, slice(
+                min(start, stop), max(start, stop), self._step_value()
+            )
+        return self.dim, slice(max(start, stop), min(start, stop), self._step_value())
 
     def qsel_width_indexer(self) -> tuple[str, float] | None:
         if (
@@ -1153,6 +1255,60 @@ class _SelectionRow:
         if not np.isfinite(width) or width <= 0.0:
             return None
         return f"{self.dim}_width", width
+
+    def restore_indexer(
+        self,
+        *,
+        method: typing.Literal["qsel", "sel", "isel"],
+        indexer: typing.Any,
+        width: float | None = None,
+    ) -> None:
+        self.use_check.setChecked(True)
+        if not _set_combo_data(self.method_combo, method):
+            raise ValueError(f"Selection method {method!r} is not available")
+        if isinstance(indexer, slice):
+            if indexer.start is None or indexer.stop is None:
+                raise ValueError(
+                    "Open-ended selections cannot be edited in this dialog"
+                )
+            if indexer.step is None:
+                self.step_check.setChecked(False)
+            else:
+                step = self._validate_restored_step(indexer.step)
+                self.step_check.setChecked(True)
+                self.step_spin.setValue(step)
+            _set_combo_data(self.kind_combo, "range")
+            if method == "isel":
+                self.index_start_spin.setValue(int(indexer.start))
+                self.index_stop_spin.setValue(int(indexer.stop))
+            else:
+                self.value_start_spin.setValue(float(indexer.start))
+                self.value_stop_spin.setValue(float(indexer.stop))
+        else:
+            _set_combo_data(self.kind_combo, "point")
+            self.step_check.setChecked(False)
+            if method == "isel":
+                self.index_start_spin.setValue(int(indexer))
+            else:
+                self.value_start_spin.setValue(float(indexer))
+
+        if method == "qsel" and width is not None:
+            self.width_check.setChecked(True)
+            self.width_spin.setValue(float(width))
+        else:
+            self.width_check.setChecked(False)
+        self.sync_widgets()
+
+    def _validate_restored_step(self, step: typing.Any) -> int:
+        try:
+            step_value = operator.index(step)
+        except TypeError as exc:
+            raise ValueError("Selection slice steps must be integer strides") from exc
+        if step_value <= 0:
+            raise ValueError(
+                "Reverse or zero-step selections cannot be edited in this dialog"
+            )
+        return step_value
 
 
 class SelectionDialog(DataTransformDialog):
@@ -1181,6 +1337,7 @@ class SelectionDialog(DataTransformDialog):
                 "Selection",
                 "Start",
                 "Stop",
+                "Step",
                 "Width",
             )
         ):
@@ -1266,6 +1423,41 @@ class SelectionDialog(DataTransformDialog):
         if qsel_kwargs:
             data = data.qsel(qsel_kwargs)
         return data
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if isinstance(operation, provenance.IselOperation):
+            self._restore_selection_operation("isel", operation.decoded_kwargs)
+        elif isinstance(operation, provenance.SelOperation):
+            self._restore_selection_operation("sel", operation.decoded_kwargs)
+        elif isinstance(operation, provenance.QSelOperation):
+            self._restore_selection_operation("qsel", operation.decoded_kwargs)
+
+    def _restore_selection_operation(
+        self,
+        method: typing.Literal["qsel", "sel", "isel"],
+        kwargs: dict[Hashable, typing.Any],
+    ) -> None:
+        for row in self.rows:
+            row.use_check.setChecked(False)
+            row.step_check.setChecked(False)
+            row.width_check.setChecked(False)
+
+        row_by_dim = {row.dim: row for row in self.rows}
+        for dim, indexer in kwargs.items():
+            if method == "qsel" and isinstance(dim, str) and dim.endswith("_width"):
+                continue
+            if dim not in row_by_dim:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            width = kwargs.get(f"{dim}_width") if method == "qsel" else None
+            row_by_dim[dim].restore_indexer(
+                method=method,
+                indexer=indexer,
+                width=None if width is None else float(width),
+            )
+        self.update_preview()
 
     @QtCore.Slot()
     @QtCore.Slot(int)
@@ -1430,6 +1622,22 @@ class InterpolationDialog(DataTransformDialog):
                 self.method_combo.currentText(),
             ),
         )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.InterpolationOperation):
+            return
+        if not _set_combo_data(self.dim_combo, operation.dim):
+            raise ValueError(f"Dimension {operation.dim!r} is not available")
+        values = operation.decoded_values
+        self.coord_widget.count_spin.setValue(int(values.size))
+        self.coord_widget._set_table_values(values)
+        if not _set_combo_text(self.method_combo, operation.method):
+            raise ValueError(
+                f"Interpolation method {operation.method!r} is not available"
+            )
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -1597,6 +1805,45 @@ class SortByDialog(DataTransformDialog):
             ),
         )
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.SortByOperation):
+            return
+        row_items: list[tuple[Hashable, QtWidgets.QTableWidgetItem]] = []
+        for row in range(self.key_table.rowCount()):
+            item = self.key_table.item(row, 0)
+            if item is None:
+                continue
+            key = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            row_items.append((key, item))
+
+        item_by_key = dict(row_items)
+        missing = [key for key in operation.variables if key not in item_by_key]
+        if missing:
+            raise ValueError(f"Sort keys {missing!r} are not available")
+
+        selected_keys = set(operation.variables)
+        ordered_keys = [
+            *operation.variables,
+            *(key for key, _item in row_items if key not in selected_keys),
+        ]
+        for row in range(self.key_table.rowCount()):
+            self.key_table.takeItem(row, 0)
+        for row, key in enumerate(ordered_keys):
+            item = item_by_key[key]
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked
+                if key in selected_keys
+                else QtCore.Qt.CheckState.Unchecked
+            )
+            self.key_table.setItem(row, 0, item)
+        if ordered_keys:
+            self.key_table.selectRow(0)
+        if not _set_combo_data(self.ascending_combo, operation.ascending):
+            raise ValueError("Sort direction is not available")
+
     @QtCore.Slot()
     def accept(self) -> None:
         if not self._sort_keys:
@@ -1685,6 +1932,18 @@ class LeadingEdgeDialog(DataTransformDialog):
             dim=dim,
             direction=self._direction,
         )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.LeadingEdgeOperation):
+            return
+        if not _set_combo_data(self.dim_combo, operation.dim):
+            raise ValueError(f"Dimension {operation.dim!r} is not available")
+        self.fraction_spin.setValue(float(operation.fraction))
+        if not _set_combo_data(self.direction_combo, operation.direction):
+            raise ValueError(f"Direction {operation.direction!r} is not available")
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -1812,6 +2071,28 @@ class CoarsenDialog(DataTransformDialog):
             coord_func=self._coord_func,
             reducer=self._reducer,
         )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.CoarsenOperation):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim, window in operation.dim.items():
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+            self.window_spins[dim].setValue(int(window))
+        for combo, value in (
+            (self.boundary_combo, operation.boundary),
+            (self.side_combo, operation.side),
+            (self.coord_func_combo, operation.coord_func),
+            (self.reducer_combo, operation.reducer),
+        ):
+            if not _set_combo_text(combo, value):
+                raise ValueError(f"Option {value!r} is not available")
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -1968,6 +2249,26 @@ class ThinDialog(DataTransformDialog):
             raise ValueError("No thinning requested")
         return provenance.ThinOperation(mode="per_dim", factors=self._effective_factors)
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.ThinOperation):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        if operation.mode == "global":
+            self.global_radio.setChecked(True)
+            self.global_spin.setValue(int(typing.cast("int", operation.factor)))
+        else:
+            self.per_dim_radio.setChecked(True)
+            for dim, factor in operation.factors.items():
+                if dim not in self.dim_checks:
+                    raise ValueError(f"Dimension {dim!r} is not available")
+                self.dim_checks[dim].setChecked(True)
+                self.factor_spins[dim].setValue(int(factor))
+        self._update_mode()
+
     @QtCore.Slot()
     def accept(self) -> None:
         if not self._use_global_mode and not self._selected_factors:
@@ -2082,6 +2383,20 @@ class SymmetrizeDialog(DataTransformDialog):
     ) -> provenance.ToolProvenanceOperation:
         return provenance.SymmetrizeOperation(**self._params)
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.SymmetrizeOperation):
+            return
+        if not _set_combo_text(self._dim_combo, str(operation.dim)):
+            raise ValueError(f"Dimension {operation.dim!r} is not available")
+        self._center_spin.setValue(float(operation.center))
+        self.subtract_check.setChecked(operation.subtract)
+        self.opt_mode[0 if operation.mode == "full" else 1].setChecked(True)
+        part_index = {"both": 0, "below": 1, "above": 2}[operation.part]
+        self.opt_part[part_index].setChecked(True)
+
 
 class SymmetrizeNfoldDialog(DataTransformDialog):
     title = "Rotational Symmetrize"
@@ -2159,6 +2474,25 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
         self,
     ) -> provenance.ToolProvenanceOperation:
         return provenance.SymmetrizeNfoldOperation(**self._params)
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.SymmetrizeNfoldOperation):
+            return
+        if tuple(operation.axes) != self._axes:
+            raise ValueError("Rotational symmetrize axes are not currently visible")
+        self.fold_spin.setValue(int(operation.fold))
+        self.reshape_check.setChecked(operation.reshape)
+        self.order_spin.setValue(int(operation.order))
+        center = operation.center
+        if isinstance(center, Mapping):
+            values = [center[dim] for dim in self._axes]
+        else:
+            values = center
+        for spin, value in zip(self.center_spins, values, strict=True):
+            spin.setValue(float(value))
 
 
 class EdgeCorrectionDialog(DataTransformDialog):
@@ -2570,6 +2904,15 @@ class DivideByCoordDialog(DataTransformDialog):
             raise ValueError("No coordinate selected")
         return provenance.DivideByCoordOperation(coord_name=coord_name)
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.DivideByCoordOperation):
+            return
+        if not _set_combo_data(self.coord_combo, operation.coord_name):
+            raise ValueError(f"Coordinate {operation.coord_name!r} is not available")
+
 
 class GaussianFilterDialog(DataFilterDialog):
     title = "Gaussian Filter"
@@ -2880,6 +3223,22 @@ class SwapDimsDialog(DataTransformDialog):
             raise ValueError("No dimensions changed")
         return provenance.SwapDimsOperation(mapping=self._swap_mapping)
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.SwapDimsOperation):
+            return
+        remaining = set(operation.mapping)
+        for dim, combo in self.target_combos.items():
+            target = operation.mapping.get(dim, dim)
+            if not _set_combo_data(combo, target):
+                raise ValueError(f"Target {target!r} is not available for {dim!r}")
+            remaining.discard(dim)
+        if remaining:
+            unavailable = sorted(str(dim) for dim in remaining)
+            raise ValueError(f"Dimensions {unavailable!r} are not available")
+
 
 class RenameDimsCoordsDialog(DataTransformDialog):
     title = "Rename Coordinates and Dimensions"
@@ -3011,6 +3370,22 @@ class RenameDimsCoordsDialog(DataTransformDialog):
         return provenance.RenameDimsCoordsOperation(
             mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
         )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.RenameDimsCoordsOperation):
+            return
+        remaining = set(operation.mapping)
+        for row, name in enumerate(self._rename_sources):
+            item = self.table.item(row, 1)
+            if item is not None:
+                item.setText(str(operation.mapping.get(name, name)))
+            remaining.discard(name)
+        if remaining:
+            unavailable = sorted(str(name) for name in remaining)
+            raise ValueError(f"Names {unavailable!r} are not available")
 
 
 class AssignCoordsDialog(DataTransformDialog):
@@ -3238,6 +3613,50 @@ class AssignCoordsDialog(DataTransformDialog):
             values=self.coord_widget.new_coord,
         )
 
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if isinstance(operation, provenance.AffineCoordOperation):
+            if not _set_combo_text(self._coord_combo, operation.coord_name):
+                raise ValueError(
+                    f"Coordinate {operation.coord_name!r} is not available"
+                )
+            self._mode_tabs.setCurrentIndex(0)
+            self.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+            self.coord_widget.scale_spin.setValue(float(operation.scale))
+            self.coord_widget.offset_spin.setValue(float(operation.offset))
+            self.coord_widget.update_affine_preview()
+            return
+        if isinstance(operation, provenance.AssignCoordsOperation):
+            if not _set_combo_text(self._coord_combo, operation.coord_name):
+                raise ValueError(
+                    f"Coordinate {operation.coord_name!r} is not available"
+                )
+            self._mode_tabs.setCurrentIndex(0)
+            self.coord_widget.edit_mode_tabs.setCurrentIndex(0)
+            self.coord_widget._set_table_values(operation.decoded_values)
+            return
+        if isinstance(operation, provenance.AssignScalarCoordOperation):
+            self._mode_tabs.setCurrentIndex(1)
+            self._add_name_edit.setText(str(operation.coord_name))
+            self._add_kind_combo.setCurrentText("Scalar")
+            self._add_literal_edit.setText(
+                provenance._provenance_value_code(operation.decoded_value)
+            )
+            self._sync_add_widgets()
+            return
+        if isinstance(operation, provenance.AssignCoord1DOperation):
+            self._mode_tabs.setCurrentIndex(1)
+            self._add_name_edit.setText(str(operation.coord_name))
+            self._add_kind_combo.setCurrentText("1D Along Coordinate")
+            if not _set_combo_data(self._add_ref_combo, operation.dim):
+                raise ValueError(f"Dimension {operation.dim!r} is not available")
+            self._add_value_mode_combo.setCurrentText("Numeric Values")
+            self._add_reference_changed()
+            self._add_coord_widget._set_table_values(operation.decoded_values)
+            self._sync_add_widgets()
+
 
 _ATTR_TYPE_NAMES: tuple[str, ...] = (
     "String",
@@ -3442,6 +3861,31 @@ class AssignAttrsDialog(DataTransformDialog):
         self,
     ) -> provenance.ToolProvenanceOperation:
         return provenance.AssignAttrsOperation(attrs=self._changed_attrs)
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.AssignAttrsOperation):
+            return
+        row_by_key = {self._row_key(row): row for row in range(self.table.rowCount())}
+        for key, value in operation.attrs.items():
+            row = row_by_key.get(key)
+            if row is None:
+                self._add_attr_row(key, value, editable_name=True)
+                row = self.table.rowCount() - 1
+                key_item = self.table.item(row, 0)
+                if key_item is not None:
+                    key_item.setText(str(key))
+            type_name, value_text = _attr_display_value(value)
+            type_combo = typing.cast(
+                "QtWidgets.QComboBox", self.table.cellWidget(row, 1)
+            )
+            if not _set_combo_text(type_combo, type_name):
+                raise ValueError(f"Attribute type {type_name!r} is not available")
+            value_item = self.table.item(row, 2)
+            if value_item is not None:
+                value_item.setText(value_text)
 
 
 class ROIPathDialog(DataTransformDialog):

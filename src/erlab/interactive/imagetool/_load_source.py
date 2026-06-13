@@ -446,6 +446,77 @@ def _load_source_details_from_provenance(
     )
 
 
+def _resolved_load_func_from_replay_call(
+    replay_call: provenance.FileReplayCall,
+    *,
+    loader_label: str | None = None,
+    loader_text: str | None = None,
+) -> _ResolvedLoadFunc:
+    if replay_call.kind == "erlab_loader":
+        return _ResolvedLoadFunc(
+            kind=replay_call.kind,
+            target=replay_call.target,
+            loader_label=loader_label or "Loader",
+            loader_text=loader_text or replay_call.target,
+            loader_expr="erlab.io.load",
+            imports=(),
+            setup_lines=(f"erlab.io.set_loader({replay_call.target!r})",),
+            loader_name=replay_call.target,
+            kwargs=dict(replay_call.kwargs),
+            selection=replay_call.selection,
+            cast_float64=replay_call.cast_float64,
+        )
+    return _ResolvedLoadFunc(
+        kind=replay_call.kind,
+        target=replay_call.target,
+        loader_label=loader_label or "Load Function",
+        loader_text=loader_text or replay_call.target,
+        loader_expr=replay_call.target,
+        imports=(f"import {replay_call.target.split('.', maxsplit=1)[0]}",),
+        setup_lines=(),
+        loader_name=None,
+        kwargs=dict(replay_call.kwargs),
+        selection=replay_call.selection,
+        cast_float64=replay_call.cast_float64,
+    )
+
+
+def _file_load_provenance_from_source(
+    file_path: pathlib.Path,
+    load_source: provenance.FileLoadSource,
+    *,
+    kwargs: dict[str, typing.Any] | None = None,
+    active_name: str = "derived",
+    replay_stages: tuple[provenance.ReplayStage, ...] = (),
+) -> provenance.ToolProvenanceSpec:
+    """Build file provenance from an existing load source with edited inputs."""
+    replay_call = load_source.replay_call
+    if replay_call is None:
+        raise ValueError("File load source does not define replay metadata")
+    if kwargs is not None:
+        replay_call = replay_call.model_copy(update={"kwargs": dict(kwargs)})
+    resolved = _resolved_load_func_from_replay_call(
+        replay_call,
+        loader_label=load_source.loader_label,
+        loader_text=load_source.loader_text,
+    )
+    details = _load_source_details(file_path, None, resolved)
+    return provenance.file_load(
+        start_label=f"Load data from file {file_path.name!r}",
+        seed_code=resolved.load_code(file_path, assign="derived"),
+        file_load_source=provenance.FileLoadSource(
+            path=str(details.path),
+            loader_label=details.loader_label,
+            loader_text=details.loader_text,
+            kwargs_text=details.kwargs_text,
+            replay_call=resolved.replay_call(),
+            load_code=details.load_code,
+        ),
+        active_name=active_name,
+        replay_stages=replay_stages,
+    )
+
+
 def _default_load_source_name(file_path: Path) -> str:
     """Choose a non-conflicting variable name for copied file-load code."""
     name = erlab.interactive.utils.IdentifierValidator().fixup(file_path.stem)

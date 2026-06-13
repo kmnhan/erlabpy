@@ -22,6 +22,9 @@ from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
+from erlab.interactive.imagetool.manager._provenance_edit import (
+    _ProvenanceEditController,
+)
 from erlab.interactive.imagetool.manager._registry import (
     activate_manager_record,
     reserve_manager_record,
@@ -427,6 +430,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         self._lineage_controller = _LineageController(self)
+        self._provenance_edit_controller = _ProvenanceEditController(self)
         self._details_panel = _DetailsPanelController(self)
         self._actions_controller = _ActionsController(self)
         self._widgets_controller = _WidgetsController(self)
@@ -998,6 +1002,20 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_copy_full_action.setObjectName("manager_copy_full_code_action")
         self._metadata_copy_full_action.triggered.connect(
             self._copy_full_derivation_code
+        )
+        self._metadata_edit_step_action = QtGui.QAction("Edit Step…", self)
+        self._metadata_edit_step_action.setObjectName(
+            "manager_edit_provenance_step_action"
+        )
+        self._metadata_edit_step_action.triggered.connect(
+            self._edit_selected_derivation_step
+        )
+        self._metadata_revert_step_action = QtGui.QAction("Revert to This Step…", self)
+        self._metadata_revert_step_action.setObjectName(
+            "manager_revert_provenance_step_action"
+        )
+        self._metadata_revert_step_action.triggered.connect(
+            self._revert_selected_derivation_step
         )
 
         self.sigLinkersChanged.connect(self._update_actions)
@@ -2352,6 +2370,11 @@ class ImageToolManager(_ImageToolManagerBase):
     def _selected_derivation_code(self) -> str | None:
         return self._details_panel._selected_derivation_code()
 
+    def _selected_derivation_row(
+        self,
+    ) -> provenance._ProvenanceDisplayRow | None:
+        return self._details_panel._selected_derivation_row()
+
     def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
         return self._details_panel._build_metadata_derivation_menu()
 
@@ -2363,6 +2386,12 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _copy_full_derivation_code(self) -> None:
         self._details_panel._copy_full_derivation_code()
+
+    def _edit_selected_derivation_step(self) -> None:
+        self._details_panel._edit_selected_derivation_step()
+
+    def _revert_selected_derivation_step(self) -> None:
+        self._details_panel._revert_selected_derivation_step()
 
     def _update_info(self, *, uid: str | None = None) -> None:
         self._details_panel._update_info(uid=uid)

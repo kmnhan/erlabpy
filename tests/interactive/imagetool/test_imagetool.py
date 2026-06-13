@@ -161,6 +161,7 @@ def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
 def _clear_selection_dialog(dialog: SelectionDialog) -> None:
     for row in dialog.rows:
         row.use_check.setChecked(False)
+        row.step_check.setChecked(False)
         row.width_check.setChecked(False)
 
 
@@ -6555,6 +6556,35 @@ def test_selection_dialog_isel_range_executes_code(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_isel_range_step_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    _set_combo_data(row.kind_combo, "range")
+    row.index_start_spin.setValue(0)
+    row.index_stop_spin.setValue(3)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    expected = data.isel(alpha=slice(0, 3, 2))
+    assert dialog.source_operations() == [
+        provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+    ]
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
@@ -6586,6 +6616,33 @@ def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("method", ["sel", "qsel"])
+def test_selection_dialog_label_range_step_executes_code(qtbot, method: str) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[1]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(0.0)
+    row.value_stop_spin.setValue(3.0)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    expected = getattr(data, method)(eV=slice(0.0, 3.0, 2))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_sel_range_executes_code(qtbot) -> None:
     data = _selection_4d_data()
     win = itool(data, execute=False)
@@ -6605,6 +6662,28 @@ def test_selection_dialog_sel_range_executes_code(qtbot) -> None:
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    operation = provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+    dialog.restore_transform_operation(operation)
+
+    row = dialog.rows[0]
+    assert row.use_check.isChecked()
+    assert row.step_check.isChecked()
+    assert row.step_spin.value() == 2
+    assert dialog.source_operations() == [operation]
+    expected = data.isel(alpha=slice(0, 3, 2))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
 
     dialog.close()
     win.close()
@@ -7255,6 +7334,14 @@ def test_sortby_dialog_key_table_order_and_empty_items(qtbot) -> None:
     dialog._move_selected_row(-1)
     operation = dialog.source_transform_operation()
     assert operation.variables == ("temperature", "y")
+
+    restored_operation = provenance.SortByOperation(
+        variables=("pressure", "temperature"),
+        ascending=False,
+    )
+    dialog.restore_transform_operation(restored_operation)
+    assert table_keys()[:4] == ["pressure", "temperature", "x", "y"]
+    assert dialog.source_transform_operation() == restored_operation
 
     empty_item_dialog = SortByDialog(win.slicer_area)
     qtbot.addWidget(empty_item_dialog)

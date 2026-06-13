@@ -12,6 +12,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
@@ -65,6 +66,123 @@ def _manager_provenance_file_spec(path: pathlib.Path):
             ),
         ),
     )
+
+
+def _manager_replay_file_spec(
+    path: pathlib.Path,
+    *operations: provenance.ToolProvenanceOperation,
+) -> provenance.ToolProvenanceSpec:
+    spec = provenance.file_load(
+        start_label=f"Load data from file {path.name!r}",
+        seed_code=(
+            "import xarray\n\n"
+            f"derived = xarray.load_dataarray({str(path)!r}, engine='h5netcdf')"
+        ),
+        file_load_source=provenance.FileLoadSource(
+            path=str(path),
+            loader_label="Load Function",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="engine='h5netcdf'",
+            replay_call=provenance.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={"engine": "h5netcdf"},
+                selected_index=0,
+            ),
+        ),
+    )
+    if operations:
+        spec = spec.append_replay_stage(provenance.full_data(*operations))
+    return spec
+
+
+def _add_file_replay_tool(
+    manager: erlab.interactive.imagetool.manager.ImageToolManager,
+    data: xr.DataArray,
+    spec: provenance.ToolProvenanceSpec,
+) -> erlab.interactive.imagetool.ImageTool:
+    tool = itool(data, manager=False, execute=False)
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    manager.add_imagetool(tool, show=False, provenance_spec=spec)
+    return tool
+
+
+def test_file_load_edit_dialog_preserves_multiline_kwargs(qtbot) -> None:
+    load_source = provenance.FileLoadSource(
+        path="scan.h5",
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        replay_call=provenance.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            selected_index=0,
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+    kwargs_text = "{\n" + ",\n".join(f"    'key_{idx}': {idx}" for idx in range(12))
+    kwargs_text += "\n}"
+
+    dialog.kwargs_edit.setPlainText(kwargs_text)
+
+    assert dialog.kwargs_edit.document().maximumBlockCount() == 0
+    assert dialog.kwargs_edit.toPlainText() == kwargs_text
+    assert dialog.loader_kwargs() == {f"key_{idx}": idx for idx in range(12)}
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        provenance.RotateOperation(
+            angle=5.0,
+            axes=("x", "y"),
+            center=(0.0, 1.0),
+        ),
+        provenance.QSelOperation(kwargs={"x": 1.0}),
+        provenance.IselOperation(kwargs={"x": 0}),
+        provenance.SelOperation(kwargs={"x": 1.0}),
+        provenance.SortByOperation(variables=("x",)),
+        provenance.AverageOperation(dims=("x",)),
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        provenance.InterpolationOperation(dim="x", values=[0.0, 1.0]),
+        provenance.LeadingEdgeOperation(dim="x", fraction=0.5),
+        provenance.CoarsenOperation(
+            dim={"x": 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        ),
+        provenance.ThinOperation(mode="global", factor=2),
+        provenance.SymmetrizeOperation(dim="x", center=0.0),
+        provenance.SymmetrizeNfoldOperation(
+            fold=4,
+            axes=("x", "y"),
+            center={"x": 0.0, "y": 1.0},
+        ),
+        provenance.NormalizeOperation(dims=("x",), mode="area"),
+        provenance.DivideByCoordOperation(coord_name="x"),
+        provenance.GaussianFilterOperation(sigma={"x": 1.0}),
+        provenance.SwapDimsOperation(mapping={"x": "kx"}),
+        provenance.RenameDimsCoordsOperation(mapping={"x": "kx"}),
+        provenance.AffineCoordOperation(coord_name="x", scale=1.0, offset=0.0),
+        provenance.AssignCoordsOperation(coord_name="x", values=[0.0, 1.0]),
+        provenance.AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        provenance.AssignCoord1DOperation(
+            coord_name="kx",
+            dim="x",
+            values=[0.0, 1.0],
+        ),
+        provenance.AssignAttrsOperation(attrs={"note": "edited"}),
+    ],
+)
+def test_manager_provenance_structured_operations_have_edit_dialogs(
+    operation: provenance.ToolProvenanceOperation,
+) -> None:
+    assert manager_provenance_edit._dialog_class_for_operation(operation) is not None
 
 
 def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:
@@ -2442,6 +2560,403 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
             .astype(np.float64)
             .qsel.mean("alpha")
             .rename(None),
+        )
+
+
+def test_manager_provenance_file_load_edit_accept_and_cancel(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    first_path = tmp_path / "first.h5"
+    second_path = tmp_path / "second.h5"
+    first = test_data.copy(deep=True)
+    second = (test_data * 3).rename(test_data.name)
+    first.to_netcdf(first_path, engine="h5netcdf")
+    second.to_netcdf(second_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            first,
+            manager=True,
+            file_path=first_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [0])
+        row = manager._selected_derivation_row()
+        assert row is not None
+        editable, _reason = manager._provenance_edit_controller.can_edit_row(row)
+        assert editable
+
+        before_spec = root.provenance_spec
+        before_data = root.slicer_area._data.copy(deep=True)
+
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            accept_call=lambda dialog: dialog.reject(),
+        )
+        xr.testing.assert_identical(root.slicer_area._data, before_data)
+        assert root.provenance_spec == before_spec
+
+        def _edit_file(dialog: QtWidgets.QDialog) -> None:
+            dialog.path_edit.setText(str(second_path))  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_file)
+
+        assert root.provenance_spec is not None
+        assert root.provenance_spec.file_load_source is not None
+        assert pathlib.Path(root.provenance_spec.file_load_source.path) == second_path
+        xr.testing.assert_identical(
+            root.slicer_area._data.rename(None),
+            second.astype(np.float64).rename(None),
+        )
+
+
+def test_manager_provenance_script_operation_rows_are_not_editable_v1(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        name="scan",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = itool(data.qsel.mean("x"), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [2])
+        row = manager._selected_derivation_row()
+        assert row is not None
+        assert row.edit_ref is not None
+
+        editable, _reason = manager._provenance_edit_controller.can_edit_row(row)
+        assert not editable
+
+
+def test_manager_provenance_script_structured_row_can_revert(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 2 * 2, dtype=float).reshape((3, 4, 2, 2)),
+        dims=("x", "y", "z", "w"),
+        coords={
+            "x": [0.0, 1.0, 2.0],
+            "y": np.arange(4),
+            "z": [0.0, 1.0],
+            "w": [0.0, 1.0],
+        },
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    file_spec = _manager_replay_file_spec(file_path)
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use source",
+            code="derived = source.copy()",
+        ),
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        provenance.IselOperation(kwargs={"y": 0}),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="source",
+                label="Recorded source",
+                provenance_spec=file_spec,
+            ),
+        ),
+    )
+    initial = provenance.replay_script_provenance(spec, {})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = itool(initial, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+        manager._update_info()
+        rows = root.derivation_display_rows
+        aggregate_row = next(
+            row
+            for row in rows
+            if row.replay_ref
+            == provenance._ProvenanceStepRef("operation", operation_index=1)
+        )
+        row_index = rows.index(aggregate_row)
+        select_metadata_rows(manager, [row_index])
+        row = manager._selected_derivation_row()
+        assert row is not None
+
+        revertible, _reason = manager._provenance_edit_controller.can_revert_row(row)
+        assert revertible
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_confirm_revert",
+            lambda: True,
+        )
+        manager._revert_selected_derivation_step()
+
+        assert root.provenance_spec is not None
+        assert [operation.op for operation in root.provenance_spec.operations] == [
+            "script_code",
+            "qsel_aggregate",
+        ]
+        xr.testing.assert_identical(
+            tool.slicer_area._data.rename(None),
+            data.qsel.mean("x").rename(None),
+        )
+
+
+def test_manager_provenance_structured_operation_edit_accept_and_cancel(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(24, dtype=float).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": np.arange(4), "z": [0.0, 1.0]},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("y",), func="mean"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = _add_file_replay_tool(
+            manager,
+            provenance.replay_file_provenance(spec),
+            spec,
+        )
+        root = manager._tool_graph.root_wrappers[0]
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        row = manager._selected_derivation_row()
+        assert row is not None
+        assert manager._provenance_edit_controller.can_edit_row(row)[0]
+
+        before_spec = root.provenance_spec
+        before_data = tool.slicer_area._data.copy(deep=True)
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            accept_call=lambda dialog: dialog.reject(),
+        )
+        assert root.provenance_spec == before_spec
+        xr.testing.assert_identical(tool.slicer_area._data, before_data)
+
+        def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
+            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
+                check.setChecked(False)
+            dialog.dim_checks["x"].setChecked(True)  # type: ignore[attr-defined]
+            reducer_index = dialog.reducer_combo.findData("sum")  # type: ignore[attr-defined]
+            dialog.reducer_combo.setCurrentIndex(reducer_index)  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
+
+        assert root.provenance_spec is not None
+        stage = root.provenance_spec.replay_stages[0]
+        assert stage.operations == (
+            provenance.QSelAggregationOperation(dims=("x",), func="sum"),
+        )
+        xr.testing.assert_identical(
+            tool.slicer_area._data.rename(None),
+            data.qsel.sum("x").rename(None),
+        )
+
+
+def test_manager_provenance_active_filter_edit_accept_and_cancel(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(24, dtype=float).reshape((3, 4, 2)) + 1.0,
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": np.arange(4), "z": [0.0, 1.0]},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(file_path)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = _add_file_replay_tool(manager, data, spec)
+        operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+        tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        row = manager._selected_derivation_row()
+        assert row is not None
+        assert manager._provenance_edit_controller.can_edit_row(row)[0]
+
+        before_source = tool.slicer_area._data.copy(deep=True)
+        before_filter = tool.slicer_area._accepted_filter_provenance_operation
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            accept_call=lambda dialog: dialog.reject(),
+        )
+        xr.testing.assert_identical(tool.slicer_area._data, before_source)
+        assert tool.slicer_area._accepted_filter_provenance_operation == before_filter
+
+        def _edit_filter(dialog: QtWidgets.QDialog) -> None:
+            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
+                check.setChecked(False)
+            dialog.dim_checks["y"].setChecked(True)  # type: ignore[attr-defined]
+            dialog.opts[2].setChecked(True)  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_filter)
+
+        assert tool.slicer_area._accepted_filter_provenance_operation == (
+            provenance.NormalizeOperation(dims=("y",), mode="min")
+        )
+        xr.testing.assert_identical(tool.slicer_area._data, before_source)
+
+
+def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
+    qtbot,
+    accept_dialog,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(48, dtype=float).reshape((3, 4, 2, 2)) + 1.0,
+        dims=("x", "y", "z", "w"),
+        coords={
+            "x": [1.0, 2.0, 4.0],
+            "y": np.arange(4),
+            "z": [0.0, 1.0],
+            "w": [0.0, 1.0],
+        },
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        provenance.IselOperation(kwargs={"y": 0}),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        initial = provenance.replay_file_provenance(spec)
+        tool = _add_file_replay_tool(manager, initial, spec)
+        root = manager._tool_graph.root_wrappers[0]
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+
+        before_spec = root.provenance_spec
+        before_data = tool.slicer_area._data.copy(deep=True)
+        failures: list[tuple[str, Exception]] = []
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_failed",
+            lambda title, exc: failures.append((title, exc)),
+        )
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_edited_operations_from_dialog",
+            lambda _dialog_cls, _operation, _input_data: [
+                provenance.QSelAggregationOperation(dims=("y",), func="mean")
+            ],
+        )
+
+        manager._edit_selected_derivation_step()
+        assert failures
+        assert root.provenance_spec == before_spec
+        xr.testing.assert_identical(tool.slicer_area._data, before_data)
+
+        accept_dialog(manager._revert_selected_derivation_step)
+        assert root.provenance_spec == before_spec
+        xr.testing.assert_identical(tool.slicer_area._data, before_data)
+
+        def _confirm_revert(dialog: QtWidgets.QDialog) -> None:
+            button = typing.cast(
+                "QtWidgets.QMessageBox",
+                dialog,
+            ).button(QtWidgets.QMessageBox.StandardButton.Yes)
+            assert button is not None
+            button.click()
+
+        accept_dialog(
+            manager._revert_selected_derivation_step,
+            accept_call=_confirm_revert,
+        )
+
+        assert root.provenance_spec is not None
+        assert root.provenance_spec.replay_stages[0].operations == (
+            provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        )
+        xr.testing.assert_identical(
+            tool.slicer_area._data.rename(None),
+            data.qsel.mean("x").rename(None),
         )
 
 

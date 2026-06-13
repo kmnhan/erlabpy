@@ -843,10 +843,31 @@ class _ManagedWindowNode(QtCore.QObject):
     def derivation_entries(
         self,
     ) -> list[provenance.DerivationEntry]:
+        return [row.entry for row in self.derivation_display_rows]
+
+    @property
+    def derivation_display_rows(
+        self,
+    ) -> list[provenance._ProvenanceDisplayRow]:
+        if self.parent_uid is not None and self.source_spec is not None:
+            rows: list[provenance._ProvenanceDisplayRow] = []
+            parent = self.manager._parent_node(self)
+            parent_provenance = parent.displayed_provenance_spec
+            if parent_provenance is not None:
+                rows.extend(parent_provenance.display_rows())
+            source_spec = self.displayed_source_spec
+            if source_spec is not None:
+                rows.extend(
+                    source_spec.display_rows(
+                        parent_data=parent.current_source_data(),
+                        scope="source",
+                    )
+                )
+            return rows
         provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return []
-        return provenance_spec.display_entries()
+        return provenance_spec.display_rows()
 
     @property
     def derivation_lines(self) -> list[str]:

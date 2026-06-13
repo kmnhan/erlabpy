@@ -11,6 +11,7 @@ from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
+    _METADATA_DERIVATION_ROW_ROLE,
     _ElidedInteractiveLabel,
     _LoadSourceDetailsDialog,
 )
@@ -55,11 +56,13 @@ class _DetailsPanelController:
 
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
-            for entry in node.derivation_entries:
+            for row in node.derivation_display_rows:
+                entry = row.entry
                 item = QtWidgets.QListWidgetItem(entry.label)
                 item.setToolTip(entry.label)
                 item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
                 item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
+                item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
                 if not entry.copyable:
                     item.setForeground(
                         self._manager.metadata_derivation_list.palette().color(
@@ -224,11 +227,37 @@ class _DetailsPanelController:
             return None
         return "\n".join(codes)
 
+    def _selected_derivation_row(
+        self,
+    ) -> provenance._ProvenanceDisplayRow | None:
+        items = self._manager._selected_derivation_items()
+        if len(items) != 1:
+            return None
+        row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
+        if isinstance(row, provenance._ProvenanceDisplayRow):
+            return row
+        return None
+
     def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
         if self._manager.metadata_derivation_list.count() == 0:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)
+        row = self._manager._selected_derivation_row()
+        edit_enabled, edit_reason = (
+            self._manager._provenance_edit_controller.can_edit_row(row)
+        )
+        revert_enabled, revert_reason = (
+            self._manager._provenance_edit_controller.can_revert_row(row)
+        )
+        self._manager._metadata_edit_step_action.setEnabled(edit_enabled)
+        self._manager._metadata_edit_step_action.setToolTip(edit_reason)
+        self._manager._metadata_revert_step_action.setEnabled(revert_enabled)
+        self._manager._metadata_revert_step_action.setToolTip(revert_reason)
+        menu.addAction(self._manager._metadata_edit_step_action)
+        menu.addAction(self._manager._metadata_revert_step_action)
+        menu.addSeparator()
+
         selected_code = self._manager._selected_derivation_code()
         self._manager._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._manager._metadata_copy_selected_action)
@@ -238,8 +267,10 @@ class _DetailsPanelController:
         return menu
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
-        if self._manager.metadata_derivation_list.itemAt(pos) is None:
+        item = self._manager.metadata_derivation_list.itemAt(pos)
+        if item is None:
             return
+        self._manager.metadata_derivation_list.setCurrentItem(item)
         menu = self._manager._build_metadata_derivation_menu()
         if menu is None:
             return
@@ -315,6 +346,16 @@ class _DetailsPanelController:
                 code = "\n\n".join(part for part in (load_code, rebased_code) if part)
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
+
+    def _edit_selected_derivation_step(self) -> None:
+        self._manager._provenance_edit_controller.edit_row(
+            self._manager._selected_derivation_row()
+        )
+
+    def _revert_selected_derivation_step(self) -> None:
+        self._manager._provenance_edit_controller.revert_row(
+            self._manager._selected_derivation_row()
+        )
 
     def _update_info(self, *, uid: str | None = None) -> None:
         """Update the information text box.

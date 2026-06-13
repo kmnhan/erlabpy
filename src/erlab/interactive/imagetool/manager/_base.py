@@ -40,6 +40,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
     from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
+    from erlab.interactive.imagetool.manager._provenance_edit import (
+        _ProvenanceEditController,
+    )
     from erlab.interactive.imagetool.manager._registry import _ManagerRecord
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
@@ -153,6 +156,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _manager_layout_tracking_enabled: bool
     _metadata_copy_full_action: QtGui.QAction
     _metadata_copy_selected_action: QtGui.QAction
+    _metadata_edit_step_action: QtGui.QAction
+    _metadata_revert_step_action: QtGui.QAction
     _metadata_detail_labels: dict[str, QtWidgets.QLabel]
     _metadata_full_code_available: bool
     _metadata_monospace_font: QtGui.QFont
@@ -161,6 +166,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any
     ]
     _progress_bars: dict[int, QtWidgets.QProgressDialog]
+    _provenance_edit_controller: _ProvenanceEditController
     _recent_directory: str | None
     _recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]]
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
