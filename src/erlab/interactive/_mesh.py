@@ -62,6 +62,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     def _emit_info_changed(self, *_args: typing.Any) -> None:
         self.sigInfoChanged.emit()
+        self._write_state()
 
     class StateModel(pydantic.BaseModel):
         first_order_peaks: list[list[int]]
@@ -291,6 +292,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
                 plot.hideAxis("bottom")
             plot.vb.autoRange()
         self._connect_signals()
+        self._reset_history_stack()
 
     def _connect_signals(self) -> None:
         self.auto_btn.clicked.connect(self.auto_find_peaks)
@@ -451,10 +453,12 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
                 return
             raise
 
-        self.p0_spin0.setValue(int(peaks[1, 0]))
-        self.p0_spin1.setValue(int(peaks[1, 1]))
-        self.p1_spin0.setValue(int(peaks[2, 0]))
-        self.p1_spin1.setValue(int(peaks[2, 1]))
+        with self._history_suppressed():
+            self.p0_spin0.setValue(int(peaks[1, 0]))
+            self.p0_spin1.setValue(int(peaks[1, 1]))
+            self.p1_spin0.setValue(int(peaks[2, 0]))
+            self.p1_spin1.setValue(int(peaks[2, 1]))
+        self._write_state()
 
     @QtCore.Slot()
     def update(self) -> None:
@@ -518,10 +522,12 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         ):
             spin.setMaximum(maximum)
 
-        self.tool_status = status
-        self.set_data_beforecalc(initial=True)
-        self._update_target_pos()
-        self._notify_data_changed()
+        with self._history_suppressed():
+            self.tool_status = status
+            self.set_data_beforecalc(initial=True)
+            self._update_target_pos()
+            self._notify_data_changed()
+        self._reset_history_stack()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

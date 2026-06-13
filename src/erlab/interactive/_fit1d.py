@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 import contextlib
 import dataclasses
 import functools
@@ -835,20 +834,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
 
         self._build_ui()
-        self._undo_shortcut = QtWidgets.QShortcut(
-            QtGui.QKeySequence.StandardKey.Undo, self
-        )
-        self._undo_shortcut.setContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self._undo_shortcut.activated.connect(self.undo)
-        self._redo_shortcut = QtWidgets.QShortcut(
-            QtGui.QKeySequence.StandardKey.Redo, self
-        )
-        self._redo_shortcut.setContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self._redo_shortcut.activated.connect(self.redo)
         self._update_fit_curve()
         self._write_history: bool = True
         self._write_state()
@@ -1004,12 +989,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step: int = 0
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
-        self._prev_states: collections.deque[Fit1DTool.StateModel] = collections.deque(
-            maxlen=5000
-        )
-        self._next_states: collections.deque[Fit1DTool.StateModel] = collections.deque(
-            maxlen=5000
-        )
         self._write_history = False
 
     def _fit_finished_connection_key(
@@ -1880,12 +1859,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if self.param_model.rowCount() > 0:
             self.param_view.selectRow(0)
 
-    def _reset_history_stack(self) -> None:
-        self._prev_states.clear()
-        self._next_states.clear()
-        self._prev_states.append(self.tool_status)
-        self._update_history_actions()
-
     @QtCore.Slot(int)
     def _on_model_choice_changed(self, _index: int) -> None:
         label = self.model_combo.currentData(role=QtCore.Qt.ItemDataRole.UserRole)
@@ -1919,68 +1892,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._sync_model_display()
             return
         self.set_model(model, **set_model_kw)
-
-    @property
-    def undoable(self) -> bool:
-        return len(self._prev_states) > 1
-
-    @property
-    def redoable(self) -> bool:
-        return len(self._next_states) > 0
-
-    @contextlib.contextmanager
-    def _history_suppressed(self):
-        original = bool(self._write_history)
-        self._write_history = False
-        try:
-            yield
-        finally:
-            self._write_history = original
-
-    @QtCore.Slot()
-    def _write_state(self) -> None:
-        if not self._write_history:
-            return
-        curr_state = self.tool_status
-        last_state = self._prev_states[-1] if self._prev_states else None
-        if last_state is None or last_state.model_dump() != curr_state.model_dump():
-            self._prev_states.append(curr_state)
-            self._next_states.clear()
-            self._update_history_actions()
-
-    @QtCore.Slot()
-    def _replace_last_state(self) -> None:
-        if not self._write_history:
-            return
-        curr_state = self.tool_status
-        if self._prev_states:
-            self._prev_states[-1] = curr_state
-            self._update_history_actions()
-
-    def _update_history_actions(self) -> None:
-        if hasattr(self, "_undo_shortcut"):
-            self._undo_shortcut.setEnabled(self.undoable)
-        if hasattr(self, "_redo_shortcut"):
-            self._redo_shortcut.setEnabled(self.redoable)
-
-    @QtCore.Slot()
-    def undo(self) -> None:
-        if not self.undoable:
-            return
-        with self._history_suppressed():
-            self._next_states.append(self._prev_states.pop())
-            self.tool_status = self._prev_states[-1]
-        self._update_history_actions()
-
-    @QtCore.Slot()
-    def redo(self) -> None:
-        if not self.redoable:
-            return
-        with self._history_suppressed():
-            next_state = self._next_states.pop()
-            self._prev_states.append(next_state)
-            self.tool_status = next_state
-        self._update_history_actions()
 
     @property
     def tool_status(self) -> StateModel:

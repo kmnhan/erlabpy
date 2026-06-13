@@ -285,3 +285,23 @@ def test_meshtool_update_data_preserves_state(qtbot, meshy_data) -> None:
     assert win._corrected is None
     assert win._mesh is None
     assert win.main_image.data_array is not None
+
+
+def test_meshtool_undo_redo_state_change(qtbot, meshy_data) -> None:
+    win: MeshTool = meshtool(meshy_data, execute=False)
+    qtbot.addWidget(win)
+
+    initial = win.tool_status
+    win.roi_hw_spin.setValue(initial.roi_hw + 1)
+
+    assert win.undoable is True
+    assert win.tool_status.roi_hw == initial.roi_hw + 1
+
+    win.undo()
+
+    assert win.tool_status == initial
+    assert win.redoable is True
+
+    win.redo()
+
+    assert win.tool_status.roi_hw == initial.roi_hw + 1

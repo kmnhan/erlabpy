@@ -214,6 +214,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._current_step_section_key = "sources"
         self._build_ui()
         self._apply_recipe_to_controls()
+        self._write_state()
 
     @staticmethod
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
@@ -441,6 +442,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.canvas.draw()
         if emit_info:
             self.sigInfoChanged.emit()
+        self._write_state()
         return True
 
     def _show_subplot_adjust_dialog(self) -> None:
@@ -1995,6 +1997,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if render:
             _render_preview(self)
             self.sigInfoChanged.emit()
+        self._write_state()
 
     def _replace_operation(
         self,
@@ -2028,6 +2031,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if render:
             _render_preview(self)
             self.sigInfoChanged.emit()
+        self._write_state()
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
         if self._updating_controls:
@@ -2168,6 +2172,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @QtCore.Slot()
     def _add_subplot_row(self) -> None:
@@ -2283,6 +2288,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @staticmethod
     def _combo_bool_or_text(
@@ -2573,6 +2579,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._refresh_step_section_button_texts()
                 _render_preview(self)
                 self.sigInfoChanged.emit()
+                self._write_state()
                 return
 
     @QtCore.Slot()
@@ -2880,6 +2887,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @QtCore.Slot()
     def _show_add_step_menu(self) -> None:
@@ -2897,6 +2905,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setCurrentRow(len(operations) - 1)
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @QtCore.Slot()
     def _remove_current_operation(self) -> None:
@@ -2997,6 +3006,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @QtCore.Slot()
     def _move_current_operation_up(self) -> None:
@@ -3015,6 +3025,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     def add_sources(
         self,
@@ -3032,6 +3043,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_source_section()
         _render_preview(self)
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @staticmethod
     def _remove_posted_events_recursive(widget: QtWidgets.QWidget) -> None:

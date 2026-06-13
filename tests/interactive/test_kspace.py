@@ -1033,6 +1033,24 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     assert win.images[1].data_array is not None
 
 
+def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
+    win = ktool(anglemap.qsel(eV=-0.1), execute=False)
+    qtbot.addWidget(win)
+    initial = win.tool_status
+
+    win.gamma_widget.setValue(initial.cmap_gamma + 0.1)
+
+    assert win.undoable
+    assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
+
+    win.undo()
+    assert win.tool_status == initial
+    assert win.redoable
+
+    win.redo()
+    assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
+
+
 def test_ktool_update_data_with_single_energy_disables_energy_group(
     qtbot, anglemap
 ) -> None:

@@ -507,6 +507,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
+        self._reset_history_stack()
 
     @property
     def data_name(self) -> str:
@@ -576,6 +577,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     def _emit_info_changed(self, *_args: typing.Any) -> None:
         self.sigInfoChanged.emit()
+        self._write_state()
 
     @staticmethod
     def _bool_text(value: bool) -> str:
@@ -810,50 +812,58 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
     def _apply_update_request(self, request: _GoldUpdateRequest) -> bool:
-        self._clear_edge_fit_results()
-        self.data = request.data
-        self._along_dim = str(self.data.dims[1])
-        self.aw.set_input(self.data)
-        self.aw.axes[0].autoRange()
+        with self._history_suppressed():
+            self._clear_edge_fit_results()
+            self.data = request.data
+            self._along_dim = str(self.data.dims[1])
+            self.aw.set_input(self.data)
+            self.aw.axes[0].autoRange()
 
-        roi_rect = self.aw.axes[0].getViewBox().itemBoundingRect(self.aw.images[0])
-        self.params_roi.roi.maxBounds = roi_rect
-        self.params_roi._x_decimals = erlab.utils.array.effective_decimals(
-            self.data[self._along_dim].values
-        )
-        self.params_roi._y_decimals = erlab.utils.array.effective_decimals(
-            self.data.eV.values
-        )
-        xm, ym, xM, yM = self.params_roi.max_bounds
-        for name in ("x0", "x1"):
-            spin = typing.cast(
-                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            roi_rect = self.aw.axes[0].getViewBox().itemBoundingRect(self.aw.images[0])
+            self.params_roi.roi.maxBounds = roi_rect
+            self.params_roi._x_decimals = erlab.utils.array.effective_decimals(
+                self.data[self._along_dim].values
             )
-            spin.setRange(xm, xM)
-            spin.setDecimals(self.params_roi._x_decimals)
-        for name in ("y0", "y1"):
-            spin = typing.cast(
-                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            self.params_roi._y_decimals = erlab.utils.array.effective_decimals(
+                self.data.eV.values
             )
-            spin.setRange(ym, yM)
-            spin.setDecimals(self.params_roi._y_decimals)
-        self.params_roi.modify_roi(
-            *self._clamp_roi_limits_to_bounds(request.roi_limits)
-        )
-        self.params_roi.update_pos()
+            xm, ym, xM, yM = self.params_roi.max_bounds
+            for name in ("x0", "x1"):
+                spin = typing.cast(
+                    "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+                )
+                spin.setRange(xm, xM)
+                spin.setDecimals(self.params_roi._x_decimals)
+            for name in ("y0", "y1"):
+                spin = typing.cast(
+                    "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+                )
+                spin.setRange(ym, yM)
+                spin.setDecimals(self.params_roi._y_decimals)
+            self.params_roi.modify_roi(
+                *self._clamp_roi_limits_to_bounds(request.roi_limits)
+            )
+            self.params_roi.update_pos()
 
-        with (
-            QtCore.QSignalBlocker(self.params_edge),
-            QtCore.QSignalBlocker(self.params_poly),
-            QtCore.QSignalBlocker(self.params_spl),
-            QtCore.QSignalBlocker(self.params_tab),
-        ):
-            self._restore_parameter_group_values(self.params_edge, request.edge_values)
-            self._restore_parameter_group_values(self.params_poly, request.poly_values)
-            self._restore_parameter_group_values(self.params_spl, request.spline_values)
-            self.params_tab.setCurrentIndex(request.tab_index)
-        self._toggle_fast()
-        self._sync_spline_lambda_enabled()
+            with (
+                QtCore.QSignalBlocker(self.params_edge),
+                QtCore.QSignalBlocker(self.params_poly),
+                QtCore.QSignalBlocker(self.params_spl),
+                QtCore.QSignalBlocker(self.params_tab),
+            ):
+                self._restore_parameter_group_values(
+                    self.params_edge, request.edge_values
+                )
+                self._restore_parameter_group_values(
+                    self.params_poly, request.poly_values
+                )
+                self._restore_parameter_group_values(
+                    self.params_spl, request.spline_values
+                )
+                self.params_tab.setCurrentIndex(request.tab_index)
+            self._toggle_fast()
+            self._sync_spline_lambda_enabled()
+        self._reset_history_stack()
 
         if request.had_fit and request.refit:
             self._source_refresh_deferred = self.has_source_binding
@@ -986,6 +996,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_spl.setDisabled(False)
         self.params_tab.setDisabled(False)
         self.perform_fit()
+        self._replace_last_state()
 
     @QtCore.Slot()
     def _abort_fit_task(self) -> None:
@@ -1664,6 +1675,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._pending_fit_action: Callable[[], None] | None = None
         self._fit_signature_current: tuple[typing.Any, ...] | None = None
         self._fit_signature_displayed: tuple[typing.Any, ...] | None = None
+        self._reset_history_stack()
 
     def _configure_data(self, data: xr.DataArray) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
@@ -1789,11 +1801,13 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         )
 
         def _apply_update(validated: xr.DataArray) -> bool:
-            self._configure_data(validated)
-            self._clear_fit_outputs()
-            self.tool_status = status
-            self._update_edc()
-            self._notify_data_changed()
+            with self._history_suppressed():
+                self._configure_data(validated)
+                self._clear_fit_outputs()
+                self.tool_status = status
+                self._update_edc()
+                self._notify_data_changed()
+            self._reset_history_stack()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
                 self._source_refresh_deferred = self.has_source_binding
@@ -1978,9 +1992,11 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             return
         self._result_ds = None
         self._fit_signature_displayed = None
-        self.live_check.setChecked(False)
-        self._fit_failed(f"Fit timed out in {elapsed:.2f} seconds")
-        self.edc_fit.setData(x=[], y=[])
+        with self._history_suppressed():
+            self.live_check.setChecked(False)
+            self._fit_failed(f"Fit timed out in {elapsed:.2f} seconds")
+            self.edc_fit.setData(x=[], y=[])
+        self._replace_last_state()
 
     def _handle_fit_error(
         self, message: str, fit_signature: tuple[typing.Any, ...]
@@ -1989,9 +2005,11 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             return
         self._result_ds = None
         self._fit_signature_displayed = None
-        self.live_check.setChecked(False)
-        self.edc_fit.setData(x=[], y=[])
-        self._fit_failed("Fit failed")
+        with self._history_suppressed():
+            self.live_check.setChecked(False)
+            self.edc_fit.setData(x=[], y=[])
+            self._fit_failed("Fit failed")
+        self._replace_last_state()
         logger.error("Error while fitting resolution tool data:\n%s", message)
 
     def _handle_fit_success(
@@ -2043,7 +2061,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             textedit.setText(_get_param_text(param))
         redchi: float | None = modelresult.redchi
         self.redchi_val.setText(f"{redchi:.4f}" if redchi is not None else "—")
-        self._emit_info_changed()
+        with self._history_suppressed():
+            self._emit_info_changed()
+        self._replace_last_state()
         if self._source_refresh_deferred:
             self.finalize_source_refresh()
 
@@ -2073,6 +2093,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         self.x_region.sigRegionChanged.connect(self._emit_info_changed)
         self.y_region.sigRegionChanged.connect(self._emit_info_changed)
+        self.live_check.toggled.connect(self._emit_info_changed)
         self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
         self.temp_spin.valueChanged.connect(self._emit_info_changed)
         self.fix_temp_check.toggled.connect(self._emit_info_changed)
@@ -2085,6 +2106,24 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.timeout_spin.valueChanged.connect(self._emit_info_changed)
         self.nfev_spin.valueChanged.connect(self._emit_info_changed)
         self.mev_check.toggled.connect(self._emit_info_changed)
+        for signal in (
+            self.x_region.sigRegionChanged,
+            self.y_region.sigRegionChanged,
+            self.live_check.toggled,
+            self.refit_on_source_update_check.toggled,
+            self.temp_spin.valueChanged,
+            self.fix_temp_check.toggled,
+            self.center_spin.valueChanged,
+            self.fix_center_check.toggled,
+            self.res_spin.valueChanged,
+            self.fix_res_check.toggled,
+            self.slope_check.toggled,
+            self.method_combo.currentTextChanged,
+            self.timeout_spin.valueChanged,
+            self.nfev_spin.valueChanged,
+            self.mev_check.toggled,
+        ):
+            signal.connect(self._write_state)
 
     def _copy_expression(
         self,

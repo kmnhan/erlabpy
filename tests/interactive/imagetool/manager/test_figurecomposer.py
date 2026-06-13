@@ -4540,6 +4540,24 @@ def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> N
     assert loaded.tool_status.operations[0].trusted is False
 
 
+def test_figure_composer_undo_redo_setup_state(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    initial = tool.tool_status
+
+    tool.nrows_spin.setValue(initial.setup.nrows + 1)
+
+    assert tool.undoable
+    assert tool.tool_status.setup.nrows == initial.setup.nrows + 1
+
+    tool.undo()
+    assert tool.tool_status.model_dump(mode="json") == initial.model_dump(mode="json")
+    assert tool.redoable
+
+    tool.redo()
+    assert tool.tool_status.setup.nrows == initial.setup.nrows + 1
+
+
 def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
