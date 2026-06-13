@@ -1507,12 +1507,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self._track_combo_interaction(combo)
         application = QtWidgets.QApplication.instance()
-        if (
-            application is not None
-            and (clipboard := application.clipboard()) is not None
-        ):
-            clipboard.dataChanged.connect(self._update_step_action_buttons)
-            self._connected_step_clipboard = clipboard
+        if isinstance(application, QtWidgets.QApplication):
+            clipboard = application.clipboard()
+            if clipboard is not None:
+                clipboard.dataChanged.connect(self._update_step_action_buttons)
+                self._connected_step_clipboard = clipboard
 
         self.setCentralWidget(root)
         self.setWindowTitle("Figure Composer")
@@ -3367,7 +3366,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _clipboard(self) -> QtGui.QClipboard | None:
         application = QtWidgets.QApplication.instance()
-        if application is None:
+        if not isinstance(application, QtWidgets.QApplication):
             return None
         return application.clipboard()
 
