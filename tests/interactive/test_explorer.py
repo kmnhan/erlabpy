@@ -6,8 +6,10 @@ from qtpy import QtCore, QtGui
 
 import erlab
 from erlab.interactive.explorer._base_explorer import (
+    _IGOR_PRO_MIME_TYPES,
     DataExplorerTabState,
     _DataExplorer,
+    _FileSystem,
     _ReprFetcher,
 )
 from erlab.interactive.explorer._tabbed_explorer import (
@@ -314,6 +316,54 @@ def test_explorer_workspace_state_missing_root_is_empty(
     assert explorer.workspace_state_payload()["root_path"] == str(missing_root)
     assert explorer._current_selection == []
     assert not explorer._model_index_for_path(missing_path).isValid()
+
+
+def test_explorer_filesystem_read_error_stays_empty(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    read_error = OSError("network drive unavailable")
+    original_iterdir = pathlib.Path.iterdir
+
+    def _iterdir(path: pathlib.Path):
+        if path == tmp_path:
+            raise read_error
+        return original_iterdir(path)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", _iterdir)
+
+    file_system = _FileSystem(tmp_path)
+    file_system.reload()
+
+    assert file_system.children == []
+    assert file_system.children_error is read_error
+
+
+def test_explorer_metadata_helpers_handle_edge_paths(
+    qtbot,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="example")
+    qtbot.addWidget(explorer)
+    model = explorer._fs_model
+
+    missing_path = tmp_path / "missing.h5"
+    missing_item = _FileSystem(missing_path)
+
+    assert model._stat_path(missing_path) is None
+    assert model.data(model.createIndex(0, 1, missing_item)) == "--"
+    assert model.date_modified(model.createIndex(0, 3, missing_item)) == ""
+    assert model._get_sort_key_func(1)(missing_item) == -1
+    assert model._get_sort_key_func(3)(missing_item) == 0
+    assert (
+        model._mime_type_for_path(tmp_path / "packed.pxt")
+        == _IGOR_PRO_MIME_TYPES["pxt"]
+    )
+
+    model.file_system._children = []
+    model.file_system._children_error = OSError("permission denied")
+    assert explorer._current_directory_notice() is not None
 
 
 def test_explorer_type_sort_uses_file_paths(
