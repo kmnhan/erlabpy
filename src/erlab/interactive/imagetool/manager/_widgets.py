@@ -318,6 +318,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             "loader",
             details.loader_label,
             details.loader_text,
+            tool_tip=_load_source_loader_tooltip(details),
         )
         self._add_detail(
             details_layout,
@@ -419,6 +420,8 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         key: str,
         label: str,
         value: str,
+        *,
+        tool_tip: str | None = None,
     ) -> int:
         key_label = QtWidgets.QLabel(label, self)
         key_label.setObjectName(f"manager_load_source_{key}_label")
@@ -438,7 +441,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
-        value_label.setToolTip(value)
+        value_label.setToolTip(value if tool_tip is None else tool_tip)
 
         layout.addWidget(key_label, row, 0)
         layout.addWidget(value_label, row, 1)
@@ -452,6 +455,15 @@ def _file_manager_action_text() -> str:
     if sys.platform.startswith("win"):
         return "Reveal in File Explorer"
     return "Open Containing Folder"
+
+
+def _load_source_loader_tooltip(details: _LoadSourceDetails) -> str:
+    lines = [f"{details.loader_label}: {details.loader_text}"]
+    if details.loader_label == "Loader" and details.loader_text in erlab.io.loaders:
+        description = getattr(erlab.io.loaders[details.loader_text], "description", "")
+        if description:
+            lines.append(str(description))
+    return "\n".join(lines)
 
 
 def _mark_missing_source_label(label: QtWidgets.QLabel) -> None:

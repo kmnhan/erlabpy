@@ -1231,6 +1231,9 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert path_label.text() == str(source_path)
     assert path_label.toolTip() == str(source_path)
     assert loader_label.text() == "xarray.load_dataarray"
+    assert loader_label.toolTip() != loader_label.text()
+    assert "xarray.load_dataarray" in loader_label.toolTip()
+    assert kwargs_text not in loader_label.toolTip()
     assert arguments_label.text() == kwargs_text
     assert arguments_label.toolTip() == kwargs_text
     assert arguments_label.textInteractionFlags() == (
@@ -1264,6 +1267,31 @@ def test_load_source_details_dialog_disables_data_explorer_without_callback(
     )
     assert data_explorer_button is not None
     assert not data_explorer_button.isEnabled()
+
+
+def test_load_source_details_dialog_loader_tooltip_includes_plugin_description(
+    qtbot, tmp_path, example_loader
+) -> None:
+    source_path = tmp_path / "scan.h5"
+    source_path.write_bytes(b"")
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="example",
+            kwargs_text="single=True",
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+
+    loader_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_loader_value_label"
+    )
+    assert loader_label is not None
+    assert "example" in loader_label.toolTip()
+    assert erlab.io.loaders["example"].description in loader_label.toolTip()
+    assert "single=True" not in loader_label.toolTip()
 
 
 def test_load_source_details_dialog_marks_missing_source_file(qtbot, tmp_path) -> None:
