@@ -15572,6 +15572,87 @@ def test_manager_figures_tab_does_not_set_empty_minimum_width(
         manager._show_figure_menu(QtCore.QPoint())
 
 
+def _selection_shortcut_sequences(widget: QtWidgets.QWidget) -> set[str]:
+    return {
+        shortcut.key().toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+        for shortcut in widget.findChildren(QtWidgets.QShortcut)
+        if shortcut.parent() is widget
+    }
+
+
+@pytest.mark.parametrize(
+    ("platform", "rename_key", "show_key", "show_modifier", "expected_shortcuts"),
+    [
+        (
+            "darwin",
+            QtCore.Qt.Key.Key_Return,
+            QtCore.Qt.Key.Key_Down,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+            {"Return", "Enter", "Ctrl+Down"},
+        ),
+        (
+            "linux",
+            QtCore.Qt.Key.Key_F2,
+            QtCore.Qt.Key.Key_Return,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            {"F2", "Return", "Enter"},
+        ),
+    ],
+)
+def test_manager_figure_list_selection_shortcuts_are_platform_native(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    platform: str,
+    rename_key: QtCore.Qt.Key,
+    show_key: QtCore.Qt.Key,
+    show_modifier: QtCore.Qt.KeyboardModifier,
+    expected_shortcuts: set[str],
+) -> None:
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", platform)
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+
+    with manager_context() as manager:
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        manager._select_figure_uid(figure_uid)
+
+        assert manager.show_action.shortcut().isEmpty()
+        assert _selection_shortcut_sequences(manager.figure_list) == expected_shortcuts
+
+        manager.figure_list.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        qtbot.wait_until(manager.figure_list.hasFocus, timeout=5000)
+        qtbot.keyClick(manager.figure_list, rename_key)
+        qtbot.wait_until(
+            lambda: (
+                manager.figure_list.state()
+                == QtWidgets.QAbstractItemView.State.EditingState
+            ),
+            timeout=5000,
+        )
+        editor = manager.figure_list.findChild(QtWidgets.QLineEdit)
+        assert editor is not None
+        editor.setText(f"{platform}_figure")
+        qtbot.keyClick(editor, QtCore.Qt.Key.Key_Return)
+        qtbot.wait_until(
+            lambda: manager._child_node(figure_uid).name == f"{platform}_figure",
+            timeout=5000,
+        )
+
+        shown: list[str] = []
+        monkeypatch.setattr(manager, "show_childtool", shown.append)
+        manager.figure_list.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        qtbot.wait_until(manager.figure_list.hasFocus, timeout=5000)
+        qtbot.keyClick(manager.figure_list, show_key, show_modifier)
+        qtbot.wait_until(lambda: shown == [figure_uid], timeout=5000)
+
+
 def test_manager_figures_gallery_view_preserves_selection_and_persists(
     qtbot,
     monkeypatch,

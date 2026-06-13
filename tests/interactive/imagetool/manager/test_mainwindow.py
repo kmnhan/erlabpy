@@ -114,6 +114,93 @@ def _add_batch_tools(
     )
 
 
+def _selection_shortcut_sequences(
+    widget: QtWidgets.QWidget,
+) -> set[str]:
+    return {
+        shortcut.key().toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+        for shortcut in widget.findChildren(QtWidgets.QShortcut)
+        if shortcut.parent() is widget
+    }
+
+
+@pytest.mark.parametrize(
+    ("platform", "rename_key", "show_key", "show_modifier", "expected_shortcuts"),
+    [
+        (
+            "darwin",
+            QtCore.Qt.Key.Key_Return,
+            QtCore.Qt.Key.Key_Down,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+            {"Return", "Enter", "Ctrl+Down"},
+        ),
+        (
+            "linux",
+            QtCore.Qt.Key.Key_F2,
+            QtCore.Qt.Key.Key_Return,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            {"F2", "Return", "Enter"},
+        ),
+    ],
+)
+def test_manager_tree_view_selection_shortcuts_are_platform_native(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    test_data: xr.DataArray,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    platform: str,
+    rename_key: QtCore.Qt.Key,
+    show_key: QtCore.Qt.Key,
+    show_modifier: QtCore.Qt.KeyboardModifier,
+    expected_shortcuts: set[str],
+) -> None:
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", platform)
+
+    with manager_context() as manager:
+        manager.show()
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        select_tools(manager, [0])
+        manager._update_actions()
+
+        assert manager.show_action.shortcut().isEmpty()
+        assert _selection_shortcut_sequences(manager.tree_view) == expected_shortcuts
+
+        tool = manager.get_imagetool(0)
+        tool.hide()
+        bring_manager_to_top(qtbot, manager)
+        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
+
+        qtbot.keyClick(manager.tree_view, rename_key)
+        qtbot.wait_until(
+            lambda: (
+                manager.tree_view.state()
+                == QtWidgets.QAbstractItemView.State.EditingState
+            ),
+            timeout=5000,
+        )
+        delegate = manager.tree_view.itemDelegate()
+        assert isinstance(delegate, _ImageToolWrapperItemDelegate)
+        assert isinstance(delegate._current_editor, QtWidgets.QLineEdit)
+        delegate._current_editor.setText(f"{platform}_shortcut_name")
+        qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
+        qtbot.wait_until(
+            lambda: (
+                manager._tool_graph.root_wrappers[0].name == f"{platform}_shortcut_name"
+            ),
+            timeout=5000,
+        )
+        assert not tool.isVisible()
+
+        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
+        qtbot.keyClick(manager.tree_view, show_key, show_modifier)
+        qtbot.wait_until(tool.isVisible, timeout=5000)
+
+
 def _block_message_dialog(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
     calls: list[tuple[tuple, dict]] = []
 
