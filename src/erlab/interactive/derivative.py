@@ -294,6 +294,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.plots[0].autoRange()
 
         self.update_result()
+        self._write_state()
 
     @QtCore.Slot()
     def reset_smooth(self) -> None:
@@ -394,6 +395,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             self.images[1].setDataArray(
                 self.result, levels=self.get_levels(self.result.values)
             )
+            self._write_state()
 
     def get_levels(self, data) -> tuple[float, float]:
         cutoff = (self.lo_spin.value(), self.hi_spin.value())
@@ -460,6 +462,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         if not self._pause_update:
             self.result = self.process_func(self.processed_data, **self.process_kwargs)
             self._notify_data_changed()
+            self._write_state()
 
     @QtCore.Slot()
     def open_itool(self) -> None:
@@ -483,8 +486,10 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.xdim = self.data.dims[1]
         self.ydim = self.data.dims[0]
         self.__dict__.pop("processed_data", None)
-        self.tool_status = status
-        self.update_preprocess()
+        with self._history_suppressed():
+            self.tool_status = status
+            self.update_preprocess()
+        self._reset_history_stack()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

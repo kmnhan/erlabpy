@@ -88,6 +88,7 @@ if typing.TYPE_CHECKING:
 _LAYOUT_ENGINE_OPTIONS = ("default", "none", "tight", "constrained", "compressed")
 _STYLE_TARGET_PLOT_SLICES = "plot_slices"
 _STYLE_TARGET_LINE = "line"
+_STYLE_TARGET_COMBO_MINIMUM_CONTENTS = 28
 
 
 class _StyleTarget(typing.NamedTuple):
@@ -96,12 +97,31 @@ class _StyleTarget(typing.NamedTuple):
     target_kind: str
     label: str
     panel_keys: tuple[_PlotSlicesPanelKey, ...] = ()
+    tooltip: str = ""
 
 
 class _AxisValueState(typing.NamedTuple):
     value: typing.Any = None
     mixed: bool = False
     available: bool = False
+
+
+class _ElidingComboBox(QtWidgets.QComboBox):
+    """Combo box whose closed label elides instead of driving dialog width."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumContentsLength(_STYLE_TARGET_COMBO_MINIMUM_CONTENTS)
+        self.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        view = self.view()
+        if view is not None:  # pragma: no branch - Qt creates the popup view.
+            view.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
 
 
 def _add_axis_form_row(
@@ -955,9 +975,12 @@ def _style_tab_page(
 ) -> tuple[QtWidgets.QWidget, QtWidgets.QComboBox, QtWidgets.QVBoxLayout]:
     page = QtWidgets.QWidget(parent)
     layout = QtWidgets.QVBoxLayout(page)
-    combo = QtWidgets.QComboBox(page)
+    combo = _ElidingComboBox(page)
     combo.setObjectName(combo_object_name)
     combo.setToolTip("Choose the plotted item to customize.")
+    combo.currentIndexChanged.connect(
+        lambda _index, combo=combo: _update_style_target_combo_tooltip(combo)
+    )
     layout.addWidget(combo)
     editor_layout = QtWidgets.QVBoxLayout()
     editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -1011,7 +1034,22 @@ def _populate_style_target_combo(
         combo.clear()
         for index, target in enumerate(targets):
             combo.addItem(target.label, index)
+            combo.setItemData(
+                index,
+                target.tooltip or target.label,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
         combo.setEnabled(bool(targets))
+        _update_style_target_combo_tooltip(combo)
+
+
+def _update_style_target_combo_tooltip(combo: QtWidgets.QComboBox) -> None:
+    tooltip = combo.itemData(combo.currentIndex(), QtCore.Qt.ItemDataRole.ToolTipRole)
+    combo.setToolTip(
+        tooltip
+        if isinstance(tooltip, str) and tooltip
+        else "Choose the plotted item to customize."
+    )
 
 
 def _current_style_target(
@@ -1085,13 +1123,15 @@ def _image_style_targets(
             tool, operation, selected_axis_ids
         )
         if panel_keys:
+            full_label = _style_target_label(tool, operation, panel_keys)
             targets.append(
                 _StyleTarget(
                     operation.operation_id,
                     index,
                     _STYLE_TARGET_PLOT_SLICES,
-                    _style_target_label(tool, operation, panel_keys),
+                    _image_style_target_label(index, operation, panel_keys),
                     panel_keys,
+                    full_label,
                 )
             )
     return targets
@@ -1141,6 +1181,26 @@ def _style_target_label(
     text = tool._operation_display_text(operation)
     if len(panel_keys) == 1:
         return f"{text}: {panel_keys[0].label}"
+    return f"{text}: {len(panel_keys)} panels"
+
+
+def _image_style_target_label(
+    operation_index: int,
+    operation: FigureOperationState,
+    panel_keys: Sequence[_PlotSlicesPanelKey],
+) -> str:
+    label = operation.label.strip() or "Image slices"
+    if label == "plot_slices":
+        label = "Image slices"
+    text = f"Step {operation_index + 1}: {label}"
+    if len(panel_keys) == 1:
+        key = panel_keys[0]
+        panel_text = (
+            f"panel {key.map_index + 1}"
+            if key.slice_index == 0
+            else f"panel {key.map_index + 1}.{key.slice_index + 1}"
+        )
+        return f"{text}: {panel_text}"
     return f"{text}: {len(panel_keys)} panels"
 
 
@@ -1388,6 +1448,7 @@ def _set_operations(
         tool._update_operation_editor_safely()
     _render_preview(tool)
     tool.sigInfoChanged.emit()
+    tool._write_state()
 
 
 def _layout_axes(tool: FigureComposerTool) -> np.ndarray | dict[str, Axes] | None:

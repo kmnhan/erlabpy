@@ -351,7 +351,7 @@ Some models have additional options that appear below the model selector that ar
      generate initial parameter values based on the data in the fit window. This
      overwrites all current parameter values.
 
-   - Any adjustment can be undone & redone with standard keyboard shortcuts.
+   - Adjustments can be undone and redone with standard keyboard shortcuts.
 
    - You can right-click parameters in the table to assign/remove expressions.
 

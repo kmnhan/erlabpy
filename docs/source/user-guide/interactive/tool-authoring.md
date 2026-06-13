@@ -29,6 +29,7 @@ In practice, `ToolWindow` enables several things:
 - save/restore support through `to_dataset()`, `from_dataset()`, `to_file()`, and
   `from_file()`, using `tool_data`, `StateModel`, `tool_status`, and optional
   save-only payload hooks for persisted data that should stay out of undo/redo history;
+- standard undo/redo actions for the lightweight UI state stored in `tool_status`;
 - integration with the ImageTool manager, including tool naming, preview images, rich
   info text, and manager refresh notifications through `sigInfoChanged`;
 - remembering which ImageTool data and selection opened the tool, including saved
@@ -198,6 +199,7 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
 
         # Paint the first frame after all widgets exist.
         self._refresh()
+        self._reset_history_stack()
 
     def _coerce_data(self, data: xr.DataArray) -> xr.DataArray:
         # Minimal tools can validate inline instead of overriding validate_update_data().
@@ -229,7 +231,9 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
     def update_data(self, new_data: xr.DataArray) -> bool:
         # This is the minimal refresh path: replace the data and repaint.
         self._data = self._coerce_data(new_data)
-        self._refresh()
+        with self._history_suppressed():
+            self._refresh()
+        self._reset_history_stack()
         return True
 
     def _display_data(self) -> xr.DataArray:
@@ -237,6 +241,7 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
 
     def _refresh(self) -> None:
         self.image.setDataArray(self._display_data())
+        self._write_state()
 ```
 
 That is the minimum `ToolWindow` surface to keep in your head:
@@ -462,6 +467,11 @@ Some implementation details matter:
   and is stored separately in workspace files. If you need to persist expensive
   calculated arrays, use the explicit persistence hooks instead of `tool_status` so
   ordinary history snapshots stay cheap.
+- Record undo/redo checkpoints after user-visible state changes by calling
+  `_write_state()`. Call `_reset_history_stack()` after construction, file restore,
+  duplication, or source-data replacement so a restored or refreshed tool starts from
+  the current state with no previous history. Use `_replace_last_state()` when an
+  asynchronous result updates the current step instead of creating a new undo step.
 - Make the `tool_status` getter and setter fully describe and restore the current UI
   state. A restored tool should look the same as one configured interactively.
 - Keep provenance and output declarations declarative. Prefer method names in
@@ -573,11 +583,13 @@ def update_data(self, new_data: xr.DataArray) -> bool:
     old_geom = self.saveGeometry()
 
     def _apply_update(validated: xr.DataArray) -> bool:
-        self._data = validated
-        self._rebuild_ui()
-        self.tool_status = status
-        self.restoreGeometry(old_geom)
-        self._notify_data_changed()
+        with self._history_suppressed():
+            self._data = validated
+            self._rebuild_ui()
+            self.tool_status = status
+            self.restoreGeometry(old_geom)
+            self._notify_data_changed()
+        self._reset_history_stack()
         return True
 
     return self._perform_source_update(new_data, apply_update=_apply_update)

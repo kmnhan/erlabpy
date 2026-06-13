@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import bisect
+import collections
 import contextlib
 import enum
 import fnmatch
@@ -3200,6 +3201,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
+        self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
+        self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
+        self._write_history = True
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
         self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
@@ -3218,6 +3222,30 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._tool_file_menu.aboutToShow.connect(self._refresh_reload_data_action)
         self._refresh_reload_data_action()
 
+        self._tool_edit_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&Edit"))
+        self._tool_edit_menu.setObjectName("tool_edit_menu")
+        self.undo_action = QtWidgets.QAction("&Undo", self)
+        self.undo_action.setObjectName("tool_undo_action")
+        self.undo_action.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_action.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.undo_action.setIcon(QtGui.QIcon.fromTheme("edit-undo"))
+        self.undo_action.setEnabled(False)
+        self.undo_action.triggered.connect(self.undo)
+        self._tool_edit_menu.addAction(self.undo_action)
+        self.redo_action = QtWidgets.QAction("&Redo", self)
+        self.redo_action.setObjectName("tool_redo_action")
+        self.redo_action.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_action.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.redo_action.setIcon(QtGui.QIcon.fromTheme("edit-redo"))
+        self.redo_action.setEnabled(False)
+        self.redo_action.triggered.connect(self.redo)
+        self._tool_edit_menu.addAction(self.redo_action)
+        self._update_history_actions()
+
         # Enable closing with keyboard shortcut
         self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self._hide_or_close)
         self.__close_shortcut.setContext(
@@ -3231,6 +3259,86 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self.__remove_shortcut.setContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
+
+    @staticmethod
+    def _history_state_equal(left: M | None, right: M | None) -> bool:
+        if left is None or right is None:
+            return left is right
+        return left.model_dump() == right.model_dump()
+
+    @property
+    def undoable(self) -> bool:
+        """Return whether a previous tool state is available."""
+        return len(self._prev_states) > 1
+
+    @property
+    def redoable(self) -> bool:
+        """Return whether an undone tool state is available."""
+        return len(self._next_states) > 0
+
+    @contextlib.contextmanager
+    def _history_suppressed(self):
+        original = bool(self._write_history)
+        self._write_history = False
+        try:
+            yield
+        finally:
+            self._write_history = original
+
+    def _reset_history_stack(self) -> None:
+        self._prev_states.clear()
+        self._next_states.clear()
+        self._prev_states.append(self.tool_status)
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def _write_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        last_state = self._prev_states[-1] if self._prev_states else None
+        if not self._history_state_equal(last_state, curr_state):
+            self._prev_states.append(curr_state)
+            self._next_states.clear()
+            self._update_history_actions()
+
+    @QtCore.Slot()
+    def _replace_last_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        if self._prev_states:
+            self._prev_states[-1] = curr_state
+        else:
+            self._prev_states.append(curr_state)
+        self._update_history_actions()
+
+    def _update_history_actions(self) -> None:
+        if hasattr(self, "undo_action") and qt_is_valid(self.undo_action):
+            self.undo_action.setEnabled(self.undoable)
+        if hasattr(self, "redo_action") and qt_is_valid(self.redo_action):
+            self.redo_action.setEnabled(self.redoable)
+
+    @QtCore.Slot()
+    def undo(self) -> None:
+        """Undo the most recent recorded tool state change."""
+        if not self.undoable:
+            return
+        with self._history_suppressed():
+            self._next_states.append(self._prev_states.pop())
+            self.tool_status = self._prev_states[-1]
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def redo(self) -> None:
+        """Redo the most recently undone tool state change."""
+        if not self.redoable:
+            return
+        with self._history_suppressed():
+            next_state = self._next_states.pop()
+            self._prev_states.append(next_state)
+            self.tool_status = next_state
+        self._update_history_actions()
 
     def centralWidget(self) -> QtWidgets.QWidget | None:
         """Return the content widget shown below the source-status banner."""
@@ -4743,9 +4851,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         tool = cls_obj(
             data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
         )
-        tool.tool_status = cls_obj.StateModel.model_validate_json(
-            ds.attrs["tool_state"]
-        )
+        with tool._history_suppressed():
+            tool.tool_status = cls_obj.StateModel.model_validate_json(
+                ds.attrs["tool_state"]
+            )
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         source_spec = None
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
@@ -4815,6 +4924,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             and "tool_rect" in ds.attrs
         ):
             tool.setGeometry(*ds.attrs["tool_rect"])
+        tool._reset_history_stack()
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:

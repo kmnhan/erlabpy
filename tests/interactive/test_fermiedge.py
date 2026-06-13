@@ -513,6 +513,26 @@ def test_goldtool_validate_update_data_transposes_and_rejects_invalid(
         win.validate_update_data(xr.DataArray(np.arange(5), dims=("alpha",)))
 
 
+def test_goldtool_undo_redo_state_change(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    initial = win.tool_status
+    win.refit_on_source_update_check.setChecked(not initial.refit_on_source_update)
+
+    assert win.undoable is True
+    assert win.tool_status.refit_on_source_update is not initial.refit_on_source_update
+
+    win.undo()
+
+    assert win.tool_status == initial
+    assert win.redoable is True
+
+    win.redo()
+
+    assert win.tool_status.refit_on_source_update is not initial.refit_on_source_update
+
+
 def test_restool(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -567,6 +587,29 @@ def test_restool(qtbot) -> None:
     assert str(win_restored.info_text) == str(win.info_text)
 
     tmp_dir.cleanup()
+
+
+def test_restool_undo_redo_state_change(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    initial = win.tool_status
+    win.temp_spin.setValue(initial.temp + 1.0)
+
+    assert win.undoable is True
+    assert win.tool_status.temp == initial.temp + 1.0
+
+    win.undo()
+
+    assert win.tool_status == initial
+    assert win.redoable is True
+
+    win.redo()
+
+    assert win.tool_status.temp == initial.temp + 1.0
 
 
 def test_restool_timeout_cleans_up_worker(qtbot, monkeypatch) -> None:

@@ -241,6 +241,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.angle_plot_check.stateChanged.connect(
             lambda: self.plotitems[0].setVisible(self.angle_plot_check.isChecked())
         )
+        self.angle_plot_check.stateChanged.connect(self._write_state_if_ready)
 
         self._roi_list: list[_MovableCircleROI] = []
         self.add_circle_btn.clicked.connect(self._add_circle)
@@ -334,8 +335,11 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         def _remove_roi():
             self.plotitems[1].removeItem(roi)
             self._roi_list.remove(roi)
+            self._write_state_if_ready()
 
         roi.sigRemoveRequested.connect(_remove_roi)
+        roi.sigRegionChangeFinished.connect(self._write_state_if_ready)
+        self._write_state_if_ready()
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
@@ -347,6 +351,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
                 high_contrast=self.contrast_check.isChecked(),
                 update=True,
             )
+        self._write_state_if_ready()
 
     def get_bz_lines(self):
         raise NotImplementedError
@@ -354,6 +359,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     def update_bz(self) -> None:
         self.plotitems[1].clearPlots()
         if not self.bz_group.isChecked():
+            self._write_state_if_ready()
             return
 
         lines, vertices, midpoints = self.get_bz_lines()
@@ -379,6 +385,11 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
                 symbolBrush=pg.mkColor("m"),
                 symbolSize=8,
             )
+        self._write_state_if_ready()
+
+    def _write_state_if_ready(self, *_args: typing.Any) -> None:
+        if hasattr(self, "data"):
+            self._write_state()
 
 
 class KspaceTool(KspaceToolGUI):
@@ -856,6 +867,7 @@ class KspaceTool(KspaceToolGUI):
 
         if avec is not None and self.bz_group.isEnabled():
             self.bz_group.setChecked(True)
+        self._reset_history_stack()
 
     def _ensure_energy_control_connections(self) -> None:
         if self._energy_controls_connected:
@@ -892,8 +904,10 @@ class KspaceTool(KspaceToolGUI):
                 self.center_spin.setValue(fixed_energy)
             self.energy_group.setDisabled(True)
 
-        self.tool_status = status
+        with self._history_suppressed():
+            self.tool_status = status
         self._notify_data_changed()
+        self._reset_history_stack()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -1298,6 +1312,7 @@ class KspaceTool(KspaceToolGUI):
         self._notify_data_changed()
         if bz_available and self.bz_group.isChecked():
             self.update_bz()
+        self._write_state()
 
     @staticmethod
     def _bz_digest_array(values: npt.ArrayLike) -> bytes:

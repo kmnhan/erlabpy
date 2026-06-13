@@ -199,6 +199,8 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     roi_control_widget.y_spin.setValue(0.2)
     roi_control_widget.r_spin.setValue(0.3)
     assert roi.get_position() == (0.0, 0.2, 0.3)
+    roi.sigRemoveRequested.emit(roi)
+    assert win._roi_list == []
 
     assert win.preview_symmetry_group.isEnabled()
     win.preview_symmetry_fold_spin.setValue(4)
@@ -1031,6 +1033,24 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     xr.testing.assert_identical(win.tool_data, new_data)
     assert win.images[0].data_array is not None
     assert win.images[1].data_array is not None
+
+
+def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
+    win = ktool(anglemap.qsel(eV=-0.1), execute=False)
+    qtbot.addWidget(win)
+    initial = win.tool_status
+
+    win.gamma_widget.setValue(initial.cmap_gamma + 0.1)
+
+    assert win.undoable
+    assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
+
+    win.undo()
+    assert win.tool_status == initial
+    assert win.redoable
+
+    win.redo()
+    assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
 
 
 def test_ktool_update_data_with_single_energy_disables_energy_group(

@@ -82,6 +82,100 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         self._data = new_data
 
 
+def test_tool_window_history_actions_undo_redo(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    undo_action = win.findChild(QtGui.QAction, "tool_undo_action")
+    redo_action = win.findChild(QtGui.QAction, "tool_redo_action")
+    assert undo_action is not None
+    assert redo_action is not None
+    assert not win.undoable
+    assert not win.redoable
+    assert not undo_action.isEnabled()
+    assert not redo_action.isEnabled()
+    assert undo_action.shortcut() in QtGui.QKeySequence.keyBindings(
+        QtGui.QKeySequence.StandardKey.Undo
+    )
+    assert redo_action.shortcut() in QtGui.QKeySequence.keyBindings(
+        QtGui.QKeySequence.StandardKey.Redo
+    )
+    assert (
+        undo_action.shortcutContext()
+        == QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+    )
+    assert (
+        redo_action.shortcutContext()
+        == QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+    )
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+
+    assert win.undoable
+    assert undo_action.isEnabled()
+
+    win.undo()
+    assert win.tool_status == _PersistentToolState(value=0)
+    assert not win.undoable
+    assert win.redoable
+    assert redo_action.isEnabled()
+
+    win.redo()
+    assert win.tool_status == _PersistentToolState(value=1)
+    assert win.undoable
+    assert not win.redoable
+
+
+def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    initial = win.tool_status
+    win.undo()
+    win.redo()
+    assert win.tool_status == initial
+
+    win._prev_states.clear()
+    win.tool_status = _PersistentToolState(value=2)
+    win._replace_last_state()
+
+    assert tuple(win._prev_states) == (_PersistentToolState(value=2),)
+    assert not win.undoable
+    assert not win.redoable
+
+    monkeypatch.delattr(win, "undo_action")
+    monkeypatch.delattr(win, "redo_action")
+    win._update_history_actions()
+
+
+def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+    assert win.undoable
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PersistentTool)
+    assert restored.tool_status == _PersistentToolState(value=1)
+    assert not restored.undoable
+    assert not restored.redoable
+
+    duplicated = win.duplicate()
+    qtbot.addWidget(duplicated)
+    assert duplicated.tool_status == _PersistentToolState(value=1)
+    assert not duplicated.undoable
+    assert not duplicated.redoable
+
+
 @pytest.fixture
 def action():
     action = QtGui.QAction("Test Action")

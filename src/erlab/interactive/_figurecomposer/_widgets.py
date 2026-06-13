@@ -32,7 +32,9 @@ from erlab.interactive._figurecomposer._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
+
+    from matplotlib.backend_bases import Event
 
     from erlab.interactive._figurecomposer._state import FigureSubplotsState
 
@@ -700,9 +702,9 @@ class _StyledFigureCanvas(FigureCanvas):
 
 
 _TOOLBAR_ICON_NAMES = {
-    "home": "mdi6.home",
-    "back": "mdi6.arrow-left",
-    "forward": "mdi6.arrow-right",
+    "figure_composer": "mdi6.application-edit-outline",
+    "back": "mdi6.undo",
+    "forward": "mdi6.redo",
     "move": "mdi6.arrow-all",
     "zoom_to_rect": "mdi6.magnify-plus",
     "subplots": "mdi6.view-grid-outline",
@@ -711,13 +713,87 @@ _TOOLBAR_ICON_NAMES = {
     "filesave": "mdi6.export",
 }
 
+_SHOW_COMPOSER_TOOLITEM = (
+    "Composer",
+    "Show the corresponding Figure Composer window",
+    "figure_composer",
+    "show_composer",
+)
+
 
 def _noop_toolbar_callback() -> None:
     return
 
 
+def _noop_navigation_callback(_changes: Mapping[object, tuple[bool, bool]]) -> None:
+    return
+
+
+def _noop_colorbar_callback(_changes: Mapping[object, tuple[float, float]]) -> None:
+    return
+
+
+def _false_toolbar_state() -> bool:
+    return False
+
+
+def _axis_limit_pair(axis: object, getter_name: str) -> tuple[float, float] | None:
+    getter = getattr(axis, getter_name, None)
+    if getter is None:
+        return None
+    try:
+        first, second = getter()
+    except (TypeError, ValueError):
+        return None
+    return float(first), float(second)
+
+
+def _axis_view(axis: object) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    xlim = _axis_limit_pair(axis, "get_xlim")
+    ylim = _axis_limit_pair(axis, "get_ylim")
+    if xlim is None or ylim is None:
+        return None
+    return xlim, ylim
+
+
+def _same_axis_limits(first: tuple[float, float], second: tuple[float, float]) -> bool:
+    return math.isclose(first[0], second[0]) and math.isclose(first[1], second[1])
+
+
+def _is_colorbar_axis(axis: object) -> bool:
+    return hasattr(axis, "_colorbar")
+
+
+def _colorbar_mappable(axis: object) -> object | None:
+    colorbar = getattr(axis, "_colorbar", None)
+    if colorbar is None:
+        return None
+    return getattr(colorbar, "mappable", None)
+
+
+def _mappable_clim(mappable: object) -> tuple[float, float] | None:
+    get_clim = getattr(mappable, "get_clim", None)
+    if get_clim is None:
+        return None
+    try:
+        first, second = get_clim()
+    except (TypeError, ValueError):
+        return None
+    if first is None or second is None:
+        return None
+    try:
+        return float(first), float(second)
+    except (TypeError, ValueError):
+        return None
+
+
 class _FigureComposerNavigationToolbar(NavigationToolbar):
     """Navigation toolbar that routes composer actions through recipe edits."""
+
+    toolitems = [  # noqa: RUF012 - Matplotlib expects toolbar items on the class.
+        _SHOW_COMPOSER_TOOLITEM if item[3] == "home" else item
+        for item in NavigationToolbar.toolitems
+    ]
 
     def __init__(
         self,
@@ -727,15 +803,40 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         export_callback: Callable[[], None],
         subplot_adjust_callback: Callable[[], None],
         axes_customize_callback: Callable[[], None],
+        show_composer_callback: Callable[[], None] = _noop_toolbar_callback,
+        navigation_callback: Callable[
+            [Mapping[object, tuple[bool, bool]]], None
+        ] = _noop_navigation_callback,
+        colorbar_callback: Callable[
+            [Mapping[object, tuple[float, float]]], None
+        ] = _noop_colorbar_callback,
+        undo_callback: Callable[[], None] = _noop_toolbar_callback,
+        redo_callback: Callable[[], None] = _noop_toolbar_callback,
+        undoable_callback: Callable[[], bool] = _false_toolbar_state,
+        redoable_callback: Callable[[], bool] = _false_toolbar_state,
     ) -> None:
         self._export_callback = export_callback
         self._subplot_adjust_callback = subplot_adjust_callback
         self._axes_customize_callback = axes_customize_callback
+        self._show_composer_callback = show_composer_callback
+        self._navigation_callback = navigation_callback
+        self._colorbar_callback = colorbar_callback
+        self._undo_callback = undo_callback
+        self._redo_callback = redo_callback
+        self._undoable_callback = undoable_callback
+        self._redoable_callback = redoable_callback
+        self._navigation_press_views: dict[
+            object, tuple[tuple[float, float], tuple[float, float]]
+        ] = {}
+        self._colorbar_press_clims: dict[object, tuple[float, float]] = {}
         super().__init__(canvas, parent)
         self.setObjectName("figureComposerNavigationToolbar")
         for action_id, action in self._actions.items():
             action.setObjectName(f"figureComposerToolbar_{action_id}")
         tooltips = {
+            "show_composer": "Show the corresponding Figure Composer window.",
+            "back": "Undo the last Figure Composer recipe change.",
+            "forward": "Redo the last undone Figure Composer recipe change.",
             "save_figure": "Export the composer figure using recipe export settings.",
             "copy_figure_to_clipboard": "Copy the current figure image.",
             "configure_subplots": (
@@ -747,6 +848,15 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         for action_id, tooltip in tooltips.items():
             if action := self._actions.get(action_id):
                 action.setToolTip(tooltip)
+        if action := self._actions.get("back"):
+            action.setText("Undo")
+            action.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+            action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        if action := self._actions.get("forward"):
+            action.setText("Redo")
+            action.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+            action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        self.set_history_buttons()
 
     def _add_copy_action(self) -> None:
         action_id = "copy_figure_to_clipboard"
@@ -773,6 +883,9 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
     def edit_parameters(self) -> None:
         self._axes_customize_callback()
 
+    def show_composer(self) -> None:
+        self._show_composer_callback()
+
     def save_figure(self, *args: object) -> None:
         self._export_callback()
 
@@ -792,6 +905,115 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         ):
             clipboard.setPixmap(pixmap)
 
+    def set_history_buttons(self) -> None:
+        if "back" in self._actions:
+            self._actions["back"].setEnabled(self._undoable_callback())
+        if "forward" in self._actions:
+            self._actions["forward"].setEnabled(self._redoable_callback())
+
+    def back(self, *args: object) -> None:
+        self._undo_callback()
+        self.set_history_buttons()
+
+    def forward(self, *args: object) -> None:
+        self._redo_callback()
+        self.set_history_buttons()
+
+    def _capture_navigation_views(
+        self, axes: Iterable[object]
+    ) -> dict[object, tuple[tuple[float, float], tuple[float, float]]]:
+        views: dict[object, tuple[tuple[float, float], tuple[float, float]]] = {}
+        for axis in axes:
+            if _is_colorbar_axis(axis):
+                continue
+            view = _axis_view(axis)
+            if view is not None:
+                views[axis] = view
+        return views
+
+    def _capture_colorbar_clims(
+        self, axes: Iterable[object]
+    ) -> dict[object, tuple[float, float]]:
+        clims: dict[object, tuple[float, float]] = {}
+        for axis in axes:
+            mappable = _colorbar_mappable(axis)
+            if mappable is None:
+                continue
+            clim = _mappable_clim(mappable)
+            if clim is not None:
+                clims[mappable] = clim
+        return clims
+
+    def _commit_navigation_views(
+        self,
+        before: Mapping[object, tuple[tuple[float, float], tuple[float, float]]],
+    ) -> None:
+        changes: dict[object, tuple[bool, bool]] = {}
+        for axis, previous in before.items():
+            current = _axis_view(axis)
+            if current is None:
+                continue
+            x_changed = not _same_axis_limits(previous[0], current[0])
+            y_changed = not _same_axis_limits(previous[1], current[1])
+            if x_changed or y_changed:
+                changes[axis] = (x_changed, y_changed)
+        if changes:
+            self._navigation_callback(changes)
+        self.set_history_buttons()
+
+    def _commit_colorbar_clims(
+        self,
+        before: Mapping[object, tuple[float, float]],
+    ) -> None:
+        if not before:
+            return
+        changes: dict[object, tuple[float, float]] = {}
+        for mappable, previous in before.items():
+            current = _mappable_clim(mappable)
+            if current is not None and not _same_axis_limits(previous, current):
+                changes[mappable] = current
+        if changes:
+            self._colorbar_callback(changes)
+        self.set_history_buttons()
+
+    def press_pan(self, event: Event) -> None:
+        super().press_pan(event)
+        pan_info = getattr(self, "_pan_info", None)
+        self._navigation_press_views = (
+            {} if pan_info is None else self._capture_navigation_views(pan_info.axes)
+        )
+        self._colorbar_press_clims = (
+            {} if pan_info is None else self._capture_colorbar_clims(pan_info.axes)
+        )
+
+    def release_pan(self, event: Event) -> None:
+        before = dict(self._navigation_press_views)
+        colorbar_before = dict(self._colorbar_press_clims)
+        self._navigation_press_views = {}
+        self._colorbar_press_clims = {}
+        super().release_pan(event)
+        self._commit_navigation_views(before)
+        self._commit_colorbar_clims(colorbar_before)
+
+    def press_zoom(self, event: Event) -> None:
+        super().press_zoom(event)
+        zoom_info = getattr(self, "_zoom_info", None)
+        self._navigation_press_views = (
+            {} if zoom_info is None else self._capture_navigation_views(zoom_info.axes)
+        )
+        self._colorbar_press_clims = (
+            {} if zoom_info is None else self._capture_colorbar_clims(zoom_info.axes)
+        )
+
+    def release_zoom(self, event: Event) -> None:
+        before = dict(self._navigation_press_views)
+        colorbar_before = dict(self._colorbar_press_clims)
+        self._navigation_press_views = {}
+        self._colorbar_press_clims = {}
+        super().release_zoom(event)
+        self._commit_navigation_views(before)
+        self._commit_colorbar_clims(colorbar_before)
+
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
         if event is not None and event.type() == QtCore.QEvent.Type.PaletteChange:
             erlab.interactive.utils.qtawesome.reset_cache()
@@ -799,6 +1021,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
                 icon_name = {
                     "zoom": "zoom_to_rect",
                     "pan": "move",
+                    "show_composer": "figure_composer",
                     "configure_subplots": "subplots",
                     "edit_parameters": "qt4_editor_options",
                     "save_figure": "filesave",
@@ -819,6 +1042,17 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         export_callback: Callable[[], None] = _noop_toolbar_callback,
         subplot_adjust_callback: Callable[[], None] = _noop_toolbar_callback,
         axes_customize_callback: Callable[[], None] = _noop_toolbar_callback,
+        show_composer_callback: Callable[[], None] = _noop_toolbar_callback,
+        navigation_callback: Callable[
+            [Mapping[object, tuple[bool, bool]]], None
+        ] = _noop_navigation_callback,
+        colorbar_callback: Callable[
+            [Mapping[object, tuple[float, float]]], None
+        ] = _noop_colorbar_callback,
+        undo_callback: Callable[[], None] = _noop_toolbar_callback,
+        redo_callback: Callable[[], None] = _noop_toolbar_callback,
+        undoable_callback: Callable[[], bool] = _false_toolbar_state,
+        redoable_callback: Callable[[], bool] = _false_toolbar_state,
     ) -> None:
         super().__init__(None)
         erlab.interactive.utils.patch_macos_matplotlib_qt_cursor()
@@ -841,6 +1075,13 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             export_callback=export_callback,
             subplot_adjust_callback=subplot_adjust_callback,
             axes_customize_callback=axes_customize_callback,
+            show_composer_callback=show_composer_callback,
+            navigation_callback=navigation_callback,
+            colorbar_callback=colorbar_callback,
+            undo_callback=undo_callback,
+            redo_callback=redo_callback,
+            undoable_callback=undoable_callback,
+            redoable_callback=redoable_callback,
         )
 
         root = QtWidgets.QWidget(self)

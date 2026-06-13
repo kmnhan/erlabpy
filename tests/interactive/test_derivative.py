@@ -177,6 +177,27 @@ def test_dtool_update_data_preserves_state(qtbot) -> None:
     assert win.result.shape == win.processed_data.shape
 
 
+def test_dtool_undo_redo_state_change(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+    initial = win.tool_status
+
+    win.nx_spin.setValue(initial.nx_value + 2)
+
+    assert win.undoable
+    assert win.tool_status.nx_value == initial.nx_value + 2
+
+    win.undo()
+    assert win.tool_status == initial
+    assert win.redoable
+
+    win.redo()
+    assert win.tool_status.nx_value == initial.nx_value + 2
+
+
 def test_dtool_open_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
