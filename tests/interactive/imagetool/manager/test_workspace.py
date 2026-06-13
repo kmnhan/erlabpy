@@ -79,6 +79,346 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
         self._status = status
 
 
+class _WorkspaceSweepToolState(pydantic.BaseModel):
+    value: int = 0
+    mode: str = "idle"
+    weights: list[float] = pydantic.Field(default_factory=list)
+    options: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+
+class _WorkspaceSweepChildTool(
+    erlab.interactive.utils.ToolWindow[_WorkspaceSweepToolState]
+):
+    StateModel = _WorkspaceSweepToolState
+    tool_name = "workspace-sweep-child"
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        "workspace-sweep.primary": erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_primary_output_data",
+        )
+    }
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        *,
+        extra_data: xr.DataArray | None = None,
+    ) -> None:
+        super().__init__()
+        self._data = data
+        self._extra_data = (
+            extra_data
+            if extra_data is not None
+            else data.copy(deep=True).rename("extra")
+        )
+        self._status = _WorkspaceSweepToolState()
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def extra_data(self) -> xr.DataArray:
+        return self._extra_data
+
+    @property
+    def tool_status(self) -> _WorkspaceSweepToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _WorkspaceSweepToolState) -> None:
+        self._status = status
+
+    def _primary_output_data(self) -> xr.DataArray:
+        return self._data
+
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        return {
+            imagetool_serialization.SAVED_TOOL_DATA_NAME: self._data,
+            "auxiliary": self._extra_data,
+        }
+
+    def _restore_persistence_data_items(
+        self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+    ) -> None:
+        del ds
+        self._extra_data = data_items["auxiliary"]
+
+
+class _WorkspaceSweepFigureTool(_WorkspaceSweepChildTool):
+    manager_collection = "figures"
+    tool_name = "workspace-sweep-figure"
+
+
+def _workspace_sweep_json(value: typing.Any) -> typing.Any:
+    return json.loads(json.dumps(value))
+
+
+def _workspace_sweep_spec_payload(
+    spec: provenance.ToolProvenanceSpec | None,
+) -> dict[str, typing.Any] | None:
+    if spec is None:
+        return None
+    return typing.cast(
+        "dict[str, typing.Any]",
+        spec.model_dump(mode="json", exclude_none=True),
+    )
+
+
+def _workspace_sweep_binding_payload(
+    binding: provenance.ImageToolSelectionSourceBinding | None,
+) -> dict[str, typing.Any] | None:
+    if binding is None:
+        return None
+    return typing.cast(
+        "dict[str, typing.Any]",
+        binding.model_dump(mode="json", exclude_none=True),
+    )
+
+
+def _workspace_sweep_window_state(widget: QtWidgets.QWidget) -> dict[str, typing.Any]:
+    payload = qt_state.qt_window_state_payload(widget)
+    payload.pop("geometry", None)
+    return payload
+
+
+def _workspace_sweep_data(name: str, *, offset: float = 0.0) -> xr.DataArray:
+    x = np.linspace(0.0, 3.0, 4)
+    y = np.linspace(-2.0, 2.0, 5)
+    z = np.linspace(10.0, 12.0, 3)
+    eV = np.linspace(-0.4, 0.4, 2)
+    values = np.arange(x.size * y.size * z.size * eV.size, dtype=float).reshape(
+        (x.size, y.size, z.size, eV.size)
+    )
+    return xr.DataArray(
+        values + offset,
+        dims=("x", "y", "z", "eV"),
+        coords={
+            "x": x,
+            "y": y,
+            "z": z,
+            "eV": eV,
+            "temperature": ("x", np.linspace(100.0, 160.0, x.size)),
+            "Fake Motor": ("y", np.linspace(30.0, 50.0, y.size)),
+        },
+        attrs={"sample": name, "acquisition": {"pass": int(offset)}},
+        name=name,
+    )
+
+
+def _configure_workspace_sweep_imagetool(
+    tool: erlab.interactive.imagetool.ImageTool,
+    *,
+    source_file: pathlib.Path,
+) -> None:
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_data = tool.slicer_area._data.copy(deep=False)
+    source_data.attrs = {"sample": str(source_data.name)}
+    source_data.to_netcdf(source_file, engine="h5netcdf")
+
+    tool.setGeometry(33, 44, 540, 430)
+    tool.controls_visible = False
+    area = tool.slicer_area
+    area.add_cursor("#336699", update=False)
+    area.set_cursor_colors([QtGui.QColor("#123456"), QtGui.QColor("#abcdef")])
+    area.set_current_cursor(1, update=False)
+    area.set_value(axis=0, value=1.0, cursor=0, update=False)
+    area.set_value(axis=1, value=0.0, cursor=0, update=False)
+    area.set_value(axis=2, value=11.0, cursor=1, update=False)
+    area.set_bin(axis=0, value=2, cursor=1, update=False)
+    area.set_bin(axis=2, value=1, cursor=0, update=False)
+    area.array_slicer.snap_to_data = True
+    area.array_slicer.twin_coord_names = {"temperature"}
+    area.array_slicer._cursor_color_params = (
+        ("x",),
+        "temperature",
+        "viridis",
+        False,
+        100.0,
+        160.0,
+    )
+    area.set_manual_limits({"x": [0.5, 2.5], "y": [-1.5, 1.5], "z": [10.0, 12.0]})
+    area.set_axis_inverted("y", True)
+    area.set_colormap(
+        "viridis",
+        gamma=1.7,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+        levels_locked=True,
+        levels=(5.0, 75.0),
+        update=False,
+    )
+    area.main_image.add_roi()
+    roi = area.main_image._roi_list[0]
+    roi.setPoints([(0.5, -1.0), (1.5, 0.75), (2.5, -0.25)], closed=True)
+    area.main_image._restore_guideline_state(
+        {"count": 2, "angle": 33.0, "offset": (1.25, 0.5), "follow_cursor": False}
+    )
+    area._file_path = source_file
+    area._load_func = (
+        xr.load_dataarray,
+        {"engine": "h5netcdf"},
+        provenance.FileDataSelection(kind="dataarray"),
+    )
+    area.apply_filter_operation(
+        provenance.GaussianFilterOperation(sigma={"x": 0.5}), update=False
+    )
+
+
+def _workspace_sweep_node_snapshot(
+    node: typing.Any,
+) -> dict[str, typing.Any]:
+    window = node.window
+    assert isinstance(window, QtWidgets.QWidget)
+    snapshot: dict[str, typing.Any] = {
+        "uid": node.uid,
+        "parent_uid": node.parent_uid,
+        "children": list(node._childtool_indices),
+        "name": node.name,
+        "display_text": node.display_text,
+        "created_time": node.added_time_iso,
+        "snapshot_token": node.snapshot_token,
+        "is_imagetool": bool(node.is_imagetool),
+        "visible": bool(window.isVisible()),
+        "window_state": _workspace_sweep_window_state(window),
+        "provenance_spec": _workspace_sweep_spec_payload(node.provenance_spec),
+        "source_spec": _workspace_sweep_spec_payload(node.source_spec),
+        "source_binding": _workspace_sweep_binding_payload(node.source_binding),
+        "output_id": node.output_id,
+        "source_state": node.source_state,
+        "source_auto_update": node.source_auto_update,
+    }
+    if hasattr(node, "watched_metadata"):
+        snapshot["watched_metadata"] = _workspace_sweep_json(node.watched_metadata())
+        source_input_ndim = getattr(node, "source_input_ndim", None)
+        snapshot["source_input_ndim"] = (
+            None if source_input_ndim is None else int(source_input_ndim)
+        )
+    if node.is_imagetool:
+        snapshot["imagetool_state"] = _workspace_sweep_json(node.slicer_area.state)
+        snapshot["imagetool_data_name"] = node.slicer_area._data.name
+    else:
+        tool = typing.cast("_WorkspaceSweepChildTool", node.tool_window)
+        snapshot["tool_status"] = tool.tool_status.model_dump(mode="json")
+        snapshot["tool_data_name"] = tool.tool_data.name
+        snapshot["tool_display_name"] = tool._tool_display_name
+    return snapshot
+
+
+def _workspace_sweep_runtime_snapshot(
+    manager: ImageToolManager,
+) -> dict[str, typing.Any]:
+    controller = manager._workspace_controller
+    return {
+        "root_order": list(manager._workspace_root_indices()),
+        "figure_uids": list(manager._tool_graph.figure_uids),
+        "loader_state": controller._workspace_loader_state_snapshot(),
+        "standalone_apps": controller._workspace_standalone_apps_snapshot(),
+        "nodes": {
+            uid: _workspace_sweep_node_snapshot(node)
+            for uid, node in sorted(manager._tool_graph.nodes.items())
+        },
+    }
+
+
+def _workspace_sweep_data_items(
+    manager: ImageToolManager,
+) -> dict[tuple[str, str], xr.DataArray]:
+    data_items: dict[tuple[str, str], xr.DataArray] = {}
+    for uid, node in sorted(manager._tool_graph.nodes.items()):
+        if node.is_imagetool:
+            data, _state = node.slicer_area.persistence_data_and_state()
+            data_items[(uid, "imagetool")] = data.copy(deep=True)
+            continue
+        tool = typing.cast("_WorkspaceSweepChildTool", node.tool_window)
+        for name, data in tool._persistence_data_items().items():
+            data_items[(uid, name)] = data.copy(deep=True)
+    return data_items
+
+
+def _workspace_sweep_assert_data_items_equal(
+    actual: dict[tuple[str, str], xr.DataArray],
+    expected: dict[tuple[str, str], xr.DataArray],
+) -> None:
+    assert set(actual) == set(expected)
+    for key, expected_data in expected.items():
+        try:
+            xr.testing.assert_identical(actual[key], expected_data)
+        except AssertionError as exc:
+            raise AssertionError(f"{key!r} data mismatch") from exc
+
+
+def _workspace_sweep_assert_snapshot_equal(
+    actual: typing.Any, expected: typing.Any, path: str = "snapshot"
+) -> None:
+    if isinstance(expected, Mapping):
+        assert isinstance(actual, Mapping), (
+            f"{path}: expected mapping, got {type(actual).__name__}"
+        )
+        assert set(actual) == set(expected), (
+            f"{path}: key mismatch "
+            f"missing={sorted(set(expected) - set(actual))!r} "
+            f"extra={sorted(set(actual) - set(expected))!r}"
+        )
+        for key in expected:
+            _workspace_sweep_assert_snapshot_equal(
+                actual[key], expected[key], f"{path}.{key}"
+            )
+        return
+    if isinstance(expected, list):
+        assert isinstance(actual, list), (
+            f"{path}: expected list, got {type(actual).__name__}"
+        )
+        assert len(actual) == len(expected), (
+            f"{path}: length mismatch {len(actual)} != {len(expected)}"
+        )
+        for index, expected_item in enumerate(expected):
+            _workspace_sweep_assert_snapshot_equal(
+                actual[index], expected_item, f"{path}[{index}]"
+            )
+        return
+    assert actual == expected, f"{path}: {actual!r} != {expected!r}"
+
+
+def _workspace_sweep_h5_attr_payload(
+    fname: pathlib.Path, payload_path: str
+) -> dict[str, typing.Any]:
+    import h5py
+
+    json_attrs = {
+        "itool_state",
+        "itool_window_state",
+        "itool_provenance_spec",
+        "manager_node_provenance_spec",
+        "manager_node_live_source_spec",
+        "manager_node_live_source_binding",
+        "tool_state",
+        "tool_window_state",
+        "tool_source_spec",
+        "tool_source_binding",
+        "tool_input_provenance_spec",
+        "tool_data_references",
+    }
+    with h5py.File(fname, "r") as h5_file:
+        attrs = dict(h5_file[payload_path].attrs)
+    payload: dict[str, typing.Any] = {}
+    for key, value in attrs.items():
+        if isinstance(value, bytes):
+            value = value.decode()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        elif isinstance(value, np.ndarray):
+            value = value.tolist()
+        if key in json_attrs and isinstance(value, str):
+            decoded = json.loads(value)
+            if key in {"itool_window_state", "tool_window_state"}:
+                decoded.pop("geometry", None)
+            payload[key] = decoded
+        else:
+            payload[key] = value
+    return payload
+
+
 def test_tool_data_blob_ignores_stale_backend_encoding() -> None:
     data = xr.DataArray(
         np.arange(3.0),
@@ -1244,6 +1584,400 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         assert restored_explorer.loader_extensions_by_name()[loader_name] == {
             "coordinate_attrs": ["explorer"]
         }
+
+
+def test_manager_workspace_roundtrip_restores_full_serializable_state(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    source_path = tmp_path / "source-root.h5"
+    root_data = _workspace_sweep_data("root", offset=10.0)
+    peer_data = _workspace_sweep_data("peer", offset=200.0)
+    root_created = datetime.datetime(2024, 2, 3, 4, 5, 6, tzinfo=datetime.UTC)
+    peer_created = datetime.datetime(2024, 2, 4, 5, 6, 7, tzinfo=datetime.UTC)
+    child_created = datetime.datetime(2024, 2, 5, 6, 7, 8, tzinfo=datetime.UTC)
+    tool_created = datetime.datetime(2024, 2, 6, 7, 8, 9, tzinfo=datetime.UTC)
+    figure_created = datetime.datetime(2024, 2, 7, 8, 9, 10, tzinfo=datetime.UTC)
+    root_marker = "snapshot-root"
+    peer_marker = "snapshot-peer"
+    child_marker = "snapshot-child-image"
+    nested_marker = "snapshot-nested-image"
+    child_tool_marker = "snapshot-child-tool"
+    output_marker = "snapshot-output-image"
+    figure_marker = "snapshot-figure-tool"
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        root_tool = erlab.interactive.imagetool.ImageTool(root_data, _in_manager=True)
+        _configure_workspace_sweep_imagetool(root_tool, source_file=source_path)
+        root_provenance = _workspace_test_file_spec(source_path)
+        manager.add_imagetool(
+            root_tool,
+            show=False,
+            uid="root-watched",
+            snapshot_token=root_marker,
+            created_time=root_created,
+            watched_var=("root_data", "watch-root-uid"),
+            watched_workspace_link_id=manager._workspace_state.link_id,
+            watched_source_label="notebook-a",
+            watched_source_uid="kernel-a",
+            watched_connected=False,
+            source_input_ndim=root_data.ndim,
+            provenance_spec=root_provenance,
+            source_spec=provenance.full_data(
+                provenance.RenameOperation(name="root-live")
+            ),
+            source_auto_update=True,
+            source_state="fresh",
+        )
+        manager.rename_imagetool(0, "root-renamed")
+
+        peer_tool = erlab.interactive.imagetool.ImageTool(peer_data, _in_manager=True)
+        peer_tool.setGeometry(7, 90, 792, 360)
+        peer_tool.slicer_area.set_colormap("magma", gamma=0.8, update=False)
+        manager.add_imagetool(
+            peer_tool,
+            show=True,
+            uid="root-peer",
+            snapshot_token=peer_marker,
+            created_time=peer_created,
+        )
+
+        manager.link_imagetools(0, 1, link_colors=False)
+        model = manager.tree_view._model
+        assert model.dropMimeData(
+            model.mimeData([model.index(0, 0)]),
+            QtCore.Qt.DropAction.MoveAction,
+            model.rowCount(),
+            0,
+            QtCore.QModelIndex(),
+        )
+        assert manager._tool_graph.displayed_indices == [1, 0]
+
+        source_data, _state = root_tool.slicer_area.persistence_data_and_state()
+        child_binding = provenance.ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"z": 1},
+            transpose_dims=("x", "y", "eV"),
+            squeeze=True,
+        )
+        child_source_spec = child_binding.materialize(source_data)
+        child_data = child_source_spec.apply(source_data).rename("child-image")
+        child_tool = erlab.interactive.imagetool.ImageTool(child_data, _in_manager=True)
+        child_tool.setGeometry(80, 130, 696, 310)
+        child_tool.slicer_area.set_colormap(
+            "plasma", gamma=1.2, reverse=True, update=False
+        )
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=True,
+            uid="child-image",
+            snapshot_token=child_marker,
+            created_time=child_created,
+            provenance_spec=provenance.script(
+                start_label="Build child image",
+                seed_code="derived = data.isel(z=1).squeeze()",
+                active_name="derived",
+            ),
+            source_spec=child_source_spec,
+            source_binding=child_binding,
+            source_auto_update=True,
+            source_state="stale",
+        )
+
+        nested_data = child_data.copy(deep=True).rename("nested-image")
+        nested_tool = erlab.interactive.imagetool.ImageTool(
+            nested_data, _in_manager=True
+        )
+        nested_tool.setGeometry(80, 160, 696, 480)
+        manager.add_imagetool_child(
+            nested_tool,
+            child_uid,
+            show=True,
+            uid="nested-image",
+            snapshot_token=nested_marker,
+            created_time=child_created + datetime.timedelta(seconds=1),
+            provenance_spec=provenance.full_data(
+                provenance.RenameOperation(name="nested-image")
+            ),
+        )
+
+        tool_binding = provenance.ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"z": 0},
+            transpose_dims=("x", "y", "eV"),
+            squeeze=True,
+        )
+        tool_source_spec = tool_binding.materialize(source_data)
+        tool_data = tool_source_spec.apply(source_data).rename("sweep-tool-data")
+        extra_data = tool_data.mean("eV").rename("sweep-tool-extra")
+        tool_data.attrs = {"sample": "sweep-tool-data"}
+        extra_data.attrs = {"sample": "sweep-tool-extra"}
+        child_window = _WorkspaceSweepChildTool(tool_data, extra_data=extra_data)
+        child_window.setGeometry(160, 170, 360, 270)
+        child_window._tool_display_name = "Sweep Child Display"
+        child_window.tool_status = _WorkspaceSweepToolState(
+            value=7,
+            mode="configured",
+            weights=[0.25, 0.5, 0.75],
+            options={"snap": True, "labels": ["alpha", "beta"]},
+        )
+        child_window.set_source_binding(
+            tool_source_spec,
+            source_binding=tool_binding,
+            auto_update=True,
+            state="unavailable",
+        )
+        child_window.set_input_provenance_spec(root_provenance)
+        child_tool_uid = manager.add_childtool(
+            child_window,
+            0,
+            show=False,
+            uid="sweep-child-tool",
+            snapshot_token=child_tool_marker,
+            created_time=tool_created,
+        )
+
+        output_data = child_window.output_imagetool_data("workspace-sweep.primary")
+        assert output_data is not None
+        output_tool = erlab.interactive.imagetool.ImageTool(
+            output_data, _in_manager=True
+        )
+        output_tool.setGeometry(80, 200, 696, 480)
+        output_tool.slicer_area.set_colormap(
+            "cividis", gamma=0.9, reverse=False, update=False
+        )
+        output_child_uid = manager.add_imagetool_child(
+            output_tool,
+            child_tool_uid,
+            show=True,
+            uid="sweep-output-image",
+            snapshot_token=output_marker,
+            created_time=tool_created + datetime.timedelta(seconds=1),
+            output_id="workspace-sweep.primary",
+            source_auto_update=True,
+            source_state="stale",
+        )
+
+        figure_data = _workspace_sweep_data("figure", offset=500.0).isel(eV=0)
+        figure_data.attrs = {"sample": "figure"}
+        figure_extra = figure_data.mean("z").rename("figure-extra")
+        figure_extra.attrs = {"sample": "figure-extra"}
+        figure_tool = _WorkspaceSweepFigureTool(
+            figure_data.rename("figure-primary"),
+            extra_data=figure_extra,
+        )
+        figure_tool.setGeometry(210, 220, 420, 320)
+        figure_tool._tool_display_name = "Sweep Figure Display"
+        figure_tool.tool_status = _WorkspaceSweepToolState(
+            value=11,
+            mode="figure",
+            weights=[1.5],
+            options={"layout": "standalone"},
+        )
+        figure_uid = manager.add_figuretool(
+            figure_tool,
+            show=False,
+            uid="sweep-figure-tool",
+            snapshot_token=figure_marker,
+            created_time=figure_created,
+        )
+
+        name_filter = "Xarray DataArray (*.h5)"
+        manager._recent_directory = str(tmp_path)
+        manager._recent_name_filter = name_filter
+        manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
+        manager._recent_loader_extensions_by_filter[name_filter] = {
+            "coordinate_attrs": ["manager"]
+        }
+        manager._workspace_controller._loader_state = (
+            manager_workspace.WorkspaceLoaderState(
+                explorer_loader_kwargs_by_name={"xarray": {"single": False}},
+                explorer_loader_extensions_by_name={
+                    "xarray": {"coordinate_attrs": ["explorer"]}
+                },
+            )
+        )
+        manager._standalone_app_pending_states["explorer"] = {
+            "window_state": {"visible": False, "rect": [10, 20, 333, 222]},
+            "tabs": [
+                {
+                    "root_path": str(tmp_path),
+                    "loader_name": None,
+                    "preview": True,
+                    "selected_paths": [str(source_path)],
+                    "sort_column": 1,
+                    "sort_order": "descending",
+                    "splitter_sizes": [120, 240],
+                    "preview_splitter_sizes": [80, 160],
+                }
+            ],
+            "active_tab": 0,
+            "loader_kwargs_by_name": {"xarray": {"single": False}},
+            "loader_extensions_by_name": {"xarray": {"coordinate_attrs": ["explorer"]}},
+        }
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        ptable._set_selection_state(
+            [6, 8], current_atomic_number=8, anchor_atomic_number=6
+        )
+        ptable._plot_atomic_number = 6
+        ptable._plot_target_user_selected = True
+        ptable.hv_edit.setText("120.5")
+        ptable.workfunction_edit.setText("4.35")
+        ptable.max_harmonic_spin.setValue(4)
+        ptable.notation_combo.setCurrentIndex(ptable.notation_combo.findData("iupac"))
+        ptable._refresh_window_state(ensure_visible=False)
+        qtbot.wait(100)
+
+        fname = tmp_path / "maximal-state.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        expected_snapshot = _workspace_sweep_runtime_snapshot(manager)
+        expected_data_items = _workspace_sweep_data_items(manager)
+
+        root_attrs = manager_workspace._read_workspace_root_attrs_h5py(fname)
+        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        assert root_attrs["imagetool_workspace_schema_version"] == 4
+        assert manifest["root_order"] == [1, 0]
+        assert manifest["workspace_link_id"] == manager._workspace_state.link_id
+        assert manifest["loader_state"] == expected_snapshot["loader_state"]
+        assert manifest["standalone_apps"] == expected_snapshot["standalone_apps"]
+
+        entries = {entry["uid"]: entry for entry in manifest["nodes"]}
+        assert set(entries) == {
+            "root-watched",
+            "root-peer",
+            "child-image",
+            "nested-image",
+            child_tool_uid,
+            output_child_uid,
+            figure_uid,
+        }
+        assert entries["root-watched"]["path"] == "0"
+        assert entries["root-peer"]["path"] == "1"
+        assert entries["child-image"]["path"] == "0/childtools/child-image"
+        assert (
+            entries["nested-image"]["path"]
+            == "0/childtools/child-image/childtools/nested-image"
+        )
+        assert entries[child_tool_uid]["kind"] == "tool"
+        assert (
+            entries[output_child_uid]["path"]
+            == f"0/childtools/{child_tool_uid}/childtools/{output_child_uid}"
+        )
+        assert entries[figure_uid]["path"] == f"figures/{figure_uid}"
+        linked_entries = [entry for entry in entries.values() if "link_group" in entry]
+        assert {entry["uid"] for entry in linked_entries} == {
+            "root-watched",
+            "root-peer",
+        }
+        assert {entry["link_colors"] for entry in linked_entries} == {False}
+
+        root_payload = _workspace_sweep_h5_attr_payload(fname, "0/imagetool")
+        assert {
+            "itool_state",
+            "itool_title",
+            "itool_name",
+            "itool_window_state",
+            "itool_provenance_spec",
+            "manager_node_uid",
+            "manager_node_kind",
+            "manager_node_snapshot_token",
+            "manager_node_added_at",
+            "manager_node_provenance_spec",
+            "manager_node_source_input_ndim",
+            "manager_node_watched_varname",
+            "manager_node_watched_uid",
+            "manager_node_watched_workspace_link_id",
+            "manager_node_watched_source_label",
+            "manager_node_watched_source_uid",
+            "manager_node_watched_connected",
+            "manager_node_live_source_spec",
+            "manager_node_source_state",
+            "manager_node_source_auto_update",
+        } <= set(root_payload)
+        assert root_payload["manager_node_watched_connected"] is False
+        assert root_payload["manager_node_source_input_ndim"] == root_data.ndim
+        assert root_payload["itool_state"]["filter_operation"] == (
+            provenance.GaussianFilterOperation(sigma={"x": 0.5}).model_dump(mode="json")
+        )
+        assert root_payload["itool_state"]["slice"]["snap_to_data"] is True
+        assert root_payload["itool_state"]["slice"]["twin_coord_names"] == [
+            "temperature"
+        ]
+        assert root_payload["itool_state"]["plotitem_states"][0]["roi_states"]
+        assert (
+            root_payload["itool_state"]["plotitem_states"][0]["guideline_state"][
+                "count"
+            ]
+            == 2
+        )
+
+        child_payload = _workspace_sweep_h5_attr_payload(
+            fname, "0/childtools/child-image/imagetool"
+        )
+        assert "manager_node_output_id" not in child_payload
+        assert child_payload["manager_node_source_state"] == "stale"
+        assert child_payload["manager_node_source_auto_update"] is True
+        assert child_payload["manager_node_live_source_binding"] == (
+            child_binding.model_dump(mode="json")
+        )
+
+        output_payload = _workspace_sweep_h5_attr_payload(
+            fname,
+            f"0/childtools/{child_tool_uid}/childtools/{output_child_uid}/imagetool",
+        )
+        assert output_payload["manager_node_output_id"] == "workspace-sweep.primary"
+        assert output_payload["manager_node_source_state"] == "stale"
+        assert output_payload["manager_node_source_auto_update"] is True
+        assert "manager_node_live_source_spec" not in output_payload
+        assert "manager_node_live_source_binding" not in output_payload
+
+        tool_payload = _workspace_sweep_h5_attr_payload(
+            fname, "0/childtools/sweep-child-tool/tool"
+        )
+        assert tool_payload["tool_state"] == child_window.tool_status.model_dump(
+            mode="json"
+        )
+        assert tool_payload["tool_source_state"] == "unavailable"
+        assert tool_payload["tool_source_auto_update"] is True
+        assert tool_payload["tool_source_binding"] == tool_binding.model_dump(
+            mode="json"
+        )
+        with h5py.File(fname, "r") as h5_file:
+            tool_group = h5_file["0/childtools/sweep-child-tool/tool"]
+            assert "auxiliary" in tool_group
+            assert (
+                tool_group["auxiliary"].attrs[
+                    manager_workspace._TOOL_DATA_BLOB_NAME_ATTR
+                ]
+                == extra_data.name
+            )
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        qtbot.wait_until(lambda: figure_uid in manager._tool_graph.figure_uids)
+
+        actual_snapshot = _workspace_sweep_runtime_snapshot(manager)
+        _workspace_sweep_assert_snapshot_equal(actual_snapshot, expected_snapshot)
+        _workspace_sweep_assert_data_items_equal(
+            _workspace_sweep_data_items(manager), expected_data_items
+        )
+        assert not manager.is_workspace_modified
 
 
 def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
