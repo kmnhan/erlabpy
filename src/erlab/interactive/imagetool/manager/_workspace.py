@@ -1515,7 +1515,11 @@ def _read_workspace_dataset_group_h5py(
             and data_name == _serialization.SAVED_TOOL_DATA_NAME
         ):
             for variable_name, dataset in datasets.items():
-                if variable_name == data_name or variable_name in data_vars:
+                if (
+                    variable_name == data_name
+                    or variable_name in data_vars
+                    or variable_name in coords
+                ):
                     continue
                 variable = _workspace_h5py_dataset_independent_tool_variable(
                     dataset,

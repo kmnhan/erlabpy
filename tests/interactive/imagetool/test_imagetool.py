@@ -1135,6 +1135,19 @@ def test_locked_levels_state_uses_json_scalars(qtbot) -> None:
     win.close()
 
 
+def test_levels_preserve_requested_span_with_nonfinite_cached_limits(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.array_slicer.__dict__["limits"] = (np.nan, np.nan)
+
+    win.slicer_area.levels = (-1.0, 1.0)
+
+    assert not win.slicer_area.levels_locked
+    assert win.slicer_area.levels == pytest.approx((-1.0, 1.0))
+
+    win.close()
+
+
 def test_figure_composer_multicursor_line_seeds_normalization_and_colors(
     qtbot,
 ) -> None:
@@ -5789,6 +5802,91 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         data.sel(x=slice(2.0, 4.0)),
     )
 
+    win.close()
+
+
+def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(5.0)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_manual_limits({"x_idx": [1.0, 3.0], "y": [0.0, 2.0]})
+
+    dialog = CropToViewDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x_idx"].setChecked(True)
+    dialog.dim_checks["y"].setChecked(True)
+
+    expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
+    public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        win.slicer_area.data
+    )
+    source_spec = dialog.source_spec("ignored")
+    code = dialog.make_code()
+
+    assert source_spec.kind == "public_data"
+    assert CropToViewDialog._nonuniform_isel_slice(slice(3, 1, -1)) == slice(3, 0, -1)
+    assert "x_idx" not in code
+    xarray.testing.assert_identical(
+        dialog.process_data(public_data).rename(None), expected.rename(None)
+    )
+    xarray.testing.assert_identical(
+        source_spec.apply(win.slicer_area.data).rename(None), expected.rename(None)
+    )
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, code).rename(None), expected.rename(None)
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(5.0)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_index(axis=0, value=1, cursor=0)
+    win.slicer_area.set_index(axis=1, value=0, cursor=0)
+    win.slicer_area.set_index(axis=0, value=3, cursor=1)
+    win.slicer_area.set_index(axis=1, value=2, cursor=1)
+
+    dialog = CropDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.cursor_combos[0].setCurrentIndex(0)
+    dialog.cursor_combos[1].setCurrentIndex(1)
+    dialog.dim_checks["x_idx"].setChecked(True)
+    dialog.dim_checks["y"].setChecked(True)
+
+    expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
+    public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        win.slicer_area.data
+    )
+    source_spec = dialog.source_spec("ignored")
+    code = dialog.make_code()
+
+    assert source_spec.kind == "public_data"
+    assert "x_idx" not in code
+    xarray.testing.assert_identical(
+        dialog.process_data(public_data).rename(None), expected.rename(None)
+    )
+    xarray.testing.assert_identical(
+        source_spec.apply(win.slicer_area.data).rename(None), expected.rename(None)
+    )
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, code).rename(None), expected.rename(None)
+    )
+
+    dialog.close()
     win.close()
 
 

@@ -656,6 +656,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.refresh_all()
         logger.debug("Refreshed after state restoration")
 
+        self.cursor_colors = [pg.mkColor(c) for c in state["cursor_colors"]]
+        for ax in self.axes:
+            ax.set_cursor_colors(self.cursor_colors)
+        self.sigCursorColorsChanged.emit()
+        logger.debug("Reapplied saved cursor colors")
+
     @property
     def splitter_sizes(self) -> list[list[int]]:
         return [s.sizes() for s in self._splitters]
@@ -699,12 +705,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @levels.setter
     def levels(self, levels: tuple[float, float]) -> None:
-        self._colorbar.cb.setSpanRegion(
-            (
-                max(levels[0], self.array_slicer.nanmin),
-                min(levels[1], self.array_slicer.nanmax),
+        requested_levels = (float(levels[0]), float(levels[1]))
+        data_limits = (self.array_slicer.nanmin, self.array_slicer.nanmax)
+        if np.isfinite(data_limits).all():
+            self._colorbar.cb.setLimits(
+                (
+                    min(requested_levels[0], float(data_limits[0])),
+                    max(requested_levels[1], float(data_limits[1])),
+                )
             )
-        )
+        else:
+            self._colorbar.cb.setLimits(requested_levels)
+        self._colorbar.cb.setSpanRegion(requested_levels)
+        if self.levels_locked:
+            for im in self._imageitems:
+                im.setLevels(requested_levels, update=False)
+                im.updateImage()
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
