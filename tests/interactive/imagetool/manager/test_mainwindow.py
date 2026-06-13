@@ -23,6 +23,7 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
     _BatchOperationDialog,
@@ -1174,21 +1175,33 @@ def test_manager_metadata_full_code_generated_only_when_copied(
 
 
 def test_load_source_details_dialog_uses_native_readonly_details(
-    qtbot, tmp_path
+    qtbot, monkeypatch, tmp_path
 ) -> None:
     kwargs_text = (
         'engine="h5netcdf", '
         "very_long_keyword_argument_name=123, "
         'another_long_keyword_argument_name="abcdef"'
     )
+    revealed: list[pathlib.Path] = []
+    opened_in_explorer: list[pathlib.Path] = []
+    source_path = tmp_path / "scan.nc"
+    source_path.write_bytes(b"")
+    monkeypatch.setattr(
+        erlab.utils.misc,
+        "open_in_file_manager",
+        lambda path: revealed.append(pathlib.Path(path)),
+    )
     dialog = _LoadSourceDetailsDialog(
         _LoadSourceDetails(
-            path=tmp_path / "scan.nc",
+            path=source_path,
             loader_label="Loader",
             loader_text="xarray.load_dataarray",
             kwargs_text=kwargs_text,
             load_code=None,
-        )
+        ),
+        show_in_data_explorer=lambda path: opened_in_explorer.append(
+            pathlib.Path(path)
+        ),
     )
     qtbot.addWidget(dialog)
     dialog.show()
@@ -1198,6 +1211,10 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert dialog.minimumSize() == dialog.maximumSize()
     assert dialog.height() == dialog.minimumSizeHint().height()
     assert dialog.height() <= dialog.sizeHint().height()
+    assert dialog.reveal_button is not None
+    assert dialog.data_explorer_button is not None
+    assert dialog.reveal_button.isEnabled()
+    assert dialog.data_explorer_button.isEnabled()
 
     path_label = dialog.findChild(
         QtWidgets.QLabel, "manager_load_source_path_value_label"
@@ -1211,14 +1228,96 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert path_label is not None
     assert loader_label is not None
     assert arguments_label is not None
-    assert path_label.text() == str(tmp_path / "scan.nc")
-    assert path_label.toolTip() == str(tmp_path / "scan.nc")
+    assert path_label.text() == str(source_path)
+    assert path_label.toolTip() == str(source_path)
     assert loader_label.text() == "xarray.load_dataarray"
     assert arguments_label.text() == kwargs_text
     assert arguments_label.toolTip() == kwargs_text
     assert arguments_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
+
+    dialog.reveal_button.click()
+    dialog.data_explorer_button.click()
+    assert revealed == [source_path]
+    assert opened_in_explorer == [source_path]
+
+
+def test_load_source_details_dialog_disables_data_explorer_without_callback(
+    qtbot, tmp_path
+) -> None:
+    source_path = tmp_path / "scan.nc"
+    source_path.write_bytes(b"")
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+
+    data_explorer_button = dialog.findChild(
+        QtWidgets.QAbstractButton, "manager_show_load_source_in_explorer_button"
+    )
+    assert data_explorer_button is not None
+    assert not data_explorer_button.isEnabled()
+
+
+def test_load_source_details_dialog_marks_missing_source_file(qtbot, tmp_path) -> None:
+    source_path = tmp_path / "missing.nc"
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            load_code=None,
+        ),
+        show_in_data_explorer=lambda _path: None,
+    )
+    qtbot.addWidget(dialog)
+
+    status_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_status_label"
+    )
+    path_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_path_value_label"
+    )
+    assert status_label is not None
+    assert path_label is not None
+    assert status_label.property("manager_source_missing") is True
+    assert path_label.property("manager_source_missing") is True
+    assert dialog.reveal_button is not None
+    assert dialog.data_explorer_button is not None
+    assert not dialog.reveal_button.isEnabled()
+    assert not dialog.data_explorer_button.isEnabled()
+
+
+def test_load_source_details_controller_opens_source_in_data_explorer(tmp_path) -> None:
+    source_path = tmp_path / "scan.nc"
+    shown_paths: list[pathlib.Path] = []
+    requested_apps: list[str] = []
+
+    class _FakeExplorer:
+        def show_path(self, path: pathlib.Path) -> None:
+            shown_paths.append(pathlib.Path(path))
+
+    def _show_standalone_app(key: str) -> _FakeExplorer:
+        requested_apps.append(key)
+        return _FakeExplorer()
+
+    manager = types.SimpleNamespace(_show_standalone_app=_show_standalone_app)
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._show_load_source_in_data_explorer(source_path)
+
+    assert requested_apps == ["explorer"]
+    assert shown_paths == [source_path]
 
 
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:

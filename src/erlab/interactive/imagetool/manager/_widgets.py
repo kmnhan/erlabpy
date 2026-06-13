@@ -19,6 +19,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.colors
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -246,6 +247,8 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self,
         details: _LoadSourceDetails,
         parent: QtWidgets.QWidget | None = None,
+        *,
+        show_in_data_explorer: Callable[[pathlib.Path], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Data Source")
@@ -253,6 +256,9 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.setMinimumWidth(540)
         self.setSizeGripEnabled(False)
         self.value_labels: dict[str, QtWidgets.QLabel] = {}
+        self.reveal_button: QtWidgets.QAbstractButton | None = None
+        self.data_explorer_button: QtWidgets.QAbstractButton | None = None
+        source_exists = details.path.exists()
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -289,9 +295,14 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         title_label.setWordWrap(True)
         title_layout.addWidget(title_label)
 
-        status_label = QtWidgets.QLabel("Loaded from file", self)
+        status_label = QtWidgets.QLabel(
+            "Loaded from file" if source_exists else "Source file not found", self
+        )
         status_label.setObjectName("manager_load_source_status_label")
-        status_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        if source_exists:
+            status_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        else:
+            _mark_missing_source_label(status_label)
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
@@ -299,6 +310,8 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         layout.addLayout(details_layout)
 
         row = self._add_detail(details_layout, 0, "path", "Path", str(details.path))
+        if not source_exists:
+            _mark_missing_source_label(self.value_labels["path"])
         row = self._add_detail(
             details_layout,
             row,
@@ -316,6 +329,50 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
         self.button_box.setCenterButtons(False)
+        self.reveal_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(
+                _file_manager_action_text(),
+                QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+            ),
+        )
+        self.reveal_button.setObjectName("manager_reveal_load_source_path_button")
+        self.reveal_button.setEnabled(source_exists)
+        self.reveal_button.setToolTip(
+            "Reveal this file in the system file manager."
+            if source_exists
+            else "The recorded source file does not exist."
+        )
+        self.reveal_button.clicked.connect(
+            lambda: erlab.utils.misc.open_in_file_manager(details.path)
+        )
+        self.data_explorer_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(
+                "Show in Data Explorer",
+                QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+            ),
+        )
+        self.data_explorer_button.setObjectName(
+            "manager_show_load_source_in_explorer_button"
+        )
+        self.data_explorer_button.setEnabled(
+            source_exists and show_in_data_explorer is not None
+        )
+        self.data_explorer_button.setToolTip(
+            "Show this file in Data Explorer."
+            if source_exists and show_in_data_explorer is not None
+            else "The recorded source file does not exist."
+            if not source_exists
+            else "Data Explorer is unavailable in this context."
+        )
+        self.data_explorer_button.clicked.connect(
+            lambda: (
+                show_in_data_explorer(details.path)
+                if show_in_data_explorer is not None
+                else None
+            )
+        )
         self.copy_path_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(
@@ -389,12 +446,29 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         return row + 1
 
 
-def _workspace_file_manager_action_text() -> str:
+def _file_manager_action_text() -> str:
     if sys.platform == "darwin":
         return "Reveal in Finder"
     if sys.platform.startswith("win"):
         return "Reveal in File Explorer"
     return "Open Containing Folder"
+
+
+def _mark_missing_source_label(label: QtWidgets.QLabel) -> None:
+    palette = label.palette()
+    palette.setColor(
+        QtGui.QPalette.ColorRole.WindowText,
+        QtGui.QColor(
+            "#ffb4ab" if erlab.interactive.colors.is_dark_mode() else "#b3261e"
+        ),
+    )
+    label.setForegroundRole(QtGui.QPalette.ColorRole.WindowText)
+    label.setPalette(palette)
+    label.setProperty("manager_source_missing", True)
+
+
+def _workspace_file_manager_action_text() -> str:
+    return _file_manager_action_text()
 
 
 @dataclass(frozen=True)

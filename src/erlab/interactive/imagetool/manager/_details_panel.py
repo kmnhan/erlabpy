@@ -23,6 +23,9 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
+    import pathlib
+
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
@@ -133,7 +136,17 @@ class _DetailsPanelController:
             self._manager._metadata_detail_labels[field.label] = value_label
 
     def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
-        _LoadSourceDetailsDialog(details, self._manager).exec()
+        _LoadSourceDetailsDialog(
+            details,
+            self._manager,
+            show_in_data_explorer=self._show_load_source_in_data_explorer,
+        ).exec()
+
+    def _show_load_source_in_data_explorer(self, path: pathlib.Path) -> None:
+        explorer = typing.cast(
+            "_TabbedExplorer", self._manager._show_standalone_app("explorer")
+        )
+        explorer.show_path(path)
 
     def _load_source_for_replay(
         self, node: _ImageToolWrapper | _ManagedWindowNode

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import sys
 import typing
 import weakref
@@ -222,6 +223,22 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         finally:
             self._workspace_state_restoring = False
         self._emit_workspace_state_changed()
+
+    def show_path(self, path: str | pathlib.Path) -> None:
+        source_path = pathlib.Path(path).resolve()
+        root_path = source_path if source_path.is_dir() else source_path.parent
+        self.add_tab(root_path=root_path)
+        explorer = self.current_explorer
+        if explorer is None:
+            return
+        selected_paths = () if source_path.is_dir() else (str(source_path),)
+        explorer.restore_workspace_state(
+            DataExplorerTabState(
+                root_path=str(root_path),
+                loader_name=explorer.loader_name,
+                selected_paths=selected_paths,
+            )
+        )
 
     def _clear_tabs(self) -> None:
         while self.tab_widget.count() > 0:
