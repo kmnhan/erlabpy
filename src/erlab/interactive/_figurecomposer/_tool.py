@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import functools
 import json
@@ -321,6 +322,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
         self._operation_context_menu: QtWidgets.QMenu | None = None
         self._connected_step_clipboard: QtGui.QClipboard | None = None
+        self._prev_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
+            collections.deque(maxlen=self._prev_states.maxlen)
+        )
+        self._next_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
+            collections.deque(maxlen=self._next_states.maxlen)
+        )
 
         if source_data is not None:
             self.set_source_data(source_data)
@@ -2937,6 +2944,77 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if clipboard is not None:
             with contextlib.suppress(TypeError, RuntimeError):
                 clipboard.dataChanged.disconnect(self._update_step_action_buttons)
+
+    def _source_data_history_state(self) -> dict[str, xr.DataArray]:
+        return dict(self._source_data)
+
+    def _restore_source_data_history_state(
+        self, source_data: Mapping[str, xr.DataArray]
+    ) -> None:
+        self._source_data = dict(source_data)
+        self._mark_preview_pixmap_stale()
+
+    def _reset_history_stack(self) -> None:
+        self._prev_states.clear()
+        self._next_states.clear()
+        self._prev_source_data_states.clear()
+        self._next_source_data_states.clear()
+        self._prev_states.append(self.tool_status)
+        self._prev_source_data_states.append(self._source_data_history_state())
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def _write_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        last_state = self._prev_states[-1] if self._prev_states else None
+        if not self._history_state_equal(last_state, curr_state):
+            self._prev_states.append(curr_state)
+            self._prev_source_data_states.append(self._source_data_history_state())
+            self._next_states.clear()
+            self._next_source_data_states.clear()
+            self._update_history_actions()
+
+    @QtCore.Slot()
+    def _replace_last_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        source_data = self._source_data_history_state()
+        if self._prev_states:
+            self._prev_states[-1] = curr_state
+            self._prev_source_data_states[-1] = source_data
+        else:
+            self._prev_states.append(curr_state)
+            self._prev_source_data_states.append(source_data)
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def undo(self) -> None:
+        """Undo the most recent recorded Figure Composer recipe change."""
+        if not self.undoable:
+            return
+        with self._history_suppressed():
+            self._next_states.append(self._prev_states.pop())
+            self._next_source_data_states.append(self._prev_source_data_states.pop())
+            self._restore_source_data_history_state(self._prev_source_data_states[-1])
+            self.tool_status = self._prev_states[-1]
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def redo(self) -> None:
+        """Redo the most recently undone Figure Composer recipe change."""
+        if not self.redoable:
+            return
+        with self._history_suppressed():
+            next_state = self._next_states.pop()
+            next_source_data = self._next_source_data_states.pop()
+            self._prev_states.append(next_state)
+            self._prev_source_data_states.append(next_source_data)
+            self._restore_source_data_history_state(next_source_data)
+            self.tool_status = next_state
+        self._update_history_actions()
 
     def _clear_operation_multi_select_event(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(self):

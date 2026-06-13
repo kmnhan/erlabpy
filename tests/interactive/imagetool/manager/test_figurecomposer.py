@@ -5929,6 +5929,18 @@ def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
     assert destination.tool_status.operations[-1].sources == ("map",)
     xr.testing.assert_identical(destination.source_data()["map"], source_data)
 
+    destination.undo()
+    assert [source.name for source in destination.tool_status.sources] == ["existing"]
+    assert set(destination.source_data()) == {"existing"}
+
+    destination.redo()
+    assert [source.name for source in destination.tool_status.sources] == [
+        "existing",
+        "map",
+    ]
+    assert destination.tool_status.operations[-1].sources == ("map",)
+    xr.testing.assert_identical(destination.source_data()["map"], source_data)
+
 
 def test_figure_composer_copy_paste_steps_renames_source_conflicts(qtbot) -> None:
     image = xr.DataArray(
@@ -6225,6 +6237,23 @@ def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
 
 def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            figurecomposer_tool_module.QtWidgets.QApplication,
+            "instance",
+            staticmethod(lambda: None),
+        )
+        disconnected_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                sources=(FigureSourceState(name="data", label="data"),),
+                operations=(_custom_order_step("a"),),
+                primary_source="data",
+            ),
+        )
+    qtbot.addWidget(disconnected_tool)
+    assert disconnected_tool._connected_step_clipboard is None
+
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
@@ -6256,6 +6285,45 @@ def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
     )
     tool._connected_step_clipboard = None
     tool._disconnect_step_clipboard()
+
+
+def test_figure_composer_source_data_history_helpers(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    tool._reset_history_stack()
+    assert list(tool._prev_source_data_states[-1]) == ["data"]
+    assert not tool.undoable
+    assert not tool.redoable
+    tool.undo()
+    tool.redo()
+    tool._write_state()
+    assert len(tool._prev_source_data_states) == 1
+
+    with tool._history_suppressed():
+        tool._write_state()
+        tool._replace_last_state()
+    assert len(tool._prev_source_data_states) == 1
+
+    replacement = data.copy(data=np.full(3, 2.0))
+    tool.set_source_data({"data": replacement})
+    tool._replace_last_state()
+    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
+
+    tool._prev_states.clear()
+    tool._prev_source_data_states.clear()
+    tool._replace_last_state()
+    assert len(tool._prev_states) == 1
+    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
 
 
 def test_figure_composer_copy_paste_source_and_insert_fallbacks(
