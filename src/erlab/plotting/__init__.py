@@ -86,10 +86,11 @@ def _register_style_library() -> None:
     user_library_paths: list[str] | None = getattr(
         matplotlib.style, "USER_LIBRARY_PATHS", None
     )
-    if user_library_paths is None:
-        from matplotlib.style import core as style_core
+    if user_library_paths is None:  # pragma: no branch
+        # Matplotlib < 3.11 exposes USER_LIBRARY_PATHS only through style.core.
+        from matplotlib.style import core as style_core  # pragma: no cover
 
-        user_library_paths = style_core.USER_LIBRARY_PATHS
+        user_library_paths = style_core.USER_LIBRARY_PATHS  # pragma: no cover
     if stylelib_path not in user_library_paths:
         user_library_paths.append(stylelib_path)
     matplotlib.style.reload_library()
