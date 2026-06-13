@@ -1135,6 +1135,19 @@ def test_locked_levels_state_uses_json_scalars(qtbot) -> None:
     win.close()
 
 
+def test_levels_preserve_requested_span_with_nonfinite_cached_limits(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.array_slicer.__dict__["limits"] = (np.nan, np.nan)
+
+    win.slicer_area.levels = (-1.0, 1.0)
+
+    assert not win.slicer_area.levels_locked
+    assert win.slicer_area.levels == pytest.approx((-1.0, 1.0))
+
+    win.close()
+
+
 def test_figure_composer_multicursor_line_seeds_normalization_and_colors(
     qtbot,
 ) -> None:
