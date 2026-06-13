@@ -6399,8 +6399,7 @@ def test_figure_composer_step_payload_rejects_malformed_clipboard_data() -> None
     assert figurecomposer_tool_module._step_clipboard_payload(mime) is None
 
     assert (
-        figurecomposer_tool_module._step_payload_text_from_mime(QtCore.QMimeData())
-        is None
+        figurecomposer_tool_module._step_clipboard_payload(QtCore.QMimeData()) is None
     )
 
     def payload_with(**updates: typing.Any) -> str:
@@ -6512,14 +6511,10 @@ def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
         )
         assert tool._clipboard() is None
         assert tool._clipboard_step_payload() is None
-        assert not tool._clipboard_contains_same_composer_cut()
         tool._copy_selected_operations()
         tool._cut_selected_operations()
     assert tool.tool_status == before
 
-    assert (
-        tool._unique_pasted_source_name("data", {"data", "data_copy"}) == "data_copy_2"
-    )
     tool._connected_step_clipboard = None
     tool._disconnect_step_clipboard()
 
@@ -6593,12 +6588,6 @@ def test_figure_composer_copy_paste_source_and_insert_fallbacks(
     )
     assert [source.name for source in renamed_sources] == ["extra"]
 
-    with monkeypatch.context() as patch:
-        patch.setattr(tool, "_clipboard_step_payload", lambda: ((), (), {}))
-        before = tool.tool_status
-        tool._paste_operations_from_clipboard()
-        assert tool.tool_status == before
-
     clipboard = _clear_clipboard()
     clipboard.setText(
         figurecomposer_tool_module._step_clipboard_payload_text(
@@ -6623,6 +6612,14 @@ def test_figure_composer_copy_paste_source_and_insert_fallbacks(
         )
         tool._paste_operations_from_clipboard()
     assert [source.name for source in tool.tool_status.sources] == ["data"]
+
+    tool._source_data["data_copy"] = data
+    renamed_sources, rename_map, _ = tool._renamed_pasted_sources(
+        (FigureSourceState(name="data", label="data"),),
+        {},
+    )
+    assert [source.name for source in renamed_sources] == ["data_copy_2"]
+    assert rename_map == {"data": "data_copy_2"}
 
     tool._source_data["extra"] = data
     renamed_sources, rename_map, renamed_source_data = tool._renamed_pasted_sources(

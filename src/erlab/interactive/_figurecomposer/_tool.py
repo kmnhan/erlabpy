@@ -140,8 +140,6 @@ _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
-_STEPS_CLIPBOARD_ACTION_COPY = "copy"
-_STEPS_CLIPBOARD_ACTION_CUT = "cut"
 
 
 class _FigureComposerStepMimeData(QtCore.QMimeData):
@@ -152,13 +150,11 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
         payload_text: str,
         source_data: Mapping[str, xr.DataArray],
         *,
-        source_tool_id: str,
-        clipboard_action: str,
+        cut_source_tool_id: str | None = None,
     ) -> None:
         super().__init__()
         self.figure_composer_source_data: dict[str, xr.DataArray] = dict(source_data)
-        self.figure_composer_source_tool_id = source_tool_id
-        self.figure_composer_clipboard_action = clipboard_action
+        self.figure_composer_cut_source_tool_id = cut_source_tool_id
         self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
         self.setText(payload_text)
 
@@ -208,18 +204,6 @@ def _step_clipboard_payload_text(
     )
 
 
-def _step_payload_text_from_mime(mime: QtCore.QMimeData) -> str | None:
-    if mime.hasFormat(_STEPS_CLIPBOARD_MIME):
-        raw = mime.data(_STEPS_CLIPBOARD_MIME).data()
-        try:
-            return bytes(raw).decode("utf-8")
-        except UnicodeDecodeError:
-            return None
-    if mime.hasText():
-        return mime.text()
-    return None
-
-
 def _step_clipboard_payload(
     mime: QtCore.QMimeData | None,
 ) -> (
@@ -232,10 +216,15 @@ def _step_clipboard_payload(
 ):
     if mime is None:
         return None
-    payload_text = _step_payload_text_from_mime(mime)
-    if payload_text is None:
-        return None
     try:
+        if mime.hasFormat(_STEPS_CLIPBOARD_MIME):
+            payload_text = bytes(mime.data(_STEPS_CLIPBOARD_MIME).data()).decode(
+                "utf-8"
+            )
+        elif mime.hasText():
+            payload_text = mime.text()
+        else:
+            return None
         payload = json.loads(payload_text)
         if not isinstance(payload, dict):
             return None
@@ -256,7 +245,7 @@ def _step_clipboard_payload(
         sources = tuple(
             FigureSourceState.model_validate(source) for source in raw_sources
         )
-    except Exception:
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
     source_data = getattr(mime, "figure_composer_source_data", {})
@@ -3495,20 +3484,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return None
         return _step_clipboard_payload(clipboard.mimeData())
 
-    def _clipboard_contains_same_composer_cut(self) -> bool:
-        clipboard = self._clipboard()
-        if clipboard is None:
-            return False
-        mime = clipboard.mimeData()
-        return (
-            getattr(mime, "figure_composer_clipboard_action", None)
-            == _STEPS_CLIPBOARD_ACTION_CUT
-            and getattr(mime, "figure_composer_source_tool_id", None)
-            == self._step_clipboard_tool_id
-        )
-
     def _write_selected_operations_to_clipboard(
-        self, clipboard_action: str
+        self, *, cut: bool = False
     ) -> tuple[int, ...] | None:
         indices = self._selected_operation_indices()
         if not indices:
@@ -3540,8 +3517,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _FigureComposerStepMimeData(
                 _step_clipboard_payload_text(operations, sources),
                 source_data,
-                source_tool_id=self._step_clipboard_tool_id,
-                clipboard_action=clipboard_action,
+                cut_source_tool_id=self._step_clipboard_tool_id if cut else None,
             )
         )
         self._update_step_action_buttons()
@@ -3549,28 +3525,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _copy_selected_operations(self) -> None:
-        self._write_selected_operations_to_clipboard(_STEPS_CLIPBOARD_ACTION_COPY)
+        self._write_selected_operations_to_clipboard()
 
     @QtCore.Slot()
     def _cut_selected_operations(self) -> None:
-        indices = self._write_selected_operations_to_clipboard(
-            _STEPS_CLIPBOARD_ACTION_CUT
-        )
+        indices = self._write_selected_operations_to_clipboard(cut=True)
         if indices is None:
             return
         self._remove_operations_at_indices(indices)
-
-    @staticmethod
-    def _unique_pasted_source_name(source_name: str, reserved: set[str]) -> str:
-        if source_name not in reserved:
-            return source_name
-        stem = f"{source_name}_copy"
-        candidate = stem
-        suffix = 2
-        while candidate in reserved:
-            candidate = f"{stem}_{suffix}"
-            suffix += 1
-        return candidate
 
     def _renamed_pasted_sources(
         self,
@@ -3602,7 +3564,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if source.name in source_data and source.name not in self._source_data:
                     renamed_source_data[source.name] = source_data[source.name]
                 continue
-            pasted_name = self._unique_pasted_source_name(source.name, reserved)
+            pasted_name = source.name
+            if pasted_name in reserved:
+                stem = f"{source.name}_copy"
+                pasted_name = stem
+                suffix = 2
+                while pasted_name in reserved:
+                    pasted_name = f"{stem}_{suffix}"
+                    suffix += 1
             reserved.add(pasted_name)
             rename_map[source.name] = pasted_name
             renamed_sources.append(source.model_copy(update={"name": pasted_name}))
@@ -3639,14 +3608,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _paste_operations_from_clipboard(self) -> None:
-        payload = self._clipboard_step_payload()
+        clipboard = self._clipboard()
+        if clipboard is None:
+            return
+        mime = clipboard.mimeData()
+        payload = _step_clipboard_payload(mime)
         if payload is None:
             return
         operations, sources, source_data = payload
         renamed_sources, rename_map, renamed_source_data = self._renamed_pasted_sources(
             sources,
             source_data,
-            preserve_existing=self._clipboard_contains_same_composer_cut(),
+            preserve_existing=(
+                getattr(mime, "figure_composer_cut_source_tool_id", None)
+                == self._step_clipboard_tool_id
+            ),
         )
         pasted_operations = tuple(
             self._operation_with_renamed_sources(operation, rename_map).model_copy(
@@ -3655,8 +3631,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             for operation in operations
         )
-        if not pasted_operations:
-            return
         operation_list = list(self._recipe.operations)
         indices = self._selected_operation_indices()
         current = self._current_operation()
