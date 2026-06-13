@@ -107,6 +107,26 @@ def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     assert "fit_data" not in code
 
 
+def test_fit1d_tool_status_without_saved_params_uses_model_defaults(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 2.0, 11)
+    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    status = win.tool_status.model_copy(update={"params": []})
+    win_restored = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win_restored)
+    win_restored.tool_status = status
+
+    assert list(win_restored._params) == ["n0", "tau"]
+    assert win_restored.tool_status.params
+
+
 def test_fit1d_undo_redo(qtbot, exp_decay_model) -> None:
     t = np.linspace(0.0, 2.0, 11)
     data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")

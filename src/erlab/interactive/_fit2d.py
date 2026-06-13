@@ -732,6 +732,7 @@ class Fit2DTool(Fit1DTool):
         super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
             self, status
         )
+        self._update_param_plot_options()
         if state2d is not None:  # pragma: no branch
             y_size = int(self._data_full.sizes[self._y_dim_name])
             self._data_name_full = state2d.data_name_full
@@ -863,7 +864,7 @@ class Fit2DTool(Fit1DTool):
         with QtCore.QSignalBlocker(self.param_plot_combo):
             prev_param = self.param_plot_combo.currentText()
             self.param_plot_combo.clear()
-            updated_names = list(self._model.param_names)
+            updated_names = list(self._params.keys())
             self.param_plot_combo.addItems(updated_names)
             if set(self._param_plot_overlay_states) != set(updated_names):
                 self._reset_param_plot_overlay_states(updated_names)
@@ -876,7 +877,7 @@ class Fit2DTool(Fit1DTool):
 
     def _apply_param_plot_overlay_states(self, states: dict[str, bool]) -> None:
         """Apply saved overlay states and refresh overlay UI."""
-        param_names = list(self._model.param_names)
+        param_names = list(self._params.keys())
         if set(states) != set(param_names):
             self._reset_param_plot_overlay_states(param_names)
             return

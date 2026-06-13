@@ -167,6 +167,59 @@ def test_fit2d_tool_status_restore(qtbot, exp_decay_model) -> None:
     assert win_restored.param_model.param_at(0).value == pytest.approx(3.0)
 
 
+def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
+    data = _make_2d_data()
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        peak_shapes="voigt",
+        fd=False,
+        background="linear",
+        convolve=False,
+    )
+    params = model.make_params(
+        const_bkg=0.0,
+        lin_bkg=0.0,
+        p0_center=0.1,
+        p0_sigma=0.15,
+        p0_gamma=0.2,
+        p0_amplitude=1.3,
+    )
+    win = erlab.interactive.ftool(data, model=model, params=params, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    win.param_plot_combo.setCurrentText("p0_width")
+    win.param_plot_overlay_check.setChecked(True)
+
+    status = win.tool_status
+    expected_param_names = list(win._params.keys())
+
+    win_restored = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        win_restored.tool_status = status
+
+    assert win_restored.tool_status.params == status.params
+    assert [
+        win_restored.param_plot_combo.itemText(i)
+        for i in range(win_restored.param_plot_combo.count())
+    ] == expected_param_names
+    win_restored.param_plot_combo.setCurrentText("p0_width")
+    assert win_restored.param_plot_overlay_check.isChecked()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        win_roundtripped = erlab.interactive.utils.ToolWindow.from_dataset(
+            win.to_dataset()
+        )
+    qtbot.addWidget(win_roundtripped)
+    assert isinstance(win_roundtripped, Fit2DTool)
+    assert win_roundtripped.tool_status.params == status.params
+    win_roundtripped.param_plot_combo.setCurrentText("p0_width")
+    assert win_roundtripped.param_plot_overlay_check.isChecked()
+
+
 def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

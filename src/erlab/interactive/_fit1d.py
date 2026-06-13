@@ -2026,7 +2026,20 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                         cls_obj = getattr(cls_obj, attr)
                     model.__class__ = cls_obj
 
-            self.set_model(model, model_load_path=status.model_load_path)
+            restored_params = (
+                self._deserialize_params(status.params) if status.params else None
+            )
+            if restored_params is None or len(restored_params) == 0:
+                self.set_model(model, model_load_path=status.model_load_path)
+            else:
+                # Saved params are authoritative during restore; generating model
+                # defaults here can evaluate incomplete deserialized model state.
+                self._model = model
+                self._model_load_path = status.model_load_path
+                self._params = restored_params
+                self._initial_params = self._params.copy()
+                self._sync_model_display()
+                self._sync_model_specific_controls()
 
             self.components_check.setChecked(status.show_components)
             self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
@@ -2038,9 +2051,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
             self._slider_widths = dict(status.slider_widths)
 
-            if status.params:
-                self._params = self._deserialize_params(status.params)
-                self._initial_params = self._params.copy()
             self._params_from_coord = self._sanitize_params_from_coord(
                 status.params_from_coord
             )
