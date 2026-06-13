@@ -1173,7 +1173,7 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         assert copied == ["derived = xr.DataArray([1.0])"]
 
 
-def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
+def test_load_source_details_dialog_uses_native_readonly_details(
     qtbot, tmp_path
 ) -> None:
     kwargs_text = (
@@ -1193,21 +1193,30 @@ def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
     qtbot.addWidget(dialog)
     dialog.show()
 
-    qtbot.wait_until(lambda: dialog.kwargs_edit._visual_row_count() > 1, timeout=2000)
+    assert not dialog.findChildren(QtWidgets.QLineEdit)
+    assert not dialog.findChildren(QtWidgets.QPlainTextEdit)
+    assert dialog.minimumSize() == dialog.maximumSize()
 
-    expected_rows = min(
-        dialog.kwargs_edit._MAX_VISIBLE_ROWS,
-        dialog.kwargs_edit._visual_row_count(),
+    path_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_path_value_label"
     )
-    assert dialog.kwargs_edit.height() == (
-        expected_rows * dialog.kwargs_edit.fontMetrics().lineSpacing()
-        + dialog.kwargs_edit._VERTICAL_PADDING
+    loader_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_loader_value_label"
     )
-    assert isinstance(
-        dialog.kwargs_highlighter, erlab.interactive.utils.PythonHighlighter
+    arguments_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_arguments_value_label"
     )
-    dialog.kwargs_edit.setPlainText(None)
-    assert dialog.kwargs_edit.toPlainText() == ""
+    assert path_label is not None
+    assert loader_label is not None
+    assert arguments_label is not None
+    assert path_label.text() == str(tmp_path / "scan.nc")
+    assert path_label.toolTip() == str(tmp_path / "scan.nc")
+    assert loader_label.text() == "xarray.load_dataarray"
+    assert arguments_label.text() == kwargs_text
+    assert arguments_label.toolTip() == kwargs_text
+    assert arguments_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
 
 
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
@@ -1244,9 +1253,11 @@ def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> No
     assert path_label is not None
     assert path_label.text() == str(workspace_path)
     assert path_label.toolTip() == str(workspace_path)
+    assert not path_label.wordWrap()
     assert path_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
+    assert dialog.minimumSize() == dialog.maximumSize()
     assert dialog.value_labels["open_windows"].text() == "3"
     assert dialog.value_labels["size"].text()
     assert dialog.value_labels["modified"].text()

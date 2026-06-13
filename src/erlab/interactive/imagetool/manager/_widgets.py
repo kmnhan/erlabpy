@@ -241,35 +241,6 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         return self.fontMetrics().horizontalAdvance("m" * self._SIZE_HINT_EMS) + padding
 
 
-class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):
-    _MAX_VISIBLE_ROWS = 4
-    _VERTICAL_PADDING = 12
-
-    def setPlainText(self, text: str | None) -> None:
-        super().setPlainText("" if text is None else text)
-        self._update_fixed_height()
-
-    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
-        super().resizeEvent(event)
-        self._update_fixed_height()
-
-    def _visual_row_count(self) -> int:
-        document = typing.cast("QtGui.QTextDocument", self.document())
-        row_count = 0
-        block = document.firstBlock()
-        while block.isValid():
-            layout = typing.cast("QtGui.QTextLayout", block.layout())
-            row_count += max(1, layout.lineCount())
-            block = block.next()
-        return row_count
-
-    def _update_fixed_height(self) -> None:
-        row_count = max(1, min(self._MAX_VISIBLE_ROWS, self._visual_row_count()))
-        self.setFixedHeight(
-            row_count * self.fontMetrics().lineSpacing() + self._VERTICAL_PADDING
-        )
-
-
 class _LoadSourceDetailsDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -279,56 +250,83 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Data Source")
         self.setModal(True)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(540)
+        self.setSizeGripEnabled(False)
+        self.value_labels: dict[str, QtWidgets.QLabel] = {}
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 12)
+        layout.setSpacing(14)
 
-        mono_font = QtGui.QFontDatabase.systemFont(
-            QtGui.QFontDatabase.SystemFont.FixedFont
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+        layout.addLayout(header_layout)
+
+        icon_label = QtWidgets.QLabel(self)
+        icon_label.setObjectName("manager_load_source_icon_label")
+        style = self.style()
+        icon = (
+            QtGui.QIcon()
+            if style is None
+            else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
+        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
+        )
+        header_layout.addWidget(icon_label, 0)
+
+        title_layout = QtWidgets.QVBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(2)
+        header_layout.addLayout(title_layout, 1)
 
         title_label = QtWidgets.QLabel(details.path.name, self)
-        title_label.setWordWrap(True)
-        layout.addWidget(title_label)
+        title_label.setObjectName("manager_load_source_name_label")
+        title_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        title_label.setMinimumWidth(0)
+        title_label.setToolTip(details.path.name)
+        title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        title_font = title_label.font()
+        title_font.setPointSize(title_font.pointSize() + 1)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setWordWrap(False)
+        title_layout.addWidget(title_label)
 
-        form_layout = QtWidgets.QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(8)
-        form_layout.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
-        )
-        layout.addLayout(form_layout)
+        status_label = QtWidgets.QLabel("Loaded from file", self)
+        status_label.setObjectName("manager_load_source_status_label")
+        status_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        title_layout.addWidget(status_label)
 
-        self.path_edit = QtWidgets.QLineEdit(str(details.path), self)
-        self.path_edit.setReadOnly(True)
-        self.path_edit.setFont(mono_font)
-        form_layout.addRow("File", self.path_edit)
+        details_layout = QtWidgets.QGridLayout()
+        details_layout.setContentsMargins(44, 0, 0, 0)
+        details_layout.setHorizontalSpacing(14)
+        details_layout.setVerticalSpacing(7)
+        details_layout.setColumnStretch(1, 1)
+        layout.addLayout(details_layout)
 
-        self.loader_edit = QtWidgets.QLineEdit(details.loader_text, self)
-        self.loader_edit.setReadOnly(True)
-        self.loader_edit.setFont(mono_font)
-        form_layout.addRow(details.loader_label, self.loader_edit)
-
-        self.kwargs_edit = _LoadSourceArgumentsEdit(self)
-        self.kwargs_edit.setReadOnly(True)
-        self.kwargs_edit.setFont(mono_font)
-        self.kwargs_edit.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.kwargs_edit.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        row = self._add_detail(details_layout, 0, "path", "Path", str(details.path))
+        row = self._add_detail(
+            details_layout,
+            row,
+            "loader",
+            details.loader_label,
+            details.loader_text,
         )
-        self.kwargs_edit.setLineWrapMode(
-            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        self._add_detail(
+            details_layout,
+            row,
+            "arguments",
+            "Load arguments",
+            details.kwargs_text,
         )
-        self.kwargs_edit.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.kwargs_highlighter = erlab.interactive.utils.PythonHighlighter(
-            self.kwargs_edit.document()
-        )
-        self.kwargs_edit.setPlainText(details.kwargs_text)
-        form_layout.addRow("Load Arguments", self.kwargs_edit)
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
         self.button_box.setCenterButtons(False)
@@ -339,7 +337,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             ),
         )
         self.copy_path_button.clicked.connect(
-            lambda: erlab.interactive.utils.copy_to_clipboard(self.path_edit.text())
+            lambda: erlab.interactive.utils.copy_to_clipboard(str(details.path))
         )
         self.copy_code_button = typing.cast(
             "QtWidgets.QAbstractButton",
@@ -367,6 +365,41 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         self.adjustSize()
+        self.setFixedSize(self.size())
+
+    def _add_detail(
+        self,
+        layout: QtWidgets.QGridLayout,
+        row: int,
+        key: str,
+        label: str,
+        value: str,
+    ) -> int:
+        key_label = QtWidgets.QLabel(label, self)
+        key_label.setObjectName(f"manager_load_source_{key}_label")
+        key_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        key_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+
+        value_label = QtWidgets.QLabel(value, self)
+        value_label.setObjectName(f"manager_load_source_{key}_value_label")
+        value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        value_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        value_label.setMinimumWidth(0)
+        value_label.setWordWrap(False)
+        value_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        value_label.setToolTip(value)
+
+        layout.addWidget(key_label, row, 0)
+        layout.addWidget(value_label, row, 1)
+        self.value_labels[key] = value_label
+        return row + 1
 
 
 def _workspace_file_manager_action_text() -> str:
@@ -436,6 +469,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.setWindowTitle(f"{workspace_name} Properties")
         self.setModal(True)
         self.setMinimumWidth(540)
+        self.setSizeGripEnabled(False)
 
         self._workspace_path = (
             None if workspace_path is None else pathlib.Path(workspace_path).resolve()
@@ -477,11 +511,17 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        title_label.setWordWrap(True)
+        title_label.setMinimumWidth(0)
+        title_label.setToolTip(workspace_name)
+        title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         title_font = title_label.font()
         title_font.setPointSize(title_font.pointSize() + 1)
         title_font.setBold(True)
         title_label.setFont(title_font)
+        title_label.setWordWrap(False)
         title_layout.addWidget(title_label)
 
         status_label = QtWidgets.QLabel(
@@ -599,6 +639,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         self.adjustSize()
+        self.setFixedSize(self.size())
 
     @staticmethod
     def _status_text(
@@ -631,9 +672,10 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         value_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        value_label.setWordWrap(True)
+        value_label.setMinimumWidth(0)
+        value_label.setWordWrap(False)
         value_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Ignored,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
         value_label.setToolTip(value)

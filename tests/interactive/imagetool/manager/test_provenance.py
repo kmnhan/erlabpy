@@ -2613,12 +2613,24 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert metadata_detail_map(manager)["File"] == str(file_path)
 
         def _inspect_source_dialog(dialog: QtWidgets.QDialog) -> None:
-            assert dialog.path_edit.text() == str(file_path)  # type: ignore[attr-defined]
+            assert not dialog.findChildren(QtWidgets.QLineEdit)
+            assert not dialog.findChildren(QtWidgets.QPlainTextEdit)
             assert (
-                dialog.loader_edit.text().endswith("xarray.load_dataarray")  # type: ignore[attr-defined]
+                dialog.findChild(
+                    QtWidgets.QLabel, "manager_load_source_path_value_label"
+                ).text()  # type: ignore[union-attr]
+                == str(file_path)
             )
             assert (
-                dialog.kwargs_edit.toPlainText() == 'engine="h5netcdf"'  # type: ignore[attr-defined]
+                dialog.findChild(
+                    QtWidgets.QLabel, "manager_load_source_loader_value_label"
+                ).text()  # type: ignore[union-attr]
+            ).endswith("xarray.load_dataarray")
+            assert (
+                dialog.findChild(
+                    QtWidgets.QLabel, "manager_load_source_arguments_value_label"
+                ).text()  # type: ignore[union-attr]
+                == 'engine="h5netcdf"'
             )
             dialog.copy_code_button.click()  # type: ignore[attr-defined]
 
