@@ -2200,11 +2200,24 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
 class _BaseCropDialog(DataTransformDialog):
     enable_copy = True
+    apply_on_nonuniform_data = True
     operation_types = (provenance.SelOperation, provenance.IselOperation)
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         raise NotImplementedError
+
+    @staticmethod
+    def _nonuniform_isel_slice(selector: slice) -> slice:
+        start = None if selector.start is None else int(selector.start)
+        stop = None if selector.stop is None else int(selector.stop)
+        step = selector.step
+        if stop is not None:
+            if step is not None and step < 0:
+                stop -= 1
+            else:
+                stop += 1
+        return slice(start, stop, step)
 
     def source_operations(
         self,
@@ -2215,7 +2228,9 @@ class _BaseCropDialog(DataTransformDialog):
 
         for key in list(sel_kwargs.keys()):
             if isinstance(key, str) and key.endswith("_idx"):
-                isel_kwargs[key.removesuffix("_idx")] = sel_kwargs.pop(key)
+                isel_kwargs[key.removesuffix("_idx")] = self._nonuniform_isel_slice(
+                    sel_kwargs.pop(key)
+                )
 
         if sel_kwargs:
             operations.append(provenance.SelOperation(kwargs=sel_kwargs))
@@ -2224,7 +2239,9 @@ class _BaseCropDialog(DataTransformDialog):
         return operations
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return data.sel(self._slice_kwargs)
+        for operation in self.source_operations():
+            data = operation.apply(data, parent_data=data)
+        return data
 
 
 class CropToViewDialog(_BaseCropDialog):
