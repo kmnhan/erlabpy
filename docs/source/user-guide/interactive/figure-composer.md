@@ -105,6 +105,15 @@ method.
 
 Steps can be enabled, disabled, duplicated, reordered, or removed. By selecting multiple
 steps, you can edit them simultaneously to apply the same change to all selected steps.
+You can also copy selected steps and paste them into another Figure Composer. Pasted
+steps are inserted after the current selection and keep their order. When the source and
+destination composers are open in the same app process, pasted steps also bring the data
+sources they use. If a copied source has the same name as a source already in the
+destination figure, the pasted source is renamed and the pasted steps are updated to use
+the new name. When steps are pasted from another app process, only the step settings and
+source metadata are available; the copied sources appear as missing until you reconnect or
+replace them. If copied steps are pasted into a text editor, they appear as readable JSON
+starting with ``"type": "erlab.figure_composer.steps"``.
 
 (figure-composer-reproducibility)=
 
