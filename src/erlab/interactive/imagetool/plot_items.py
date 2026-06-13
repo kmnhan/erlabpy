@@ -47,6 +47,10 @@ else:
 
 logger = logging.getLogger(__name__)
 
+_CURSOR_SPAN_Z_VALUE = 9
+_CURSOR_LINE_Z_VALUE = 10
+_GUIDELINE_Z_VALUE = 11
+
 
 class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     # Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
@@ -1324,6 +1328,7 @@ class ItoolPlotItem(pg.PlotItem):
         angle: float | None = None,
     ) -> None:
         for item in erlab.interactive.utils.make_crosshairs(n):
+            item.setZValue(_GUIDELINE_Z_VALUE)
             self.addItem(item)
             self._guidelines_items.append(item)
 
@@ -2844,9 +2849,9 @@ class ItoolPlotItem(pg.PlotItem):
             self.cursor_lines[-1][ax] = c
             self.cursor_spans[-1][ax] = s
             self.addItem(c)
-            c.setZValue(10)
+            c.setZValue(_CURSOR_LINE_Z_VALUE)
             self.addItem(s)
-            s.setZValue(9)
+            s.setZValue(_CURSOR_SPAN_Z_VALUE)
             c.sigDragged.connect(
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
