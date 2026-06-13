@@ -1995,16 +1995,10 @@ class Fit2DTool(Fit1DTool):
         return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
 
     def _resolve_parameter_output(
-        self, parts: tuple[Output, str | None]
+        self, output: Output, param_name: str
     ) -> tuple[str, bool] | None:
-        output, param_name = parts
         stderr = output == self.Output.PARAMETER_STDERR
-        if param_name is None:
-            current = self._current_param_output(stderr=stderr)
-            if current is None:
-                return None
-            param_name = current[0]
-        elif not param_name or all(
+        if not param_name or all(
             self.param_plot_combo.itemText(i) != param_name
             for i in range(self.param_plot_combo.count())
         ):
@@ -2015,8 +2009,11 @@ class Fit2DTool(Fit1DTool):
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_data(output_id)
+        output, param_name = parts
+        if param_name is None:
+            return super().output_imagetool_data(output)
 
-        request = self._resolve_parameter_output(parts)
+        request = self._resolve_parameter_output(output, param_name)
         if request is None:
             return None
         param_name, stderr = request
@@ -2028,8 +2025,11 @@ class Fit2DTool(Fit1DTool):
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_provenance(output_id, data)
+        output, param_name = parts
+        if param_name is None:
+            return super().output_imagetool_provenance(output, data)
 
-        request = self._resolve_parameter_output(parts)
+        request = self._resolve_parameter_output(output, param_name)
         if request is None:
             return None
         param_name, stderr = request
