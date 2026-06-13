@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import logging
 import pathlib
 import types
@@ -2983,7 +2984,7 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
-def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace_reload(
+def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shift(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3012,12 +3013,20 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: len(root._childtool_indices) == 1, timeout=5000)
         child_uid = root._childtool_indices[0]
         child_node = manager._child_node(child_uid)
-        assert child_node.source_binding is not None
+        assert child_node.source_binding is None
+        assert child_node.source_spec is not None
+        original_source_spec = child_node.source_spec
 
         tree = manager._to_datatree()
         child_attrs = tree[f"0/childtools/{child_uid}/imagetool"].attrs
-        assert "manager_node_live_source_binding" in child_attrs
+        assert "manager_node_live_source_binding" not in child_attrs
         assert "manager_node_live_source_spec" in child_attrs
+        child_attrs["manager_node_live_source_binding"] = json.dumps(
+            provenance.ImageToolSelectionSourceBinding(
+                selection_mode="isel",
+                selection_indexers={"z": 0},
+            ).model_dump(mode="json")
+        )
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -3026,7 +3035,8 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         loaded_child = manager._child_node(child_uid)
-        assert loaded_child.source_binding is not None
+        assert loaded_child.source_binding is None
+        assert loaded_child.source_spec == original_source_spec
 
         shifted = data.assign_coords(z=[10.0, 11.0, 12.0])
         with qtbot.wait_signal(manager._sigDataReplaced):
@@ -3035,10 +3045,9 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: loaded_child.source_state == "stale", timeout=5000)
         assert loaded_child._update_from_parent_source() is True
         child_data = manager.get_imagetool(child_uid).slicer_area._data.rename(None)
-        assert not np.isnan(child_data.values).all()
         xarray.testing.assert_identical(
             child_data,
-            shifted.qsel(z=11.0, z_width=3.0).rename(None),
+            original_source_spec.apply(shifted).rename(None),
         )
 
 
@@ -3078,7 +3087,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         )
         child_node = manager._child_node(child_uid)
 
-        assert child_node.source_binding == source_binding
+        assert child_node.source_binding is None
         assert child_node.source_spec == source_spec
 
 

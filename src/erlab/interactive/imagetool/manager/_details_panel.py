@@ -270,6 +270,9 @@ class _DetailsPanelController:
         item = self._manager.metadata_derivation_list.itemAt(pos)
         if item is None:
             return
+        if not item.isSelected():
+            self._manager.metadata_derivation_list.clearSelection()
+            item.setSelected(True)
         self._manager.metadata_derivation_list.setCurrentItem(item)
         menu = self._manager._build_metadata_derivation_menu()
         if menu is None:

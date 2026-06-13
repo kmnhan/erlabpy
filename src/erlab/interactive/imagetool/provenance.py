@@ -202,12 +202,11 @@ _PRIVATE_FRAMEWORK_REEXPORTS = (
 
 
 class ImageToolSelectionSourceBinding(pydantic.BaseModel):
-    """ImageTool selection state stored for manager child refreshes.
+    """Legacy ImageTool selection state used to build a source spec.
 
-    Stores the parent dimension indices selected in an ImageTool plot. When a child
-    refreshes after parent coordinates change, :meth:`materialize` rebuilds ``qsel`` or
-    ``isel`` operations from the current parent data so the child follows the same
-    cursor or bin position instead of old coordinate labels.
+    Stores the parent dimension indices selected in an ImageTool plot. Current refresh
+    paths materialize this once into explicit ``qsel`` or ``isel`` operations, then keep
+    those operation arguments stable for later refreshes.
     """
 
     schema_version: typing.Literal[1] = 1

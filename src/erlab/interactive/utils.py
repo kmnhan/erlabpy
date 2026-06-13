@@ -3586,10 +3586,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             except Exception:
                 parent_data = None
 
-        source_spec = self._source_spec
-        if parent_data is not None and self._source_binding is not None:
-            source_spec = self._materialized_source_spec(parent_data)
-        return parent_data, source_spec
+        return parent_data, self._source_spec
 
     def _sync_input_provenance_snapshot(self) -> None:
         """Refresh the stored input provenance snapshot for the displayed tool data."""
@@ -4131,7 +4128,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def source_binding(
         self,
     ) -> provenance.ImageToolSelectionSourceBinding | None:
-        """Return the ImageTool selection state used for source refreshes, if any."""
+        """Return legacy ImageTool selection state awaiting one-time materialization."""
         return self._source_binding
 
     @property
@@ -4175,12 +4172,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         Parameters
         ----------
         source_spec
-            Current source spec used for derivation display and older saved
-            workspaces. If ``source_binding`` is not provided, refresh applies this
-            spec as stored.
+            Current source spec used for derivation display and refresh. When provided,
+            refresh applies this spec as stored.
         source_binding
-            Selection state from an ImageTool plot. When provided, refresh first builds
-            a new ``source_spec`` from the current parent data.
+            Legacy selection state from an ImageTool plot. Used only to materialize a
+            missing ``source_spec`` once; explicit ``source_spec`` values take priority.
         auto_update
             Whether compatible parent changes should update this tool automatically.
         state
@@ -4194,15 +4190,21 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 "source_spec must be a ToolProvenanceSpec or None. Use "
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
-        self._source_spec = (
-            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
-        )
         if source_binding is not None and not isinstance(
             source_binding,
             erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
-        self._source_binding = source_binding
+        if source_spec is None and source_binding is not None:
+            with contextlib.suppress(Exception):
+                if self._source_parent_fetcher is not None:
+                    source_spec = source_binding.materialize(
+                        self._source_parent_fetcher()
+                    )
+        self._source_spec = (
+            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
+        )
+        self._source_binding = None if self._source_spec is not None else source_binding
         self._source_auto_update = bool(auto_update)
         if self.has_source_binding and state == "fresh":
             self._sync_input_provenance_snapshot()
@@ -4213,6 +4215,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
+        if fetcher is not None and self._source_spec is None:
+            with contextlib.suppress(Exception):
+                self._materialized_source_spec(fetcher())
         if fetcher is not None and self._source_state == "fresh":
             self._sync_input_provenance_snapshot()
 
@@ -4334,12 +4339,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self, parent_data: xr.DataArray
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
         """Return the source spec to apply to ``parent_data``."""
+        if self._source_spec is not None:
+            return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
+            self._source_binding = None
             return self._source_spec
-        if self._source_spec is None:
-            raise RuntimeError("Tool is not bound to an ImageTool source.")
-        return self._source_spec
+        raise RuntimeError("Tool is not bound to an ImageTool source.")
 
     def _resolve_source_data(self, parent_data: xr.DataArray) -> xr.DataArray:
         """Apply the current source spec or selection state to ``parent_data``."""
@@ -4554,10 +4560,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if self._source_spec is not None:
             attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(
                 self._source_spec.model_dump(mode="json")
-            )
-        if self._source_binding is not None:
-            attrs[_TOOL_SOURCE_BINDING_ATTR] = json.dumps(
-                self._source_binding.model_dump(mode="json")
             )
         if self.has_source_binding:
             attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
@@ -4874,7 +4876,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     exc_info=True,
                 )
         source_binding = None
-        if _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
+        if source_spec is None and _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
             try:
                 provenance = erlab.interactive.imagetool.provenance
                 binding_type = provenance.ImageToolSelectionSourceBinding

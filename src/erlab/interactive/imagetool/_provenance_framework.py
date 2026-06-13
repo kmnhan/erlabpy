@@ -32,12 +32,10 @@ reload, copied code, and shared-input deduplication compile those specs on deman
 through :mod:`erlab.interactive.imagetool._replay_graph`; the graph itself is not
 saved.
 
-Manager children opened from an ImageTool cursor or bin selection do not keep the
-first generated ``qsel`` arguments as their refresh state. They store the selected
-parent indices in
+Manager children opened from an ImageTool cursor or bin selection keep the explicit
+``qsel`` or ``isel`` arguments generated when the child is opened. Legacy
 :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
-and rebuild ``qsel`` or ``isel`` operations from the current parent data each time
-they refresh.
+payloads are materialized once into a normal source spec before refresh.
 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
@@ -1854,10 +1852,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     A spec records exact operation arguments for live refresh, runtime replay, copied
     code, and derivation display. Manager children opened from ImageTool cursor or bin
-    selections should keep
-    :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
-    as their refresh state; that binding builds a spec before refresh so edited parent
-    coordinates are used.
+    selections refresh by replaying those explicit arguments; legacy selection
+    bindings are converted to source specs once for compatibility.
     """
 
     schema_version: typing.Literal[2] = 2

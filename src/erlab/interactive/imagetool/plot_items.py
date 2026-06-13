@@ -1164,10 +1164,8 @@ class ItoolPlotItem(pg.PlotItem):
         """Return a source spec for the current plot selection.
 
         The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
-        parent data. Copied code, derivation display, and older saved workspaces use
-        this form directly. Manager child refreshes should store
-        :meth:`make_tool_source_binding` and call ``materialize`` before applying the
-        source.
+        parent data. Copied code, derivation display, manager refresh, and saved
+        workspaces use this form directly.
 
         Parameters
         ----------
@@ -1181,49 +1179,40 @@ class ItoolPlotItem(pg.PlotItem):
         provenance.ToolProvenanceSpec
             Source spec for the current parent data.
         """
-        return self.make_tool_source_binding(
-            transpose=transpose, squeeze=squeeze
-        ).materialize(self.slicer_area._tool_source_parent_data())
-
-    def make_tool_source_binding(
-        self, *, transpose: bool = False, squeeze: bool = False
-    ) -> provenance.ImageToolSelectionSourceBinding:
-        """Return ImageTool selection state for future manager refreshes.
-
-        Parameters
-        ----------
-        transpose
-            Whether refreshed data should be transposed for the opened tool.
-        squeeze
-            Whether refreshed data should squeeze singleton dimensions.
-
-        Returns
-        -------
-        provenance.ImageToolSelectionSourceBinding
-            Selection state that stores cursor, bin, crop, transpose, and squeeze
-            choices from this plot.
-        """
         cursor = self.slicer_area.current_cursor
         alt_pressed: bool = (
             QtCore.Qt.KeyboardModifier.AltModifier
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
+        parent_data = self.slicer_area._tool_source_parent_data()
+        selection_data = provenance.ToolProvenanceSpec._starting_data_for_kind(
+            "selection", parent_data
+        )
+        operations: list[provenance.ToolProvenanceOperation] = []
         selection_code = self.selection_code_for_cursor(cursor)
         selection_indexers = self.array_slicer.isel_args(
             cursor, self.display_axis, int_if_one=True
         )
-        selection_mode: typing.Literal["qsel", "isel"] = (
-            "qsel" if selection_code.startswith(".qsel") else "isel"
-        )
-        selection_binned_dims: list[Hashable] = []
-        if selection_code.startswith(".qsel"):
+        if selection_indexers and selection_code.startswith(".qsel"):
             binned = self.array_slicer.get_binned(cursor)
+            selection_binned_dims: list[Hashable] = []
             for dim in selection_indexers:
                 axis_idx = self.array_slicer._dim_indices.get(dim)
                 if axis_idx is None:
                     axis_idx = self.array_slicer._obj.dims.index(dim)
                 if binned[axis_idx]:
                     selection_binned_dims.append(dim)
+            operations.append(
+                provenance.QSelOperation(
+                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
+                        selection_data,
+                        selection_indexers,
+                        tuple(selection_binned_dims),
+                    )
+                )
+            )
+        elif selection_indexers:
+            operations.append(provenance.IselOperation(kwargs=selection_indexers))
 
         crop_sel_indexers: dict[Hashable, slice] = {}
         crop_isel_indexers: dict[Hashable, slice] = {}
@@ -1248,17 +1237,36 @@ class ItoolPlotItem(pg.PlotItem):
                 else:
                     crop_sel_indexers[key] = index_selector
 
-        transpose_dims = tuple(reversed(self.current_data.dims)) if transpose else None
-        binding_type = provenance.ImageToolSelectionSourceBinding
-        return binding_type(
-            selection_mode=selection_mode,
-            selection_indexers=selection_indexers,
-            selection_binned_dims=tuple(selection_binned_dims),
-            crop_sel_indexers=crop_sel_indexers,
-            crop_isel_indexers=crop_isel_indexers,
-            transpose_dims=transpose_dims,
-            squeeze=squeeze and any(size == 1 for size in self.current_data.shape),
-        )
+        if crop_sel_indexers:
+            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
+            for dim, selector in crop_sel_indexers.items():
+                if dim not in selection_data.dims:
+                    raise ValueError(f"Dimension `{dim}` not found in data")
+                coord = selection_data[dim][selector].values
+                if isinstance(selector, slice):
+                    if coord.size == 0:
+                        raise ValueError(f"Selection for dimension `{dim}` is empty")
+                    crop_sel_kwargs[dim] = slice(
+                        erlab.utils.misc._convert_to_native(coord[0]),
+                        erlab.utils.misc._convert_to_native(coord[-1]),
+                    )
+                else:
+                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
+            operations.append(provenance.SelOperation(kwargs=crop_sel_kwargs))
+
+        if crop_isel_indexers:
+            operations.append(provenance.IselOperation(kwargs=crop_isel_indexers))
+
+        operations.append(provenance.SortCoordOrderOperation())
+        if transpose:
+            operations.append(
+                provenance.TransposeOperation(
+                    dims=tuple(reversed(self.current_data.dims))
+                )
+            )
+        if squeeze and any(size == 1 for size in self.current_data.shape):
+            operations.append(provenance.SqueezeOperation())
+        return provenance.selection(*operations)
 
     @property
     def is_guidelines_visible(self) -> bool:
@@ -2380,7 +2388,6 @@ class ItoolPlotItem(pg.PlotItem):
         data: xr.DataArray,
         source_spec: provenance.ToolProvenanceSpec,
         *,
-        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         use_parent_colormap: bool,
     ) -> None:
         itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
@@ -2423,7 +2430,6 @@ class ItoolPlotItem(pg.PlotItem):
                         tool,
                         target,
                         source_spec=source_spec,
-                        source_binding=source_binding,
                     )
                 return
 
@@ -2443,11 +2449,9 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_new_window(self) -> None:
         """Open the current data in a new window."""
         data = self.current_data
-        source_binding = self.make_tool_source_binding()
         self._open_data_in_new_window(
             data,
-            source_binding.materialize(self.slicer_area._tool_source_parent_data()),
-            source_binding=source_binding,
+            self.make_tool_source_spec(),
             use_parent_colormap=True,
         )
 
@@ -2465,7 +2469,6 @@ class ItoolPlotItem(pg.PlotItem):
         self._open_data_in_new_window(
             data,
             source_spec,
-            source_binding=None,
             use_parent_colormap=False,
         )
 
@@ -2478,13 +2481,7 @@ class ItoolPlotItem(pg.PlotItem):
                     data, data_name=self.get_selection_code(), execute=False
                 )
                 if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                    source_binding = self.make_tool_source_binding()
-                    tool.set_source_binding(
-                        source_binding.materialize(
-                            self.slicer_area._tool_source_parent_data()
-                        ),
-                        source_binding=source_binding,
-                    )
+                    tool.set_source_binding(self.make_tool_source_spec())
                 self.slicer_area.add_tool_window(tool)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
@@ -2507,13 +2504,7 @@ class ItoolPlotItem(pg.PlotItem):
                 data, data_name=self.get_selection_code(), execute=False
             )
             if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                source_binding = self.make_tool_source_binding()
-                tool.set_source_binding(
-                    source_binding.materialize(
-                        self.slicer_area._tool_source_parent_data()
-                    ),
-                    source_binding=source_binding,
-                )
+                tool.set_source_binding(self.make_tool_source_spec())
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2525,13 +2516,7 @@ class ItoolPlotItem(pg.PlotItem):
                 execute=False,
             )
             if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                source_binding = self.make_tool_source_binding(transpose=True)
-                tool.set_source_binding(
-                    source_binding.materialize(
-                        self.slicer_area._tool_source_parent_data()
-                    ),
-                    source_binding=source_binding,
-                )
+                tool.set_source_binding(self.make_tool_source_spec(transpose=True))
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2542,11 +2527,7 @@ class ItoolPlotItem(pg.PlotItem):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            source_binding = self.make_tool_source_binding(squeeze=True)
-            tool.set_source_binding(
-                source_binding.materialize(self.slicer_area._tool_source_parent_data()),
-                source_binding=source_binding,
-            )
+            tool.set_source_binding(self.make_tool_source_spec(squeeze=True))
         self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()

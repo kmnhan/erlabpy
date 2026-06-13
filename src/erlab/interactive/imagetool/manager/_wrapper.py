@@ -311,17 +311,9 @@ class _ManagedWindowNode(QtCore.QObject):
 
         self.window = window
         try:
-            if source_spec is not None:
+            if source_spec is not None or source_binding is not None:
                 self.set_source_binding(
                     source_spec,
-                    source_binding=source_binding,
-                    provenance_spec=provenance_spec,
-                    auto_update=source_auto_update,
-                    state=source_state,
-                )
-            elif source_binding is not None:
-                self.set_source_binding(
-                    None,
                     source_binding=source_binding,
                     provenance_spec=provenance_spec,
                     auto_update=source_auto_update,
@@ -904,12 +896,11 @@ class _ManagedWindowNode(QtCore.QObject):
         Parameters
         ----------
         source_spec
-            Current source spec used for derivation display and older saved
-            workspaces. If ``source_binding`` is not provided, refresh applies this
-            spec as stored.
+            Current source spec used for derivation display and refresh. When provided,
+            refresh applies this spec as stored.
         source_binding
-            Selection state from an ImageTool plot. When provided, refresh first builds
-            a new ``source_spec`` from the current parent data.
+            Legacy selection state from an ImageTool plot. Used only to materialize a
+            missing ``source_spec`` once; explicit ``source_spec`` values take priority.
         provenance_spec
             Displayed provenance to show immediately. If omitted and the source is
             fresh, provenance is rebuilt from the parent and current source spec.
@@ -931,12 +922,12 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
-        self._source_binding = source_binding
-        if source_spec is None and self._source_binding is not None and self.parent_uid:
-            source_spec = self._source_binding.materialize(
+        if source_spec is None and source_binding is not None and self.parent_uid:
+            source_spec = source_binding.materialize(
                 self.manager._parent_node(self).current_source_data()
             )
         self._source_spec = provenance.require_live_source_spec(source_spec)
+        self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
             provenance_spec,
             provenance.ToolProvenanceSpec,
@@ -1018,12 +1009,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self, parent_data: xr.DataArray
     ) -> provenance.ToolProvenanceSpec:
         """Return the source spec to apply to ``parent_data``."""
+        if self._source_spec is not None:
+            return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
+            self._source_binding = None
             return self._source_spec
-        if self._source_spec is None:
-            raise RuntimeError("Node is not bound to an ImageTool source.")
-        return self._source_spec
+        raise RuntimeError("Node is not bound to an ImageTool source.")
 
     def _resolved_output_payload(
         self,

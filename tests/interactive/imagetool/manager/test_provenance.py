@@ -2624,6 +2624,58 @@ def test_manager_provenance_file_load_edit_accept_and_cancel(
         )
 
 
+def test_manager_provenance_context_menu_retargets_nonselected_row(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    operation = provenance.AssignAttrsOperation(attrs={"note": "selected"})
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+        operation,
+    )
+    displayed = operation.apply(
+        test_data.qsel.mean("alpha"),
+        parent_data=test_data.qsel.mean("alpha"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(manager, displayed, spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        assert manager.metadata_derivation_list.count() >= 3
+        select_metadata_rows(manager, [0, 1])
+        target_item = manager.metadata_derivation_list.item(2)
+        assert target_item is not None
+        assert not target_item.isSelected()
+
+        captured_rows: list[provenance._ProvenanceDisplayRow | None] = []
+
+        def _capture_menu() -> None:
+            row = manager._selected_derivation_row()
+            captured_rows.append(row)
+            return
+
+        monkeypatch.setattr(manager, "_build_metadata_derivation_menu", _capture_menu)
+        pos = manager.metadata_derivation_list.visualItemRect(target_item).center()
+        manager._show_metadata_derivation_menu(pos)
+
+        assert captured_rows
+        assert captured_rows[-1] is not None
+        assert manager.metadata_derivation_list.selectedItems() == [target_item]
+
+
 def test_manager_provenance_script_operation_rows_are_not_editable_v1(
     qtbot,
     manager_context: Callable[
