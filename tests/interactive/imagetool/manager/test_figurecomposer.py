@@ -4106,6 +4106,12 @@ def test_figure_composer_show_composer_from_figure_window(qtbot, monkeypatch) ->
 
     assert calls == ["showNormal", "raise", "activate"]
 
+    calls.clear()
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+        tool._show_composer_from_figure_window()
+    assert calls == []
+
 
 def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
@@ -4619,6 +4625,94 @@ def test_figure_composer_navigation_updates_recipe_limits(qtbot) -> None:
     assert tool.tool_status.operations[-1].method_name == "set_xlim"
     assert tool.tool_status.operations[-1].method_args == pytest.approx((0.25, 0.75))
 
+    axis.set_xlim(0.25, 0.75)
+    unchanged_status = tool.tool_status
+    tool._figure_window_navigation_changed({axis: (True, False)})
+    assert tool.tool_status == unchanged_status
+
+    axis.set_xlim(0.1, 0.9)
+    tool._figure_window_navigation_changed({axis: (True, False)})
+    assert tool.tool_status.operations[-1].method_name == "set_xlim"
+    assert tool.tool_status.operations[-1].method_args == pytest.approx((0.1, 0.9))
+
+    axis.set_ylim(0.2, 0.8)
+    tool._figure_window_navigation_changed({axis: (False, True)})
+    assert tool.tool_status.operations[-1].method_name == "set_ylim"
+    assert tool.tool_status.operations[-1].method_args == pytest.approx((0.2, 0.8))
+
+    status = tool.tool_status
+    tool._updating_controls = True
+    try:
+        tool._figure_window_navigation_changed({axis: (True, True)})
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status == status
+
+    with pytest.MonkeyPatch.context() as context:
+        context.setattr(
+            figurecomposer_tool_module, "_live_layout_axes", lambda _tool: None
+        )
+        tool._figure_window_navigation_changed({axis: (True, True)})
+    assert tool.tool_status == status
+
+
+def test_figure_composer_navigation_helper_edges(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+
+    axis = object()
+    assert tool._navigation_axis_selection({"main": axis}, axis) == (
+        FigureAxesSelectionState(axes_ids=("main",))
+    )
+    assert tool._navigation_axis_selection({"main": object()}, axis) is None
+    assert tool._navigation_axis_selection(object(), axis) is None
+
+    layout_axes = np.empty((1, 2), dtype=object)
+    layout_axes[0, 0] = object()
+    layout_axes[0, 1] = axis
+    assert tool._navigation_axis_selection(layout_axes, axis) == (
+        FigureAxesSelectionState(axes=((0, 1),))
+    )
+
+    class AxisWithLimits:
+        def get_xlim(self) -> tuple[float, float]:
+            return (0.1, 0.9)
+
+        def get_ylim(self) -> tuple[float, float]:
+            return (0.2, 0.8)
+
+    assert tool._navigation_axis_limit_updates(
+        AxisWithLimits(), x_changed=True, y_changed=True
+    ) == (("set_xlim", (0.1, 0.9)), ("set_ylim", (0.2, 0.8)))
+    assert (
+        tool._navigation_axis_limit_updates(object(), x_changed=True, y_changed=True)
+        == ()
+    )
+
+    matching_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_xlim",
+        axes=FigureAxesSelectionState(axes_ids=("main",)),
+    )
+    assert (
+        tool._matching_navigation_limit_operation_index(
+            (matching_operation,),
+            "set_xlim",
+            FigureAxesSelectionState(axes_ids=("main",)),
+        )
+        == 0
+    )
+    assert (
+        tool._matching_navigation_limit_operation_index(
+            (matching_operation,),
+            "set_ylim",
+            FigureAxesSelectionState(axes_ids=("main",)),
+        )
+        is None
+    )
+    tool._apply_live_figure_operation_updates((), set())
+    assert tool.tool_status.operations == ()
+
 
 def test_figure_composer_navigation_ignores_colorbar_axes(qtbot) -> None:
     data = _figure_composer_image_source("data")
@@ -4686,6 +4780,49 @@ def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
     mappable = typing.cast("typing.Any", colorbar_axis)._colorbar.mappable
     previous_clim = mappable.get_clim()
 
+    operations = tool.tool_status.operations
+    assert tool._plot_slices_mappable_target(object(), operations) is None
+    bad_panel_mappable = type("BadPanelMappable", (), {})()
+    setattr(
+        bad_panel_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+        operation.operation_id,
+    )
+    setattr(
+        bad_panel_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+        ("bad", 0),
+    )
+    assert tool._plot_slices_mappable_target(bad_panel_mappable, operations) is None
+    missing_operation_mappable = type("MissingOperationMappable", (), {})()
+    setattr(
+        missing_operation_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+        "missing",
+    )
+    setattr(
+        missing_operation_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+        (0, 0),
+    )
+    assert (
+        tool._plot_slices_mappable_target(missing_operation_mappable, operations)
+        is None
+    )
+    assert (
+        tool._operation_with_colorbar_clim(operation, (99, 99), (1.0, 5.0)) == operation
+    )
+
+    initial = tool.tool_status
+    tool._figure_window_colorbar_changed({object(): (0.0, 1.0)})
+    assert tool.tool_status == initial
+    tool._updating_controls = True
+    try:
+        tool._figure_window_colorbar_changed({mappable: (1.0, 5.0)})
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status == initial
+
     mappable.set_clim(1.0, 5.0)
     tool.figure_window.toolbar._commit_colorbar_clims({mappable: previous_clim})
 
@@ -4693,6 +4830,10 @@ def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
     assert updated.vmin == pytest.approx(1.0)
     assert updated.vmax == pytest.approx(5.0)
     assert tool.undoable
+
+    unchanged = tool.tool_status
+    tool._figure_window_colorbar_changed({mappable: (1.0, 5.0)})
+    assert tool.tool_status == unchanged
 
     tool.figure_window.toolbar.back()
 
@@ -4749,6 +4890,51 @@ def test_figure_composer_colorbar_drag_updates_panel_style_limits(qtbot) -> None
     assert style.slice_index == 0
     assert style.vmin == pytest.approx(0.25)
     assert style.vmax == pytest.approx(0.75)
+
+
+def test_figure_composer_plot_slices_mappable_tagging_edges() -> None:
+    operation = FigureOperationState.plot_slices(label="data", sources=("data",))
+    key = figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel")
+    figure = Figure()
+    axis = figure.subplots()
+    old_mappable = axis.imshow(np.arange(4.0).reshape(2, 2))
+    old_ids = figurecomposer_plot_slices._axis_mappable_ids((axis,))
+
+    figurecomposer_plot_slices._tag_plot_slices_mappables(
+        operation,
+        (axis,),
+        (key, figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "extra")),
+        old_ids,
+    )
+
+    assert not hasattr(
+        old_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+    )
+
+    new_mappable = axis.imshow(np.arange(4.0).reshape(2, 2))
+    figurecomposer_plot_slices._tag_plot_slices_mappables(
+        operation,
+        (axis,),
+        (key,),
+        old_ids,
+    )
+
+    assert not hasattr(
+        old_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+    )
+    assert (
+        getattr(
+            new_mappable,
+            figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+        )
+        == operation.operation_id
+    )
+    assert getattr(
+        new_mappable,
+        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+    ) == (0, 0)
 
 
 def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
@@ -7605,6 +7791,193 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
         assert not toolbar._actions[action_id].icon().isNull()
 
 
+def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    toolbar = tool.figure_window.toolbar
+
+    limited_toolitems = [
+        item
+        for item in figurecomposer_widgets._FigureComposerNavigationToolbar.toolitems
+        if item[3] not in {"back", "forward"}
+    ]
+    with monkeypatch.context() as context:
+        context.setattr(
+            figurecomposer_widgets._FigureComposerNavigationToolbar,
+            "toolitems",
+            limited_toolitems,
+        )
+        limited_window = figurecomposer_widgets._FigureComposerDisplayWindow(
+            FigureSubplotsState()
+        )
+        qtbot.addWidget(limited_window)
+    assert "back" not in limited_window.toolbar._actions
+    assert "forward" not in limited_window.toolbar._actions
+
+    assert (
+        figurecomposer_widgets._noop_navigation_callback({object(): (True, False)})
+        is None
+    )
+    assert (
+        figurecomposer_widgets._noop_colorbar_callback({object(): (0.0, 1.0)}) is None
+    )
+
+    class Axis:
+        def __init__(
+            self,
+            xlim: tuple[float, float] = (0.0, 1.0),
+            ylim: tuple[float, float] = (0.0, 1.0),
+        ) -> None:
+            self.xlim = xlim
+            self.ylim = ylim
+
+        def get_xlim(self) -> tuple[float, float]:
+            return self.xlim
+
+        def get_ylim(self) -> tuple[float, float]:
+            return self.ylim
+
+    class RaisingAxis:
+        def get_xlim(self) -> tuple[float, float]:
+            raise ValueError
+
+        def get_ylim(self) -> tuple[float, float]:
+            raise TypeError
+
+    class Mappable:
+        def __init__(self, clim: tuple[float | None, float | None]) -> None:
+            self.clim = clim
+
+        def get_clim(self) -> tuple[float | None, float | None]:
+            return self.clim
+
+    class RaisingMappable:
+        def get_clim(self) -> tuple[float, float]:
+            raise ValueError
+
+    axis = Axis()
+    assert figurecomposer_widgets._axis_limit_pair(axis, "get_xlim") == (0.0, 1.0)
+    assert figurecomposer_widgets._axis_limit_pair(object(), "get_xlim") is None
+    assert figurecomposer_widgets._axis_limit_pair(RaisingAxis(), "get_xlim") is None
+    assert figurecomposer_widgets._axis_view(axis) == ((0.0, 1.0), (0.0, 1.0))
+    assert figurecomposer_widgets._axis_view(object()) is None
+
+    mappable = Mappable((0.0, 1.0))
+    colorbar_axis = Axis()
+    colorbar_axis._colorbar = type("Colorbar", (), {"mappable": mappable})()
+    colorbar_without_mappable = Axis()
+    colorbar_without_mappable._colorbar = None
+    invalid_clim_axis = Axis()
+    invalid_clim_axis._colorbar = type(
+        "InvalidColorbar",
+        (),
+        {"mappable": Mappable((None, 1.0))},
+    )()
+
+    assert figurecomposer_widgets._is_colorbar_axis(colorbar_axis)
+    assert not figurecomposer_widgets._is_colorbar_axis(axis)
+    assert figurecomposer_widgets._colorbar_mappable(colorbar_axis) is mappable
+    assert figurecomposer_widgets._colorbar_mappable(colorbar_without_mappable) is None
+    assert figurecomposer_widgets._mappable_clim(mappable) == (0.0, 1.0)
+    assert figurecomposer_widgets._mappable_clim(object()) is None
+    assert figurecomposer_widgets._mappable_clim(RaisingMappable()) is None
+    assert figurecomposer_widgets._mappable_clim(Mappable((None, 1.0))) is None
+    assert figurecomposer_widgets._mappable_clim(Mappable(("bad", 1.0))) is None
+
+    navigation_views = toolbar._capture_navigation_views(
+        (axis, colorbar_axis, object(), RaisingAxis())
+    )
+    assert navigation_views == {axis: ((0.0, 1.0), (0.0, 1.0))}
+    assert toolbar._capture_colorbar_clims(
+        (
+            axis,
+            colorbar_axis,
+            colorbar_without_mappable,
+            invalid_clim_axis,
+            object(),
+            RaisingAxis(),
+        )
+    ) == {mappable: (0.0, 1.0)}
+
+    navigation_calls: list[dict[object, tuple[bool, bool]]] = []
+    colorbar_calls: list[dict[object, tuple[float, float]]] = []
+    toolbar._navigation_callback = navigation_calls.append
+    toolbar._colorbar_callback = colorbar_calls.append
+
+    axis.xlim = (0.2, 0.8)
+    toolbar._commit_navigation_views(
+        {
+            axis: ((0.0, 1.0), (0.0, 1.0)),
+            object(): ((0.0, 1.0), (0.0, 1.0)),
+        }
+    )
+    assert navigation_calls == [{axis: (True, False)}]
+
+    toolbar._commit_navigation_views({axis: ((0.2, 0.8), (0.0, 1.0))})
+    assert navigation_calls == [{axis: (True, False)}]
+
+    toolbar._commit_colorbar_clims({})
+    mappable.clim = (0.25, 0.75)
+    toolbar._commit_colorbar_clims({mappable: (0.0, 1.0), object(): (0.0, 1.0)})
+    assert colorbar_calls == [{mappable: (0.25, 0.75)}]
+    toolbar._commit_colorbar_clims({mappable: (0.25, 0.75)})
+    assert colorbar_calls == [{mappable: (0.25, 0.75)}]
+
+    back_action = toolbar._actions.pop("back")
+    forward_action = toolbar._actions.pop("forward")
+    try:
+        toolbar.set_history_buttons()
+    finally:
+        toolbar._actions["back"] = back_action
+        toolbar._actions["forward"] = forward_action
+
+    pan_axis = Axis()
+    zoom_axis = Axis()
+
+    class ToolbarInfo:
+        def __init__(self, axes: tuple[object, ...]) -> None:
+            self.axes = axes
+
+    def fake_press_pan(self, _event):
+        self._pan_info = ToolbarInfo((pan_axis, colorbar_axis))
+
+    def fake_press_zoom(self, _event):
+        self._zoom_info = ToolbarInfo((zoom_axis, colorbar_axis))
+
+    monkeypatch.setattr(
+        figurecomposer_widgets.NavigationToolbar, "press_pan", fake_press_pan
+    )
+    monkeypatch.setattr(
+        figurecomposer_widgets.NavigationToolbar,
+        "release_pan",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        figurecomposer_widgets.NavigationToolbar,
+        "press_zoom",
+        fake_press_zoom,
+    )
+    monkeypatch.setattr(
+        figurecomposer_widgets.NavigationToolbar,
+        "release_zoom",
+        lambda *_args: None,
+    )
+
+    toolbar.press_pan(object())
+    assert pan_axis in toolbar._navigation_press_views
+    assert mappable in toolbar._colorbar_press_clims
+    toolbar.release_pan(object())
+    assert toolbar._navigation_press_views == {}
+    assert toolbar._colorbar_press_clims == {}
+
+    toolbar.press_zoom(object())
+    assert zoom_axis in toolbar._navigation_press_views
+    assert mappable in toolbar._colorbar_press_clims
+    toolbar.release_zoom(object())
+    assert toolbar._navigation_press_views == {}
+    assert toolbar._colorbar_press_clims == {}
+
+
 def test_figure_composer_toolbar_copies_canvas_to_clipboard(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
@@ -9073,6 +9446,81 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     )
     assert main_panel_styles_check is not None
     assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Checked
+
+
+def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -> None:
+    source_count = 6
+    source_names = tuple(
+        f"source_{index}_with_an_intentionally_long_alias_name"
+        for index in range(source_count)
+    )
+    source_labels = tuple(
+        f"Long data label {index} with additional descriptive text"
+        for index in range(source_count)
+    )
+    source_data = {name: _figure_composer_image_source(name) for name in source_names}
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=source_names,
+        axes=FigureAxesSelectionState(
+            axes=tuple((0, index) for index in range(source_count))
+        ),
+    )
+    tool = FigureComposerTool(
+        source_data[source_names[0]],
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=source_count),
+            sources=tuple(
+                FigureSourceState(name=name, label=label)
+                for name, label in zip(source_names, source_labels, strict=True)
+            ),
+            operations=(operation,),
+            primary_source=source_names[0],
+        ),
+        source_data=source_data,
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    target_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
+    )
+    assert selector is not None
+    assert target_combo is not None
+    selector.set_selected_axes(
+        tuple((0, index) for index in range(source_count)), emit=True
+    )
+
+    assert target_combo.count() == 1
+    visible_text = target_combo.itemText(0)
+    assert "Image slices" in visible_text
+    assert f"{source_count} panels" in visible_text
+    for text in (*source_names, *source_labels):
+        assert text not in visible_text
+
+    tooltip = target_combo.itemData(0, QtCore.Qt.ItemDataRole.ToolTipRole)
+    assert isinstance(tooltip, str)
+    assert all(label in tooltip for label in source_labels)
+    assert target_combo.toolTip() == tooltip
+    assert target_combo.view().textElideMode() == QtCore.Qt.TextElideMode.ElideMiddle
+    assert (
+        target_combo.sizeAdjustPolicy()
+        == QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
+    assert (
+        target_combo.sizeHint().width()
+        < target_combo.fontMetrics().horizontalAdvance(tooltip)
+    )
+    custom_label = figurecomposer_toolbar_dialogs._image_style_target_label(
+        1,
+        operation.model_copy(update={"label": "Custom image step"}),
+        (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "ignored"),),
+    )
+    assert custom_label == "Step 2: Custom image step: panel 1.2"
 
 
 def test_figure_composer_toolbar_axes_dialog_keeps_cleared_image_styles_on_close(

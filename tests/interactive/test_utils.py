@@ -128,6 +128,30 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     assert not win.redoable
 
 
+def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    initial = win.tool_status
+    win.undo()
+    win.redo()
+    assert win.tool_status == initial
+
+    win._prev_states.clear()
+    win.tool_status = _PersistentToolState(value=2)
+    win._replace_last_state()
+
+    assert tuple(win._prev_states) == (_PersistentToolState(value=2),)
+    assert not win.undoable
+    assert not win.redoable
+
+    monkeypatch.delattr(win, "undo_action")
+    monkeypatch.delattr(win, "redo_action")
+    win._update_history_actions()
+
+
 def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)

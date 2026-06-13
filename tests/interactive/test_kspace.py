@@ -199,6 +199,8 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     roi_control_widget.y_spin.setValue(0.2)
     roi_control_widget.r_spin.setValue(0.3)
     assert roi.get_position() == (0.0, 0.2, 0.3)
+    roi.sigRemoveRequested.emit(roi)
+    assert win._roi_list == []
 
     assert win.preview_symmetry_group.isEnabled()
     win.preview_symmetry_fold_spin.setValue(4)
