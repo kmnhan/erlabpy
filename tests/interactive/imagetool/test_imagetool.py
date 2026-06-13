@@ -6693,6 +6693,350 @@ def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
+    qtbot,
+) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    sel_operation = provenance.SelOperation(kwargs={"eV": slice(1.0, 3.0)})
+    dialog.restore_transform_operation(sel_operation)
+    assert dialog.source_operations() == [sel_operation]
+
+    qsel_operation = provenance.QSelOperation(kwargs={"beta": 2.0, "beta_width": 1.5})
+    dialog.restore_transform_operation(qsel_operation)
+    beta_row = next(row for row in dialog.rows if row.dim == "beta")
+    assert beta_row.width_check.isChecked()
+    assert beta_row.width_spin.value() == 1.5
+    assert dialog.source_operations() == [qsel_operation]
+
+    with pytest.raises(ValueError, match="Open-ended selections"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(None, 3)})
+        )
+    with pytest.raises(ValueError, match="integer strides"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})
+        )
+    with pytest.raises(ValueError, match="Reverse or zero-step"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 0)})
+        )
+    with pytest.raises(ValueError, match="not available"):
+        dialog.restore_transform_operation(
+            provenance.SelOperation(kwargs={"missing": 1.0})
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_descending_range_step_restore(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=float),
+        dims=("x",),
+        coords={"x": np.arange(5.0, 0.0, -1.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+    row = dialog.rows[0]
+
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "sel")
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(2.0)
+    row.value_stop_spin.setValue(4.0)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    assert row.indexer() == ("x", slice(4.0, 2.0, 2))
+
+    dialog.close()
+    win.close()
+
+
+def _restore_dialog_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(20, dtype=float).reshape((4, 5)),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(4.0),
+            "y": np.arange(5.0),
+            "kx": ("x", np.linspace(-0.2, 0.2, 4)),
+            "ky": ("y", np.linspace(-0.3, 0.3, 5)),
+            "temperature": ("x", [20.0, 10.0, 30.0, 15.0]),
+        },
+        attrs={"note": "old"},
+        name="scan",
+    )
+
+
+@pytest.mark.parametrize(
+    ("dialog_cls", "operation", "expected"),
+    [
+        (
+            AggregateDialog,
+            provenance.AverageOperation(dims=("x",)),
+            provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        ),
+        (
+            AggregateDialog,
+            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
+            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
+        ),
+        (
+            InterpolationDialog,
+            provenance.InterpolationOperation(
+                dim="x",
+                values=[0.0, 1.5, 3.0],
+                method="linear",
+            ),
+            provenance.InterpolationOperation(
+                dim="x",
+                values=[0.0, 1.5, 3.0],
+                method="linear",
+            ),
+        ),
+        (
+            LeadingEdgeDialog,
+            provenance.LeadingEdgeOperation(
+                dim="x",
+                fraction=0.4,
+                direction="positive",
+            ),
+            provenance.LeadingEdgeOperation(
+                dim="x",
+                fraction=0.4,
+                direction="positive",
+            ),
+        ),
+        (
+            CoarsenDialog,
+            provenance.CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+            ),
+            provenance.CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+            ),
+        ),
+        (
+            ThinDialog,
+            provenance.ThinOperation(mode="global", factor=2),
+            provenance.ThinOperation(mode="global", factor=2),
+        ),
+        (
+            ThinDialog,
+            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+        ),
+        (
+            SymmetrizeDialog,
+            provenance.SymmetrizeOperation(
+                dim="x",
+                center=1.0,
+                part="below",
+                mode="full",
+                subtract=True,
+            ),
+            provenance.SymmetrizeOperation(
+                dim="x",
+                center=1.0,
+                part="below",
+                mode="full",
+                subtract=True,
+            ),
+        ),
+        (
+            SymmetrizeNfoldDialog,
+            provenance.SymmetrizeNfoldOperation(
+                fold=4,
+                axes=("x", "y"),
+                center={"x": 1.0, "y": 2.0},
+                reshape=False,
+                order=2,
+            ),
+            provenance.SymmetrizeNfoldOperation(
+                fold=4,
+                axes=("x", "y"),
+                center={"x": 1.0, "y": 2.0},
+                reshape=False,
+                order=2,
+            ),
+        ),
+        (
+            DivideByCoordDialog,
+            provenance.DivideByCoordOperation(coord_name="temperature"),
+            provenance.DivideByCoordOperation(coord_name="temperature"),
+        ),
+        (
+            SwapDimsDialog,
+            provenance.SwapDimsOperation(mapping={"x": "kx"}),
+            provenance.SwapDimsOperation(mapping={"x": "kx"}),
+        ),
+        (
+            RenameDimsCoordsDialog,
+            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignCoordsOperation(
+                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
+            ),
+            provenance.AssignCoordsOperation(
+                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
+            ),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignCoord1DOperation(
+                coord_name="kx_new",
+                dim="x",
+                values=[0.0, 0.1, 0.2, 0.3],
+            ),
+            provenance.AssignCoord1DOperation(
+                coord_name="kx_new",
+                dim="x",
+                values=[0.0, 0.1, 0.2, 0.3],
+            ),
+        ),
+        (
+            AssignAttrsDialog,
+            provenance.AssignAttrsOperation(
+                attrs={"note": "edited", "temperature": 20.0}
+            ),
+            provenance.AssignAttrsOperation(
+                attrs={"note": "edited", "temperature": 20.0}
+            ),
+        ),
+    ],
+)
+def test_transform_dialog_restore_operation_roundtrip(
+    qtbot,
+    dialog_cls: type[imagetool_dialogs.DataTransformDialog],
+    operation: provenance.ToolProvenanceOperation,
+    expected: provenance.ToolProvenanceOperation,
+) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = dialog_cls(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.source_transform_operation() == expected
+
+    dialog.close()
+    win.close()
+
+
+def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
+    qtbot,
+) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = RotationDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    axes = tuple(win.slicer_area.main_image.axis_dims_uniform)
+    operation = provenance.RotateOperation(
+        angle=12.5,
+        axes=axes,
+        center=(1.0, 2.0),
+        reshape=False,
+        order=2,
+    )
+
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.source_transform_operation() == operation
+    with pytest.raises(ValueError, match="not currently visible"):
+        dialog.restore_transform_operation(
+            provenance.RotateOperation(angle=0.0, axes=("x", "z"), center=(0.0, 0.0))
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_symmetrize_nfold_restore_accepts_mapping_center(qtbot) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = SymmetrizeNfoldDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_transform_operation(
+        provenance.SymmetrizeNfoldOperation(
+            fold=3,
+            axes=("x", "y"),
+            center={"x": 1.0, "y": 2.0},
+        )
+    )
+
+    assert [spin.value() for spin in dialog.center_spins] == [1.0, 2.0]
+    with pytest.raises(ValueError, match="not currently visible"):
+        dialog.restore_transform_operation(
+            provenance.SymmetrizeNfoldOperation(fold=3, axes=("x", "z"))
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_restore_transform_operation_ignores_unrelated_operations(qtbot) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialogs = [
+        imagetool_dialogs.DataTransformDialog(win.slicer_area),
+        RotationDialog(win.slicer_area),
+        AggregateDialog(win.slicer_area),
+        InterpolationDialog(win.slicer_area),
+        SortByDialog(win.slicer_area),
+        LeadingEdgeDialog(win.slicer_area),
+        CoarsenDialog(win.slicer_area),
+        ThinDialog(win.slicer_area),
+        SymmetrizeDialog(win.slicer_area),
+        SymmetrizeNfoldDialog(win.slicer_area),
+        DivideByCoordDialog(win.slicer_area),
+        SwapDimsDialog(win.slicer_area),
+        RenameDimsCoordsDialog(win.slicer_area),
+        AssignCoordsDialog(win.slicer_area),
+        AssignAttrsDialog(win.slicer_area),
+    ]
+    for dialog in dialogs:
+        qtbot.addWidget(dialog)
+
+    unrelated = provenance.ScriptCodeOperation(label="script", code="derived = data")
+    for dialog in dialogs:
+        dialog.restore_transform_operation(unrelated)
+
+    for dialog in dialogs:
+        dialog.close()
+    win.close()
+
+
 def test_selection_dialog_qsel_range_ignores_cursor_width(qtbot) -> None:
     data = _selection_4d_data()
     win = itool(data, execute=False)

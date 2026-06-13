@@ -1,6 +1,7 @@
 import enum
 import json
 import pathlib
+import types
 import typing
 from collections.abc import Callable
 
@@ -183,6 +184,568 @@ def test_manager_provenance_structured_operations_have_edit_dialogs(
     operation: provenance.ToolProvenanceOperation,
 ) -> None:
     assert manager_provenance_edit._dialog_class_for_operation(operation) is not None
+
+
+def test_manager_provenance_loader_kwargs_parser_and_file_dialog_branches(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    parse = manager_provenance_edit._parse_loader_kwargs
+
+    assert parse("") == {}
+    assert parse("(none)") == {}
+    assert parse("{'engine': 'h5netcdf'}") == {"engine": "h5netcdf"}
+    assert parse("engine='h5netcdf', chunks={'x': 1}") == {
+        "engine": "h5netcdf",
+        "chunks": {"x": 1},
+    }
+    with pytest.raises(TypeError, match="dictionary"):
+        parse("{'not-a-dict'}")
+    with pytest.raises(TypeError, match="string keys"):
+        parse("{1: 'bad'}")
+    with pytest.raises(TypeError, match="keyword arguments"):
+        parse("'bad'")
+    with pytest.raises(TypeError, match="unpacking"):
+        parse("**kwargs")
+
+    load_source = provenance.FileLoadSource(
+        path=str(tmp_path / "old.h5"),
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="(none)",
+        replay_call=None,
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+    assert dialog.loader_kwargs() == {}
+
+    new_path = tmp_path / "new.h5"
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(new_path), ""),
+    )
+    dialog._browse()
+    assert dialog.file_path() == new_path
+
+    warnings: list[object] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, title, text: warnings.append(object()),
+    )
+    dialog.kwargs_edit.setPlainText("'bad'")
+    dialog.accept()
+    assert len(warnings) == 1
+
+
+def test_manager_provenance_dialog_class_lookup_skips_base_restore_hooks() -> None:
+    class _NoRestoreTransformDialog(
+        manager_provenance_edit.dialogs.DataTransformDialog
+    ):
+        operation_types = (provenance.ScriptCodeOperation,)
+
+    class _NoRestoreFilterDialog(manager_provenance_edit.dialogs.DataFilterDialog):
+        operation_types = (provenance.ScriptCodeOperation,)
+
+    assert (
+        manager_provenance_edit._dialog_class_for_operation(
+            provenance.ScriptCodeOperation(label="script", code="derived = data")
+        )
+        is None
+    )
+
+    del _NoRestoreTransformDialog, _NoRestoreFilterDialog
+
+
+def _fake_edit_controller(
+    node: typing.Any | None = None,
+    *,
+    parent: typing.Any | None = None,
+) -> manager_provenance_edit._ProvenanceEditController:
+    nodes = {} if node is None else {"node": node}
+
+    def _parent_node(_node: typing.Any) -> typing.Any:
+        if parent is None:
+            raise RuntimeError("missing parent")
+        return parent
+
+    manager = types.SimpleNamespace(
+        _metadata_node_uid="node" if node is not None else None,
+        _tool_graph=types.SimpleNamespace(nodes=nodes),
+        _parent_node=_parent_node,
+        _script_input_can_reload=lambda *_args, **_kwargs: True,
+        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
+            data=xr.DataArray([1.0], dims=("x",)),
+            provenance_spec=spec,
+        ),
+        _update_info=lambda **_kwargs: None,
+    )
+    return manager_provenance_edit._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+
+
+def _fake_edit_node(
+    spec: provenance.ToolProvenanceSpec | None,
+    *,
+    source_spec: provenance.ToolProvenanceSpec | None = None,
+    source_display_spec: provenance.ToolProvenanceSpec | None = None,
+    parent_uid: str | None = None,
+    active_filter: provenance.ToolProvenanceOperation | None = None,
+) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        uid="node",
+        is_imagetool=True,
+        imagetool=object(),
+        parent_uid=parent_uid,
+        source_spec=source_spec,
+        displayed_provenance_spec=spec,
+        displayed_source_spec=source_display_spec,
+        source_auto_update=True,
+        slicer_area=types.SimpleNamespace(
+            _accepted_filter_provenance_operation=active_filter
+        ),
+    )
+
+
+def test_manager_provenance_edit_controller_availability_branches() -> None:
+    edit_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    replay_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("row", None),
+        edit_ref=edit_ref,
+        replay_ref=replay_ref,
+    )
+
+    assert not _fake_edit_controller().can_edit_row(row)[0]
+    assert not _fake_edit_controller().can_revert_row(row)[0]
+
+    node = _fake_edit_node(provenance.full_data(provenance.IselOperation()))
+    node.parent_uid = "parent"
+    node.source_spec = provenance.selection()
+    controller = _fake_edit_controller(node)
+    assert not controller.can_edit_row(row)[0]
+    assert not controller.can_revert_row(row)[0]
+
+    node = _fake_edit_node(None)
+    controller = _fake_edit_controller(node)
+    assert not controller.can_edit_row(row)[0]
+    assert not controller.can_revert_row(row)[0]
+
+    file_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("load", None),
+        edit_ref=provenance._ProvenanceStepRef("file_load"),
+        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    assert not controller.can_edit_row(file_row)[0]
+
+    no_replay_file = _manager_provenance_file_spec(pathlib.Path("scan.h5")).model_copy(
+        update={
+            "file_load_source": provenance.FileLoadSource(
+                path="scan.h5",
+                loader_label="Load Function",
+                loader_text="load",
+                kwargs_text="",
+                replay_call=None,
+            )
+        }
+    )
+    controller = _fake_edit_controller(_fake_edit_node(no_replay_file))
+    assert not controller.can_edit_row(file_row)[0]
+
+    missing_operation_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("missing", None),
+        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=10),
+        replay_ref=replay_ref,
+    )
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    assert not controller.can_edit_row(missing_operation_row)[0]
+
+    script_operation_spec = provenance.ToolProvenanceSpec(
+        kind="full_data",
+        operations=(
+            provenance.ScriptCodeOperation(label="script", code="derived = data"),
+        ),
+    )
+    script_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("script", None),
+        edit_ref=edit_ref,
+        replay_ref=replay_ref,
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(script_operation_spec, parent_uid="parent")
+    )
+    assert not controller.can_edit_row(script_row)[0]
+
+    source_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("source", None),
+        edit_ref=edit_ref,
+        replay_ref=replay_ref,
+        scope="source",
+    )
+
+    unsupported_spec = provenance.full_data(provenance.RestoreNonuniformDimsOperation())
+    controller = _fake_edit_controller(
+        _fake_edit_node(
+            provenance.full_data(),
+            source_display_spec=unsupported_spec,
+            parent_uid="parent",
+        )
+    )
+    assert not controller.can_edit_row(source_row)[0]
+
+    live_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("live", None),
+        edit_ref=edit_ref,
+        replay_ref=replay_ref,
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(provenance.selection(provenance.IselOperation()))
+    )
+    assert not controller.can_edit_row(live_row)[0]
+    assert not controller.can_revert_row(live_row)[0]
+
+    script_input_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("input", None),
+        replay_ref=provenance._ProvenanceStepRef("script_input", script_input_index=0),
+    )
+    assert not controller.can_revert_row(script_input_row)[0]
+
+    controller = _fake_edit_controller(
+        _fake_edit_node(
+            provenance.selection(provenance.IselOperation()),
+            source_display_spec=provenance.selection(provenance.IselOperation()),
+            parent_uid="parent",
+        )
+    )
+    assert controller.can_revert_row(source_row)[0]
+
+
+def test_manager_provenance_edit_controller_error_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = _fake_edit_node(provenance.full_data())
+    controller = _fake_edit_controller(node)
+    unavailable: list[str] = []
+    failed: list[tuple[str, Exception]] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller, "_show_failed", lambda title, exc: failed.append((title, exc))
+    )
+
+    controller.edit_row(None)
+    controller.revert_row(None)
+    assert len(unavailable) == 2
+
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("row", None),
+        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    )
+    monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    monkeypatch.setattr(controller, "_display_spec_for_row", lambda _node, _row: None)
+    controller.revert_row(row)
+    assert len(failed) == 1
+
+    monkeypatch.setattr(
+        controller,
+        "_display_spec_for_row",
+        lambda _node, _row: provenance.full_data(),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    controller.revert_row(row)
+    assert len(failed) == 2
+    assert "boom" in str(failed[-1][1])
+
+
+def test_manager_provenance_edit_controller_private_error_branches() -> None:
+    controller = _fake_edit_controller(_fake_edit_node(None))
+    file_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("load", None),
+        edit_ref=provenance._ProvenanceStepRef("file_load"),
+    )
+    with pytest.raises(RuntimeError, match="file load"):
+        controller._edit_file_load_row(
+            typing.cast("typing.Any", _fake_edit_node(None)), file_row
+        )
+
+    operation_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("op", None),
+        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    )
+    with pytest.raises(RuntimeError, match="No provenance"):
+        controller._edit_operation_row(
+            typing.cast("typing.Any", _fake_edit_node(None)), operation_row
+        )
+    with pytest.raises(RuntimeError, match="not available"):
+        controller._edit_operation_row(
+            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            operation_row,
+        )
+    with pytest.raises(RuntimeError, match="No editing dialog"):
+        controller._edit_operation_row(
+            typing.cast(
+                "typing.Any",
+                _fake_edit_node(
+                    provenance.full_data(provenance.RestoreNonuniformDimsOperation())
+                ),
+            ),
+            operation_row,
+        )
+
+
+def test_manager_provenance_edit_controller_dialog_execution_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller()
+    data = xr.DataArray(np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y"))
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    original_itool = erlab.interactive.itool
+
+    monkeypatch.setattr(erlab.interactive, "itool", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="temporary ImageTool"):
+        controller._edited_operations_from_dialog(
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            operation,
+            data,
+        )
+
+    monkeypatch.setattr(erlab.interactive, "itool", original_itool)
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "exec",
+        lambda self: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+    assert (
+        controller._edited_operations_from_dialog(
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            operation,
+            data,
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "exec",
+        lambda self: int(QtWidgets.QDialog.DialogCode.Accepted),
+    )
+    assert controller._edited_operations_from_dialog(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        operation,
+        data,
+    ) == [operation]
+
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "filter_operation",
+        lambda self: None,
+    )
+    assert (
+        controller._edited_operations_from_dialog(
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            operation,
+            data,
+        )
+        == []
+    )
+
+    with pytest.raises(RuntimeError, match="Active display filter"):
+        controller._edit_active_filter(
+            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            operation,
+            manager_provenance_edit.dialogs.AggregateDialog,
+        )
+
+
+def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
+    parent_data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y")
+    )
+    parent = types.SimpleNamespace(
+        displayed_provenance_spec=provenance.full_data(),
+        current_source_data=lambda: parent_data,
+    )
+    node = _fake_edit_node(
+        provenance.full_data(),
+        parent_uid="parent",
+        source_display_spec=provenance.selection(),
+    )
+    replaced: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec, bool, bool]] = []
+    source_bindings: list[
+        tuple[
+            provenance.ToolProvenanceSpec,
+            bool,
+            str,
+            provenance.ToolProvenanceSpec,
+        ]
+    ] = []
+    node._replace_imagetool_data = (
+        lambda data, spec, *, propagate_descendants, preserve_filter: replaced.append(
+            (data, spec, propagate_descendants, preserve_filter)
+        )
+    )
+    node.set_source_binding = lambda spec, *, auto_update, state, provenance_spec: (
+        source_bindings.append((spec, auto_update, state, provenance_spec))
+    )
+    controller = _fake_edit_controller(node, parent=parent)
+    spec = provenance.selection(provenance.IselOperation(kwargs={"x": 1}))
+
+    data, replayed_spec = controller._replay_candidate_result(
+        typing.cast("typing.Any", node),
+        "source",
+        spec,
+    )
+    xr.testing.assert_identical(data, parent_data.isel(x=1))
+    assert replayed_spec == spec
+
+    controller._replace_node_data(
+        typing.cast("typing.Any", node),
+        "source",
+        data,
+        spec,
+        provenance.NormalizeOperation(dims=("y",), mode="area"),
+    )
+
+    assert source_bindings
+    assert source_bindings[-1][0] == spec
+    assert source_bindings[-1][1:] == (
+        True,
+        "fresh",
+        provenance.compose_display_provenance(
+            parent.displayed_provenance_spec,
+            spec,
+            parent_data=parent_data,
+        ),
+    )
+    assert replaced[-1][2:] == (True, True)
+
+    with pytest.raises(RuntimeError, match="Live provenance"):
+        controller._replay_candidate_result(
+            typing.cast("typing.Any", node),
+            "display",
+            spec,
+        )
+    with pytest.raises(RuntimeError, match="Source-bound edits"):
+        controller._replace_node_data(
+            typing.cast("typing.Any", node),
+            "source",
+            data,
+            typing.cast("typing.Any", None),
+            None,
+        )
+
+    unsupported = spec.model_copy(update={"kind": "bad"})
+    with pytest.raises(RuntimeError, match="Unsupported provenance kind"):
+        controller._replay_candidate_result(
+            typing.cast("typing.Any", node),
+            "display",
+            unsupported,
+        )
+
+
+def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> None:
+    controller = _fake_edit_controller()
+    active = provenance.NormalizeOperation(dims=("x",), mode="area")
+    node = _fake_edit_node(provenance.full_data(), active_filter=active)
+
+    assert (
+        controller._active_filter_ref(
+            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            provenance.full_data(active),
+        )
+        is None
+    )
+
+    live_spec = provenance.full_data(provenance.IselOperation(kwargs={"x": 0}), active)
+    assert controller._active_filter_ref(
+        typing.cast("typing.Any", node),
+        live_spec,
+    ) == provenance._ProvenanceStepRef("operation", operation_index=1)
+
+    file_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(provenance.full_data(active))
+    assert controller._active_filter_ref(
+        typing.cast("typing.Any", node),
+        file_spec,
+    ) == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+    base_spec, split_operation = controller._split_active_filter(
+        typing.cast("typing.Any", node),
+        file_spec,
+    )
+    assert split_operation == active
+    assert base_spec.replay_stages == ()
+
+    node.slicer_area._accepted_filter_provenance_operation = None
+    assert controller._split_active_filter(
+        typing.cast("typing.Any", node),
+        live_spec,
+    ) == (live_spec, None)
+
+
+def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> None:
+    isel = provenance.IselOperation(kwargs={"x": 0})
+    sel = provenance.SelOperation(kwargs={"y": 1.0})
+    spec = provenance.selection(isel, sel)
+    start_ref = provenance._ProvenanceStepRef("start")
+    first_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    missing_ref = provenance._ProvenanceStepRef("operation", operation_index=20)
+    script_input_ref = provenance._ProvenanceStepRef(
+        "script_input",
+        script_input_index=0,
+    )
+
+    assert spec._operation_for_ref(start_ref) is None
+    assert spec._operation_for_ref(first_ref) == isel
+    assert spec._operation_for_ref(missing_ref) is None
+    with pytest.raises(ValueError, match="Expected an operation"):
+        spec._replace_operation_ref(start_ref, ())
+    assert spec._replace_operation_ref(first_ref, (sel,)).operations == (sel, sel)
+    assert spec._prefix_through_ref(start_ref).operations == ()
+    with pytest.raises(ValueError, match="cannot be replayed"):
+        spec._prefix_through_ref(script_input_ref)
+    assert spec._prefix_before_ref(start_ref).operations == ()
+    assert spec._prefix_before_ref(first_ref).operations == ()
+    assert spec._streamlined_operations("selection", spec.operations) == spec.operations
+
+    file_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(provenance.full_data(isel, sel))
+    stage_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=1,
+        stage_index=0,
+    )
+    assert file_spec._operation_for_ref(stage_ref) == sel
+    assert (
+        file_spec._operation_for_ref(
+            provenance._ProvenanceStepRef("operation", operation_index=1, stage_index=2)
+        )
+        is None
+    )
+    assert (
+        file_spec._prefix_through_ref(
+            provenance._ProvenanceStepRef("file_load")
+        ).replay_stages
+        == ()
+    )
+    assert file_spec._prefix_before_ref(stage_ref).replay_stages[0].operations == (
+        isel,
+    )
 
 
 def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:

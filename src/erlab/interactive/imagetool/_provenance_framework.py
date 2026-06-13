@@ -2458,10 +2458,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 ),
             )
             for operation_index, operation in self._streamlined_operation_refs(
-                typing.cast(
-                    "typing.Literal['full_data', 'public_data', 'selection']",
-                    self.kind,
-                ),
+                self.kind,
                 self.operations,
                 parent_data=parent_data,
             )
