@@ -187,6 +187,20 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
+def _clear_clipboard() -> QtGui.QClipboard:
+    clipboard = QtWidgets.QApplication.clipboard()
+    clipboard.clear()
+    return clipboard
+
+
+def _custom_order_step(label: str) -> FigureOperationState:
+    return FigureOperationState.custom(
+        label=label,
+        code=f"fig.__dict__['_order'] = fig.__dict__.get('_order', []) + [{label!r}]",
+        trusted=True,
+    )
+
+
 def _method_operations(
     tool: FigureComposerTool,
     family: FigureMethodFamily,
@@ -5807,6 +5821,830 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
     assert tool.operation_list.currentRow() == 1
 
 
+def test_figure_composer_copy_paste_steps_preserves_order_and_history(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in "abcd"),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    _clear_clipboard()
+
+    _select_operation_rows(tool, (1, 3))
+    copied_ids = {tool.tool_status.operations[index].operation_id for index in (1, 3)}
+    tool.copy_operation_button.click()
+    _select_operation_rows(tool, (0,))
+    tool.paste_operation_button.click()
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "d",
+        "b",
+        "c",
+        "d",
+    ]
+    assert _selected_operation_rows(tool) == (1, 2)
+    assert tool.operation_list.currentRow() == 1
+    pasted_ids = {tool.tool_status.operations[index].operation_id for index in (1, 2)}
+    assert pasted_ids.isdisjoint(copied_ids)
+
+    tool.undo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+    tool.redo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "d",
+        "b",
+        "c",
+        "d",
+    ]
+
+
+def test_figure_composer_cut_paste_steps_preserves_order_and_history(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in "abcd"),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    clipboard = _clear_clipboard()
+
+    _select_operation_rows(tool, (1, 3))
+    cut_ids = {tool.tool_status.operations[index].operation_id for index in (1, 3)}
+    tool.cut_operation_button.click()
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+    ]
+    assert _selected_operation_rows(tool) == (1,)
+    assert tool.operation_list.currentRow() == 1
+    assert [
+        operation["label"]
+        for operation in json.loads(clipboard.mimeData().text())["operations"]
+    ] == ["b", "d"]
+
+    tool.paste_operation_button.click()
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+        "b",
+        "d",
+    ]
+    assert _selected_operation_rows(tool) == (2, 3)
+    assert tool.operation_list.currentRow() == 2
+    pasted_ids = {tool.tool_status.operations[index].operation_id for index in (2, 3)}
+    assert pasted_ids.isdisjoint(cut_ids)
+
+    tool.undo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+    ]
+    tool.undo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+    tool.redo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+    ]
+    tool.redo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+        "b",
+        "d",
+    ]
+
+
+def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
+    qtbot,
+) -> None:
+    source_data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="map",
+    )
+    source_tool = FigureComposerTool(
+        source_data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="map", label="map"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("map",),
+                ),
+            ),
+            primary_source="map",
+        ),
+        source_data={"map": source_data},
+    )
+    destination_data = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 1.0, 2.0]},
+        name="existing",
+    )
+    destination = FigureComposerTool(
+        destination_data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="existing", label="existing"),),
+            operations=(),
+            primary_source="existing",
+        ),
+        source_data={"existing": destination_data},
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    _clear_clipboard()
+
+    _select_operation_rows(source_tool, (0,))
+    source_tool.copy_operation_button.click()
+    destination._paste_operations_from_clipboard()
+
+    assert [source.name for source in destination.tool_status.sources] == [
+        "existing",
+        "map",
+    ]
+    assert destination.tool_status.operations[-1].sources == ("map",)
+    xr.testing.assert_identical(destination.source_data()["map"], source_data)
+
+    destination.undo()
+    assert [source.name for source in destination.tool_status.sources] == ["existing"]
+    assert set(destination.source_data()) == {"existing"}
+
+    destination.redo()
+    assert [source.name for source in destination.tool_status.sources] == [
+        "existing",
+        "map",
+    ]
+    assert destination.tool_status.operations[-1].sources == ("map",)
+    xr.testing.assert_identical(destination.source_data()["map"], source_data)
+
+
+def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    map_selections=(FigureDataSelectionState(source="data"),),
+                ),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+    _clear_clipboard()
+
+    _select_operation_rows(tool, (0,))
+    original_id = tool.tool_status.operations[0].operation_id
+    tool.cut_operation_button.click()
+    tool.paste_operation_button.click()
+
+    assert [source.name for source in tool.tool_status.sources] == ["data"]
+    assert set(tool.source_data()) == {"data"}
+    pasted_operation = tool.tool_status.operations[0]
+    assert pasted_operation.sources == ("data",)
+    assert pasted_operation.map_selections[0].source == "data"
+    assert pasted_operation.operation_id != original_id
+
+
+def test_figure_composer_cut_paste_steps_renames_cross_composer_sources(
+    qtbot,
+) -> None:
+    image = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="incoming_image",
+    )
+    profile = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 1.0, 2.0]},
+        name="incoming_profile",
+    )
+    source_tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data", label="image"),
+                FigureSourceState(name="profile", label="profile"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    map_selections=(FigureDataSelectionState(source="data"),),
+                ),
+                FigureOperationState.line(label="line", source="profile"),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": image, "profile": profile},
+    )
+    existing_image = image.copy(data=np.full((2, 2), -1.0))
+    existing_profile = profile.copy(data=np.full(3, -1.0))
+    destination = FigureComposerTool(
+        existing_image,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data", label="existing image"),
+                FigureSourceState(name="profile", label="existing profile"),
+            ),
+            operations=(),
+            primary_source="data",
+        ),
+        source_data={"data": existing_image, "profile": existing_profile},
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    _clear_clipboard()
+
+    _select_operation_rows(source_tool, (0, 1))
+    source_tool.cut_operation_button.click()
+    destination._paste_operations_from_clipboard()
+
+    assert [operation.label for operation in source_tool.tool_status.operations] == []
+    assert [source.name for source in destination.tool_status.sources] == [
+        "data",
+        "profile",
+        "data_copy",
+        "profile_copy",
+    ]
+    pasted_plot, pasted_line = destination.tool_status.operations
+    assert pasted_plot.sources == ("data_copy",)
+    assert pasted_plot.map_selections[0].source == "data_copy"
+    assert pasted_line.line_source == "profile_copy"
+    xr.testing.assert_identical(destination.source_data()["data"], existing_image)
+    xr.testing.assert_identical(destination.source_data()["profile"], existing_profile)
+    xr.testing.assert_identical(destination.source_data()["data_copy"], image)
+    xr.testing.assert_identical(destination.source_data()["profile_copy"], profile)
+
+
+def test_figure_composer_copy_paste_steps_renames_source_conflicts(qtbot) -> None:
+    image = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="incoming_image",
+    )
+    profile = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 1.0, 2.0]},
+        name="incoming_profile",
+    )
+    source_tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data", label="image"),
+                FigureSourceState(name="profile", label="profile"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    map_selections=(FigureDataSelectionState(source="data"),),
+                ),
+                FigureOperationState.line(label="line", source="profile"),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": image, "profile": profile},
+    )
+    existing_image = image.copy(data=np.full((2, 2), -1.0))
+    existing_profile = profile.copy(data=np.full(3, -1.0))
+    destination = FigureComposerTool(
+        existing_image,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data", label="existing image"),
+                FigureSourceState(name="profile", label="existing profile"),
+            ),
+            operations=(),
+            primary_source="data",
+        ),
+        source_data={"data": existing_image, "profile": existing_profile},
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    _clear_clipboard()
+
+    _select_operation_rows(source_tool, (0, 1))
+    source_tool.copy_operation_button.click()
+    destination._paste_operations_from_clipboard()
+
+    assert [source.name for source in destination.tool_status.sources] == [
+        "data",
+        "profile",
+        "data_copy",
+        "profile_copy",
+    ]
+    pasted_plot, pasted_line = destination.tool_status.operations
+    assert pasted_plot.sources == ("data_copy",)
+    assert pasted_plot.map_selections[0].source == "data_copy"
+    assert pasted_line.line_source == "profile_copy"
+    xr.testing.assert_identical(destination.source_data()["data"], existing_image)
+    xr.testing.assert_identical(destination.source_data()["profile"], existing_profile)
+    xr.testing.assert_identical(destination.source_data()["data_copy"], image)
+    xr.testing.assert_identical(destination.source_data()["profile_copy"], profile)
+
+
+def test_figure_composer_copy_paste_steps_plain_payload_has_missing_source(
+    qtbot,
+) -> None:
+    remote_data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="remote",
+    )
+    source_tool = FigureComposerTool(
+        remote_data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="remote", label="remote"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("remote",),
+                ),
+            ),
+            primary_source="remote",
+        ),
+        source_data={"remote": remote_data},
+    )
+    destination_data = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 1.0, 2.0]},
+        name="local",
+    )
+    destination = FigureComposerTool(
+        destination_data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="local", label="local"),),
+            operations=(),
+            primary_source="local",
+        ),
+        source_data={"local": destination_data},
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    clipboard = _clear_clipboard()
+
+    _select_operation_rows(source_tool, (0,))
+    source_tool.copy_operation_button.click()
+    payload_text = clipboard.mimeData().text()
+    assert payload_text.startswith(
+        '{\n  "type": "erlab.figure_composer.steps",\n  "version": 1,'
+    )
+    assert json.loads(payload_text)["type"] == "erlab.figure_composer.steps"
+    mime = QtCore.QMimeData()
+    mime.setData(
+        figurecomposer_tool_module._STEPS_CLIPBOARD_MIME,
+        payload_text.encode("utf-8"),
+    )
+    mime.setText(payload_text)
+    clipboard.setMimeData(mime)
+    destination._paste_operations_from_clipboard()
+
+    assert [source.name for source in destination.tool_status.sources] == [
+        "local",
+        "remote",
+    ]
+    assert destination.tool_status.operations[-1].sources == ("remote",)
+    assert "remote" not in destination.source_data()
+
+
+def test_figure_composer_copy_paste_steps_ignores_invalid_payload(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    clipboard = _clear_clipboard()
+    clipboard.setText("{not valid json")
+    before = tool.tool_status
+
+    tool._update_step_action_buttons()
+    assert not tool.paste_operation_button.isEnabled()
+    tool._paste_operations_from_clipboard()
+    assert tool.tool_status == before
+
+    clipboard.setText(
+        json.dumps(
+            {
+                "version": figurecomposer_tool_module._STEPS_CLIPBOARD_PAYLOAD_VERSION,
+                "operations": [_custom_order_step("b").model_dump(mode="json")],
+                "sources": [],
+            }
+        )
+    )
+    tool._update_step_action_buttons()
+    assert not tool.paste_operation_button.isEnabled()
+    tool._paste_operations_from_clipboard()
+    assert tool.tool_status == before
+
+
+def test_figure_composer_copy_paste_steps_shortcuts_and_context_menu(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in ("a", "b")),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    _clear_clipboard()
+
+    _select_operation_rows(tool, (0,))
+    copy_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_C,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    tool.operation_list.keyPressEvent(copy_event)
+    if not copy_event.isAccepted():
+        copy_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.MetaModifier,
+        )
+        tool.operation_list.keyPressEvent(copy_event)
+    assert copy_event.isAccepted()
+
+    tool._show_operation_context_menu(QtCore.QPoint(0, 0))
+    assert tool._operation_context_menu is not None
+    paste_action = next(
+        action
+        for action in tool._operation_context_menu.actions()
+        if action.objectName() == "figureComposerContextPasteStepsAction"
+    )
+    _select_operation_rows(tool, (1,))
+    paste_action.trigger()
+    tool._operation_context_menu.close()
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "a",
+    ]
+
+
+def test_figure_composer_cut_paste_steps_shortcuts_and_context_menu(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in ("a", "b", "c")),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    _clear_clipboard()
+
+    _select_operation_rows(tool, (1,))
+    cut_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_X,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    tool.operation_list.keyPressEvent(cut_event)
+    if not cut_event.isAccepted():
+        cut_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_X,
+            QtCore.Qt.KeyboardModifier.MetaModifier,
+        )
+        tool.operation_list.keyPressEvent(cut_event)
+    assert cut_event.isAccepted()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "c",
+    ]
+
+    _select_operation_rows(tool, (0,))
+    tool._show_operation_context_menu(QtCore.QPoint(0, 0))
+    assert tool._operation_context_menu is not None
+    cut_action = next(
+        action
+        for action in tool._operation_context_menu.actions()
+        if action.objectName() == "figureComposerContextCutStepsAction"
+    )
+    assert cut_action.isEnabled()
+    cut_action.trigger()
+    tool._operation_context_menu.close()
+
+    assert [operation.label for operation in tool.tool_status.operations] == ["c"]
+
+
+def test_figure_composer_step_payload_rejects_malformed_clipboard_data() -> None:
+    mime = QtCore.QMimeData()
+    mime.setData(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME, b"\xff")
+    assert figurecomposer_tool_module._step_clipboard_payload(mime) is None
+
+    assert (
+        figurecomposer_tool_module._step_clipboard_payload(QtCore.QMimeData()) is None
+    )
+
+    def payload_with(**updates: typing.Any) -> str:
+        payload = {
+            "type": figurecomposer_tool_module._STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": figurecomposer_tool_module._STEPS_CLIPBOARD_PAYLOAD_VERSION,
+            "operations": [_custom_order_step("a").model_dump(mode="json")],
+            "sources": [],
+        }
+        payload.update(updates)
+        return json.dumps(payload)
+
+    invalid_payloads = (
+        "[]",
+        payload_with(version=2),
+        payload_with(operations=[]),
+        payload_with(operations={}),
+        payload_with(sources={}),
+    )
+    for payload_text in invalid_payloads:
+        mime = QtCore.QMimeData()
+        mime.setText(payload_text)
+        assert figurecomposer_tool_module._step_clipboard_payload(mime) is None
+
+    mime = QtCore.QMimeData()
+    mime.setText(payload_with())
+    mime.figure_composer_source_data = object()
+    operations, sources, source_data = (
+        figurecomposer_tool_module._step_clipboard_payload(mime)
+    )
+    assert [operation.label for operation in operations] == ["a"]
+    assert sources == ()
+    assert source_data == {}
+
+
+def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
+    operation_list = figurecomposer_tool_module._FigureComposerOperationList()
+    qtbot.addWidget(operation_list)
+    pasted: list[bool] = []
+    operation_list.paste_requested.connect(lambda: pasted.append(True))
+
+    operation_list.keyPressEvent(None)
+
+    paste_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_V,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    operation_list.keyPressEvent(paste_event)
+    if not paste_event.isAccepted():
+        paste_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.MetaModifier,
+        )
+        operation_list.keyPressEvent(paste_event)
+    assert paste_event.isAccepted()
+    assert pasted == [True]
+
+    fallback_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_A,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    operation_list.keyPressEvent(fallback_event)
+
+
+def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            figurecomposer_tool_module.QtWidgets.QApplication,
+            "instance",
+            staticmethod(lambda: None),
+        )
+        disconnected_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                sources=(FigureSourceState(name="data", label="data"),),
+                operations=(_custom_order_step("a"),),
+                primary_source="data",
+            ),
+        )
+    qtbot.addWidget(disconnected_tool)
+    assert disconnected_tool._connected_step_clipboard is None
+
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._clipboard() is not None
+    tool.operation_list.setCurrentRow(-1)
+    tool.operation_list.clearSelection()
+    tool._copy_selected_operations()
+
+    _select_operation_rows(tool, (0,))
+    before = tool.tool_status
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            figurecomposer_tool_module.QtWidgets.QApplication,
+            "instance",
+            staticmethod(lambda: None),
+        )
+        assert tool._clipboard() is None
+        assert tool._clipboard_step_payload() is None
+        tool._copy_selected_operations()
+        tool._cut_selected_operations()
+    assert tool.tool_status == before
+
+    tool._connected_step_clipboard = None
+    tool._disconnect_step_clipboard()
+
+
+def test_figure_composer_source_data_history_helpers(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    tool._reset_history_stack()
+    assert list(tool._prev_source_data_states[-1]) == ["data"]
+    assert not tool.undoable
+    assert not tool.redoable
+    tool.undo()
+    tool.redo()
+    tool._write_state()
+    assert len(tool._prev_source_data_states) == 1
+
+    with tool._history_suppressed():
+        tool._write_state()
+        tool._replace_last_state()
+    assert len(tool._prev_source_data_states) == 1
+
+    replacement = data.copy(data=np.full(3, 2.0))
+    tool.set_source_data({"data": replacement})
+    tool._replace_last_state()
+    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
+
+    tool._prev_states.clear()
+    tool._prev_source_data_states.clear()
+    tool._replace_last_state()
+    assert len(tool._prev_states) == 1
+    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
+
+
+def test_figure_composer_copy_paste_source_and_insert_fallbacks(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    operation = FigureOperationState.plot_slices(
+        label="plot",
+        sources=("data",),
+        map_selections=(FigureDataSelectionState(source="extra"),),
+    )
+    assert tool._operation_source_names(operation) == ("data", "extra")
+
+    renamed_sources, _, _ = tool._renamed_pasted_sources(
+        (
+            FigureSourceState(name="extra", label="extra"),
+            FigureSourceState(name="extra", label="extra"),
+        ),
+        {},
+    )
+    assert [source.name for source in renamed_sources] == ["extra"]
+
+    clipboard = _clear_clipboard()
+    clipboard.setText(
+        figurecomposer_tool_module._step_clipboard_payload_text(
+            (_custom_order_step("b"),), ()
+        )
+    )
+    tool.operation_list.setCurrentRow(0)
+    with monkeypatch.context() as patch:
+        patch.setattr(tool, "_operation_id_for_item", lambda item: "missing")
+        tool._paste_operations_from_clipboard()
+    assert [operation.label for operation in tool.tool_status.operations] == ["a", "b"]
+
+    def existing_source_payload(sources, source_data, *, preserve_existing=False):
+        return (FigureSourceState(name="data", label="data"),), {}, {}
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tool, "_renamed_pasted_sources", existing_source_payload)
+        clipboard.setText(
+            figurecomposer_tool_module._step_clipboard_payload_text(
+                (_custom_order_step("c"),), ()
+            )
+        )
+        tool._paste_operations_from_clipboard()
+    assert [source.name for source in tool.tool_status.sources] == ["data"]
+
+    tool._source_data["data_copy"] = data
+    renamed_sources, rename_map, _ = tool._renamed_pasted_sources(
+        (FigureSourceState(name="data", label="data"),),
+        {},
+    )
+    assert [source.name for source in renamed_sources] == ["data_copy_2"]
+    assert rename_map == {"data": "data_copy_2"}
+
+    tool._source_data["extra"] = data
+    renamed_sources, rename_map, renamed_source_data = tool._renamed_pasted_sources(
+        (FigureSourceState(name="extra", label="extra"),),
+        {"extra": data},
+        preserve_existing=True,
+    )
+    assert [source.name for source in renamed_sources] == ["extra"]
+    assert rename_map == {"extra": "extra"}
+    assert renamed_source_data == {}
+
+    metadata_source = FigureSourceState(name="metadata_only", label="metadata")
+    tool._recipe = tool._recipe.model_copy(
+        update={"sources": (*tool.tool_status.sources, metadata_source)}
+    )
+    renamed_sources, rename_map, renamed_source_data = tool._renamed_pasted_sources(
+        (metadata_source,),
+        {"metadata_only": data},
+        preserve_existing=True,
+    )
+    assert renamed_sources == ()
+    assert rename_map == {"metadata_only": "metadata_only"}
+    xr.testing.assert_identical(renamed_source_data["metadata_only"], data)
+
+
 def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None:
     data = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="data")
     tool = FigureComposerTool(
@@ -7067,6 +7905,80 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     assert first_axes_id not in status_text
 
 
+def test_figure_composer_gridspec_axes_selector_click_keeps_surviving_removed_target(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    span_00 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    span_01 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=1,
+                        ncols=2,
+                        axes=(
+                            FigureGridSpecAxesState(
+                                axes_id="ax0",
+                                span=span_00,
+                            ),
+                            FigureGridSpecAxesState(
+                                axes_id="ax1",
+                                span=span_01,
+                            ),
+                        ),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes_ids=("ax0", "ax1")),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool._select_step_section("axes")
+    tool._sync_axes_selector()
+
+    tool.gridspec_layout_widget.set_selected_region("ax1")
+    tool._gridspec_delete_selected_region()
+    tool._sync_axes_selector()
+    tool.gridspec_axes_selector.resize(tool.gridspec_axes_selector.sizeHint())
+
+    assert tool.tool_status.operations[0].axes.axes_ids == ("ax0", "ax1")
+    assert tool.gridspec_axes_selector.selected_axes_ids() == ("ax0",)
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+    qtbot.mouseClick(
+        tool.gridspec_axes_selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=tool.gridspec_axes_selector.axis_rect("ax0").center(),
+    )
+
+    assert tool.tool_status.operations[0].axes.axes_ids == ("ax0",)
+    assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+
 def test_figure_composer_gridspec_delete_selects_nearby_axes(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     left_axis = FigureGridSpecAxesState(
@@ -7722,6 +8634,19 @@ def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
     assert all(
         button.focusPolicy() == QtCore.Qt.FocusPolicy.StrongFocus for button in buttons
     )
+    step_action_buttons = (
+        tool.add_step_button,
+        tool.copy_operation_button,
+        tool.cut_operation_button,
+        tool.paste_operation_button,
+        tool.duplicate_operation_button,
+        tool.move_operation_up_button,
+        tool.move_operation_down_button,
+        tool.remove_operation_button,
+        tool.operation_list,
+    )
+    for index, button in enumerate(step_action_buttons[:-1]):
+        assert button.nextInFocusChain() is step_action_buttons[index + 1]
     for index, button in enumerate(buttons[:-1]):
         assert button.nextInFocusChain() is buttons[index + 1]
 
@@ -15386,6 +16311,51 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     assert tool.tool_status.operations[0].axes.axes == ((0, 0), (0, 1))
     assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
     assert "axes=axs" in tool.generated_code()
+
+
+def test_figure_composer_axes_selector_click_keeps_surviving_removed_axes_target(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0), (1, 1))),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.nrows_spin.setValue(1)
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool._select_step_section("axes")
+    tool.axes_selector.resize(tool.axes_selector.sizeHint())
+
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0), (1, 1))
+    assert tool.axes_selector.selected_axes() == ((0, 0),)
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+
+    qtbot.mouseClick(
+        tool.axes_selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=tool.axes_selector.cell_rect((0, 0)).center(),
+    )
+
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0),)
+    assert not tool._operation_has_invalid_axes(tool.tool_status.operations[0])
 
 
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(

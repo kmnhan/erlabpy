@@ -103,8 +103,13 @@ method.
 
 :::
 
-Steps can be enabled, disabled, duplicated, reordered, or removed. By selecting multiple
-steps, you can edit them simultaneously to apply the same change to all selected steps.
+Steps can be enabled, disabled, duplicated, reordered, cut, copied, pasted, or removed.
+
+By selecting multiple steps, you can edit them simultaneously to apply the same change
+to all selected steps. Copied or cut steps can be pasted into another Figure Composer.
+
+When the source and destination composers are open in the same app process, pasted steps
+also bring the data sources they use.
 
 (figure-composer-reproducibility)=
 

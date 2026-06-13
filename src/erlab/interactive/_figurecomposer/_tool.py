@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import functools
+import json
 import math
 import textwrap
 import typing
@@ -135,6 +137,121 @@ _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
+_STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
+_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
+_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+
+
+class _FigureComposerStepMimeData(QtCore.QMimeData):
+    """Clipboard payload that can also carry live source data in one process."""
+
+    def __init__(
+        self,
+        payload_text: str,
+        source_data: Mapping[str, xr.DataArray],
+        *,
+        cut_source_tool_id: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.figure_composer_source_data: dict[str, xr.DataArray] = dict(source_data)
+        self.figure_composer_cut_source_tool_id = cut_source_tool_id
+        self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
+        self.setText(payload_text)
+
+
+class _FigureComposerOperationList(QtWidgets.QListWidget):
+    copy_requested = QtCore.Signal()
+    cut_requested = QtCore.Signal()
+    paste_requested = QtCore.Signal()
+    context_menu_requested = QtCore.Signal(QtCore.QPoint)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.context_menu_requested)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
+        if event is None:
+            return
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit()
+            event.accept()
+            return
+        if event.matches(QtGui.QKeySequence.StandardKey.Cut):
+            self.cut_requested.emit()
+            event.accept()
+            return
+        if event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+def _step_clipboard_payload_text(
+    operations: Sequence[FigureOperationState], sources: Sequence[FigureSourceState]
+) -> str:
+    return json.dumps(
+        {
+            "type": _STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": _STEPS_CLIPBOARD_PAYLOAD_VERSION,
+            "operations": [
+                operation.model_dump(mode="json") for operation in operations
+            ],
+            "sources": [source.model_dump(mode="json") for source in sources],
+        },
+        indent=2,
+    )
+
+
+def _step_clipboard_payload(
+    mime: QtCore.QMimeData | None,
+) -> (
+    tuple[
+        tuple[FigureOperationState, ...],
+        tuple[FigureSourceState, ...],
+        dict[str, xr.DataArray],
+    ]
+    | None
+):
+    if mime is None:
+        return None
+    try:
+        if mime.hasFormat(_STEPS_CLIPBOARD_MIME):
+            payload_text = bytes(mime.data(_STEPS_CLIPBOARD_MIME).data()).decode(
+                "utf-8"
+            )
+        elif mime.hasText():
+            payload_text = mime.text()
+        else:
+            return None
+        payload = json.loads(payload_text)
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != _STEPS_CLIPBOARD_PAYLOAD_TYPE:
+            return None
+        if payload.get("version") != _STEPS_CLIPBOARD_PAYLOAD_VERSION:
+            return None
+        raw_operations = payload.get("operations")
+        raw_sources = payload.get("sources", [])
+        if not isinstance(raw_operations, list) or not raw_operations:
+            return None
+        if not isinstance(raw_sources, list):
+            return None
+        operations = tuple(
+            FigureOperationState.model_validate(operation)
+            for operation in raw_operations
+        )
+        sources = tuple(
+            FigureSourceState.model_validate(source) for source in raw_sources
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    source_data = getattr(mime, "figure_composer_source_data", {})
+    if not isinstance(source_data, dict):
+        source_data = {}
+    return operations, sources, dict(source_data)
 
 
 def _target_axes_count_text(count: int) -> str:
@@ -206,6 +323,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
+        self._operation_context_menu: QtWidgets.QMenu | None = None
+        self._connected_step_clipboard: QtGui.QClipboard | None = None
+        self._step_clipboard_tool_id = uuid.uuid4().hex
+        self._prev_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
+            collections.deque(maxlen=self._prev_states.maxlen)
+        )
+        self._next_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
+            collections.deque(maxlen=self._next_states.maxlen)
+        )
 
         if source_data is not None:
             self.set_source_data(source_data)
@@ -733,6 +859,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_pixmap_update_pending = False
         self._clear_preview_pixmap_cache(stale=False)
         self._remove_operation_list_event_filter()
+        self._disconnect_step_clipboard()
         self._close_figure_window()
         if event is not None:
             super().closeEvent(event)
@@ -779,7 +906,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.remove_operation_button = _step_toolbar_button(
             recipe_page,
             "figureComposerDeleteStepButton",
-            "Delete Step",
+            "Delete",
             "Remove the selected recipe step or steps.",
         )
         self.remove_operation_button.clicked.connect(self._remove_current_operation)
@@ -791,6 +918,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.duplicate_operation_button.clicked.connect(
             self._duplicate_current_operation
+        )
+        self.copy_operation_button = _step_toolbar_button(
+            recipe_page,
+            "figureComposerCopyStepButton",
+            "Copy",
+            "Copy the selected recipe step or steps.",
+        )
+        self.copy_operation_button.clicked.connect(self._copy_selected_operations)
+        self.cut_operation_button = _step_toolbar_button(
+            recipe_page,
+            "figureComposerCutStepButton",
+            "Cut",
+            "Cut the selected recipe step or steps.",
+        )
+        self.cut_operation_button.clicked.connect(self._cut_selected_operations)
+        self.paste_operation_button = _step_toolbar_button(
+            recipe_page,
+            "figureComposerPasteStepButton",
+            "Paste",
+            "Paste copied recipe steps after the current selection.",
+        )
+        self.paste_operation_button.clicked.connect(
+            self._paste_operations_from_clipboard
         )
         self.move_operation_up_button = _step_toolbar_button(
             recipe_page,
@@ -834,6 +984,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_step_action_layout = QtWidgets.QHBoxLayout()
         selected_step_action_layout.setSpacing(4)
         selected_step_action_layout.addWidget(self.add_step_button)
+        selected_step_action_layout.addWidget(self.copy_operation_button)
+        selected_step_action_layout.addWidget(self.cut_operation_button)
+        selected_step_action_layout.addWidget(self.paste_operation_button)
         selected_step_action_layout.addWidget(self.duplicate_operation_button)
         selected_step_action_layout.addWidget(self.move_operation_up_button)
         selected_step_action_layout.addWidget(self.move_operation_down_button)
@@ -846,8 +999,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.recipe_splitter.setChildrenCollapsible(False)
         recipe_layout.addWidget(self.recipe_splitter, 1)
 
-        self.operation_list = QtWidgets.QListWidget(recipe_page)
+        self.operation_list = _FigureComposerOperationList(recipe_page)
         self.operation_list.setObjectName("figureComposerOperationList")
+        self.operation_list.copy_requested.connect(self._copy_selected_operations)
+        self.operation_list.cut_requested.connect(self._cut_selected_operations)
+        self.operation_list.paste_requested.connect(
+            self._paste_operations_from_clipboard
+        )
+        self.operation_list.context_menu_requested.connect(
+            self._show_operation_context_menu
+        )
         self._operation_list_viewport = self.operation_list.viewport()
         if self._operation_list_viewport is not None:
             self._operation_list_viewport.installEventFilter(self)
@@ -1365,6 +1526,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.gridspec_region_kind_combo,
         ):
             self._track_combo_interaction(combo)
+        application = QtWidgets.QApplication.instance()
+        if isinstance(application, QtWidgets.QApplication):
+            clipboard = application.clipboard()
+            if clipboard is not None:
+                clipboard.dataChanged.connect(self._update_step_action_buttons)
+                self._connected_step_clipboard = clipboard
 
         self.setCentralWidget(root)
         self.setWindowTitle("Figure Composer")
@@ -2321,15 +2488,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_step_action_buttons(self) -> None:
         indices = self._selected_operation_indices()
+        can_paste = self._clipboard_step_payload() is not None
         if not indices:
             self.remove_operation_button.setEnabled(False)
             self.duplicate_operation_button.setEnabled(False)
+            self.copy_operation_button.setEnabled(False)
+            self.cut_operation_button.setEnabled(False)
+            self.paste_operation_button.setEnabled(can_paste)
             self.move_operation_up_button.setEnabled(False)
             self.move_operation_down_button.setEnabled(False)
             return
         index_set = set(indices)
         self.remove_operation_button.setEnabled(True)
         self.duplicate_operation_button.setEnabled(True)
+        self.copy_operation_button.setEnabled(True)
+        self.cut_operation_button.setEnabled(True)
+        self.paste_operation_button.setEnabled(can_paste)
         self.move_operation_up_button.setEnabled(
             any(index > 0 and index - 1 not in index_set for index in indices)
         )
@@ -2779,6 +2953,84 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if viewport is not None and erlab.interactive.utils.qt_is_valid(self, viewport):
             viewport.removeEventFilter(self)
 
+    def _disconnect_step_clipboard(self) -> None:
+        clipboard = self._connected_step_clipboard
+        self._connected_step_clipboard = None
+        if clipboard is not None:
+            with contextlib.suppress(TypeError, RuntimeError):
+                clipboard.dataChanged.disconnect(self._update_step_action_buttons)
+
+    def _source_data_history_state(self) -> dict[str, xr.DataArray]:
+        return dict(self._source_data)
+
+    def _restore_source_data_history_state(
+        self, source_data: Mapping[str, xr.DataArray]
+    ) -> None:
+        self._source_data = dict(source_data)
+        self._mark_preview_pixmap_stale()
+
+    def _reset_history_stack(self) -> None:
+        self._prev_states.clear()
+        self._next_states.clear()
+        self._prev_source_data_states.clear()
+        self._next_source_data_states.clear()
+        self._prev_states.append(self.tool_status)
+        self._prev_source_data_states.append(self._source_data_history_state())
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def _write_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        last_state = self._prev_states[-1] if self._prev_states else None
+        if not self._history_state_equal(last_state, curr_state):
+            self._prev_states.append(curr_state)
+            self._prev_source_data_states.append(self._source_data_history_state())
+            self._next_states.clear()
+            self._next_source_data_states.clear()
+            self._update_history_actions()
+
+    @QtCore.Slot()
+    def _replace_last_state(self, *_args: typing.Any) -> None:
+        if not self._write_history:
+            return
+        curr_state = self.tool_status
+        source_data = self._source_data_history_state()
+        if self._prev_states:
+            self._prev_states[-1] = curr_state
+            self._prev_source_data_states[-1] = source_data
+        else:
+            self._prev_states.append(curr_state)
+            self._prev_source_data_states.append(source_data)
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def undo(self) -> None:
+        """Undo the most recent recorded Figure Composer recipe change."""
+        if not self.undoable:
+            return
+        with self._history_suppressed():
+            self._next_states.append(self._prev_states.pop())
+            self._next_source_data_states.append(self._prev_source_data_states.pop())
+            self._restore_source_data_history_state(self._prev_source_data_states[-1])
+            self.tool_status = self._prev_states[-1]
+        self._update_history_actions()
+
+    @QtCore.Slot()
+    def redo(self) -> None:
+        """Redo the most recently undone Figure Composer recipe change."""
+        if not self.redoable:
+            return
+        with self._history_suppressed():
+            next_state = self._next_states.pop()
+            next_source_data = self._next_source_data_states.pop()
+            self._prev_states.append(next_state)
+            self._prev_source_data_states.append(next_source_data)
+            self._restore_source_data_history_state(next_source_data)
+            self.tool_status = next_state
+        self._update_history_actions()
+
     def _clear_operation_multi_select_event(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(self):
             return
@@ -3136,6 +3388,58 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         )
 
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_operation_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu("Recipe Steps", self.operation_list)
+        self._operation_context_menu = menu
+
+        copy_action = QtGui.QAction("Copy", menu)
+        copy_action.setObjectName("figureComposerContextCopyStepsAction")
+        copy_action.setEnabled(bool(self._selected_operation_indices()))
+        copy_action.triggered.connect(self._copy_selected_operations)
+        menu.addAction(copy_action)
+
+        cut_action = QtGui.QAction("Cut", menu)
+        cut_action.setObjectName("figureComposerContextCutStepsAction")
+        cut_action.setEnabled(bool(self._selected_operation_indices()))
+        cut_action.triggered.connect(self._cut_selected_operations)
+        menu.addAction(cut_action)
+
+        paste_action = QtGui.QAction("Paste", menu)
+        paste_action.setObjectName("figureComposerContextPasteStepsAction")
+        paste_action.setEnabled(self._clipboard_step_payload() is not None)
+        paste_action.triggered.connect(self._paste_operations_from_clipboard)
+        menu.addAction(paste_action)
+
+        menu.addSeparator()
+        duplicate_action = QtGui.QAction("Duplicate", menu)
+        duplicate_action.setObjectName("figureComposerContextDuplicateStepAction")
+        duplicate_action.setEnabled(self.duplicate_operation_button.isEnabled())
+        duplicate_action.triggered.connect(self._duplicate_current_operation)
+        menu.addAction(duplicate_action)
+
+        move_up_action = QtGui.QAction("Up", menu)
+        move_up_action.setObjectName("figureComposerContextMoveStepUpAction")
+        move_up_action.setEnabled(self.move_operation_up_button.isEnabled())
+        move_up_action.triggered.connect(self._move_current_operation_up)
+        menu.addAction(move_up_action)
+
+        move_down_action = QtGui.QAction("Down", menu)
+        move_down_action.setObjectName("figureComposerContextMoveStepDownAction")
+        move_down_action.setEnabled(self.move_operation_down_button.isEnabled())
+        move_down_action.triggered.connect(self._move_current_operation_down)
+        menu.addAction(move_down_action)
+
+        remove_action = QtGui.QAction("Delete", menu)
+        remove_action.setObjectName("figureComposerContextDeleteStepAction")
+        remove_action.setEnabled(self.remove_operation_button.isEnabled())
+        remove_action.triggered.connect(self._remove_current_operation)
+        menu.addAction(remove_action)
+
+        viewport = self.operation_list.viewport()
+        if viewport is not None:  # pragma: no branch
+            menu.popup(viewport.mapToGlobal(position))
+
     def _add_operation(self, action_id: str) -> None:
         operation = _registry.spec_for_action(action_id).create_operation(self)
         operations = (*self._recipe.operations, operation)
@@ -3146,9 +3450,219 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
 
-    @QtCore.Slot()
-    def _remove_current_operation(self) -> None:
+    @staticmethod
+    def _operation_source_names(operation: FigureOperationState) -> tuple[str, ...]:
+        names: list[str] = []
+        for source_name in operation.sources:
+            if source_name not in names:
+                names.append(source_name)
+        for selection in operation.map_selections:
+            if selection.source not in names:
+                names.append(selection.source)
+        if operation.line_source is not None and operation.line_source not in names:
+            names.append(operation.line_source)
+        return tuple(names)
+
+    def _clipboard(self) -> QtGui.QClipboard | None:
+        application = QtWidgets.QApplication.instance()
+        if not isinstance(application, QtWidgets.QApplication):
+            return None
+        return application.clipboard()
+
+    def _clipboard_step_payload(
+        self,
+    ) -> (
+        tuple[
+            tuple[FigureOperationState, ...],
+            tuple[FigureSourceState, ...],
+            dict[str, xr.DataArray],
+        ]
+        | None
+    ):
+        clipboard = self._clipboard()
+        if clipboard is None:
+            return None
+        return _step_clipboard_payload(clipboard.mimeData())
+
+    def _write_selected_operations_to_clipboard(
+        self, *, cut: bool = False
+    ) -> tuple[int, ...] | None:
         indices = self._selected_operation_indices()
+        if not indices:
+            return None
+        operations = tuple(self._recipe.operations[index] for index in indices)
+        source_names = tuple(
+            dict.fromkeys(
+                source_name
+                for operation in operations
+                for source_name in self._operation_source_names(operation)
+            )
+        )
+        source_by_name = {source.name: source for source in self._recipe.sources}
+        sources = tuple(
+            source_by_name.get(
+                source_name, FigureSourceState(name=source_name, label=source_name)
+            )
+            for source_name in source_names
+        )
+        source_data = {
+            source_name: self._source_data[source_name].copy(deep=False)
+            for source_name in source_names
+            if source_name in self._source_data
+        }
+        clipboard = self._clipboard()
+        if clipboard is None:
+            return None
+        clipboard.setMimeData(
+            _FigureComposerStepMimeData(
+                _step_clipboard_payload_text(operations, sources),
+                source_data,
+                cut_source_tool_id=self._step_clipboard_tool_id if cut else None,
+            )
+        )
+        self._update_step_action_buttons()
+        return indices
+
+    @QtCore.Slot()
+    def _copy_selected_operations(self) -> None:
+        self._write_selected_operations_to_clipboard()
+
+    @QtCore.Slot()
+    def _cut_selected_operations(self) -> None:
+        indices = self._write_selected_operations_to_clipboard(cut=True)
+        if indices is None:
+            return
+        self._remove_operations_at_indices(indices)
+
+    def _renamed_pasted_sources(
+        self,
+        sources: Sequence[FigureSourceState],
+        source_data: Mapping[str, xr.DataArray],
+        *,
+        preserve_existing: bool = False,
+    ) -> tuple[
+        tuple[FigureSourceState, ...],
+        dict[str, str],
+        dict[str, xr.DataArray],
+    ]:
+        existing_source_names = {source.name for source in self._recipe.sources}
+        reserved = {source.name for source in self._recipe.sources}
+        reserved.update(self._source_data)
+        rename_map: dict[str, str] = {}
+        renamed_sources: list[FigureSourceState] = []
+        renamed_source_data: dict[str, xr.DataArray] = {}
+        seen_sources: set[str] = set()
+        for source in sources:
+            if source.name in seen_sources:
+                continue
+            seen_sources.add(source.name)
+            if preserve_existing and source.name in reserved:
+                rename_map[source.name] = source.name
+                if source.name not in existing_source_names:
+                    renamed_sources.append(source)
+                    existing_source_names.add(source.name)
+                if source.name in source_data and source.name not in self._source_data:
+                    renamed_source_data[source.name] = source_data[source.name]
+                continue
+            pasted_name = source.name
+            if pasted_name in reserved:
+                stem = f"{source.name}_copy"
+                pasted_name = stem
+                suffix = 2
+                while pasted_name in reserved:
+                    pasted_name = f"{stem}_{suffix}"
+                    suffix += 1
+            reserved.add(pasted_name)
+            rename_map[source.name] = pasted_name
+            renamed_sources.append(source.model_copy(update={"name": pasted_name}))
+            if source.name in source_data:
+                renamed_source_data[pasted_name] = source_data[source.name]
+        return tuple(renamed_sources), rename_map, renamed_source_data
+
+    @staticmethod
+    def _operation_with_renamed_sources(
+        operation: FigureOperationState, rename_map: Mapping[str, str]
+    ) -> FigureOperationState:
+        updates: dict[str, typing.Any] = {}
+        if operation.sources:
+            updates["sources"] = tuple(
+                rename_map.get(source_name, source_name)
+                for source_name in operation.sources
+            )
+        if operation.map_selections:
+            updates["map_selections"] = tuple(
+                selection.model_copy(
+                    update={
+                        "source": rename_map.get(selection.source, selection.source),
+                    }
+                )
+                for selection in operation.map_selections
+            )
+        if operation.line_source is not None:
+            updates["line_source"] = rename_map.get(
+                operation.line_source, operation.line_source
+            )
+        if not updates:
+            return operation
+        return operation.model_copy(update=updates)
+
+    @QtCore.Slot()
+    def _paste_operations_from_clipboard(self) -> None:
+        clipboard = self._clipboard()
+        if clipboard is None:
+            return
+        mime = clipboard.mimeData()
+        payload = _step_clipboard_payload(mime)
+        if payload is None:
+            return
+        operations, sources, source_data = payload
+        renamed_sources, rename_map, renamed_source_data = self._renamed_pasted_sources(
+            sources,
+            source_data,
+            preserve_existing=(
+                getattr(mime, "figure_composer_cut_source_tool_id", None)
+                == self._step_clipboard_tool_id
+            ),
+        )
+        pasted_operations = tuple(
+            self._operation_with_renamed_sources(operation, rename_map).model_copy(
+                update={"operation_id": uuid.uuid4().hex},
+                deep=True,
+            )
+            for operation in operations
+        )
+        operation_list = list(self._recipe.operations)
+        indices = self._selected_operation_indices()
+        current = self._current_operation()
+        if indices:
+            insert_index = max(indices) + 1
+        elif current is not None:
+            insert_index = current[0] + 1
+        else:
+            insert_index = len(operation_list)
+        operation_list[insert_index:insert_index] = pasted_operations
+
+        source_names = {source.name for source in self._recipe.sources}
+        source_list = list(self._recipe.sources)
+        for source in renamed_sources:
+            if source.name in source_names:
+                continue
+            source_names.add(source.name)
+            source_list.append(source)
+        self._source_data.update(renamed_source_data)
+        self._recipe = self._recipe.model_copy(
+            update={
+                "sources": tuple(source_list),
+                "operations": tuple(operation_list),
+            }
+        )
+        self._refresh_source_list()
+        self._finish_operation_structure_change(
+            {operation.operation_id for operation in pasted_operations},
+            pasted_operations[0].operation_id,
+        )
+
+    def _remove_operations_at_indices(self, indices: Sequence[int]) -> None:
         if not indices:
             return
         index_set = set(indices)
@@ -3165,6 +3679,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             current_id = operations[current_index].operation_id
             selected_ids = {current_id}
         self._finish_operation_structure_change(selected_ids, current_id)
+
+    @QtCore.Slot()
+    def _remove_current_operation(self) -> None:
+        self._remove_operations_at_indices(self._selected_operation_indices())
 
     @QtCore.Slot()
     def _duplicate_current_operation(self) -> None:
@@ -3507,6 +4025,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         preceding_widgets = (
             self.add_step_button,
+            self.copy_operation_button,
+            self.cut_operation_button,
+            self.paste_operation_button,
             self.duplicate_operation_button,
             self.move_operation_up_button,
             self.move_operation_down_button,
