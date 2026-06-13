@@ -906,7 +906,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.remove_operation_button = _step_toolbar_button(
             recipe_page,
             "figureComposerDeleteStepButton",
-            "Delete Step",
+            "Delete",
             "Remove the selected recipe step or steps.",
         )
         self.remove_operation_button.clicked.connect(self._remove_current_operation)
@@ -3430,7 +3430,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         move_down_action.triggered.connect(self._move_current_operation_down)
         menu.addAction(move_down_action)
 
-        remove_action = QtGui.QAction("Delete Step", menu)
+        remove_action = QtGui.QAction("Delete", menu)
         remove_action.setObjectName("figureComposerContextDeleteStepAction")
         remove_action.setEnabled(self.remove_operation_button.isEnabled())
         remove_action.triggered.connect(self._remove_current_operation)
