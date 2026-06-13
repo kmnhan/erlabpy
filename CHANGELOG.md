@@ -1,3 +1,53 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool:** add interface to `xarray.DataArray.sortby` (#397) ([506dc2c](https://github.com/kmnhan/erlabpy/commit/506dc2cc2ebe59b2453150683ddb646357cbb083))
+
+  Add a `Sort By` dialog for sorting data with `xarray.DataArray.sortby`.
+
+- **manager:** add figure composer (#389) ([43283ad](https://github.com/kmnhan/erlabpy/commit/43283ad5d20c9d30fa7ee35beda348ec87c2b2cc))
+
+  Add a new interface named Figure Composer for building reproducible publication-quality Matplotlib figures without leaving the GUI. Users can create new figures from ImageTool panels or the manager list. The figures are also saved to the workspace file and can be reloaded in future sessions.
+
+  See the [Figure Composer guide](https://erlabpy.readthedocs.io/en/latest/user-guide/interactive/figure-composer.html) for details on how to use it.
+
+- **manager:** add batch operations (#387) ([7256cf5](https://github.com/kmnhan/erlabpy/commit/7256cf5847cb1d07e726b5a35f0268ede260dddb))
+
+  Add a Batch Operation dialog to ImageTool Manager for applying operations to multiple ImageTools at once.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** keep rotation guidelines above cursors (#400) ([9bf0b1e](https://github.com/kmnhan/erlabpy/commit/9bf0b1e3ad022a6bc09a96ff86da35d0c142c65b))
+
+  Rotation guideline crosshairs now draw above ImageTool cursor lines and spans so they remain visible even when they overlap the active cursor or other cursors.
+
+- **plotting:** fix compatibility with matplotlib 3.11 (#399) ([59bf86b](https://github.com/kmnhan/erlabpy/commit/59bf86b3e0a8eb248246c290773f4d7caab694a8))
+
+- **ftool:** fixes ambiguous warnings when restoring fit results (#395) ([bd80eab](https://github.com/kmnhan/erlabpy/commit/bd80eabef7b3a4a23247fbd2edde238a17805173))
+
+  Loading saved fit tools now restores persisted fit parameters before generating model defaults. This avoids spurious RuntimeWarning messages from deserialized lmfit models.
+
+- **manager:** prevent manager metadata from widening details pane (#396) ([e30b647](https://github.com/kmnhan/erlabpy/commit/e30b64783caed92be3b907cb7589bac646b202fd))
+
+- **manager:** make unavailable code generation more informative (#393) ([e547bbc](https://github.com/kmnhan/erlabpy/commit/e547bbcabe998cf2a6b3e81fac5effb8a6d3756b))
+
+  When ImageTool Manager cannot generate replay code for a selected result, Copy Full Code now opens a warning dialog instead of only showing a status-bar message.
+
+- **imagetool:** prevent transpose failures from stale cursor state (#394) ([c0660bd](https://github.com/kmnhan/erlabpy/commit/c0660bd4eac8841ed6ee8a0d1f6aad9cab77807c))
+
+  ImageTool now normalizes cursor state before axis swaps and when preserving cursors across compatible data updates. This prevents transpose operations from crashing when restored or linked tools contain older partial cursor metadata, while preserving valid off-grid cursor values when snapping to data is disabled.
+
+  The fix also keeps cursor bin, index, value, and binned-state arrays aligned after axis changes, so linked and restored ImageTool windows can transpose reliably.
+
+- **manager:** properly expose delete action for child ImageTools (#392) ([92cbe8c](https://github.com/kmnhan/erlabpy/commit/92cbe8c99b6c15d514c2a7581884a3bdd127db2f))
+
+- **manager:** make workspace save/load robust (#390) ([5f0c283](https://github.com/kmnhan/erlabpy/commit/5f0c28342c732f20ef9d670f03b25d882f2ab9ae))
+
+  ImageTool Manager workspaces now save and restore rich data attributes such as dictionaries, lists, tuples, NumPy scalars/arrays, bytes, complex values, booleans, numbers, strings, and None. Unsupported attribute objects are skipped with a warning instead of crashing the save.
+
+- **imagetool:** fixes an issue where loading a saved ImageTool with multiple cursors restored the cursors internally but left the cursor selection combo box showing only one cursor (#388) ([38c05cc](https://github.com/kmnhan/erlabpy/commit/38c05cc78179e55ccc2924ad44fcb5aa6686d7d1))
+
 ## v3.23.2 (2026-05-31)
 
 ### 🐞 Bug Fixes
