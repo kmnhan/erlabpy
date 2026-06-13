@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import traceback
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -272,7 +273,7 @@ class _ProvenanceEditController:
             else:
                 self._edit_operation_row(node, row)
         except Exception as exc:
-            self._show_failed("Edit Step Failed", exc)
+            self._show_failed("Could Not Apply Provenance Edit", exc)
 
     def revert_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
         revertible, reason = self.can_revert_row(row)
@@ -291,7 +292,7 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             self._show_failed(
-                "Revert Step Failed",
+                "Could Not Revert Provenance Step",
                 RuntimeError("No provenance spec is available"),
             )
             return
@@ -299,7 +300,7 @@ class _ProvenanceEditController:
             candidate = spec._prefix_through_ref(ref)
             self._validate_and_replace(node, row.scope, candidate)
         except Exception as exc:
-            self._show_failed("Revert Step Failed", exc)
+            self._show_failed("Could Not Revert Provenance Step", exc)
 
     def _metadata_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         uid = self._manager._metadata_node_uid
@@ -611,10 +612,19 @@ class _ProvenanceEditController:
         )
 
     def _show_failed(self, title: str, exc: Exception) -> None:
-        msg_box = QtWidgets.QMessageBox(self._manager)
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle(title)
-        msg_box.setText("The selected ImageTool was not changed.")
-        msg_box.setInformativeText(str(exc))
-        msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-        msg_box.exec()
+        exc_text = "".join(traceback.TracebackException.from_exception(exc).format())
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title=title,
+            text="The provenance change could not be applied.",
+            informative_text=(
+                "The current ImageTool data was left unchanged because the edited "
+                "provenance could not be replayed. Use Revert to This Step to drop "
+                "later provenance, or adjust the earlier steps so the full chain is "
+                "valid again."
+            ),
+            detailed_text=erlab.interactive.utils._format_traceback(exc_text),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        dialog.exec()

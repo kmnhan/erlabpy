@@ -467,6 +467,42 @@ def test_manager_provenance_edit_controller_error_paths(
     assert "boom" in str(failed[-1][1])
 
 
+def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    dialogs: list[dict[str, typing.Any]] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, parent: typing.Any, **kwargs: typing.Any) -> None:
+            dialogs.append({"parent": parent, **kwargs})
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
+
+    controller._show_failed(
+        "Could Not Apply Provenance Edit", RuntimeError("missing coord")
+    )
+
+    assert len(dialogs) == 1
+    assert dialogs[0]["parent"] is controller._manager
+    assert "provenance" in dialogs[0]["text"].lower()
+    assert "replay" in dialogs[0]["informative_text"].lower()
+    assert "unchanged" in dialogs[0]["informative_text"].lower()
+    assert "RuntimeError" in dialogs[0]["detailed_text"]
+    assert "missing coord" in dialogs[0]["detailed_text"]
+    assert (
+        dialogs[0]["icon_pixmap"]
+        == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+    )
+
+
 def test_manager_provenance_edit_controller_private_error_branches() -> None:
     controller = _fake_edit_controller(_fake_edit_node(None))
     file_row = provenance._ProvenanceDisplayRow(
