@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
@@ -109,15 +110,16 @@ def _add_file_replay_tool(
     return tool
 
 
-def test_file_load_edit_dialog_preserves_multiline_kwargs(qtbot) -> None:
+def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
     load_source = provenance.FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
-        kwargs_text="",
+        kwargs_text="engine='h5netcdf'",
         replay_call=provenance.FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
             selected_index=0,
         ),
     )
@@ -125,14 +127,66 @@ def test_file_load_edit_dialog_preserves_multiline_kwargs(qtbot) -> None:
     qtbot.addWidget(parent)
     dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
     qtbot.addWidget(dialog)
-    kwargs_text = "{\n" + ",\n".join(f"    'key_{idx}': {idx}" for idx in range(12))
-    kwargs_text += "\n}"
 
-    dialog.kwargs_edit.setPlainText(kwargs_text)
+    assert isinstance(dialog.loader_options, manager_dialogs._LoaderOptionsWidget)
+    assert dialog.kwargs_edit is dialog.loader_options.kwargs_line
 
-    assert dialog.kwargs_edit.document().maximumBlockCount() == 0
-    assert dialog.kwargs_edit.toPlainText() == kwargs_text
-    assert dialog.loader_kwargs() == {f"key_{idx}": idx for idx in range(12)}
+    dialog.kwargs_edit.setText("engine='h5netcdf', chunks={'x': 1}")
+
+    assert dialog.loader_options.checked_filter()[2] == {
+        "engine": "h5netcdf",
+        "chunks": {"x": 1},
+    }
+
+
+def test_file_load_edit_dialog_allows_loader_change(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    loader = example_loader()
+    monkeypatch.setitem(erlab.io.loaders._loaders, loader.name, loader)
+    monkeypatch.setitem(erlab.io.loaders._alias_mapping, loader.name, loader.name)
+    load_source = provenance.FileLoadSource(
+        path=str(tmp_path / "scan.h5"),
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="engine='h5netcdf'",
+        replay_call=provenance.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
+            selected_index=0,
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+
+    loader_filters = list(dialog.loader_options._valid_loaders)
+    example_filter = next(
+        name
+        for name, (func, _kwargs) in dialog.loader_options._valid_loaders.items()
+        if getattr(func, "__self__", None) is loader
+    )
+    dialog.loader_options._button_group.button(
+        loader_filters.index(example_filter)
+    ).setChecked(True)
+    dialog.kwargs_edit.setText("single=True")
+
+    spec = dialog.provenance_spec(active_name="derived", replay_stages=())
+
+    assert spec.file_load_source is not None
+    replay_call = spec.file_load_source.replay_call
+    assert replay_call is not None
+    assert replay_call.kind == "erlab_loader"
+    assert replay_call.target == "example"
+    assert replay_call.kwargs == {"single": True}
+    assert replay_call.selection == provenance.FileDataSelection(
+        kind="parsed_index", value=0
+    )
 
 
 @pytest.mark.parametrize(
@@ -221,7 +275,7 @@ def test_manager_provenance_loader_kwargs_parser_and_file_dialog_branches(
     qtbot.addWidget(parent)
     dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
     qtbot.addWidget(dialog)
-    assert dialog.loader_kwargs() == {}
+    assert dialog.loader_options.checked_filter()[2] == {"engine": "h5netcdf"}
 
     new_path = tmp_path / "new.h5"
     monkeypatch.setattr(
@@ -234,11 +288,11 @@ def test_manager_provenance_loader_kwargs_parser_and_file_dialog_branches(
 
     warnings: list[object] = []
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "warning",
-        lambda _parent, title, text: warnings.append(object()),
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *_args, **_kwargs: warnings.append(object()),
     )
-    dialog.kwargs_edit.setPlainText("'bad'")
+    dialog.kwargs_edit.setText("'bad'")
     dialog.accept()
     assert len(warnings) == 1
 

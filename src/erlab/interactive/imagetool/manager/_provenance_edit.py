@@ -10,7 +10,11 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool import dialogs, provenance
-from erlab.interactive.imagetool._load_source import _file_load_provenance_from_source
+from erlab.interactive.imagetool._load_source import (
+    _load_provenance_from_file_details,
+    _loader_callable_text,
+)
+from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
     import xarray as xr
@@ -56,11 +60,25 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self.setObjectName("managerProvenanceFileLoadEditDialog")
         self.setWindowTitle("Edit File Load")
         self.setModal(True)
+        replay_call = load_source.replay_call
+        self._selection = (
+            provenance.FileDataSelection(kind="dataarray")
+            if replay_call is None
+            else replay_call.selection
+        )
+        initial_kwargs = (
+            _parse_loader_kwargs(load_source.kwargs_text)
+            if replay_call is None
+            else dict(replay_call.kwargs)
+        )
+        loader_extensions = initial_kwargs.pop("loader_extensions", None)
 
-        layout = QtWidgets.QFormLayout(self)
-        layout.setFieldGrowthPolicy(
+        layout = QtWidgets.QVBoxLayout(self)
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
+        layout.addLayout(form_layout)
 
         self.path_edit = QtWidgets.QLineEdit(str(load_source.path), self)
         self.path_edit.setObjectName("managerProvenanceFilePathEdit")
@@ -74,30 +92,52 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         path_layout.setContentsMargins(0, 0, 0, 0)
         path_layout.addWidget(self.path_edit, 1)
         path_layout.addWidget(browse_button)
-        layout.addRow("File", path_widget)
+        form_layout.addRow("File", path_widget)
 
-        self.loader_label = QtWidgets.QLineEdit(load_source.loader_text, self)
-        self.loader_label.setObjectName("managerProvenanceLoaderEdit")
-        self.loader_label.setReadOnly(True)
-        layout.addRow(load_source.loader_label, self.loader_label)
+        valid_loaders = erlab.interactive.utils.file_loaders(self.file_path())
+        if not valid_loaders:
+            valid_loaders = erlab.interactive.utils.file_loaders()
 
-        replay_call = load_source.replay_call
-        kwargs_text = load_source.kwargs_text
-        if replay_call is not None and replay_call.kwargs:
-            kwargs_text = erlab.interactive.utils.format_call_kwargs(
-                typing.cast(
-                    "dict[typing.Hashable, typing.Any]",
-                    dict(replay_call.kwargs),
-                )
-            )
-        elif kwargs_text == "(none)":
-            kwargs_text = ""
-        self.kwargs_edit = QtWidgets.QPlainTextEdit(kwargs_text, self)
+        selected_filter = None
+        if replay_call is not None:
+            for name_filter, (func, kwargs) in valid_loaders.items():
+                if replay_call.kind == "erlab_loader":
+                    loader = getattr(func, "__self__", None)
+                    matches = (
+                        isinstance(loader, erlab.io.dataloader.LoaderBase)
+                        and loader.name == replay_call.target
+                    )
+                else:
+                    matches = _loader_callable_text(func) == replay_call.target and all(
+                        initial_kwargs.get(key) == value
+                        for key, value in kwargs.items()
+                    )
+                if matches:
+                    selected_filter = name_filter
+                    break
+        selected_filter = selected_filter or next(iter(valid_loaders), None)
+        if selected_filter is not None:
+            func, kwargs = valid_loaders[selected_filter]
+            valid_loaders = dict(valid_loaders)
+            valid_loaders[selected_filter] = (func, dict(kwargs) | initial_kwargs)
+
+        self.loader_options = _LoaderOptionsWidget(
+            self,
+            valid_loaders,
+            loader_extensions=(
+                {selected_filter: dict(loader_extensions)}
+                if selected_filter is not None and isinstance(loader_extensions, dict)
+                else None
+            ),
+            sample_paths=(self.file_path(),),
+        )
+        self.loader_options.setObjectName("managerProvenanceLoaderOptionsWidget")
+        self.loader_options.check_filter(selected_filter)
+        self.kwargs_edit = self.loader_options.kwargs_line
         self.kwargs_edit.setObjectName("managerProvenanceLoaderKwargsEdit")
-        line_height = self.kwargs_edit.fontMetrics().lineSpacing()
-        frame_width = 2 * self.kwargs_edit.frameWidth()
-        self.kwargs_edit.setMaximumHeight(line_height * 8 + frame_width + 8)
-        layout.addRow("Loader Arguments", self.kwargs_edit)
+        self.loader_label = self.loader_options.func_label
+        self.loader_label.setObjectName("managerProvenanceLoaderEdit")
+        layout.addWidget(self.loader_options)
 
         self.button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -107,13 +147,30 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self.button_box.setObjectName("managerProvenanceFileEditButtonBox")
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
-        layout.addRow(self.button_box)
+        layout.addWidget(self.button_box)
 
     def file_path(self) -> pathlib.Path:
         return pathlib.Path(self.path_edit.text()).expanduser()
 
-    def loader_kwargs(self) -> dict[str, typing.Any]:
-        return _parse_loader_kwargs(self.kwargs_edit.toPlainText())
+    def provenance_spec(
+        self,
+        *,
+        active_name: str,
+        replay_stages: tuple[provenance.ReplayStage, ...],
+    ) -> provenance.ToolProvenanceSpec:
+        _filter_name, func, kwargs = self.loader_options.checked_filter()
+        spec = _load_provenance_from_file_details(
+            self.file_path(),
+            (func, kwargs, self._selection),
+        )
+        if spec is None:
+            raise RuntimeError("Selected loader cannot be replayed")
+        return spec.model_copy(
+            update={
+                "active_name": active_name,
+                "replay_stages": replay_stages,
+            }
+        )
 
     @QtCore.Slot()
     def _browse(self) -> None:
@@ -127,14 +184,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
-        try:
-            self.loader_kwargs()
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Invalid Loader Arguments",
-                str(exc),
-            )
+        if not self.loader_options.validate_checked_values():
             return
         super().accept()
 
@@ -347,10 +397,7 @@ class _ProvenanceEditController:
         dialog = _FileLoadEditDialog(spec.file_load_source, self._manager)
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
-        candidate = _file_load_provenance_from_source(
-            dialog.file_path(),
-            spec.file_load_source,
-            kwargs=dialog.loader_kwargs(),
+        candidate = dialog.provenance_spec(
             active_name=spec.active_name or "derived",
             replay_stages=spec.replay_stages,
         )
