@@ -1,11 +1,25 @@
+import importlib
+
 import matplotlib.colorbar
 import matplotlib.pyplot as plt
+import matplotlib.style
 import numpy as np
 import pytest
 import xarray as xr
 from pyqtgraph.colormap import modulatedBarData
 
 import erlab.plotting as eplt
+
+
+def test_plotting_import_registration_is_idempotent() -> None:
+    importlib.reload(eplt)
+    importlib.reload(eplt)
+
+    assert "BuWh" in matplotlib.colormaps
+    assert "BuWh_r" in matplotlib.colormaps
+    assert "khan" in matplotlib.style.library
+    with matplotlib.style.context("khan"):
+        assert plt.rcParams["pcolor.shading"] == "auto"
 
 
 def sample_plot(norms, kw0, kw1, cmap):

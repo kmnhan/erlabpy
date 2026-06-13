@@ -62,9 +62,14 @@ def _load_igor_ct(
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
         name, values.astype(np.float64) / 65535
     )
-    matplotlib.colormaps.register(cmap)
+    _register_colormap(cmap)
     if register_reversed:
-        matplotlib.colormaps.register(cmap.reversed())
+        _register_colormap(cmap.reversed())
+
+
+def _register_colormap(cmap: matplotlib.colors.Colormap) -> None:
+    if cmap.name not in matplotlib.colormaps:
+        matplotlib.colormaps.register(cmap)
 
 
 def _get_ct_wave_bytes(file: str) -> io.BytesIO:
@@ -76,6 +81,21 @@ def _get_ct_wave_bytes(file: str) -> io.BytesIO:
     return io.BytesIO(file)
 
 
+def _register_style_library() -> None:
+    stylelib_path = os.path.join(os.path.dirname(__file__), "stylelib")
+    user_library_paths: list[str] | None = getattr(
+        matplotlib.style, "USER_LIBRARY_PATHS", None
+    )
+    if user_library_paths is None:  # pragma: no branch
+        # Matplotlib < 3.11 exposes USER_LIBRARY_PATHS only through style.core.
+        from matplotlib.style import core as style_core  # pragma: no cover
+
+        user_library_paths = style_core.USER_LIBRARY_PATHS  # pragma: no cover
+    if stylelib_path not in user_library_paths:
+        user_library_paths.append(stylelib_path)
+    matplotlib.style.reload_library()
+
+
 _load_igor_ct(_get_ct_wave_bytes("CTBlueWhite.ibw"), "BuWh")
 _load_igor_ct(_get_ct_wave_bytes("CTRainbowLIght.ibw"), "RainbowLight")
 # _load_igor_ct(_get_ct_wave_bytes("CTRedTemperature.ibw"), "RedTemperature")
@@ -85,9 +105,4 @@ _load_igor_ct(_get_ct_wave_bytes("PlanetEarth.ibw"), "PlanetEarth")
 # _load_igor_ct(_get_ct_wave_bytes("ametrine.ibw"), "ametrine")
 # _load_igor_ct(_get_ct_wave_bytes("isolum.ibw"), "isolum")
 # _load_igor_ct(_get_ct_wave_bytes("morgenstemning.ibw"), "morgenstemning")
-
-
-matplotlib.style.core.USER_LIBRARY_PATHS.append(
-    os.path.join(os.path.dirname(__file__), "stylelib")
-)
-matplotlib.style.core.reload_library()
+_register_style_library()

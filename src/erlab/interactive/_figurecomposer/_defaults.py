@@ -54,7 +54,7 @@ def _figure_style_context() -> Iterator[None]:
 
 def _styled_rcparams_value(key: str) -> typing.Any:
     with _figure_style_context():
-        return mpl.rcParams[key]
+        return typing.cast("typing.Any", mpl.rcParams)[key]
 
 
 def _default_figsize() -> tuple[float, float]:
