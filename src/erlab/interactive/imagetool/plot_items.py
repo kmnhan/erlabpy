@@ -1757,12 +1757,16 @@ class ItoolPlotItem(pg.PlotItem):
 
     def _sync_figure_composer_view_limits(self) -> None:
         """Snapshot visible plot limits before seeding a Figure Composer step."""
-        for dim, rng in zip(
+        for dim, auto, rng in zip(
             self.axis_dims_uniform,
+            self.vb.state["autoRange"],
             self.vb.state["viewRange"],
             strict=True,
         ):
             if dim is None:
+                continue
+            if auto:
+                self.slicer_area.manual_limits.pop(dim, None)
                 continue
             try:
                 axis = self.slicer_area.data.dims.index(dim)

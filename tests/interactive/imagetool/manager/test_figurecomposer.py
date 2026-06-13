@@ -15599,6 +15599,46 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         assert styles[(1, 0)].norm_gamma == pytest.approx(0.25)
 
 
+def test_manager_create_figure_from_2d_data_ignores_autorange_startup_limits(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("eV", "alpha"),
+        coords={
+            "eV": np.linspace(10.0, 14.0, 5),
+            "alpha": np.linspace(20.0, 24.0, 5),
+        },
+        name="map",
+    )
+
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = typing.cast(
+            "FigureComposerTool", manager._child_node(figure_uid).tool_window
+        )
+        operation = figure_tool.tool_status.operations[0]
+        assert operation.xlim is None
+        assert operation.ylim is None
+
+        figure = plt.figure()
+        try:
+            figurecomposer_rendering._render_into_figure(
+                figure_tool, figure, sync_visible=False
+            )
+            assert figure_tool._operation_render_errors == {}
+            assert any(axis.images for axis in figure.axes)
+        finally:
+            plt.close(figure)
+
+
 def test_manager_workspace_figure_sources_save_as_references(
     qtbot,
     tmp_path: Path,
