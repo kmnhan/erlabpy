@@ -2576,6 +2576,7 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
         coords={
             "x": np.arange(2.0),
             "y": np.arange(3.0),
+            "temperature": ("x", np.linspace(100.0, 200.0, 2)),
             "Fake Motor": ("x", np.linspace(10.0, 20.0, 2)),
         },
         name="primary",
@@ -2601,6 +2602,7 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     assert manager_workspace._workspace_dataset_can_write_h5py(
         imagetool_serialization.encode_private_coords(ds, data_name)
     )
+    xr.testing.assert_identical(loaded[data_name], primary.rename(data_name))
     xr.testing.assert_equal(
         loaded[data_name].coords["Fake Motor"], primary.coords["Fake Motor"]
     )
