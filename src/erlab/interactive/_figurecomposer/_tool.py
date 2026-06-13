@@ -70,6 +70,11 @@ from erlab.interactive._figurecomposer._operations._base import (
     COMMON_SOURCE_SECTION_TOOLTIP,
     StepSection,
 )
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+    _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+    _plot_slices_panel_keys,
+)
 from erlab.interactive._figurecomposer._rendering import (
     _live_layout_axes,
     _render_into_figure,
@@ -94,6 +99,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
@@ -281,6 +287,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 axes_customize_callback=lambda: self._show_axes_customize_dialog(),
                 show_composer_callback=lambda: self._show_composer_from_figure_window(),
                 navigation_callback=self._figure_window_navigation_changed,
+                colorbar_callback=self._figure_window_colorbar_changed,
                 undo_callback=self.undo,
                 redo_callback=self.redo,
                 undoable_callback=lambda: self.undoable,
@@ -433,6 +440,37 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not changed:
             return
 
+        self._apply_live_figure_operation_updates(operations, changed_operation_ids)
+
+    def _figure_window_colorbar_changed(
+        self, changes: Mapping[object, tuple[float, float]]
+    ) -> None:
+        if self._updating_controls or self._rendering:
+            return
+        operations = list(self._recipe.operations)
+        changed_operation_ids: set[str] = set()
+        changed = False
+        for mappable, clim in changes.items():
+            target = self._plot_slices_mappable_target(mappable, operations)
+            if target is None:
+                continue
+            index, operation, panel_key = target
+            updated = self._operation_with_colorbar_clim(operation, panel_key, clim)
+            if operation.model_dump() == updated.model_dump():
+                continue
+            operations[index] = updated
+            changed_operation_ids.add(updated.operation_id)
+            changed = True
+        if not changed:
+            return
+
+        self._apply_live_figure_operation_updates(operations, changed_operation_ids)
+
+    def _apply_live_figure_operation_updates(
+        self,
+        operations: Sequence[FigureOperationState],
+        changed_operation_ids: set[str],
+    ) -> None:
         current = self._current_operation()
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
@@ -450,6 +488,69 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._mark_preview_pixmap_stale()
         self.sigInfoChanged.emit()
         self._write_state()
+
+    def _plot_slices_mappable_target(
+        self,
+        mappable: object,
+        operations: Sequence[FigureOperationState],
+    ) -> tuple[int, FigureOperationState, tuple[int, int]] | None:
+        operation_id = getattr(mappable, _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR, None)
+        panel_key = getattr(mappable, _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR, None)
+        if not isinstance(operation_id, str):
+            return None
+        if (
+            not isinstance(panel_key, tuple)
+            or len(panel_key) != 2
+            or not all(isinstance(value, int) for value in panel_key)
+        ):
+            return None
+        for index, operation in enumerate(operations):
+            if (
+                operation.operation_id == operation_id
+                and operation.kind == FigureOperationKind.PLOT_SLICES
+            ):
+                return index, operation, typing.cast("tuple[int, int]", panel_key)
+        return None
+
+    def _operation_with_colorbar_clim(
+        self,
+        operation: FigureOperationState,
+        panel_key: tuple[int, int],
+        clim: tuple[float, float],
+    ) -> FigureOperationState:
+        panel_keys = _plot_slices_panel_keys(self, operation)
+        valid_keys = {(key.map_index, key.slice_index) for key in panel_keys}
+        if panel_key not in valid_keys:
+            return operation
+        vmin, vmax = clim
+        if len(panel_keys) == 1 or (
+            operation.same_limits is not False and not operation.panel_styles_enabled
+        ):
+            return operation.model_copy(update={"vmin": vmin, "vmax": vmax})
+
+        styles = {
+            (style.map_index, style.slice_index): style
+            for style in operation.panel_styles
+            if (style.map_index, style.slice_index) in valid_keys
+        }
+        current_style = styles.get(
+            panel_key,
+            FigurePlotSlicesPanelStyleState(
+                map_index=panel_key[0],
+                slice_index=panel_key[1],
+            ),
+        )
+        styles[panel_key] = current_style.model_copy(
+            update={"vmin": vmin, "vmax": vmax}
+        )
+        panel_styles = tuple(
+            sorted(
+                styles.values(), key=lambda style: (style.map_index, style.slice_index)
+            )
+        )
+        return operation.model_copy(
+            update={"panel_styles_enabled": True, "panel_styles": panel_styles}
+        )
 
     def _navigation_axis_selection(
         self,

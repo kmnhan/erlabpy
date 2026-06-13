@@ -136,6 +136,8 @@ _MISSING = object()
 _PLOT_SLICES_PANEL_LINE = "line"
 _PLOT_SLICES_PANEL_IMAGE = "image"
 _PLOT_SLICES_PANEL_MIXED = "mixed"
+_PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR = "_figure_composer_operation_id"
+_PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR = "_figure_composer_panel_key"
 
 
 class _PlotSlicesPanelKey(typing.NamedTuple):
@@ -3167,11 +3169,55 @@ def _render_plot_slices(
         maps,
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=True),
     )
+    axes_tuple = _iter_axes(axes)
+    panel_keys = _plot_slices_panel_keys(tool, operation)
+    mappable_ids_before = _axis_mappable_ids(axes_tuple)
     eplt.plot_slices(
         maps,
         axes=typing.cast("Iterable[matplotlib.axes.Axes]", axes),
         **kwargs,
     )
+    _tag_plot_slices_mappables(
+        operation,
+        axes_tuple,
+        panel_keys,
+        mappable_ids_before,
+    )
+
+
+def _axis_mappables(axis: object) -> tuple[object, ...]:
+    images = tuple(getattr(axis, "images", ()))
+    collections = tuple(getattr(axis, "collections", ()))
+    return (*images, *collections)
+
+
+def _axis_mappable_ids(axes: Sequence[object]) -> dict[object, set[int]]:
+    return {axis: {id(mappable) for mappable in _axis_mappables(axis)} for axis in axes}
+
+
+def _tag_plot_slices_mappables(
+    operation: FigureOperationState,
+    axes: Sequence[object],
+    panel_keys: Sequence[_PlotSlicesPanelKey],
+    mappable_ids_before: Mapping[object, set[int]],
+) -> None:
+    if len(axes) != len(panel_keys):
+        return
+    for axis, panel_key in zip(axes, panel_keys, strict=True):
+        previous_ids = mappable_ids_before.get(axis, set())
+        for mappable in _axis_mappables(axis):
+            if id(mappable) in previous_ids:
+                continue
+            setattr(
+                mappable,
+                _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+                operation.operation_id,
+            )
+            setattr(
+                mappable,
+                _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+                (panel_key.map_index, panel_key.slice_index),
+            )
 
 
 def _plot_slices_axes(

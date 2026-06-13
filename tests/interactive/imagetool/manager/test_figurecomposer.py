@@ -4654,6 +4654,103 @@ def test_figure_composer_navigation_ignores_colorbar_axes(qtbot) -> None:
     assert not tool.undoable
 
 
+def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(4)},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="data",
+        sources=("data",),
+    ).model_copy(update={"colorbar": "right"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    qtbot.addWidget(tool.figure_window)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    tool.canvas.draw()
+    tool._reset_history_stack()
+
+    colorbar_axis = next(
+        axis for axis in tool.figure.axes if hasattr(axis, "_colorbar")
+    )
+    mappable = typing.cast("typing.Any", colorbar_axis)._colorbar.mappable
+    previous_clim = mappable.get_clim()
+
+    mappable.set_clim(1.0, 5.0)
+    tool.figure_window.toolbar._commit_colorbar_clims({mappable: previous_clim})
+
+    updated = tool.tool_status.operations[0]
+    assert updated.vmin == pytest.approx(1.0)
+    assert updated.vmax == pytest.approx(5.0)
+    assert tool.undoable
+
+    tool.figure_window.toolbar.back()
+
+    assert tool.tool_status.operations[0].vmin is None
+    assert tool.tool_status.operations[0].vmax is None
+    assert tool.redoable
+
+    tool.figure_window.toolbar.forward()
+
+    assert tool.tool_status.operations[0].vmin == pytest.approx(1.0)
+    assert tool.tool_status.operations[0].vmax == pytest.approx(5.0)
+
+
+def test_figure_composer_colorbar_drag_updates_panel_style_limits(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_slices(
+        label="data",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(-0.5, 0.0),
+        axes=FigureAxesSelectionState(expression="axs[0, :]"),
+    ).model_copy(update={"colorbar": "right"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    qtbot.addWidget(tool.figure_window)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    tool.canvas.draw()
+    tool._reset_history_stack()
+
+    colorbar_axis = next(
+        axis for axis in tool.figure.axes if hasattr(axis, "_colorbar")
+    )
+    mappable = typing.cast("typing.Any", colorbar_axis)._colorbar.mappable
+    previous_clim = mappable.get_clim()
+
+    mappable.set_clim(0.25, 0.75)
+    tool.figure_window.toolbar._commit_colorbar_clims({mappable: previous_clim})
+
+    updated = tool.tool_status.operations[0]
+    assert updated.vmin is None
+    assert updated.vmax is None
+    assert updated.panel_styles_enabled
+    assert len(updated.panel_styles) == 1
+    style = updated.panel_styles[0]
+    assert style.map_index == 0
+    assert style.slice_index == 0
+    assert style.vmin == pytest.approx(0.25)
+    assert style.vmax == pytest.approx(0.75)
+
+
 def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
