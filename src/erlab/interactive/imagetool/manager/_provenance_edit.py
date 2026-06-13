@@ -4,6 +4,7 @@ import ast
 import pathlib
 import traceback
 import typing
+import warnings
 
 from qtpy import QtCore, QtWidgets
 
@@ -485,7 +486,7 @@ class _ProvenanceEditController:
         spec: provenance.ToolProvenanceSpec,
     ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
         if spec.kind == "file":
-            return provenance.replay_file_provenance(spec), spec
+            return self._replay_file_candidate(spec), spec
         if spec.kind in {"full_data", "public_data", "selection"}:
             if scope != "source" or node.parent_uid is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
@@ -498,6 +499,29 @@ class _ProvenanceEditController:
             )
             return result.data, result.provenance_spec
         raise RuntimeError("Unsupported provenance kind")
+
+    def _replay_file_candidate(
+        self,
+        spec: provenance.ToolProvenanceSpec,
+    ) -> xr.DataArray:
+        load_source = spec.file_load_source
+        if load_source is not None:
+            source_path = pathlib.Path(load_source.path)
+            if not source_path.exists():
+                raise FileNotFoundError(
+                    f"Recorded source file is no longer accessible: {source_path}"
+                )
+        with warnings.catch_warnings(record=True) as replay_warnings:
+            warnings.simplefilter("always")
+            try:
+                return provenance.replay_file_provenance(spec)
+            except Exception as exc:
+                if warning_details := _replay_warning_details(replay_warnings):
+                    exc.add_note(
+                        "Warnings emitted while replaying provenance:\n"
+                        f"{warning_details}"
+                    )
+                raise
 
     def _replace_node_data(
         self,
@@ -618,7 +642,7 @@ class _ProvenanceEditController:
             title=title,
             text="The provenance change could not be applied.",
             informative_text=(
-                "The current ImageTool data was left unchanged because the edited "
+                "The current ImageTool data was left unchanged because the requested "
                 "provenance could not be replayed. Use Revert to This Step to drop "
                 "later provenance, or adjust the earlier steps so the full chain is "
                 "valid again."
@@ -628,3 +652,17 @@ class _ProvenanceEditController:
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
         )
         dialog.exec()
+
+
+def _replay_warning_details(
+    replay_warnings: list[warnings.WarningMessage],
+) -> str:
+    lines: list[str] = []
+    for warning in replay_warnings:
+        category_name = warning.category.__name__
+        message = str(warning.message).strip()
+        if not message:
+            continue
+        indented_message = "\n  ".join(message.splitlines())
+        lines.append(f"- {category_name}: {indented_message}")
+    return "\n".join(lines)

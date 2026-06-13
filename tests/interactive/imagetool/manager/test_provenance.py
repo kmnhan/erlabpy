@@ -3,6 +3,7 @@ import json
 import pathlib
 import types
 import typing
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -486,9 +487,13 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
         _RecordingMessageDialog,
     )
 
-    controller._show_failed(
-        "Could Not Apply Provenance Edit", RuntimeError("missing coord")
+    failure = RuntimeError("missing coord")
+    failure.add_note(
+        "Warnings emitted while replaying provenance:\n"
+        "- UserWarning: inferred scan warning"
     )
+
+    controller._show_failed("Could Not Apply Provenance Edit", failure)
 
     assert len(dialogs) == 1
     assert dialogs[0]["parent"] is controller._manager
@@ -497,10 +502,62 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
     assert "unchanged" in dialogs[0]["informative_text"].lower()
     assert "RuntimeError" in dialogs[0]["detailed_text"]
     assert "missing coord" in dialogs[0]["detailed_text"]
+    assert "inferred scan warning" in dialogs[0]["detailed_text"]
     assert (
         dialogs[0]["icon_pixmap"]
         == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
     )
+
+
+def test_manager_provenance_file_replay_validation_prechecks_missing_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    spec = _manager_provenance_file_spec(tmp_path / "missing.h5")
+
+    monkeypatch.setattr(
+        manager_provenance_edit.provenance,
+        "replay_file_provenance",
+        lambda _spec: pytest.fail("missing files should fail before loader replay"),
+    )
+
+    with pytest.raises(FileNotFoundError, match="no longer accessible"):
+        controller._replay_file_candidate(spec)
+
+
+def test_manager_provenance_file_replay_validation_captures_loader_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    file_path.touch()
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    spec = _manager_provenance_file_spec(file_path)
+
+    def _warn_then_fail(_spec: provenance.ToolProvenanceSpec) -> xr.DataArray:
+        warnings.warn(
+            "Loading f_003_S001 with inferred index 3 resulted in an error.",
+            UserWarning,
+            stacklevel=1,
+        )
+        raise RuntimeError("real replay failure")
+
+    monkeypatch.setattr(
+        manager_provenance_edit.provenance,
+        "replay_file_provenance",
+        _warn_then_fail,
+    )
+
+    with warnings.catch_warnings(record=True) as escaped_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(RuntimeError, match="real replay failure") as exc_info:
+            controller._replay_file_candidate(spec)
+
+    assert not escaped_warnings
+    notes = "\n".join(getattr(exc_info.value, "__notes__", ()))
+    assert "Warnings emitted while replaying provenance" in notes
+    assert "inferred index 3" in notes
 
 
 def test_manager_provenance_edit_controller_private_error_branches() -> None:
