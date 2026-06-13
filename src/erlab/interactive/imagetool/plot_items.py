@@ -3262,7 +3262,7 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
 
         self._span.blockSignals(True)
-        self._span.setRegion(self.limits)
+        self._set_span_region(self.limits)
         self._span.blockSignals(False)
         self._span.sigRegionChangeStarted.connect(
             lambda *_: self.slicer_area.begin_history_group()

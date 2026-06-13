@@ -1,7 +1,7 @@
 import numpy as np
 import pyqtgraph as pg
 import pytest
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive._options import options
@@ -297,6 +297,72 @@ def test_colorbar_edit_widget_applies_changes_to_images(qtbot):
         assert attrs["gamma"] == pytest.approx(0.4)
         assert attrs["reverse"] is True
         assert attrs["high_contrast"] is True
+
+
+def test_colorbar_handle_drag_updates_large_data_levels(qtbot):
+    mn, mx = 1e11, 1e15
+    image = BetterImageItem(np.array([[mn, mx]], dtype=float))
+    image.set_colormap("viridis", gamma=1.0)
+    colorbar = BetterColorBarItem(image=image)
+    widget = pg.PlotWidget(plotItem=colorbar)
+    qtbot.addWidget(widget)
+    widget.resize(100, 400)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    colorbar.setSpanRegion((mn, mx))
+    QtWidgets.QApplication.processEvents()
+
+    start = widget.mapFromScene(colorbar.vb.mapViewToScene(pg.Point(0.5, mn)))
+    start += QtCore.QPoint(0, -3)
+    end = QtCore.QPoint(start.x(), start.y() - 30)
+
+    qtbot.mousePress(widget.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(widget.viewport(), pos=end)
+    qtbot.mouseRelease(widget.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+    QtWidgets.QApplication.processEvents()
+
+    lower, upper = colorbar.spanRegion()
+    assert lower > mn
+    assert upper == pytest.approx(mx)
+    assert image.getLevels() == pytest.approx((lower, upper))
+
+
+def test_colorbar_image_maps_to_large_data_limits(qtbot):
+    mn, mx = 1e11, 1e15
+    image = BetterImageItem(np.array([[mn, mx]], dtype=float))
+    image.set_colormap("viridis", gamma=1.0)
+    colorbar = BetterColorBarItem(image=image)
+    widget = pg.PlotWidget(plotItem=colorbar)
+    qtbot.addWidget(widget)
+    widget.resize(100, 400)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    mapped_rect = colorbar._colorbar.mapRectToParent(colorbar._colorbar.boundingRect())
+
+    assert mapped_rect.left() == pytest.approx(0.0)
+    assert mapped_rect.width() == pytest.approx(1.0)
+    assert mapped_rect.top() == pytest.approx(mn)
+    assert mapped_rect.bottom() == pytest.approx(mx)
+
+
+def test_colorbar_limit_change_preserves_data_levels(qtbot):
+    image = BetterImageItem(np.arange(100, dtype=float).reshape(10, 10))
+    image.set_colormap("viridis", gamma=1.0)
+    image.setLevels((2.0, 8.0))
+    colorbar = BetterColorBarItem(image=image, limits=(0.0, 10.0))
+    widget = pg.PlotWidget(plotItem=colorbar)
+    qtbot.addWidget(widget)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    colorbar.setSpanRegion((2.0, 8.0))
+    colorbar.setLimits((0.0, 20.0))
+    QtWidgets.QApplication.processEvents()
+
+    assert colorbar.spanRegion() == pytest.approx((2.0, 8.0))
+    assert image.getLevels() == pytest.approx((2.0, 8.0))
 
 
 def test_colormap_combobox_populates_on_show(qtbot):
