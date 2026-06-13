@@ -255,12 +255,12 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.value_labels: dict[str, QtWidgets.QLabel] = {}
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 12)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(8)
 
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
+        header_layout.setSpacing(8)
         layout.addLayout(header_layout)
 
         icon_label = QtWidgets.QLabel(self)
@@ -271,7 +271,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             if style is None
             else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
-        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setPixmap(icon.pixmap(24, 24))
         icon_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
         )
@@ -287,17 +287,12 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         title_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        title_label.setMinimumWidth(0)
         title_label.setToolTip(details.path.name)
-        title_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Ignored,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
         title_font = title_label.font()
         title_font.setPointSize(title_font.pointSize() + 1)
         title_font.setBold(True)
         title_label.setFont(title_font)
-        title_label.setWordWrap(False)
+        title_label.setWordWrap(True)
         title_layout.addWidget(title_label)
 
         status_label = QtWidgets.QLabel("Loaded from file", self)
@@ -306,9 +301,9 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
-        details_layout.setContentsMargins(44, 0, 0, 0)
-        details_layout.setHorizontalSpacing(14)
-        details_layout.setVerticalSpacing(7)
+        details_layout.setContentsMargins(32, 0, 0, 0)
+        details_layout.setHorizontalSpacing(10)
+        details_layout.setVerticalSpacing(4)
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
@@ -388,10 +383,9 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         value_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        value_label.setMinimumWidth(0)
-        value_label.setWordWrap(False)
+        value_label.setWordWrap(True)
         value_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
         value_label.setToolTip(value)
@@ -479,12 +473,12 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.reveal_button: QtWidgets.QAbstractButton | None = None
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 12)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(8)
 
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
+        header_layout.setSpacing(8)
         layout.addLayout(header_layout)
 
         icon_label = QtWidgets.QLabel(self)
@@ -495,7 +489,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
             if style is None
             else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
-        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setPixmap(icon.pixmap(24, 24))
         icon_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
         )
@@ -511,17 +505,12 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        title_label.setMinimumWidth(0)
         title_label.setToolTip(workspace_name)
-        title_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Ignored,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
         title_font = title_label.font()
         title_font.setPointSize(title_font.pointSize() + 1)
         title_font.setBold(True)
         title_label.setFont(title_font)
-        title_label.setWordWrap(False)
+        title_label.setWordWrap(True)
         title_layout.addWidget(title_label)
 
         status_label = QtWidgets.QLabel(
@@ -532,9 +521,9 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
-        details_layout.setContentsMargins(44, 0, 0, 0)
-        details_layout.setHorizontalSpacing(14)
-        details_layout.setVerticalSpacing(7)
+        details_layout.setContentsMargins(32, 0, 0, 0)
+        details_layout.setHorizontalSpacing(10)
+        details_layout.setVerticalSpacing(4)
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
@@ -672,10 +661,9 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         value_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        value_label.setMinimumWidth(0)
-        value_label.setWordWrap(False)
+        value_label.setWordWrap(True)
         value_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
         value_label.setToolTip(value)

@@ -1253,7 +1253,7 @@ def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> No
     assert path_label is not None
     assert path_label.text() == str(workspace_path)
     assert path_label.toolTip() == str(workspace_path)
-    assert not path_label.wordWrap()
+    assert path_label.wordWrap()
     assert path_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
