@@ -290,6 +290,32 @@ def test_explorer_workspace_state_restores_selection(
     assert not explorer._model_index_for_path(missing_path).isValid()
 
 
+def test_explorer_workspace_state_missing_root_is_empty(
+    qtbot,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="example")
+    qtbot.addWidget(explorer)
+
+    missing_root = tmp_path / "disconnected-share"
+    missing_path = missing_root / "data_001.h5"
+    explorer.restore_workspace_state(
+        DataExplorerTabState(
+            root_path=str(missing_root),
+            loader_name="example",
+            selected_paths=(str(missing_path),),
+        )
+    )
+    qtbot.wait(10)
+
+    assert explorer.current_directory == missing_root
+    assert explorer._tree_view.model().rowCount() == 0
+    assert explorer.workspace_state_payload()["root_path"] == str(missing_root)
+    assert explorer._current_selection == []
+    assert not explorer._model_index_for_path(missing_path).isValid()
+
+
 def test_explorer_loader_options_dialog_updates_kwargs(
     qtbot,
     monkeypatch,
