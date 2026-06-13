@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import re
 import types
@@ -94,6 +95,113 @@ def _configure_fit2d_for_tests(
     monkeypatch.setattr(win, "_show_warning", _warn)
     monkeypatch.setattr(win, "_show_error", _error)
     return warnings, errors
+
+
+def _lmfit_json_with_callable_pyversion(
+    payload: str, callable_name: str, pyversion: str = "3.13"
+) -> str:
+    decoded = json.loads(payload)
+
+    def _set_pyversion(value: object) -> bool:
+        changed = False
+        if isinstance(value, dict):
+            if (
+                value.get("__class__") == "Callable"
+                and value.get("__name__") == callable_name
+            ):
+                value["pyversion"] = pyversion
+                changed = True
+            for item in value.values():
+                changed = _set_pyversion(item) or changed
+        elif isinstance(value, list):
+            for item in value:
+                changed = _set_pyversion(item) or changed
+        return changed
+
+    assert _set_pyversion(decoded)
+    return json.dumps(decoded)
+
+
+def _saved_ftool_dataset_with_callable_pyversion(
+    ds: xr.Dataset, callable_name: str, pyversion: str = "3.13"
+) -> xr.Dataset:
+    ds = ds.copy()
+    state = json.loads(ds.attrs["tool_state"])
+    state["model_state"][1] = _lmfit_json_with_callable_pyversion(
+        state["model_state"][1], callable_name, pyversion
+    )
+    ds.attrs["tool_state"] = json.dumps(state)
+
+    result_var = Fit2DTool._PERSISTED_FIT_RESULT_VAR
+    if result_var not in ds:
+        return ds
+    sparse = xr.load_dataset(
+        memoryview(np.asarray(ds[result_var].values, dtype=np.uint8).tobytes()),
+        engine="h5netcdf",
+    )
+    for var in sparse.data_vars:
+        if str(var).endswith("modelfit_results"):
+            attrs = sparse[var].attrs.copy()
+            patched = xr.apply_ufunc(
+                lambda text: _lmfit_json_with_callable_pyversion(
+                    str(text), callable_name, pyversion
+                ),
+                sparse[var],
+                vectorize=True,
+                output_dtypes=[str],
+            )
+            patched.attrs = attrs
+            sparse[var] = patched
+    blob = sparse.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
+    ds[result_var] = xr.DataArray(
+        np.frombuffer(blob, dtype=np.uint8).copy(),
+        dims=(Fit2DTool._PERSISTED_FIT_RESULT_DIM,),
+    )
+    return ds
+
+
+def _assert_modelresult_params_equivalent(actual, expected) -> None:
+    assert list(actual.params.keys()) == list(expected.params.keys())
+    for name, expected_param in expected.params.items():
+        actual_param = actual.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+    np.testing.assert_allclose(actual.best_fit, expected.best_fit)
+
+
+def _make_erlab_callable_case(
+    name: str,
+) -> tuple[str, object, xr.DataArray, object]:
+    x = np.linspace(-1.0, 1.0, 25)
+    y = np.arange(2)
+    match name:
+        case "multipeak":
+            model = erlab.analysis.fit.models.MultiPeakModel(
+                fd=False,
+                background="none",
+                convolve=False,
+            )
+            params = model.make_params(
+                p0_center=0.0,
+                p0_width=0.35,
+                p0_height=1.2,
+            )
+            callable_name = "MultiPeakFunction"
+        case "polynomial":
+            model = erlab.analysis.fit.models.PolynomialModel(degree=2)
+            params = model.make_params(c0=1.0, c1=0.25, c2=-0.15)
+            callable_name = "PolynomialFunction"
+        case _:
+            raise ValueError(name)
+    rows = [model.eval(params, x=x) * (1.0 + 0.05 * idx) for idx in y]
+    data = xr.DataArray(
+        np.stack(rows, axis=0),
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+        name=f"{name}_map",
+    )
+    return callable_name, model, data, params
 
 
 def test_ftool_2d_fill_and_transpose(qtbot, accept_dialog) -> None:
@@ -218,6 +326,53 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     assert win_roundtripped.tool_status.params == status.params
     win_roundtripped.param_plot_combo.setCurrentText("p0_width")
     assert win_roundtripped.param_plot_overlay_check.isChecked()
+
+
+@pytest.mark.parametrize("case_name", ["multipeak", "polynomial"])
+def test_fit2d_persistence_suppresses_successful_erlab_callable_warning(
+    qtbot, case_name: str
+) -> None:
+    callable_name, model, data, params = _make_erlab_callable_case(case_name)
+    win = erlab.interactive.ftool(data, model=model, params=params, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    fit_ds = win._data.xlm.modelfit(
+        win._coord_name,
+        model=model,
+        params=params,
+        max_nfev=10,
+    ).load()
+    expected_result = fit_ds.modelfit_results.compute().item()
+    win._last_result_ds = fit_ds
+    win._result_ds_full[win._current_idx] = fit_ds
+    win._params = expected_result.params.copy()
+    win._params_full[win._current_idx] = win._params.copy()
+    win._fit_is_current = True
+    expected_params = win.tool_status.params
+
+    saved = _saved_ftool_dataset_with_callable_pyversion(
+        win.to_dataset(), callable_name
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+
+    assert [
+        warning
+        for warning in caught
+        if "Could not unpack dill-encoded callable" in str(warning.message)
+    ] == []
+    assert type(restored._model.func) is type(model.func)
+    assert restored.tool_status.params == expected_params
+
+    restored_result_ds = restored._result_ds_full[restored._current_idx]
+    assert restored_result_ds is not None
+    restored_result = restored_result_ds.modelfit_results.compute().item()
+    assert type(restored_result.model.func) is type(model.func)
+    _assert_modelresult_params_equivalent(restored_result, expected_result)
 
 
 def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> None:

@@ -9,10 +9,13 @@ import functools
 import gc
 import importlib
 import logging
+import re
 import threading
 import time
 import traceback
 import typing
+import warnings
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import pydantic
@@ -23,7 +26,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab.interactive.utils
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Mapping
+    from collections.abc import Hashable, Mapping
 
     import lmfit
     import varname
@@ -35,11 +38,119 @@ else:
 
 _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
+_T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
+_LMFIT_CALLABLE_WARNING_RE = re.compile(
+    r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
+)
 
 _fit_worker_gc_lock = threading.Lock()
 _fit_worker_gc_depth = 0
 _fit_worker_gc_restore_enabled = False
+
+
+def _load_lmfit_for_ftool_restore(
+    load: Callable[[], _T], *, params: object | None = None
+) -> _T:
+    caught: list[warnings.WarningMessage] = []
+
+    def _warn_again(
+        warning_message: warnings.WarningMessage, suppressed_names: set[str]
+    ) -> None:
+        match = _LMFIT_CALLABLE_WARNING_RE.match(str(warning_message.message))
+        if match is not None and match.group(1) in suppressed_names:
+            return
+        warnings.warn_explicit(
+            warning_message.message,
+            warning_message.category,
+            warning_message.filename,
+            warning_message.lineno,
+            registry=None,
+            source=warning_message.source,
+        )
+
+    def _model_from_loaded(value: object) -> object | None:
+        if hasattr(value, "func"):
+            return value
+        if isinstance(value, xr.Dataset) and "modelfit_results" in value:
+            results = value["modelfit_results"].compute().values
+            if results.size:
+                return getattr(results.flat[0], "model", None)
+        return None
+
+    def _erlab_callable_names(model: object | None) -> set[str]:
+        if model is None:
+            raise TypeError("Restored lmfit model is missing.")
+        names: set[str] = set()
+        stack = [model]
+        while stack:
+            submodel = stack.pop()
+            func = getattr(submodel, "func", None)
+            if not callable(func):
+                raise TypeError(
+                    "Restored lmfit model contains a non-callable function."
+                )
+            wrapped = getattr(func, "__func__", None)
+            bound_self = getattr(func, "__self__", None)
+            modules = (
+                getattr(func, "__module__", None),
+                getattr(type(func), "__module__", None),
+                getattr(type(bound_self), "__module__", None)
+                if bound_self is not None
+                else None,
+                getattr(wrapped, "__module__", None) if wrapped is not None else None,
+            )
+            if any(
+                isinstance(module, str)
+                and (module == "erlab" or module.startswith("erlab."))
+                for module in modules
+            ):
+                for name_source in (func, wrapped, type(func)):
+                    name = getattr(name_source, "__name__", None)
+                    if isinstance(name, str) and name:
+                        names.add(name)
+            stack.extend(
+                child
+                for child in (
+                    getattr(submodel, "left", None),
+                    getattr(submodel, "right", None),
+                )
+                if child is not None
+            )
+        return names
+
+    def _validate_params(model: object) -> None:
+        if params is None:
+            return
+        if not isinstance(params, Iterable):
+            raise TypeError("Restored lmfit parameters are not iterable.")
+        param_names = set(params)
+        missing = [
+            name
+            for name in list(getattr(model, "param_names", ()))
+            if name not in param_names
+        ]
+        if missing:
+            raise ValueError(
+                "Restored lmfit model is missing saved parameters: "
+                + ", ".join(map(str, missing))
+            )
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loaded = load()
+            model = _model_from_loaded(loaded)
+            suppressed_names = _erlab_callable_names(model)
+            _validate_params(model)
+    except Exception:
+        for warning_message in caught:
+            _warn_again(warning_message, set())
+        raise
+
+    for warning_message in caught:
+        _warn_again(warning_message, suppressed_names)
+    return loaded
 
 
 @contextlib.contextmanager
@@ -2010,10 +2121,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         with self._history_suppressed():
             self._data_name = status.data_name
             self._model_name = status.model_name
+            restored_params = (
+                self._deserialize_params(status.params) if status.params else None
+            )
             try:
                 model = lmfit.model.Model(lambda x: x)
                 cls_info, model_state = status.model_state
-                model = model.loads(model_state)
+                model = _load_lmfit_for_ftool_restore(
+                    lambda: model.loads(model_state),
+                    params=restored_params,
+                )
                 mod_name, qual = cls_info.split(":")
             except Exception:  # pragma: no cover
                 self._show_error("Model restore failed", "Failed to restore model.")
@@ -2026,9 +2143,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                         cls_obj = getattr(cls_obj, attr)
                     model.__class__ = cls_obj
 
-            restored_params = (
-                self._deserialize_params(status.params) if status.params else None
-            )
             if restored_params is None or len(restored_params) == 0:
                 self.set_model(model, model_load_path=status.model_load_path)
             else:
@@ -2760,8 +2874,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
         if self._PERSISTED_FIT_RESULT_VAR not in ds:
             return
-        self._last_result_ds = erlab.interactive.utils._deserialize_fit_dataset_blob(
-            ds[self._PERSISTED_FIT_RESULT_VAR].values
+        self._last_result_ds = _load_lmfit_for_ftool_restore(
+            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(
+                ds[self._PERSISTED_FIT_RESULT_VAR].values
+            )
         )
         result = self._last_result_ds.modelfit_results.compute().item()
         self._set_fit_stats(result)

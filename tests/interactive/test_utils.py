@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import typing
+import warnings
 
 import lmfit
 import numpy as np
@@ -346,6 +347,47 @@ def test_empty_fit_dataset_blob_roundtrip_has_no_private_coord_data() -> None:
     restored = utils._deserialize_fit_dataset_blob(blob)
 
     xr.testing.assert_identical(restored, empty)
+
+
+def test_lmfit_erlab_callable_warning_filter_reemits_unrelated_warning() -> None:
+    import erlab.analysis.fit.models
+    from erlab.interactive._fit1d import _load_lmfit_for_ftool_restore
+
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        fd=False, background="none", convolve=False
+    )
+    message = (
+        "Could not unpack dill-encoded callable 'NotErlab', saved with Python "
+        "version 3.13"
+    )
+
+    def _load():
+        warnings.warn(message, UserWarning, stacklevel=2)
+        return model
+
+    with pytest.warns(UserWarning, match="NotErlab"):
+        restored = _load_lmfit_for_ftool_restore(_load)
+
+    assert restored is model
+
+
+def test_lmfit_erlab_callable_warning_filter_reemits_when_load_fails() -> None:
+    from erlab.interactive._fit1d import _load_lmfit_for_ftool_restore
+
+    message = (
+        "Could not unpack dill-encoded callable 'MultiPeakFunction', saved with Python "
+        "version 3.13"
+    )
+
+    def _load():
+        warnings.warn(message, UserWarning, stacklevel=2)
+        raise RuntimeError("load failed")
+
+    with (
+        pytest.warns(UserWarning, match="MultiPeakFunction"),
+        pytest.raises(RuntimeError, match="load failed"),
+    ):
+        _load_lmfit_for_ftool_restore(_load)
 
 
 def test_load_ui_temporarily_disables_autoconnect(monkeypatch) -> None:

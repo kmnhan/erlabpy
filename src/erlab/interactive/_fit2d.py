@@ -19,6 +19,7 @@ import erlab.interactive.utils
 from erlab.interactive._fit1d import (
     Fit1DTool,
     _FitRestoreState,
+    _load_lmfit_for_ftool_restore,
     _SnapCursorLine,
     _State2D,
 )
@@ -1271,8 +1272,10 @@ class Fit2DTool(Fit1DTool):
     def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
         if self._PERSISTED_FIT_RESULT_VAR not in ds:
             return
-        sparse = erlab.interactive.utils._deserialize_fit_dataset_blob(
-            ds[self._PERSISTED_FIT_RESULT_VAR].values
+        sparse = _load_lmfit_for_ftool_restore(
+            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(
+                ds[self._PERSISTED_FIT_RESULT_VAR].values
+            )
         )
         y_size = int(self._data_full.sizes[self._y_dim_name])
         self._result_ds_full = [None] * y_size
