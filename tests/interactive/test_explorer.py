@@ -316,6 +316,24 @@ def test_explorer_workspace_state_missing_root_is_empty(
     assert not explorer._model_index_for_path(missing_path).isValid()
 
 
+def test_explorer_type_sort_uses_file_paths(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    qtbot.wait_until(lambda: explorer._tree_view.model().rowCount() > 0)
+
+    def _fail_find_index(_item):
+        raise AssertionError("type sorting should not walk model indexes")
+
+    monkeypatch.setattr(explorer._fs_model, "_find_index", _fail_find_index)
+
+    explorer._tree_view.sortByColumn(2, QtCore.Qt.SortOrder.AscendingOrder)
+
+
 def test_explorer_loader_options_dialog_updates_kwargs(
     qtbot,
     monkeypatch,

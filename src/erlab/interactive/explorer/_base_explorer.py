@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import stat
 import sys
 import time
 import traceback
@@ -232,27 +233,40 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
 
     def file_info(self, index: QtCore.QModelIndex) -> QtCore.QFileInfo:
         """Get the :class:`QtCore.QFileInfo` of the file at given index."""
-        return QtCore.QFileInfo(self.file_path(index))
+        return self._file_info_for_path(self.get_fs(index).path)
 
     def mime_type(self, index: QtCore.QModelIndex) -> str:
-        file_info = self.file_info(index)
-        if file_info.suffix() in _IGOR_PRO_MIME_TYPES:
-            mime: str = _IGOR_PRO_MIME_TYPES[file_info.suffix()]
+        return self._mime_type_for_path(self.get_fs(index).path)
 
+    @staticmethod
+    def _file_info_for_path(path: pathlib.Path) -> QtCore.QFileInfo:
+        return QtCore.QFileInfo(str(path))
+
+    def _mime_type_for_path(self, path: pathlib.Path) -> str:
+        suffix = path.suffix.removeprefix(".")
+        if suffix in _IGOR_PRO_MIME_TYPES:
+            mime: str = _IGOR_PRO_MIME_TYPES[suffix]
         else:
             mime = self._mime_database.mimeTypeForFile(
-                file_info, QtCore.QMimeDatabase.MatchMode.MatchExtension
+                self._file_info_for_path(path),
+                QtCore.QMimeDatabase.MatchMode.MatchExtension,
             ).comment()
-
         return _TRANSLATE_MIME_TYPES.get(mime, mime)
+
+    @staticmethod
+    def _stat_path(path: pathlib.Path) -> os.stat_result | None:
+        try:
+            return path.stat()
+        except OSError:
+            return None
 
     def date_modified(self, index: QtCore.QModelIndex) -> str:
         """Get the date modified of the file at the index."""
-        path: pathlib.Path = index.internalPointer().path
-        if path.exists():
+        stat_result = self._stat_path(self.get_fs(index).path)
+        if stat_result is not None:
             return time.strftime(
                 "%Y-%m-%d %H:%M:%S",
-                time.localtime(os.path.getmtime(path)),
+                time.localtime(stat_result.st_mtime),
             )
         return ""
 
@@ -366,11 +380,10 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
                 case 0:
                     return item.path.name
                 case 1:
-                    if item.path.is_dir() or not item.path.exists():
+                    stat_result = self._stat_path(item.path)
+                    if stat_result is None or stat.S_ISDIR(stat_result.st_mode):
                         return "--"
-                    return erlab.utils.formatting.format_nbytes(
-                        os.path.getsize(item.path)
-                    )
+                    return erlab.utils.formatting.format_nbytes(stat_result.st_size)
                 case 2:
                     return self.mime_type(index)
                 case 3:
@@ -437,13 +450,19 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
             return item.path.name.casefold()
 
         def size_key(item: _FileSystem) -> int:
-            return os.path.getsize(item.path) if item.path.is_file() else -1
+            stat_result = self._stat_path(item.path)
+            if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
+                return -1
+            return stat_result.st_size
 
         def type_key(item: _FileSystem) -> str:
-            return self.mime_type(self._find_index(item)).casefold()
+            return self._mime_type_for_path(item.path).casefold()
 
         def date_key(item: _FileSystem) -> float:
-            return os.path.getmtime(item.path) if item.path.exists() else 0
+            stat_result = self._stat_path(item.path)
+            if stat_result is None:
+                return 0
+            return stat_result.st_mtime
 
         return [name_key, size_key, type_key, date_key][column]
 
