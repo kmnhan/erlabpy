@@ -538,16 +538,17 @@ def unify_clim(
     axes = np.asarray(axes, dtype=object)
 
     if target is None:
-        vmn_list, vmx_list = [], []
+        vmn_list: list[float] = []
+        vmx_list: list[float] = []
         for ax in axes.flat:
             mappable = get_mappable(ax, image_only=image_only, silent=True)
             if mappable is not None:
                 if autoscale:
                     mappable.autoscale()
                 if mappable.norm.vmin is not None:
-                    vmn_list.append(mappable.norm.vmin)
+                    vmn_list.append(typing.cast("float", mappable.norm.vmin))
                 if mappable.norm.vmax is not None:
-                    vmx_list.append(mappable.norm.vmax)
+                    vmx_list.append(typing.cast("float", mappable.norm.vmax))
         vmn, vmx = min(vmn_list), max(vmx_list)
     else:
         if isinstance(target, matplotlib.cm.ScalarMappable):
@@ -557,7 +558,8 @@ def unify_clim(
         if mappable is not None:
             if autoscale:
                 mappable.autoscale()
-            vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
+            vmn = typing.cast("float | None", mappable.norm.vmin)
+            vmx = typing.cast("float | None", mappable.norm.vmax)
 
     vmin = vmn if vmin is None else vmin
     vmax = vmx if vmax is None else vmax
@@ -565,7 +567,7 @@ def unify_clim(
     for ax in axes.flat:
         mappable = get_mappable(ax, image_only=image_only, silent=True)
         if mappable is not None:
-            mappable.norm.vmin, mappable.norm.vmax = vmin, vmax
+            mappable.set_clim(vmin, vmax)
 
 
 def proportional_colorbar(

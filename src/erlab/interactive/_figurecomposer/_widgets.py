@@ -767,7 +767,7 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         color = self.palette().color(QtGui.QPalette.ColorRole.ButtonText)
         return erlab.interactive.utils.qtawesome.icon(icon_name, color=color)
 
-    def configure_subplots(self) -> None:
+    def configure_subplots(self, *args: typing.Any) -> typing.Any:
         self._subplot_adjust_callback()
 
     def edit_parameters(self) -> None:

@@ -1388,7 +1388,7 @@ class LoaderBase(metaclass=_Loader):
 
             old_rc = {k: v for k, v in plt.rcParams.items() if k in rc_dict}
             with out:
-                plt.rcParams.update(rc_dict)
+                typing.cast("typing.Any", plt.rcParams).update(rc_dict)
                 plot_data.qplot(ax=plt.gca())
                 plt.title("")  # Remove automatically generated title
 
