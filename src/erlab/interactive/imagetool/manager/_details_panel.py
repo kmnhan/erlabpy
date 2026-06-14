@@ -93,7 +93,6 @@ class _DetailsPanelController:
                 widget.deleteLater()
         self._manager._metadata_detail_labels.clear()
 
-        single_line_rows: list[tuple[int, tuple[QtWidgets.QWidget, ...]]] = []
         for row, field in enumerate(fields):
             row_vertical_alignment = (
                 QtCore.Qt.AlignmentFlag.AlignTop
@@ -169,9 +168,28 @@ class _DetailsPanelController:
             value_label.setAlignment(
                 QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
             )
+            if details_button is not None:
+                style = details_button.style() or QtWidgets.QApplication.style()
+                small_icon_size = (
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PixelMetric.PM_SmallIconSize,
+                        None,
+                        details_button,
+                    )
+                    if style is not None
+                    else value_label.fontMetrics().height()
+                )
+                row_height = max(
+                    key_label.sizeHint().height(),
+                    value_label.sizeHint().height(),
+                    small_icon_size,
+                )
+                details_button.setIconSize(
+                    QtCore.QSize(small_icon_size, small_icon_size)
+                )
+                details_button.setFixedSize(QtCore.QSize(row_height, row_height))
             layout.addWidget(key_label, row, 0)
             layout.addWidget(value_label, row, 1)
-            row_widgets: tuple[QtWidgets.QWidget, ...] = (key_label, value_label)
             if details_button is not None:
                 layout.addWidget(
                     details_button,
@@ -179,21 +197,7 @@ class _DetailsPanelController:
                     2,
                     alignment=QtCore.Qt.AlignmentFlag.AlignVCenter,
                 )
-                row_widgets = (*row_widgets, details_button)
-            if not field.wrap:
-                single_line_rows.append((row, row_widgets))
             self._manager._metadata_detail_labels[field.label] = value_label
-
-        if single_line_rows:
-            single_line_row_height = max(
-                max(
-                    max(widget.sizeHint().height(), widget.minimumSizeHint().height())
-                    for widget in row_widgets
-                )
-                for _row, row_widgets in single_line_rows
-            )
-            for row, _row_widgets in single_line_rows:
-                layout.setRowMinimumHeight(row, single_line_row_height)
 
     def _show_load_source_details(
         self,
@@ -315,10 +319,6 @@ class _DetailsPanelController:
 
     def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
         items = list(self._manager.metadata_derivation_list.selectedItems())
-        if not items:
-            current_item = self._manager.metadata_derivation_list.currentItem()
-            if current_item is not None:
-                items = [current_item]
         return sorted(items, key=self._manager.metadata_derivation_list.row)
 
     def _selected_derivation_code(self) -> str | None:
@@ -373,13 +373,8 @@ class _DetailsPanelController:
         return menu
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
-        item = self._manager.metadata_derivation_list.itemAt(pos)
-        if item is None:
+        if self._manager.metadata_derivation_list.itemAt(pos) is None:
             return
-        if not item.isSelected():
-            self._manager.metadata_derivation_list.clearSelection()
-            item.setSelected(True)
-        self._manager.metadata_derivation_list.setCurrentItem(item)
         menu = self._manager._build_metadata_derivation_menu()
         if menu is None:
             return

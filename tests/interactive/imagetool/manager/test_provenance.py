@@ -4510,7 +4510,7 @@ def test_manager_provenance_file_load_batch_edit_updates_matching_peer(
         assert pathlib.Path(second_spec.file_load_source.path) == paths["new_b"]
 
 
-def test_manager_provenance_context_menu_retargets_nonselected_row(
+def test_manager_provenance_context_menu_preserves_extended_selection(
     qtbot,
     monkeypatch,
     tmp_path: pathlib.Path,
@@ -4546,20 +4546,43 @@ def test_manager_provenance_context_menu_retargets_nonselected_row(
         assert target_item is not None
         assert not target_item.isSelected()
 
-        captured_rows: list[provenance._ProvenanceDisplayRow | None] = []
+        build_metadata_derivation_menu = manager._build_metadata_derivation_menu
+        menu = build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_edit_step_action.isEnabled()
+        assert not manager._metadata_revert_step_action.isEnabled()
+
+        captured_selection: list[list[int]] = []
 
         def _capture_menu() -> None:
-            row = manager._selected_derivation_row()
-            captured_rows.append(row)
+            captured_selection.append(
+                [
+                    manager.metadata_derivation_list.row(item)
+                    for item in manager.metadata_derivation_list.selectedItems()
+                ]
+            )
             return
 
         monkeypatch.setattr(manager, "_build_metadata_derivation_menu", _capture_menu)
         pos = manager.metadata_derivation_list.visualItemRect(target_item).center()
         manager._show_metadata_derivation_menu(pos)
 
-        assert captured_rows
-        assert captured_rows[-1] is not None
-        assert manager.metadata_derivation_list.selectedItems() == [target_item]
+        assert captured_selection == [[0, 1]]
+        assert [
+            manager.metadata_derivation_list.row(item)
+            for item in manager.metadata_derivation_list.selectedItems()
+        ] == [0, 1]
+        assert not target_item.isSelected()
+
+        manager.metadata_derivation_list.setCurrentItem(target_item)
+        manager.metadata_derivation_list.clearSelection()
+        assert manager.metadata_derivation_list.currentItem() is target_item
+        assert manager.metadata_derivation_list.selectedItems() == []
+        menu = build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_edit_step_action.isEnabled()
+        assert not manager._metadata_revert_step_action.isEnabled()
+        assert not manager._metadata_copy_selected_action.isEnabled()
 
 
 def test_manager_provenance_script_operation_rows_are_not_editable_v1(

@@ -1541,7 +1541,7 @@ def test_details_panel_file_field_info_button_passes_metadata_node_uid(
     assert shown == [(details, "node-1")]
 
 
-def test_details_panel_single_line_rows_use_uniform_height_and_elide(
+def test_details_panel_single_line_rows_stay_compact_and_elide(
     qtbot,
     tmp_path,
 ) -> None:
@@ -1601,17 +1601,37 @@ def test_details_panel_single_line_rows_use_uniform_height_and_elide(
     )
 
     layout = manager.metadata_details_layout
-    single_line_row_height = layout.rowMinimumHeight(0)
-    assert single_line_row_height > 0
-    assert layout.rowMinimumHeight(1) == single_line_row_height
-    assert layout.rowMinimumHeight(2) == single_line_row_height
+    assert layout.rowMinimumHeight(0) == 0
+    assert layout.rowMinimumHeight(1) == 0
+    assert layout.rowMinimumHeight(2) == 0
     assert layout.rowMinimumHeight(3) == 0
     details_button = metadata_widget.findChild(
         QtWidgets.QToolButton,
         "manager_metadata_file_details_button",
     )
     assert details_button is not None
-    assert single_line_row_height >= details_button.sizeHint().height()
+    file_key_label = typing.cast(
+        "QtWidgets.QLabel",
+        layout.itemAtPosition(2, 0).widget(),
+    )
+    button_style = details_button.style() or QtWidgets.QApplication.style()
+    small_icon_size = (
+        button_style.pixelMetric(
+            QtWidgets.QStyle.PixelMetric.PM_SmallIconSize,
+            None,
+            details_button,
+        )
+        if button_style is not None
+        else file_label.fontMetrics().height()
+    )
+    compact_row_height = max(
+        file_key_label.sizeHint().height(),
+        file_label.sizeHint().height(),
+        small_icon_size,
+    )
+    assert details_button.minimumHeight() == compact_row_height
+    assert details_button.maximumHeight() == compact_row_height
+    assert details_button.iconSize() == QtCore.QSize(small_icon_size, small_icon_size)
     inputs_key_label = typing.cast(
         "QtWidgets.QLabel",
         layout.itemAtPosition(3, 0).widget(),
