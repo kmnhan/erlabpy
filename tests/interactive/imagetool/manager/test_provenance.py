@@ -5102,6 +5102,7 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         assert menu is not None
         assert not manager._metadata_edit_step_action.isEnabled()
         assert not manager._metadata_revert_step_action.isEnabled()
+        assert not manager._metadata_delete_step_action.isEnabled()
 
         captured_selection: list[list[int]] = []
 
@@ -5134,6 +5135,51 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         assert not manager._metadata_edit_step_action.isEnabled()
         assert not manager._metadata_revert_step_action.isEnabled()
         assert not manager._metadata_copy_selected_action.isEnabled()
+        assert not manager._metadata_delete_step_action.isEnabled()
+
+
+def test_manager_provenance_context_menu_groups_row_commands(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(manager, test_data.qsel.mean("alpha"), spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+
+        assert manager._metadata_delete_step_action.isEnabled()
+
+        actions = menu.actions()
+        assert actions[0] is manager._metadata_edit_step_action
+        assert actions[1] is manager._metadata_revert_step_action
+        assert actions[2].isSeparator()
+        assert actions[3] is manager._metadata_copy_selected_action
+        assert actions[4] is manager._metadata_paste_steps_action
+        if manager._metadata_copy_full_action in actions:
+            assert actions[5] is manager._metadata_copy_full_action
+            separator_index = 6
+        else:
+            separator_index = 5
+        assert actions[separator_index].isSeparator()
+        assert actions[separator_index + 1] is manager._metadata_delete_step_action
 
 
 def test_manager_provenance_script_operation_rows_are_not_editable_v1(
@@ -6344,6 +6390,246 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     assert replaced[0][2] is False
 
 
+def test_manager_can_delete_row_reports_unavailable_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Average", None),
+        replay_ref=operation_ref,
+    )
+
+    controller = _fake_edit_controller(None, metadata_uid=None)
+    deletable, reason = controller.can_delete_row(row)
+    assert not deletable
+    assert reason
+
+    source_child = _fake_edit_node(
+        provenance.full_data(provenance.AverageOperation(dims=("x",))),
+        parent_uid="parent",
+        source_spec=provenance.full_data(),
+    )
+    controller = _fake_edit_controller(source_child)
+    deletable, reason = controller.can_delete_row(row)
+    assert not deletable
+    assert reason
+
+    controller = _fake_edit_controller(_fake_edit_node(None))
+    deletable, reason = controller.can_delete_row(row)
+    assert not deletable
+    assert reason
+
+    missing_ref_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Missing", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=99,
+            stage_index=0,
+        ),
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(provenance.full_data(provenance.AverageOperation(dims=("x",))))
+    )
+    deletable, reason = controller.can_delete_row(missing_ref_row)
+    assert not deletable
+    assert reason
+
+    broken_script_spec = types.SimpleNamespace(
+        kind="script",
+        _operation_for_ref=lambda _ref: provenance.ScriptCodeOperation(
+            label="Broken",
+            code="derived = data",
+        ),
+        _replace_operation_ref=lambda *_args: (_ for _ in ()).throw(
+            ValueError("bad ref")
+        ),
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(typing.cast("typing.Any", broken_script_spec))
+    )
+    deletable, reason = controller.can_delete_row(row)
+    assert not deletable
+    assert reason
+
+    source_live_spec = provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    live_row = source_live_spec.display_rows(scope="source")[1]
+    source_bound = _fake_edit_node(
+        provenance.full_data(),
+        parent_uid="parent",
+        source_display_spec=source_live_spec,
+    )
+    controller = _fake_edit_controller(source_bound)
+    deletable, reason = controller.can_delete_row(live_row)
+    assert deletable
+    assert reason == ""
+
+    controller = _fake_edit_controller(_fake_edit_node(source_live_spec))
+    deletable, reason = controller.can_delete_row(source_live_spec.display_rows()[1])
+    assert not deletable
+    assert reason
+
+
+def test_manager_delete_row_error_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Average", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=0,
+            stage_index=0,
+        ),
+    )
+    node = _fake_edit_node(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    controller = _fake_edit_controller(node)
+    monkeypatch.setattr(controller, "can_delete_row", lambda _row: (True, ""))
+
+    failures: list[tuple[str, Exception]] = []
+    monkeypatch.setattr(
+        controller,
+        "_show_failed",
+        lambda title, exc: failures.append((title, exc)),
+    )
+    monkeypatch.setattr(controller, "_display_spec_for_row", lambda *_args: None)
+    controller.delete_row(row)
+    assert failures
+
+    failures.clear()
+    monkeypatch.setattr(
+        controller,
+        "_display_spec_for_row",
+        lambda *_args: provenance.full_data(provenance.AverageOperation(dims=("x",))),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad replay")),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_handle_missing_source_file",
+        lambda *_args, **_kwargs: False,
+    )
+    controller.delete_row(row)
+    assert failures
+
+    failures.clear()
+    monkeypatch.setattr(
+        controller,
+        "_handle_missing_source_file",
+        lambda *_args, **_kwargs: True,
+    )
+    controller.delete_row(row)
+    assert failures == []
+
+
+def test_manager_delete_provenance_step_preserves_later_operations(
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("scan")
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    operations = (
+        provenance.AverageOperation(dims=("z",)),
+        provenance.IselOperation(kwargs={"y": 1}),
+    )
+    spec = _manager_replay_file_spec(file_path, *operations)
+    displayed = provenance.replay_file_provenance(spec)
+
+    with manager_context() as manager:
+        tool = _add_file_replay_tool(manager, displayed, spec)
+        index = 0
+
+        select_tools(manager, [index])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        row = manager._selected_derivation_row()
+        deletable, reason = manager._provenance_edit_controller.can_delete_row(row)
+        assert deletable, reason
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        trigger_menu_action(menu, manager._metadata_delete_step_action)
+
+        expected_spec = spec._replace_operation_ref(
+            provenance._ProvenanceStepRef(
+                "operation",
+                operation_index=0,
+                stage_index=0,
+            ),
+            (),
+        )
+        expected = provenance.replay_file_provenance(expected_spec)
+        xr.testing.assert_identical(tool.slicer_area._data, expected)
+        root = manager._tool_graph.root_wrappers[index]
+        assert root.provenance_spec == expected_spec
+        assert metadata_derivation_texts(manager) == [
+            f"Load data from file {file_path.name!r}",
+            operations[1].derivation_entry().label,
+        ]
+
+
+def test_manager_delete_invalid_script_step_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("scan")
+    operations = (
+        provenance.ScriptCodeOperation(
+            label="Create result",
+            code="result = derived + 1.0",
+        ),
+        provenance.ScriptCodeOperation(
+            label="Use result",
+            code="result = result * 2.0",
+        ),
+    )
+    spec = provenance.script(
+        *operations,
+        start_label="Start from data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    displayed = provenance.replay_script_provenance(spec, {"data": data})
+
+    with manager_context() as manager:
+        tool = itool(displayed, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+
+        select_tools(manager, [index])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        row = manager._selected_derivation_row()
+        deletable, reason = manager._provenance_edit_controller.can_delete_row(row)
+        assert not deletable
+        assert reason
+
+        unavailable: list[str] = []
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_unavailable",
+            unavailable.append,
+        )
+        before = tool.slicer_area._data.copy(deep=True)
+        before_spec = manager._tool_graph.root_wrappers[index].provenance_spec
+        manager._delete_selected_derivation_step()
+
+        assert unavailable
+        xr.testing.assert_identical(tool.slicer_area._data, before)
+        assert manager._tool_graph.root_wrappers[index].provenance_spec == before_spec
+
+
 def test_manager_copy_paste_structured_provenance_steps(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -6602,6 +6888,16 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
         assert child_node.source_spec is None
         assert child_node.source_auto_update is False
+        pasted_code = child_node.displayed_provenance_spec.derivation_code()
+        source_code = script_spec.derivation_code()
+        assert pasted_code is not None
+        assert source_code is not None
+        assert pasted_code.splitlines()[-2:] == source_code.splitlines()[-2:]
+        derivation = metadata_derivation_texts(manager)
+        assert script_operations[0].derivation_entry().label in derivation
+        assert script_operations[1].derivation_entry().label in derivation
+        assert not any("Paste provenance steps" in label for label in derivation)
+        assert not any("derived = data" in label for label in derivation)
 
         bad_operation = provenance.ScriptCodeOperation(
             label="Use unavailable scratch value",
@@ -6634,6 +6930,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
             lambda title, exc, **kwargs: failures.append((title, exc, kwargs)),
         )
         before = child_tool.slicer_area._data.copy(deep=True)
+        before_spec = child_node.provenance_spec
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info()
@@ -6649,6 +6946,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         )
         assert "Revert to This Step" not in failures[0][2]["unchanged_reason"]
         xr.testing.assert_identical(child_tool.slicer_area._data, before)
+        assert child_node.provenance_spec == before_spec
         assert child_node.source_spec is None
 
 

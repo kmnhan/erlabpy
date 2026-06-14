@@ -2319,9 +2319,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return entries
 
     def _script_graph_code(self, *, display: bool) -> str | None:
-        if not self.script_inputs:
-            return None
-
         try:
             graph = _replay_graph.compile_replay_graph(self, display=display)
             return _replay_graph.emit_replay_code(
@@ -2343,8 +2340,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def derivation_code(self) -> str | None:
         prefix: str | None = None
-        if self.kind == "script" and self.script_inputs:
-            return self._script_graph_code(display=True)
+        if self.kind == "script" and (
+            graph_code := self._script_graph_code(display=True)
+        ):
+            return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
         step_codes = self._code_lines_from_entries(self.display_entries()[1:])
@@ -2478,8 +2477,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         no-op and normalization steps from copied provenance code.
         """
         prefix: str | None = None
-        if self.kind == "script" and self.script_inputs:
-            return self._script_graph_code(display=True)
+        if self.kind == "script" and (
+            graph_code := self._script_graph_code(display=True)
+        ):
+            return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
 

@@ -148,6 +148,7 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
     def __init__(
         self,
         payload_text: str,
+        step_code_text: str,
         source_data: Mapping[str, xr.DataArray],
         *,
         cut_source_tool_id: str | None = None,
@@ -156,7 +157,7 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
         self.figure_composer_source_data: dict[str, xr.DataArray] = dict(source_data)
         self.figure_composer_cut_source_tool_id = cut_source_tool_id
         self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
-        self.setText(payload_text)
+        self.setText(step_code_text)
 
 
 class _FigureComposerOperationList(QtWidgets.QListWidget):
@@ -202,6 +203,24 @@ def _step_clipboard_payload_text(
         },
         indent=2,
     )
+
+
+def _step_clipboard_code_text(
+    tool: FigureComposerTool,
+    operations: Sequence[FigureOperationState],
+) -> str:
+    lines: list[str] = []
+    for operation in operations:
+        if not operation.enabled:
+            continue
+        try:
+            lines.extend(_registry.spec_for(operation.kind).code_lines(tool, operation))
+        except Exception as exc:
+            return (
+                "# Could not generate Python code for the copied "
+                f"Figure Composer steps: {exc}"
+            )
+    return "\n".join(lines)
 
 
 def _step_clipboard_payload(
@@ -3516,6 +3535,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         clipboard.setMimeData(
             _FigureComposerStepMimeData(
                 _step_clipboard_payload_text(operations, sources),
+                _step_clipboard_code_text(self, operations),
                 source_data,
                 cut_source_tool_id=self._step_clipboard_tool_id if cut else None,
             )

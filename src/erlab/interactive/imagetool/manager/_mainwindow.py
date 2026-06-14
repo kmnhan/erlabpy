@@ -997,7 +997,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
         self._refreshing_figure_list = False
-        self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
+        self._metadata_copy_selected_action = QtGui.QAction("Copy", self)
         self._metadata_copy_selected_action.setObjectName(
             "manager_copy_selected_code_action"
         )
@@ -1009,7 +1009,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_copy_full_action.triggered.connect(
             self._copy_full_derivation_code
         )
-        self._metadata_paste_steps_action = QtGui.QAction("Paste Steps", self)
+        self._metadata_paste_steps_action = QtGui.QAction("Paste", self)
         self._metadata_paste_steps_action.setObjectName(
             "manager_paste_provenance_steps_action"
         )
@@ -1029,6 +1029,13 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self._metadata_revert_step_action.triggered.connect(
             self._revert_selected_derivation_step
+        )
+        self._metadata_delete_step_action = QtGui.QAction("Delete", self)
+        self._metadata_delete_step_action.setObjectName(
+            "manager_delete_provenance_step_action"
+        )
+        self._metadata_delete_step_action.triggered.connect(
+            self._delete_selected_derivation_step
         )
 
         self.sigLinkersChanged.connect(self._update_actions)
@@ -2418,6 +2425,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _revert_selected_derivation_step(self) -> None:
         self._details_panel._revert_selected_derivation_step()
+
+    def _delete_selected_derivation_step(self) -> None:
+        self._details_panel._delete_selected_derivation_step()
 
     def _update_info(self, *, uid: str | None = None) -> None:
         self._details_panel._update_info(uid=uid)

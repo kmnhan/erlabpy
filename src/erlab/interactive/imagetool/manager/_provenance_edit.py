@@ -490,8 +490,7 @@ class _ProvenanceEditController:
                     node,
                     provenance.script(
                         *steps,
-                        start_label="Paste provenance steps",
-                        seed_code="derived = data",
+                        start_label="Start from current ImageTool data",
                         active_name=active_name or "derived",
                     ),
                     where="validating the pasted script provenance steps",
@@ -563,7 +562,10 @@ class _ProvenanceEditController:
             if local.kind == "script":
                 data = provenance.replay_script_provenance(
                     local,
-                    {"data": current_data},
+                    {
+                        "data": current_data,
+                        "derived": current_data,
+                    },
                 )
             else:
                 data = local.apply(current_data)
@@ -585,6 +587,38 @@ class _ProvenanceEditController:
             spec = local.to_replay_spec()
         node.replace_with_detached_data(data, spec, preserve_filter=False)
         self._manager._update_info(uid=node.uid)
+
+    def can_delete_row(
+        self,
+        row: provenance._ProvenanceDisplayRow | None,
+    ) -> tuple[bool, str]:
+        node = self._metadata_node()
+        if row is None or row.replay_ref is None:
+            return False, "This row cannot be deleted."
+        if row.replay_ref.kind != "operation":
+            return False, "Only operation rows can be deleted."
+        if not self._node_editable(node):
+            return False, "Select an available ImageTool row to delete provenance."
+        node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
+        if self._source_child_parent_row(node, row):
+            return False, "Delete the parent ImageTool row directly."
+        spec = self._display_spec_for_row(node, row)
+        if spec is None:
+            return False, "This row does not have replayable provenance."
+        if spec._operation_for_ref(row.replay_ref) is None:
+            return False, "This operation is not available."
+        if spec.kind == "script":
+            try:
+                candidate = spec._replace_operation_ref(row.replay_ref, ())
+            except (IndexError, ValueError):
+                return False, "This script row is not a replayable step."
+            if not provenance.script_provenance_replayable(candidate):
+                return False, "Deleting this script step would make replay invalid."
+        if spec.kind in {"full_data", "public_data", "selection"}:
+            if row.scope == "source" and node.parent_uid is not None:
+                return True, ""
+            return False, "This live row needs a parent source to replay."
+        return True, ""
 
     def can_edit_row(
         self,
@@ -734,6 +768,54 @@ class _ProvenanceEditController:
             ):
                 return
             self._show_failed("Could Not Revert Provenance Step", exc)
+
+    def delete_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
+        deletable, reason = self.can_delete_row(row)
+        if not deletable:
+            self._show_unavailable(reason)
+            return
+        node = typing.cast(
+            "_ImageToolWrapper | _ManagedWindowNode",
+            self._metadata_node(),
+        )
+        row = typing.cast("provenance._ProvenanceDisplayRow", row)
+        ref = typing.cast("provenance._ProvenanceStepRef", row.replay_ref)
+        spec = self._display_spec_for_row(node, row)
+        if spec is None:
+            self._show_failed(
+                "Could Not Delete Provenance Step",
+                RuntimeError("No provenance spec is available"),
+            )
+            return
+        candidate: provenance.ToolProvenanceSpec | None = None
+        try:
+            candidate = spec._replace_operation_ref(ref, ())
+            if candidate.kind == "file":
+                candidate = candidate.model_copy(
+                    update={
+                        "replay_stages": tuple(
+                            stage
+                            for stage in candidate.replay_stages
+                            if stage.operations
+                        )
+                    }
+                )
+            self._validate_and_replace(
+                node,
+                row.scope,
+                candidate,
+                where="validating the provenance delete target",
+            )
+        except Exception as exc:
+            if self._handle_missing_source_file(
+                node,
+                row,
+                title="Could Not Delete Provenance Step",
+                exc=exc,
+                repair_spec=candidate,
+            ):
+                return
+            self._show_failed("Could Not Delete Provenance Step", exc)
 
     def _metadata_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         uid = self._manager._metadata_node_uid

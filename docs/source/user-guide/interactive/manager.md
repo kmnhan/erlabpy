@@ -396,7 +396,7 @@ window created from another row, the panel can show:
 
 Right-click on the steps list to copy code that rebuilds the data shown in the selected
 ImageTool window. You can also copy selected steps, select another ImageTool in the
-manager, and choose {guilabel}`Paste Steps` to apply those steps to that ImageTool's
+manager, and choose {guilabel}`Paste` to apply those steps to that ImageTool's
 current data.
 
 For [watched variables](working-with-notebooks), copied code contains the watched

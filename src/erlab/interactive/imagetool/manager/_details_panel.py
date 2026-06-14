@@ -498,10 +498,15 @@ class _DetailsPanelController:
         revert_enabled, revert_reason = (
             self._manager._provenance_edit_controller.can_revert_row(row)
         )
+        delete_enabled, delete_reason = (
+            self._manager._provenance_edit_controller.can_delete_row(row)
+        )
         self._manager._metadata_edit_step_action.setEnabled(edit_enabled)
         self._manager._metadata_edit_step_action.setToolTip(edit_reason)
         self._manager._metadata_revert_step_action.setEnabled(revert_enabled)
         self._manager._metadata_revert_step_action.setToolTip(revert_reason)
+        self._manager._metadata_delete_step_action.setEnabled(delete_enabled)
+        self._manager._metadata_delete_step_action.setToolTip(delete_reason)
         menu.addAction(self._manager._metadata_edit_step_action)
         if edit_enabled:
             menu.setDefaultAction(self._manager._metadata_edit_step_action)
@@ -511,9 +516,6 @@ class _DetailsPanelController:
         selected_code = self._manager._selected_derivation_code()
         self._manager._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._manager._metadata_copy_selected_action)
-        if self._manager._metadata_full_code_available:
-            self._manager._metadata_copy_full_action.setEnabled(True)
-            menu.addAction(self._manager._metadata_copy_full_action)
         clipboard = QtWidgets.QApplication.clipboard()
         paste_payload = _provenance_step_clipboard_payload(
             None if clipboard is None else clipboard.mimeData()
@@ -526,10 +528,16 @@ class _DetailsPanelController:
         self._manager._metadata_paste_steps_action.setEnabled(paste_enabled)
         self._manager._metadata_paste_steps_action.setToolTip(paste_reason)
         menu.addAction(self._manager._metadata_paste_steps_action)
+        if self._manager._metadata_full_code_available:
+            self._manager._metadata_copy_full_action.setEnabled(True)
+            menu.addAction(self._manager._metadata_copy_full_action)
+        menu.addSeparator()
+        menu.addAction(self._manager._metadata_delete_step_action)
         return menu
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
-        if self._manager.metadata_derivation_list.itemAt(pos) is None:
+        item = self._manager.metadata_derivation_list.itemAt(pos)
+        if item is None:
             return
         menu = self._manager._build_metadata_derivation_menu()
         if menu is None:
@@ -662,6 +670,11 @@ class _DetailsPanelController:
 
     def _revert_selected_derivation_step(self) -> None:
         self._manager._provenance_edit_controller.revert_row(
+            self._manager._selected_derivation_row()
+        )
+
+    def _delete_selected_derivation_step(self) -> None:
+        self._manager._provenance_edit_controller.delete_row(
             self._manager._selected_derivation_row()
         )
 

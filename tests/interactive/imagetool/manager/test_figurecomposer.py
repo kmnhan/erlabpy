@@ -5904,10 +5904,19 @@ def test_figure_composer_cut_paste_steps_preserves_order_and_history(qtbot) -> N
     ]
     assert _selected_operation_rows(tool) == (1,)
     assert tool.operation_list.currentRow() == 1
+    mime = clipboard.mimeData()
+    payload_text = bytes(
+        mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
+    ).decode("utf-8")
     assert [
-        operation["label"]
-        for operation in json.loads(clipboard.mimeData().text())["operations"]
+        operation["label"] for operation in json.loads(payload_text)["operations"]
     ] == ["b", "d"]
+    assert clipboard.text().splitlines() == [
+        "fig.__dict__['_order'] = fig.__dict__.get('_order', []) + ['b']",
+        "fig.__dict__['_order'] = fig.__dict__.get('_order', []) + ['d']",
+    ]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(clipboard.text())
 
     tool.paste_operation_button.click()
 
@@ -6197,7 +6206,7 @@ def test_figure_composer_copy_paste_steps_renames_source_conflicts(qtbot) -> Non
     xr.testing.assert_identical(destination.source_data()["profile_copy"], profile)
 
 
-def test_figure_composer_copy_paste_steps_plain_payload_has_missing_source(
+def test_figure_composer_copy_paste_steps_typed_payload_has_missing_source(
     qtbot,
 ) -> None:
     remote_data = xr.DataArray(
@@ -6241,17 +6250,24 @@ def test_figure_composer_copy_paste_steps_plain_payload_has_missing_source(
 
     _select_operation_rows(source_tool, (0,))
     source_tool.copy_operation_button.click()
-    payload_text = clipboard.mimeData().text()
+    copied_mime = clipboard.mimeData()
+    payload_text = bytes(
+        copied_mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
+    ).decode("utf-8")
     assert payload_text.startswith(
         '{\n  "type": "erlab.figure_composer.steps",\n  "version": 1,'
     )
     assert json.loads(payload_text)["type"] == "erlab.figure_composer.steps"
+    assert copied_mime.text()
+    assert not copied_mime.text().lstrip().startswith("{")
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(copied_mime.text())
     mime = QtCore.QMimeData()
     mime.setData(
         figurecomposer_tool_module._STEPS_CLIPBOARD_MIME,
         payload_text.encode("utf-8"),
     )
-    mime.setText(payload_text)
+    mime.setText(copied_mime.text())
     clipboard.setMimeData(mime)
     destination._paste_operations_from_clipboard()
 
@@ -6261,6 +6277,65 @@ def test_figure_composer_copy_paste_steps_plain_payload_has_missing_source(
     ]
     assert destination.tool_status.operations[-1].sources == ("remote",)
     assert "remote" not in destination.source_data()
+
+
+def test_figure_composer_copy_steps_keeps_payload_when_code_text_fails(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(_custom_order_step("a"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    clipboard = _clear_clipboard()
+    disabled = tool.tool_status.operations[0].model_copy(update={"enabled": False})
+    assert figurecomposer_tool_module._step_clipboard_code_text(tool, (disabled,)) == ""
+
+    class BrokenSpec:
+        @staticmethod
+        def code_lines(
+            _tool: FigureComposerTool,
+            _operation: FigureOperationState,
+        ) -> list[str]:
+            raise ValueError("bad axes")
+
+    _select_operation_rows(tool, (0,))
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            figurecomposer_tool_module._registry,
+            "spec_for",
+            lambda _kind: BrokenSpec(),
+        )
+        failure_text = figurecomposer_tool_module._step_clipboard_code_text(
+            tool,
+            tool.tool_status.operations,
+        )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            figurecomposer_tool_module,
+            "_step_clipboard_code_text",
+            lambda _tool, _operations: failure_text,
+        )
+        tool._write_selected_operations_to_clipboard()
+
+    copied_mime = clipboard.mimeData()
+    payload_text = bytes(
+        copied_mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
+    ).decode("utf-8")
+    assert [
+        operation["label"] for operation in json.loads(payload_text)["operations"]
+    ] == ["a"]
+    assert failure_text.startswith(
+        "# Could not generate Python code for the copied Figure Composer steps:"
+    )
+    assert copied_mime.text() == failure_text
+    assert not copied_mime.text().lstrip().startswith("{")
 
 
 def test_figure_composer_copy_paste_steps_ignores_invalid_payload(qtbot) -> None:
@@ -6278,6 +6353,12 @@ def test_figure_composer_copy_paste_steps_ignores_invalid_payload(qtbot) -> None
     clipboard.setText("{not valid json")
     before = tool.tool_status
 
+    tool._update_step_action_buttons()
+    assert not tool.paste_operation_button.isEnabled()
+    tool._paste_operations_from_clipboard()
+    assert tool.tool_status == before
+
+    clipboard.setText("fig.suptitle('Copied step code')")
     tool._update_step_action_buttons()
     assert not tool.paste_operation_button.isEnabled()
     tool._paste_operations_from_clipboard()
