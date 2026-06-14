@@ -2125,6 +2125,259 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
     xr.testing.assert_identical(derived, (data + 1).qsel.mean("x"))
 
 
+def test_tool_provenance_script_context_binding_replays_current_output() -> None:
+    data = _base_data()
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Compute intermediate result",
+            code="result = derived + 1",
+        ),
+        start_label="Start from current tool input data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    local = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset copied result",
+            code="result = derived + 2",
+        ),
+        start_label="Start from current ImageTool data",
+        active_name="result",
+    )
+    current = provenance.replay_script_provenance(parent, {"data": data})
+    expected = provenance.replay_script_provenance(
+        local,
+        {"data": current, "derived": current},
+    )
+
+    composed = provenance.compose_full_provenance(
+        parent,
+        local,
+        script_context_names=("data", "derived", "data"),
+    )
+
+    assert composed is not None
+    assert [entry.label for entry in composed.derivation_entries()] == [
+        "Start from current tool input data",
+        "Compute intermediate result",
+        "Offset copied result",
+    ]
+    assert [
+        operation.derivation_entry().label for operation in composed.operations
+    ] == [
+        "Compute intermediate result",
+        "Offset copied result",
+    ]
+    assert [
+        binding.model_dump(mode="json") for binding in composed.script_context_bindings
+    ] == [{"operation_index": 1, "names": ["data", "derived"]}]
+
+    replayed = provenance.replay_script_provenance(composed, {"data": data})
+    xr.testing.assert_identical(replayed, expected)
+    code = typing.cast("str", composed.derivation_code())
+    assert "Start from current ImageTool data" not in code
+    assert "derived = derived" not in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, expected)
+
+
+def test_tool_provenance_script_context_binding_validation() -> None:
+    operation = provenance.ScriptCodeOperation(
+        label="Offset copied result",
+        code="result = derived + 2",
+    )
+
+    spec = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+        operations=(operation,),
+        script_context_bindings=[
+            {"operation_index": 0, "names": ["data", "derived", "data"]},
+        ],
+    )
+    assert [
+        binding.model_dump(mode="json") for binding in spec.script_context_bindings
+    ] == [{"operation_index": 0, "names": ["data", "derived"]}]
+    assert (
+        provenance.ToolProvenanceSpec(
+            kind="script",
+            start_label="Run script",
+            active_name="result",
+            operations=(operation,),
+            script_context_bindings=None,
+        ).script_context_bindings
+        == ()
+    )
+
+    invalid_payloads: tuple[tuple[typing.Any, type[BaseException], str], ...] = (
+        (
+            [{"operation_index": True, "names": ["data"]}],
+            TypeError,
+            "operation index",
+        ),
+        (
+            [{"operation_index": -1, "names": ["data"]}],
+            ValidationError,
+            "non-negative",
+        ),
+        (
+            [{"operation_index": 0, "names": "data"}],
+            TypeError,
+            "names must be a sequence",
+        ),
+        (
+            [{"operation_index": 0, "names": [None]}],
+            ValidationError,
+            "must not be None",
+        ),
+        (
+            [{"operation_index": 0, "names": []}],
+            ValidationError,
+            "must not be empty",
+        ),
+        ("bad", TypeError, "must be a sequence"),
+    )
+    for bindings, exc_type, message in invalid_payloads:
+        with pytest.raises(exc_type, match=message):
+            provenance.ToolProvenanceSpec(
+                kind="script",
+                start_label="Run script",
+                active_name="result",
+                operations=(operation,),
+                script_context_bindings=bindings,
+            )
+
+    with pytest.raises(ValidationError, match="operation boundary"):
+        provenance.ToolProvenanceSpec(
+            kind="script",
+            start_label="Run script",
+            active_name="result",
+            operations=(operation,),
+            script_context_bindings=[
+                {"operation_index": 1, "names": ["data"]},
+            ],
+        )
+    with pytest.raises(ValidationError, match="file provenance specs"):
+        provenance.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load source",
+            seed_code="derived = data",
+            active_name="derived",
+            file_load_source=_file_replay_source(),
+            script_context_bindings=[
+                {"operation_index": 0, "names": ["data"]},
+            ],
+        )
+    with pytest.raises(ValidationError, match="Only script or file provenance specs"):
+        provenance.ToolProvenanceSpec(
+            kind="full_data",
+            script_context_bindings=[
+                {"operation_index": 0, "names": ["data"]},
+            ],
+        )
+
+
+def test_tool_provenance_script_context_bindings_follow_operation_edits() -> None:
+    first = provenance.ScriptCodeOperation(
+        label="Compute intermediate result",
+        code="result = derived + 1",
+    )
+    second = provenance.ScriptCodeOperation(
+        label="Offset copied result",
+        code="result = derived + 2",
+    )
+    average = provenance.AverageOperation(dims=("x",))
+    spec = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+        operations=(first, second, average),
+        script_context_bindings=[
+            {"operation_index": 1, "names": ["data", "derived"]},
+            {"operation_index": 2, "names": ["data"]},
+        ],
+    )
+
+    def binding_payloads(
+        value: provenance.ToolProvenanceSpec,
+    ) -> list[dict[str, typing.Any]]:
+        return [
+            binding.model_dump(mode="json") for binding in value.script_context_bindings
+        ]
+
+    expanded = spec._replace_operation_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=0),
+        (first, provenance.SqueezeOperation()),
+    )
+    assert binding_payloads(expanded) == [
+        {"operation_index": 2, "names": ["data", "derived"]},
+        {"operation_index": 3, "names": ["data"]},
+    ]
+
+    deleted_last = spec._replace_operation_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=2),
+        (),
+    )
+    assert binding_payloads(deleted_last) == [
+        {"operation_index": 1, "names": ["data", "derived"]},
+    ]
+
+    through_second = spec._prefix_through_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=1)
+    )
+    assert binding_payloads(through_second) == [
+        {"operation_index": 1, "names": ["data", "derived"]},
+    ]
+    before_second = spec._prefix_before_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=1)
+    )
+    assert binding_payloads(before_second) == []
+    start_only = spec._prefix_through_ref(provenance._ProvenanceStepRef("start"))
+    assert start_only.operations == ()
+    assert start_only.script_context_bindings == ()
+
+
+def test_tool_provenance_script_context_names_are_validation_only() -> None:
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Compute intermediate result",
+            code="result = derived + 1",
+        ),
+        start_label="Start from current tool input data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    local_script = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset copied result",
+            code="result = derived + 2",
+        ),
+        start_label="Run pasted script",
+        active_name="result",
+    )
+    local_structured = provenance.full_data(provenance.AverageOperation(dims=("x",)))
+
+    with pytest.raises(ValueError, match="script context names"):
+        provenance.compose_full_provenance(
+            parent,
+            local_script,
+            script_context_names=(typing.cast("str", None),),
+        )
+    composed = provenance.compose_full_provenance(
+        parent,
+        local_structured,
+        script_context_names=("data", "derived"),
+    )
+
+    assert composed is not None
+    assert composed.script_context_bindings == ()
+
+
 def test_file_load_source_replay_call_round_trips() -> None:
 
     xarray_source = provenance.FileLoadSource(

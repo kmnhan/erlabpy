@@ -579,10 +579,17 @@ class _ProvenanceEditController:
                 exc,
             ) from exc
 
-        spec = provenance.compose_full_provenance(
-            node.displayed_provenance_spec,
-            local,
-        )
+        if local.kind == "script":
+            spec = provenance.compose_full_provenance(
+                node.displayed_provenance_spec,
+                local,
+                script_context_names=("data", "derived"),
+            )
+        else:
+            spec = provenance.compose_full_provenance(
+                node.displayed_provenance_spec,
+                local,
+            )
         if spec is None:
             spec = local.to_replay_spec()
         node.replace_with_detached_data(data, spec, preserve_filter=False)

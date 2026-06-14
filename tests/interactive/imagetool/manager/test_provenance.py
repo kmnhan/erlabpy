@@ -6320,6 +6320,22 @@ def test_manager_copy_selected_derivation_code_fallbacks(
     controller._copy_selected_derivation_code()
 
 
+def test_manager_derivation_context_menu_ignores_empty_space(
+    qtbot,
+) -> None:
+    list_widget = QtWidgets.QListWidget()
+    qtbot.addWidget(list_widget)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=list_widget,
+        _build_metadata_derivation_menu=lambda: pytest.fail("unexpected menu"),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+
+    controller._show_metadata_derivation_menu(QtCore.QPoint(10, 10))
+
+
 def test_manager_paste_steps_validation_error_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6455,6 +6471,25 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     assert not deletable
     assert reason
 
+    valid_script_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset",
+            code="derived = derived + 1",
+        ),
+        provenance.ScriptCodeOperation(
+            label="Scale",
+            code="derived = derived * 2",
+        ),
+        start_label="Start from data",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(valid_script_spec))
+    deletable, reason = controller.can_delete_row(valid_script_spec.display_rows()[2])
+    assert deletable
+    assert reason == ""
+
     source_live_spec = provenance.full_data(provenance.AverageOperation(dims=("x",)))
     live_row = source_live_spec.display_rows(scope="source")[1]
     source_bound = _fake_edit_node(
@@ -6527,6 +6562,33 @@ def test_manager_delete_row_error_branches(
     )
     controller.delete_row(row)
     assert failures == []
+
+    live_row = provenance.full_data(
+        provenance.AverageOperation(dims=("x",))
+    ).display_rows()[1]
+    replaced: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+        ]
+    ] = []
+    monkeypatch.setattr(controller, "can_delete_row", lambda _row: (True, ""))
+    monkeypatch.setattr(
+        controller,
+        "_display_spec_for_row",
+        lambda *_args: provenance.full_data(provenance.AverageOperation(dims=("x",))),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda edit_node, scope, candidate, **_kwargs: replaced.append(
+            (edit_node, scope, candidate)
+        ),
+    )
+    controller.delete_row(live_row)
+    assert len(replaced) == 1
+    assert replaced[0][2].operations == ()
 
 
 def test_manager_delete_provenance_step_preserves_later_operations(
@@ -6724,6 +6786,7 @@ def test_manager_copy_paste_structured_provenance_steps(
 
         dest_node = manager._tool_graph.root_wrappers[dest_index]
         assert dest_node.displayed_provenance_spec is not None
+        assert dest_node.displayed_provenance_spec.script_context_bindings == ()
         replay_namespace = _exec_generated_code(
             dest_node.displayed_provenance_spec.derivation_code(),
             {"data": dest_base.copy(deep=True)},
@@ -6889,10 +6952,14 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         assert child_node.source_spec is None
         assert child_node.source_auto_update is False
         pasted_code = child_node.displayed_provenance_spec.derivation_code()
-        source_code = script_spec.derivation_code()
         assert pasted_code is not None
-        assert source_code is not None
-        assert pasted_code.splitlines()[-2:] == source_code.splitlines()[-2:]
+        replay_namespace = _exec_generated_code(
+            pasted_code,
+            {"data": data.copy(deep=True)},
+        )
+        replayed = replay_namespace["result"]
+        assert isinstance(replayed, xr.DataArray)
+        xr.testing.assert_identical(replayed, expected)
         derivation = metadata_derivation_texts(manager)
         assert script_operations[0].derivation_entry().label in derivation
         assert script_operations[1].derivation_entry().label in derivation
@@ -6948,6 +7015,96 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         xr.testing.assert_identical(child_tool.slicer_area._data, before)
         assert child_node.provenance_spec == before_spec
         assert child_node.source_spec is None
+
+
+def test_manager_paste_script_steps_replays_from_current_output_name(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("scan")
+    dest_base_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Compute destination result",
+            code="result = derived + 1.0",
+        ),
+        start_label="Start from destination data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    dest_data = provenance.replay_script_provenance(dest_base_spec, {"data": data})
+    copied_operation = provenance.ScriptCodeOperation(
+        label="Offset copied result",
+        code="result = derived + 2.0",
+    )
+    source_spec = provenance.script(
+        copied_operation,
+        start_label="Run copied script",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    source_data = provenance.replay_script_provenance(source_spec, {"data": data})
+
+    with manager_context() as manager:
+        dest_tool = itool(dest_data, manager=False, execute=False)
+        assert isinstance(dest_tool, erlab.interactive.imagetool.ImageTool)
+        dest_index = manager.add_imagetool(
+            dest_tool,
+            show=False,
+            provenance_spec=dest_base_spec,
+        )
+        source_tool = itool(source_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(
+            source_tool,
+            show=False,
+            provenance_spec=source_spec,
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        manager._copy_selected_derivation_code()
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [dest_index])
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+
+        expected = dest_data + 2.0
+        displayed_expected = (
+            erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
+                expected,
+                copy_values=False,
+            )
+        )
+        xr.testing.assert_identical(dest_tool.slicer_area._data, displayed_expected)
+        dest_node = manager._tool_graph.root_wrappers[dest_index]
+        assert dest_node.displayed_provenance_spec is not None
+        assert [
+            operation.derivation_entry().label
+            for operation in dest_node.displayed_provenance_spec.operations
+        ] == [
+            "Compute destination result",
+            "Offset copied result",
+        ]
+        assert [
+            binding.model_dump(mode="json")
+            for binding in dest_node.displayed_provenance_spec.script_context_bindings
+        ] == [{"operation_index": 1, "names": ["data", "derived"]}]
+
+        code = dest_node.displayed_provenance_spec.derivation_code()
+        assert code is not None
+        assert "Start from current ImageTool data" not in code
+        assert "derived = derived" not in code
+        replay_namespace = _exec_generated_code(
+            code,
+            {"data": data.copy(deep=True)},
+        )
+        replayed = replay_namespace["result"]
+        assert isinstance(replayed, xr.DataArray)
+        xr.testing.assert_identical(replayed, expected)
 
 
 def test_manager_divide_by_coord_child_refresh_and_code(

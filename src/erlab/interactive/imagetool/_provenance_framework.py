@@ -1841,6 +1841,44 @@ class ScriptInput(pydantic.BaseModel):
         return parse_tool_provenance_spec(self.provenance_spec)
 
 
+class _ScriptContextBinding(pydantic.BaseModel):
+    """Hidden binding from the current script output to names used by later code."""
+
+    operation_index: int
+    names: tuple[str, ...]
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    @pydantic.field_validator("operation_index", mode="before")
+    @classmethod
+    def _validate_operation_index(cls, value: typing.Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("script context operation index must be an integer")
+        if value < 0:
+            raise ValueError("script context operation index must be non-negative")
+        return value
+
+    @pydantic.field_validator("names", mode="before")
+    @classmethod
+    def _validate_names(cls, value: typing.Any) -> tuple[str, ...]:
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError("script context names must be a sequence")
+        names: list[str] = []
+        for item in value:
+            name = _validate_active_name(item)
+            if name is None:
+                raise ValueError("script context names must not be None")
+            if name not in names:
+                names.append(name)
+        if not names:
+            raise ValueError("script context names must not be empty")
+        return tuple(names)
+
+
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Saved provenance recipe for ImageTool data.
 
@@ -1865,6 +1903,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     file_load_source: FileLoadSource | None = None
     replay_stages: tuple[ReplayStage, ...] = ()
     script_inputs: tuple[ScriptInput, ...] = ()
+    script_context_bindings: tuple[_ScriptContextBinding, ...] = pydantic.Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -1928,6 +1970,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             for item in value
         )
 
+    @pydantic.field_validator("script_context_bindings", mode="before")
+    @classmethod
+    def _validate_script_context_bindings(
+        cls, value: typing.Any
+    ) -> tuple[_ScriptContextBinding, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError("Serialized script context bindings must be a sequence")
+        return tuple(
+            item
+            if isinstance(item, _ScriptContextBinding)
+            else _ScriptContextBinding.model_validate(item)
+            for item in value
+        )
+
     @pydantic.model_validator(mode="after")
     def _validate_kind_fields(self) -> typing.Self:
         if self.kind == "script":
@@ -1935,6 +1993,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("script provenance specs must define `start_label`")
             if self.replay_stages:
                 raise ValueError("script provenance specs cannot define replay stages")
+            for binding in self.script_context_bindings:
+                if binding.operation_index >= len(self.operations):
+                    raise ValueError(
+                        "script context binding must target an operation boundary"
+                    )
             return self
         if self.kind == "file":
             if self.start_label is None:
@@ -1949,6 +2012,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("file provenance specs must define `replay_call`")
             if self.operations:
                 raise ValueError("file provenance specs cannot define operations")
+            if self.script_context_bindings:
+                raise ValueError("file provenance specs cannot define script context")
             return self
         if (
             self.start_label is not None
@@ -1957,11 +2022,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             or self.file_load_source is not None
             or self.replay_stages
             or self.script_inputs
+            or self.script_context_bindings
         ):
             raise ValueError(
                 "Only script or file provenance specs may define `start_label`, "
                 "`seed_code`, `active_name`, `file_load_source`, `replay_stages`, "
-                "or `script_inputs`"
+                "`script_inputs`, or `script_context_bindings`"
             )
         return self
 
@@ -2047,7 +2113,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if ref.stage_index is None:
             operations = list(self.operations)
             operations[ref.operation_index : ref.operation_index + 1] = replacement_ops
-            return self.model_copy(update={"operations": tuple(operations)})
+            updates: dict[str, typing.Any] = {"operations": tuple(operations)}
+            if self.kind == "script" and self.script_context_bindings:
+                operation_count_delta = len(replacement_ops) - 1
+                script_context_bindings: list[_ScriptContextBinding] = []
+                for binding in self.script_context_bindings:
+                    operation_index = binding.operation_index
+                    if operation_index > ref.operation_index:
+                        operation_index += operation_count_delta
+                    if operation_index < len(operations):
+                        script_context_bindings.append(
+                            binding.model_copy(
+                                update={"operation_index": operation_index}
+                            )
+                        )
+                updates["script_context_bindings"] = tuple(script_context_bindings)
+            return self.model_copy(update=updates)
 
         stages = list(self.replay_stages)
         stage = stages[ref.stage_index]
@@ -2065,14 +2146,23 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 return self.model_copy(update={"replay_stages": ()})
             if self.kind in {"full_data", "public_data", "selection"}:
                 return self.model_copy(update={"operations": ()})
-            return self.model_copy(update={"operations": ()})
+            return self.model_copy(
+                update={"operations": (), "script_context_bindings": ()}
+            )
 
         if ref.kind != "operation" or ref.operation_index is None:
             raise ValueError("This provenance row cannot be replayed as a prefix")
 
         end = ref.operation_index + 1
         if ref.stage_index is None:
-            return self.model_copy(update={"operations": self.operations[:end]})
+            updates: dict[str, typing.Any] = {"operations": self.operations[:end]}
+            if self.kind == "script" and self.script_context_bindings:
+                updates["script_context_bindings"] = tuple(
+                    binding
+                    for binding in self.script_context_bindings
+                    if binding.operation_index < end
+                )
+            return self.model_copy(update=updates)
 
         stages = list(self.replay_stages[: ref.stage_index])
         stage = self.replay_stages[ref.stage_index]
@@ -2085,9 +2175,16 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return self._prefix_through_ref(ref)
 
         if ref.stage_index is None:
-            return self.model_copy(
-                update={"operations": self.operations[: ref.operation_index]}
-            )
+            updates: dict[str, typing.Any] = {
+                "operations": self.operations[: ref.operation_index]
+            }
+            if self.kind == "script" and self.script_context_bindings:
+                updates["script_context_bindings"] = tuple(
+                    binding
+                    for binding in self.script_context_bindings
+                    if binding.operation_index < ref.operation_index
+                )
+            return self.model_copy(update=updates)
 
         stages = list(self.replay_stages[: ref.stage_index])
         stage = self.replay_stages[ref.stage_index]
@@ -2319,6 +2416,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return entries
 
     def _script_graph_code(self, *, display: bool) -> str | None:
+        if not self.operations:
+            return None
         try:
             graph = _replay_graph.compile_replay_graph(self, display=display)
             return _replay_graph.emit_replay_code(
@@ -2480,7 +2579,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind == "script" and (
             graph_code := self._script_graph_code(display=True)
         ):
-            return graph_code
+            inline_targets = {"derived"} if self.active_name != "derived" else None
+            return _simplify_display_code(
+                graph_code,
+                inline_targets=inline_targets,
+            )
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
 
@@ -2765,6 +2868,8 @@ def _as_script_replay_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
 def compose_full_provenance(
     parent: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     local: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    script_context_names: Sequence[str] = (),
 ) -> ToolProvenanceSpec | None:
     """Compose canonical full provenance from parent and local provenance.
 
@@ -2795,7 +2900,17 @@ def compose_full_provenance(
     parent_spec = _as_script_replay_spec(parent_replay)
     local_spec = _as_script_replay_spec(local_value.to_replay_spec())
 
+    normalized_context_names: list[str] = []
+    for item in script_context_names:
+        name = _validate_active_name(item)
+        if name is None:
+            raise ValueError("script context names must not be None")
+        if name not in normalized_context_names:
+            normalized_context_names.append(name)
+
     local_operations = list(local_spec.operations)
+    local_operation_offset = len(parent_spec.operations)
+    inserted_local_operations = 0
     if local_spec.seed_code:
         seed_code: str | None = local_spec.seed_code
         if seed_code == _DEFAULT_REPLAY_SEED_CODE:
@@ -2813,6 +2928,7 @@ def compose_full_provenance(
                     code=seed_code,
                 ),
             )
+            inserted_local_operations = 1
     elif local_spec.active_name == "derived":
         parent_input = replay_input_name(parent_spec)
         if (
@@ -2829,6 +2945,28 @@ def compose_full_provenance(
                     code=f"derived = {parent_input}",
                 ),
             )
+            inserted_local_operations = 1
+
+    script_context_bindings = list(parent_spec.script_context_bindings)
+    if normalized_context_names and local_value.kind == "script" and local_operations:
+        script_context_bindings.append(
+            _ScriptContextBinding(
+                operation_index=local_operation_offset,
+                names=tuple(normalized_context_names),
+            )
+        )
+    script_context_bindings.extend(
+        binding.model_copy(
+            update={
+                "operation_index": (
+                    local_operation_offset
+                    + inserted_local_operations
+                    + binding.operation_index
+                )
+            }
+        )
+        for binding in local_spec.script_context_bindings
+    )
 
     return ToolProvenanceSpec(
         kind="script",
@@ -2838,6 +2976,7 @@ def compose_full_provenance(
         file_load_source=parent_spec.file_load_source or local_spec.file_load_source,
         script_inputs=(*parent_spec.script_inputs, *local_spec.script_inputs),
         operations=(*parent_spec.operations, *local_operations),
+        script_context_bindings=tuple(script_context_bindings),
     )
 
 

@@ -203,6 +203,80 @@ class Child(Base, metaclass=data_5):
     assert not _replay_graph.script_provenance_replayable(None)
 
 
+def test_replay_graph_script_context_binding_error_paths() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    invalid_context = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        active_name="result",
+        operations=(
+            provenance.ScriptCodeOperation(
+                label="Use pasted context",
+                code="result = data + 1",
+            ),
+        ),
+        script_context_bindings=[
+            {"operation_index": 0, "names": ["data"]},
+        ],
+    )
+
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
+        _replay_graph._validate_script_provenance(invalid_context)
+
+    rebound_input = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        active_name="data_0",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        operations=(
+            provenance.ScriptCodeOperation(
+                label="Offset rebound input",
+                code="data_0 = derived + 1",
+            ),
+        ),
+        script_context_bindings=[
+            {"operation_index": 0, "names": ["derived"]},
+        ],
+    )
+    rebound_graph = _replay_graph.compile_replay_graph(
+        rebound_input,
+        external_inputs={"data_0": data},
+    )
+    rebound_display_graph = _replay_graph.compile_replay_graph(
+        rebound_input,
+        display=True,
+        external_inputs={"data_0": data},
+    )
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(rebound_graph),
+        data + 1,
+    )
+    assert rebound_display_graph.output_key is not None
+
+    active_relay = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="result = data",
+        active_name="result",
+        operations=(
+            provenance.ScriptCodeOperation(
+                label="Write alternate output",
+                code="derived = result + 1",
+            ),
+        ),
+    )
+    active_graph = _replay_graph.compile_replay_graph(
+        active_relay,
+        external_inputs={"data": data},
+    )
+
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(active_graph),
+        data,
+    )
+    assert _replay_graph._remove_noop_assignments("derived =") == "derived ="
+
+
 def test_replay_graph_manual_error_and_cache_paths() -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",))
 
