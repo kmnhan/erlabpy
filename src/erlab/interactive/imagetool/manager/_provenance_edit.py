@@ -106,18 +106,21 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._original_path = pathlib.Path(load_source.path).expanduser()
         self._batch_peers = tuple(batch_peers)
         self._batch_peers_by_uid = {peer.node.uid: peer for peer in self._batch_peers}
-        replay_call = load_source.replay_call
+        self._replay_call = load_source.replay_call
         self._selection = (
             provenance.FileDataSelection(kind="dataarray")
-            if replay_call is None
-            else replay_call.selection
+            if self._replay_call is None
+            else self._replay_call.selection
         )
-        initial_kwargs = (
+        self._initial_kwargs = (
             _parse_loader_kwargs(load_source.kwargs_text)
-            if replay_call is None
-            else dict(replay_call.kwargs)
+            if self._replay_call is None
+            else dict(self._replay_call.kwargs)
         )
-        loader_extensions = initial_kwargs.pop("loader_extensions", None)
+        loader_extensions = self._initial_kwargs.pop("loader_extensions", None)
+        self._initial_loader_extensions = (
+            dict(loader_extensions) if isinstance(loader_extensions, dict) else None
+        )
 
         layout = QtWidgets.QVBoxLayout(self)
         form_layout = QtWidgets.QFormLayout()
@@ -140,49 +143,8 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         path_layout.addWidget(browse_button)
         form_layout.addRow("File", path_widget)
 
-        valid_loaders = erlab.interactive.utils.file_loaders(self.file_path())
-        if not valid_loaders:
-            valid_loaders = erlab.interactive.utils.file_loaders()
-
-        selected_filter = None
-        if replay_call is not None:
-            for name_filter, (func, kwargs) in valid_loaders.items():
-                if replay_call.kind == "erlab_loader":
-                    loader = getattr(func, "__self__", None)
-                    matches = (
-                        isinstance(loader, erlab.io.dataloader.LoaderBase)
-                        and loader.name == replay_call.target
-                    )
-                else:
-                    matches = _loader_callable_text(func) == replay_call.target and all(
-                        initial_kwargs.get(key) == value
-                        for key, value in kwargs.items()
-                    )
-                if matches:
-                    selected_filter = name_filter
-                    break
-        selected_filter = selected_filter or next(iter(valid_loaders), None)
-        if selected_filter is not None:
-            func, kwargs = valid_loaders[selected_filter]
-            valid_loaders = dict(valid_loaders)
-            valid_loaders[selected_filter] = (func, dict(kwargs) | initial_kwargs)
-
-        self.loader_options = _LoaderOptionsWidget(
-            self,
-            valid_loaders,
-            loader_extensions=(
-                {selected_filter: dict(loader_extensions)}
-                if selected_filter is not None and isinstance(loader_extensions, dict)
-                else None
-            ),
-            sample_paths=(self.file_path(),),
-        )
-        self.loader_options.setObjectName("managerProvenanceLoaderOptionsWidget")
-        self.loader_options.check_filter(selected_filter)
-        self.kwargs_edit = self.loader_options.kwargs_line
-        self.kwargs_edit.setObjectName("managerProvenanceLoaderKwargsEdit")
-        self.loader_label = self.loader_options.func_label
-        self.loader_label.setObjectName("managerProvenanceLoaderEdit")
+        self.loader_options = self._make_loader_options(self.file_path())
+        self._sync_loader_option_aliases()
         layout.addWidget(self.loader_options)
 
         self.batch_apply_check = QtWidgets.QCheckBox(
@@ -232,7 +194,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self.batch_peer_tree.resizeColumnToContents(1)
         layout.addWidget(self.batch_peer_tree)
         self.batch_apply_check.toggled.connect(self.batch_peer_tree.setVisible)
-        self.path_edit.textChanged.connect(self._update_batch_peer_paths)
+        self.path_edit.textChanged.connect(self._path_changed)
 
         self.button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -246,6 +208,109 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
 
     def file_path(self) -> pathlib.Path:
         return pathlib.Path(self.path_edit.text()).expanduser()
+
+    def _make_loader_options(
+        self,
+        path: pathlib.Path,
+        *,
+        preferred_filter: str | None = None,
+    ) -> _LoaderOptionsWidget:
+        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        if not valid_loaders:
+            valid_loaders = erlab.interactive.utils.file_loaders()
+
+        selected_filter = (
+            preferred_filter if preferred_filter in valid_loaders else None
+        )
+        if selected_filter is None and self._replay_call is not None:
+            for name_filter, (func, kwargs) in valid_loaders.items():
+                if self._replay_call.kind == "erlab_loader":
+                    loader = getattr(func, "__self__", None)
+                    matches = (
+                        isinstance(loader, erlab.io.dataloader.LoaderBase)
+                        and loader.name == self._replay_call.target
+                    )
+                else:
+                    matches = _loader_callable_text(
+                        func
+                    ) == self._replay_call.target and all(
+                        self._initial_kwargs.get(key) == value
+                        for key, value in kwargs.items()
+                    )
+                if matches:
+                    selected_filter = name_filter
+                    break
+        selected_filter = selected_filter or next(iter(valid_loaders), None)
+        if selected_filter is not None:
+            func, kwargs = valid_loaders[selected_filter]
+            valid_loaders = dict(valid_loaders)
+            valid_loaders[selected_filter] = (
+                func,
+                dict(kwargs) | self._initial_kwargs,
+            )
+
+        loader_options = _LoaderOptionsWidget(
+            self,
+            valid_loaders,
+            loader_extensions=(
+                {selected_filter: self._initial_loader_extensions}
+                if selected_filter is not None
+                and self._initial_loader_extensions is not None
+                else None
+            ),
+            sample_paths=(path,),
+        )
+        loader_options.setObjectName("managerProvenanceLoaderOptionsWidget")
+        loader_options.check_filter(selected_filter)
+        return loader_options
+
+    def _sync_loader_option_aliases(self) -> None:
+        self.kwargs_edit = self.loader_options.kwargs_line
+        self.kwargs_edit.setObjectName("managerProvenanceLoaderKwargsEdit")
+        self.loader_label = self.loader_options.func_label
+        self.loader_label.setObjectName("managerProvenanceLoaderEdit")
+
+    def _checked_filter_name(self) -> str | None:
+        checked_id = self.loader_options._button_group.checkedId()
+        filters = tuple(self.loader_options._valid_loaders)
+        if 0 <= checked_id < len(filters):
+            return filters[checked_id]
+        return None
+
+    def _update_loader_options_for_path(self) -> None:
+        path = self.file_path()
+        current_filter = self._checked_filter_name()
+        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        if not valid_loaders:
+            valid_loaders = erlab.interactive.utils.file_loaders()
+        if tuple(valid_loaders) == tuple(self.loader_options._valid_loaders):
+            self.loader_options._sample_paths = (path,)
+            return
+
+        current_kwargs_text = self.kwargs_edit.text()
+        current_extensions_text = {
+            key: line.text()
+            for key, line in self.loader_options.loader_extension_lines.items()
+        }
+        loader_options = self._make_loader_options(
+            path, preferred_filter=current_filter
+        )
+
+        layout = typing.cast("QtWidgets.QVBoxLayout", self.layout())
+        layout.replaceWidget(self.loader_options, loader_options)
+        old_options = self.loader_options
+        self.loader_options = loader_options
+        self._sync_loader_option_aliases()
+        old_options.deleteLater()
+
+        selected_filter = self._checked_filter_name()
+        if selected_filter == current_filter:
+            self.kwargs_edit.setText(current_kwargs_text)
+            for key, text in current_extensions_text.items():
+                line = self.loader_options.loader_extension_lines.get(key)
+                if line is not None:
+                    line.setText(text)
+        self.updateGeometry()
 
     def selected_batch_peers(self) -> tuple[_FileLoadBatchPeer, ...]:
         if not self.batch_apply_check.isChecked():
@@ -316,6 +381,11 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         if _normalized_path(path) == _normalized_path(self._original_path):
             return peer.original_path
         return path.parent / f"{peer.original_path.stem}{path.suffix}"
+
+    @QtCore.Slot(str)
+    def _path_changed(self, _text: str) -> None:
+        self._update_batch_peer_paths()
+        self._update_loader_options_for_path()
 
     @QtCore.Slot()
     def _update_batch_peer_paths(self) -> None:

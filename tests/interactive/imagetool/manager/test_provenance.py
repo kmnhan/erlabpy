@@ -189,6 +189,47 @@ def test_file_load_edit_dialog_allows_loader_change(
     )
 
 
+def test_file_load_edit_dialog_updates_loader_options_for_replacement_path(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    load_source = provenance.FileLoadSource(
+        path=str(tmp_path / "scan.h5"),
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="engine='h5netcdf'",
+        replay_call=provenance.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
+            selected_index=0,
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+
+    initial_filter = dialog._checked_filter_name()
+    assert initial_filter is not None
+    dialog.kwargs_edit.setText("engine='h5netcdf', chunks={'x': 1}")
+
+    same_suffix_path = tmp_path / "replacement.h5"
+    dialog.path_edit.setText(str(same_suffix_path))
+
+    assert dialog.loader_options._sample_paths == (same_suffix_path,)
+    assert dialog._checked_filter_name() == initial_filter
+    assert dialog.kwargs_edit.text() == "engine='h5netcdf', chunks={'x': 1}"
+
+    new_suffix_path = tmp_path / "replacement.nc"
+    dialog.path_edit.setText(str(new_suffix_path))
+
+    loader_filters = tuple(dialog.loader_options._valid_loaders)
+    assert dialog.loader_options._sample_paths == (new_suffix_path,)
+    assert initial_filter not in loader_filters
+    assert any("*.nc" in name for name in loader_filters)
+
+
 def test_file_load_edit_dialog_batch_targets_and_path_mapping(
     qtbot,
     tmp_path: pathlib.Path,
