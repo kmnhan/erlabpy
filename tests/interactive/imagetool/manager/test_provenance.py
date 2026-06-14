@@ -658,6 +658,23 @@ def test_manager_provenance_file_load_batch_helper_branches(
         == pathlib.Path("scan.h5").expanduser().absolute()
     )
 
+    empty_warning = warnings.WarningMessage(
+        "",
+        UserWarning,
+        "scan.py",
+        1,
+    )
+    useful_warning = warnings.WarningMessage(
+        "first line\nsecond line",
+        RuntimeWarning,
+        "scan.py",
+        2,
+    )
+    assert (
+        manager_provenance_edit._replay_warning_details([empty_warning, useful_warning])
+        == "- RuntimeWarning: first line\n  second line"
+    )
+
 
 def test_manager_provenance_edit_file_load_source_uses_display_spec(
     monkeypatch: pytest.MonkeyPatch,

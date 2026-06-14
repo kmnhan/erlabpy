@@ -1681,6 +1681,25 @@ def test_centered_icon_tool_button_centers_visible_icon_with_stylesheet(
     assert abs(((min_y + max_y) / 2) - ((image.height() - 1) / 2)) <= 0.5
 
 
+def test_centered_icon_tool_button_visible_rect_fallbacks() -> None:
+    transparent = QtGui.QPixmap(8, 6)
+    transparent.fill(QtCore.Qt.GlobalColor.transparent)
+    transparent.setDevicePixelRatio(0.0)
+
+    rect = manager_widgets._CenteredIconToolButton._visible_pixmap_rect(transparent)
+
+    assert rect == QtCore.QRectF(0.0, 0.0, 8.0, 6.0)
+
+
+def test_centered_icon_tool_button_paint_skips_missing_icon(qtbot) -> None:
+    button = manager_widgets._CenteredIconToolButton()
+    qtbot.addWidget(button)
+    button.resize(24, 24)
+    button.show()
+
+    button.paintEvent(None)
+
+
 def test_load_source_details_controller_opens_file_load_edit_after_dialog(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1747,7 +1766,7 @@ def test_load_source_details_controller_opens_file_load_edit_after_dialog(
         typing.cast("manager_mainwindow.ImageToolManager", manager)
     )
 
-    controller._show_load_source_details(details, node_uid="node-1")
+    controller._show_load_source_details(details)
 
     assert events == [
         ("can", node, source_path),
@@ -1756,6 +1775,96 @@ def test_load_source_details_controller_opens_file_load_edit_after_dialog(
         ("exec", source_path, None),
         ("edit", node, source_path),
     ]
+
+
+def test_load_source_details_controller_skips_edit_when_node_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "missing.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    node = types.SimpleNamespace(uid="node-1")
+    events: list[str] = []
+
+    class _FakeDialog:
+        edit_file_load_requested = True
+
+        def __init__(
+            self,
+            _details: _LoadSourceDetails,
+            _parent: QtWidgets.QWidget,
+            *,
+            show_in_data_explorer: Callable[[pathlib.Path], None],
+            can_edit_file_load: bool,
+            edit_file_load_tooltip: str,
+        ) -> None:
+            del show_in_data_explorer, can_edit_file_load, edit_file_load_tooltip
+
+        def exec(self) -> int:
+            manager._tool_graph.nodes.clear()
+            events.append("exec")
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _FakeProvenanceEditController:
+        def can_edit_file_load_source(
+            self,
+            edit_node: object,
+            path: pathlib.Path,
+        ) -> tuple[bool, str]:
+            assert edit_node is node
+            assert path == source_path
+            return True, "Select the current source file."
+
+        def edit_file_load_source(
+            self,
+            _edit_node: object,
+            _path: pathlib.Path,
+        ) -> None:
+            pytest.fail("edit should not run for a missing node")
+
+    monkeypatch.setattr(
+        manager_details_panel,
+        "_LoadSourceDetailsDialog",
+        _FakeDialog,
+    )
+    manager = types.SimpleNamespace(
+        _metadata_node_uid="node-1",
+        _tool_graph=types.SimpleNamespace(nodes={"node-1": node}),
+        _provenance_edit_controller=_FakeProvenanceEditController(),
+        _show_standalone_app=lambda _key: None,
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._show_load_source_details(details)
+
+    assert events == ["exec"]
+
+
+def test_details_panel_selected_derivation_row_rejects_unexpected_item_data(
+    qtbot,
+) -> None:
+    derivation_list = QtWidgets.QListWidget()
+    qtbot.addWidget(derivation_list)
+    item = QtWidgets.QListWidgetItem("row")
+    item.setData(manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
+    derivation_list.addItem(item)
+    item.setSelected(True)
+
+    manager = types.SimpleNamespace(metadata_derivation_list=derivation_list)
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+    manager._selected_derivation_items = controller._selected_derivation_items
+
+    assert controller._selected_derivation_row() is None
 
 
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
