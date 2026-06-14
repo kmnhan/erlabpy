@@ -562,6 +562,92 @@ class _ProvenanceEditController:
             return node.displayed_source_spec
         return node.displayed_provenance_spec
 
+    def _file_load_source_edit_target(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        path: pathlib.Path,
+    ) -> tuple[
+        typing.Literal["display", "source"] | None,
+        provenance.ToolProvenanceSpec | None,
+        str,
+    ]:
+        target_path = _normalized_path(path)
+        candidates: list[
+            tuple[
+                typing.Literal["display", "source"],
+                provenance.ToolProvenanceSpec | None,
+            ]
+        ] = [("display", node.displayed_provenance_spec)]
+        if node.parent_uid is not None and node.source_spec is not None:
+            candidates.append(("source", node.displayed_source_spec))
+
+        for scope, spec in candidates:
+            if spec is None or spec.kind != "file" or spec.file_load_source is None:
+                continue
+            load_source = spec.file_load_source
+            if _normalized_path(pathlib.Path(load_source.path)) != target_path:
+                continue
+            if load_source.replay_call is None:
+                return None, None, "This file load step cannot be replayed."
+            return (
+                scope,
+                spec,
+                "Select the current source file and update the recorded "
+                "file-load step.",
+            )
+        return (
+            None,
+            None,
+            "This source was not recorded as an editable file-load step.",
+        )
+
+    def can_edit_file_load_source(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        path: pathlib.Path,
+    ) -> tuple[bool, str]:
+        if not self._node_editable(node):
+            return False, "This ImageTool is not available for editing."
+        _scope, spec, reason = self._file_load_source_edit_target(node, path)
+        return spec is not None, reason
+
+    def edit_file_load_source(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        path: pathlib.Path,
+    ) -> None:
+        if not self._node_editable(node):
+            self._show_unavailable("This ImageTool is not available for editing.")
+            return
+        scope, spec, reason = self._file_load_source_edit_target(node, path)
+        if scope is None or spec is None:
+            self._show_unavailable(reason)
+            return
+        try:
+            self._edit_file_load_spec(
+                node,
+                scope,
+                spec,
+                where="validating the edited file-load provenance",
+                batch_peers=self._file_load_batch_peers(node, spec),
+            )
+        except Exception as exc:
+            if isinstance(exc, _ProvenanceReplayFailure):
+                missing = exc.missing_source_file
+            else:
+                missing = (
+                    exc if isinstance(exc, _MissingProvenanceSourceFileError) else None
+                )
+            if missing is not None:
+                self._show_missing_source_file(
+                    "Could Not Update Source File",
+                    exc,
+                    missing,
+                    can_edit=False,
+                )
+                return
+            self._show_failed("Could Not Update Source File", exc)
+
     def _edit_file_load_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,

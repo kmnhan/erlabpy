@@ -11,7 +11,7 @@ import pydantic
 import pytest
 import xarray
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
@@ -657,6 +657,147 @@ def test_manager_provenance_file_load_batch_helper_branches(
         manager_provenance_edit._normalized_path(pathlib.Path("scan.h5"))
         == pathlib.Path("scan.h5").expanduser().absolute()
     )
+
+
+def test_manager_provenance_edit_file_load_source_uses_display_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "missing.h5"
+    node = _fake_edit_node(_manager_replay_file_spec(source_path))
+    controller = _fake_edit_controller(node)
+    calls: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+            dict[str, typing.Any],
+        ]
+    ] = []
+
+    def _edit_file_load_spec(
+        edit_node: object,
+        scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+        **kwargs: typing.Any,
+    ) -> None:
+        calls.append((edit_node, scope, spec, kwargs))
+
+    monkeypatch.setattr(controller, "_edit_file_load_spec", _edit_file_load_spec)
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+    assert editable
+    assert reason
+
+    controller.edit_file_load_source(typing.cast("typing.Any", node), source_path)
+
+    assert len(calls) == 1
+    edit_node, scope, spec, kwargs = calls[0]
+    assert edit_node is node
+    assert scope == "display"
+    assert spec is node.displayed_provenance_spec
+    assert kwargs["where"] == "validating the edited file-load provenance"
+    assert kwargs["batch_peers"] == ()
+
+
+def test_manager_provenance_edit_file_load_source_falls_back_to_source_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.h5"
+    display_path = tmp_path / "display.h5"
+    source_display_spec = _manager_replay_file_spec(source_path)
+    node = _fake_edit_node(
+        _manager_replay_file_spec(display_path),
+        source_spec=provenance.full_data(),
+        source_display_spec=source_display_spec,
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(node)
+    calls: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+        ]
+    ] = []
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda edit_node, scope, spec, **_kwargs: calls.append(
+            (edit_node, scope, spec)
+        ),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+    assert editable
+    assert reason
+
+    controller.edit_file_load_source(typing.cast("typing.Any", node), source_path)
+
+    assert calls == [(node, "source", source_display_spec)]
+
+
+def test_manager_provenance_edit_file_load_source_rejects_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.h5"
+    node = _fake_edit_node(_manager_replay_file_spec(source_path))
+    controller = _fake_edit_controller(node)
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda *_args, **_kwargs: pytest.fail("unexpected edit"),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "other.h5",
+    )
+    assert not editable
+    assert reason
+
+    controller.edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "other.h5",
+    )
+
+    assert unavailable == [reason]
+
+
+def test_manager_provenance_edit_file_load_source_rejects_unreplayable_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.h5"
+    spec = _manager_replay_file_spec(source_path)
+    assert spec.file_load_source is not None
+    node = _fake_edit_node(
+        spec.model_copy(
+            update={
+                "file_load_source": spec.file_load_source.model_copy(
+                    update={"replay_call": None}
+                )
+            }
+        )
+    )
+    controller = _fake_edit_controller(node)
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+
+    assert not editable
+    assert "replay" in reason
 
 
 def test_manager_provenance_edit_controller_availability_branches() -> None:
@@ -1825,8 +1966,8 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
     )
 
 
-def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:
-    class _FallbackStyleLabel(manager_widgets._ElidedInteractiveLabel):
+def test_elided_value_label_keeps_full_text_during_resize(qtbot) -> None:
+    class _FallbackStyleLabel(manager_widgets._ElidedValueLabel):
         def style(self) -> QtWidgets.QStyle | None:
             return None
 
@@ -1846,35 +1987,11 @@ def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:
     label.setText(None)
     assert label.text() == ""
     assert label.full_text == ""
-
-    clicks: list[None] = []
-    label.clicked.connect(lambda: clicks.append(None))
-    click_pos = QtCore.QPointF(1, 1)
-    left_event = QtGui.QMouseEvent(
-        QtCore.QEvent.Type.MouseButtonRelease,
-        click_pos,
-        click_pos,
-        click_pos,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
+    assert not hasattr(label, "clicked")
+    assert label.cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+    assert label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
-    label.mouseReleaseEvent(left_event)
-    assert clicks == [None]
-    assert left_event.isAccepted()
-
-    right_event = QtGui.QMouseEvent(
-        QtCore.QEvent.Type.MouseButtonRelease,
-        click_pos,
-        click_pos,
-        click_pos,
-        QtCore.Qt.MouseButton.RightButton,
-        QtCore.Qt.MouseButton.RightButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
-    label.mouseReleaseEvent(right_event)
-    label.mouseReleaseEvent(None)
-    assert clicks == [None]
 
 
 def test_manager_metadata_added_label_does_not_force_splitter_width(
@@ -3595,6 +3712,11 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert getattr(file_label, "full_text", file_label.text()) == str(file_path)
         assert file_label.text() == str(file_path)
         assert metadata_detail_map(manager)["File"] == str(file_path)
+        details_button = manager.metadata_details_widget.findChild(
+            QtWidgets.QToolButton,
+            "manager_metadata_file_details_button",
+        )
+        assert details_button is not None
 
         def _inspect_source_dialog(dialog: QtWidgets.QDialog) -> None:
             assert not dialog.findChildren(QtWidgets.QLineEdit)
@@ -3619,7 +3741,10 @@ def test_manager_open_in_new_window_nests_imagetool_children(
             dialog.copy_code_button.click()  # type: ignore[attr-defined]
 
         accept_dialog(
-            lambda: qtbot.mouseClick(file_label, QtCore.Qt.MouseButton.LeftButton),
+            lambda: qtbot.mouseClick(
+                details_button,
+                QtCore.Qt.MouseButton.LeftButton,
+            ),
             pre_call=_inspect_source_dialog,
         )
         assert copied

@@ -12,7 +12,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
-    _ElidedInteractiveLabel,
+    _ElidedValueLabel,
     _LoadSourceDetailsDialog,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -98,15 +98,36 @@ class _DetailsPanelController:
                 QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
             )
             value_label: QtWidgets.QLabel
+            details_button: QtWidgets.QToolButton | None = None
             if field.details is not None:
-                value_label = _ElidedInteractiveLabel(
+                value_label = _ElidedValueLabel(
                     field.value,
                     self._manager.metadata_details_widget,
                 )
-                value_label.setForegroundRole(QtGui.QPalette.ColorRole.Link)
                 value_label.set_full_text(field.value)
-                value_label.clicked.connect(
-                    lambda d=field.details: self._manager._show_load_source_details(d)
+                node_uid = self._manager._metadata_node_uid
+                details_button = QtWidgets.QToolButton(
+                    self._manager.metadata_details_widget
+                )
+                details_button.setObjectName("manager_metadata_file_details_button")
+                details_button.setToolButtonStyle(
+                    QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+                )
+                details_button.setAutoRaise(True)
+                details_button.setToolTip("Show data source details")
+                details_button.setAccessibleName("Show data source details")
+                icon = QtGui.QIcon.fromTheme("dialog-information")
+                if icon.isNull():
+                    style = details_button.style() or QtWidgets.QApplication.style()
+                    if style is not None:
+                        icon = style.standardIcon(
+                            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
+                        )
+                details_button.setIcon(icon)
+                details_button.clicked.connect(
+                    lambda _checked=False, d=field.details, uid=node_uid: (
+                        self._manager._show_load_source_details(d, node_uid=uid)
+                    )
                 )
             else:
                 value_label = QtWidgets.QLabel(
@@ -133,14 +154,54 @@ class _DetailsPanelController:
                 value_label.setFont(self._manager._metadata_monospace_font)
             self._manager.metadata_details_layout.addWidget(key_label, row, 0)
             self._manager.metadata_details_layout.addWidget(value_label, row, 1)
+            if details_button is not None:
+                self._manager.metadata_details_layout.addWidget(
+                    details_button,
+                    row,
+                    2,
+                    alignment=QtCore.Qt.AlignmentFlag.AlignTop,
+                )
             self._manager._metadata_detail_labels[field.label] = value_label
 
-    def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
-        _LoadSourceDetailsDialog(
+    def _show_load_source_details(
+        self,
+        details: _LoadSourceDetails,
+        *,
+        node_uid: str | None = None,
+    ) -> None:
+        if node_uid is None:
+            node_uid = self._manager._metadata_node_uid
+        node = (
+            None if node_uid is None else self._manager._tool_graph.nodes.get(node_uid)
+        )
+        can_edit_file_load = False
+        edit_file_load_tooltip = (
+            "This source was not recorded as an editable file-load step."
+        )
+        if node is not None:
+            can_edit_file_load, edit_file_load_tooltip = (
+                self._manager._provenance_edit_controller.can_edit_file_load_source(
+                    node,
+                    details.path,
+                )
+            )
+        dialog = _LoadSourceDetailsDialog(
             details,
             self._manager,
             show_in_data_explorer=self._show_load_source_in_data_explorer,
-        ).exec()
+            can_edit_file_load=can_edit_file_load,
+            edit_file_load_tooltip=edit_file_load_tooltip,
+        )
+        dialog.exec()
+        if not dialog.edit_file_load_requested or node_uid is None:
+            return
+        node = self._manager._tool_graph.nodes.get(node_uid)
+        if node is None:
+            return
+        self._manager._provenance_edit_controller.edit_file_load_source(
+            node,
+            details.path,
+        )
 
     def _show_load_source_in_data_explorer(self, path: pathlib.Path) -> None:
         explorer = typing.cast(

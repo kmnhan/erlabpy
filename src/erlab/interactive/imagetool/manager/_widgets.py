@@ -151,8 +151,7 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
         self.sync_height_for_width()
 
 
-class _ElidedInteractiveLabel(QtWidgets.QLabel):
-    clicked = QtCore.Signal()
+class _ElidedValueLabel(QtWidgets.QLabel):
     _SIZE_HINT_EMS = 24
 
     def __init__(
@@ -166,7 +165,9 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         self._full_text = ""
         self._elide_mode = elide_mode
         self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.setMinimumWidth(0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -226,15 +227,6 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
             self.foregroundRole(),
         )
 
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
-        if event is None:
-            return
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
     def _stable_hint_width(self) -> int:
         padding = 2 * (self.margin() + self.frameWidth())
         if self.indent() > 0:
@@ -249,6 +241,10 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
         *,
         show_in_data_explorer: Callable[[pathlib.Path], None] | None = None,
+        can_edit_file_load: bool = False,
+        edit_file_load_tooltip: str = (
+            "This source was not recorded as an editable file-load step."
+        ),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Data Source")
@@ -258,6 +254,9 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.value_labels: dict[str, QtWidgets.QLabel] = {}
         self.reveal_button: QtWidgets.QAbstractButton | None = None
         self.data_explorer_button: QtWidgets.QAbstractButton | None = None
+        self.edit_file_load_button: QtWidgets.QAbstractButton | None = None
+        self.copy_code_button: QtWidgets.QAbstractButton | None = None
+        self.edit_file_load_requested = False
         source_exists = details.path.exists()
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -312,6 +311,21 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         row = self._add_detail(details_layout, 0, "path", "Path", str(details.path))
         if not source_exists:
             _mark_missing_source_label(self.value_labels["path"])
+            self.edit_file_load_button = QtWidgets.QPushButton(
+                "Edit File Load…",
+                self,
+            )
+            self.edit_file_load_button.setObjectName("manager_edit_load_source_button")
+            self.edit_file_load_button.setAutoDefault(False)
+            self.edit_file_load_button.setEnabled(can_edit_file_load)
+            self.edit_file_load_button.setToolTip(edit_file_load_tooltip)
+            self.edit_file_load_button.clicked.connect(self._request_file_load_edit)
+            details_layout.addWidget(
+                self.edit_file_load_button,
+                row - 1,
+                2,
+                alignment=QtCore.Qt.AlignmentFlag.AlignLeft,
+            )
         row = self._add_detail(
             details_layout,
             row,
@@ -330,50 +344,44 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
         self.button_box.setCenterButtons(False)
-        self.reveal_button = typing.cast(
-            "QtWidgets.QAbstractButton",
-            self.button_box.addButton(
-                _file_manager_action_text(),
-                QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
-            ),
-        )
-        self.reveal_button.setObjectName("manager_reveal_load_source_path_button")
-        self.reveal_button.setEnabled(source_exists)
-        self.reveal_button.setToolTip(
-            "Reveal this file in the system file manager."
-            if source_exists
-            else "The recorded source file does not exist."
-        )
-        self.reveal_button.clicked.connect(
-            lambda: erlab.utils.misc.open_in_file_manager(details.path)
-        )
-        self.data_explorer_button = typing.cast(
-            "QtWidgets.QAbstractButton",
-            self.button_box.addButton(
-                "Show in Data Explorer",
-                QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
-            ),
-        )
-        self.data_explorer_button.setObjectName(
-            "manager_show_load_source_in_explorer_button"
-        )
-        self.data_explorer_button.setEnabled(
-            source_exists and show_in_data_explorer is not None
-        )
-        self.data_explorer_button.setToolTip(
-            "Show this file in Data Explorer."
-            if source_exists and show_in_data_explorer is not None
-            else "The recorded source file does not exist."
-            if not source_exists
-            else "Data Explorer is unavailable in this context."
-        )
-        self.data_explorer_button.clicked.connect(
-            lambda: (
-                show_in_data_explorer(details.path)
-                if show_in_data_explorer is not None
-                else None
+        if source_exists:
+            self.reveal_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    _file_manager_action_text(),
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
             )
-        )
+            self.reveal_button.setObjectName("manager_reveal_load_source_path_button")
+            self.reveal_button.setToolTip(
+                "Reveal this file in the system file manager."
+            )
+            self.reveal_button.clicked.connect(
+                lambda: erlab.utils.misc.open_in_file_manager(details.path)
+            )
+            self.data_explorer_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Show in Data Explorer",
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
+            )
+            self.data_explorer_button.setObjectName(
+                "manager_show_load_source_in_explorer_button"
+            )
+            self.data_explorer_button.setEnabled(show_in_data_explorer is not None)
+            self.data_explorer_button.setToolTip(
+                "Show this file in Data Explorer."
+                if show_in_data_explorer is not None
+                else "Data Explorer is unavailable in this context."
+            )
+            self.data_explorer_button.clicked.connect(
+                lambda: (
+                    show_in_data_explorer(details.path)
+                    if show_in_data_explorer is not None
+                    else None
+                )
+            )
         self.copy_path_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(
@@ -383,25 +391,23 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.copy_path_button.clicked.connect(
             lambda: erlab.interactive.utils.copy_to_clipboard(str(details.path))
         )
-        self.copy_code_button = typing.cast(
-            "QtWidgets.QAbstractButton",
-            self.button_box.addButton(
-                "Copy Load Code", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
-            ),
-        )
-        self.copy_code_button.setEnabled(details.load_code is not None)
-        self.copy_code_button.setToolTip(
-            "Copy a replayable loading snippet for this source."
-            if details.load_code is not None
-            else "Load code is unavailable for this source."
-        )
-        self.copy_code_button.clicked.connect(
-            lambda: (
-                erlab.interactive.utils.copy_to_clipboard(details.load_code)
-                if details.load_code is not None
-                else None
+        load_code = details.load_code
+        if load_code is not None:
+            self.copy_code_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Copy Load Code",
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
             )
-        )
+            self.copy_code_button.setToolTip(
+                "Copy a replayable loading snippet for this source."
+            )
+            self.copy_code_button.clicked.connect(
+                lambda _checked=False, code=load_code: (
+                    erlab.interactive.utils.copy_to_clipboard(code)
+                )
+            )
         close_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close),
@@ -412,6 +418,11 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.resize(target_width, self.minimumSizeHint().height())
         target_height = self.height()
         self.setFixedSize(target_width, target_height)
+
+    @QtCore.Slot()
+    def _request_file_load_edit(self) -> None:
+        self.edit_file_load_requested = True
+        self.accept()
 
     def _add_detail(
         self,

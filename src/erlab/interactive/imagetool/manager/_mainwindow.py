@@ -2348,8 +2348,13 @@ class ImageToolManager(_ImageToolManagerBase):
     def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
         self._details_panel._set_metadata_fields(fields)
 
-    def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
-        self._details_panel._show_load_source_details(details)
+    def _show_load_source_details(
+        self,
+        details: _LoadSourceDetails,
+        *,
+        node_uid: str | None = None,
+    ) -> None:
+        self._details_panel._show_load_source_details(details, node_uid=node_uid)
 
     def _load_source_for_replay(
         self, node: _ImageToolWrapper | _ManagedWindowNode
