@@ -391,11 +391,18 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
-        row = self._add_detail(details_layout, 0, "path", "Path", str(details.path))
+        row = self._add_detail(
+            details_layout,
+            0,
+            "path",
+            "Path",
+            str(details.path),
+            elide_mode=QtCore.Qt.TextElideMode.ElideMiddle,
+        )
         if not source_exists:
             _mark_missing_source_label(self.value_labels["path"])
             self.edit_file_load_button = QtWidgets.QPushButton(
-                "Edit File Load…",
+                "Locate…",
                 self,
             )
             self.edit_file_load_button.setObjectName("manager_edit_load_source_button")
@@ -416,6 +423,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             details.loader_label,
             details.loader_text,
             tool_tip=_load_source_loader_tooltip(details),
+            elide_mode=QtCore.Qt.TextElideMode.ElideRight,
         )
         self._add_detail(
             details_layout,
@@ -423,6 +431,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             "arguments",
             "Load arguments",
             details.kwargs_text,
+            wrap=True,
         )
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
@@ -439,9 +448,12 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             self.reveal_button.setToolTip(
                 "Reveal this file in the system file manager."
             )
-            self.reveal_button.clicked.connect(
-                lambda: erlab.utils.misc.open_in_file_manager(details.path)
-            )
+
+            def reveal_in_file_manager_and_close() -> None:
+                erlab.utils.misc.open_in_file_manager(details.path)
+                self.accept()
+
+            self.reveal_button.clicked.connect(reveal_in_file_manager_and_close)
             self.data_explorer_button = typing.cast(
                 "QtWidgets.QAbstractButton",
                 self.button_box.addButton(
@@ -458,13 +470,15 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
                 if show_in_data_explorer is not None
                 else "Data Explorer is unavailable in this context."
             )
-            self.data_explorer_button.clicked.connect(
-                lambda: (
+            if show_in_data_explorer is not None:
+
+                def show_in_data_explorer_and_close() -> None:
                     show_in_data_explorer(details.path)
-                    if show_in_data_explorer is not None
-                    else None
+                    self.accept()
+
+                self.data_explorer_button.clicked.connect(
+                    show_in_data_explorer_and_close
                 )
-            )
         self.copy_path_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(
@@ -516,25 +530,47 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         value: str,
         *,
         tool_tip: str | None = None,
+        elide_mode: QtCore.Qt.TextElideMode | None = None,
+        wrap: bool = False,
     ) -> int:
         key_label = QtWidgets.QLabel(label, self)
         key_label.setObjectName(f"manager_load_source_{key}_label")
-        key_label.setAlignment(
-            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop
+        vertical_alignment = (
+            QtCore.Qt.AlignmentFlag.AlignTop
+            if wrap
+            else QtCore.Qt.AlignmentFlag.AlignVCenter
         )
+        key_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | vertical_alignment)
         key_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
 
-        value_label = QtWidgets.QLabel(value, self)
+        if wrap:
+            value_label = QtWidgets.QLabel(value, self)
+            value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            value_label.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            value_label.setWordWrap(True)
+            value_label.setMinimumWidth(0)
+        else:
+            value_label = _ElidedValueLabel(
+                value,
+                self,
+                elide_mode=(
+                    QtCore.Qt.TextElideMode.ElideRight
+                    if elide_mode is None
+                    else elide_mode
+                ),
+            )
         value_label.setObjectName(f"manager_load_source_{key}_value_label")
-        value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        value_label.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        value_label.setWordWrap(True)
-        value_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
+        value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | vertical_alignment)
+        size_policy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding
+            if wrap
+            else QtWidgets.QSizePolicy.Policy.Ignored,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
+        size_policy.setHeightForWidth(wrap)
+        value_label.setSizePolicy(size_policy)
         value_label.setToolTip(value if tool_tip is None else tool_tip)
 
         layout.addWidget(key_label, row, 0)

@@ -1234,13 +1234,22 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert path_label is not None
     assert loader_label is not None
     assert arguments_label is not None
+    assert isinstance(path_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(loader_label, manager_widgets._ElidedValueLabel)
+    assert not isinstance(arguments_label, manager_widgets._ElidedValueLabel)
     assert path_label.text() == str(source_path)
+    assert path_label.full_text == str(source_path)
     assert path_label.toolTip() == str(source_path)
     assert path_label.textFormat() == QtCore.Qt.TextFormat.PlainText
     assert path_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
+    assert not path_label.wordWrap()
+    assert path_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
     assert loader_label.text() == "xarray.load_dataarray"
+    assert not loader_label.wordWrap()
     assert loader_label.toolTip() != loader_label.text()
     assert "xarray.load_dataarray" in loader_label.toolTip()
     assert kwargs_text not in loader_label.toolTip()
@@ -1249,10 +1258,28 @@ def test_load_source_details_dialog_uses_native_readonly_details(
     assert arguments_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
+    assert arguments_label.wordWrap()
 
     dialog.reveal_button.click()
-    dialog.data_explorer_button.click()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
     assert revealed == [source_path]
+
+    explorer_dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text=kwargs_text,
+            load_code=None,
+        ),
+        show_in_data_explorer=lambda path: opened_in_explorer.append(
+            pathlib.Path(path)
+        ),
+    )
+    qtbot.addWidget(explorer_dialog)
+    assert explorer_dialog.data_explorer_button is not None
+    explorer_dialog.data_explorer_button.click()
+    assert explorer_dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
     assert opened_in_explorer == [source_path]
 
 
@@ -1305,7 +1332,11 @@ def test_load_source_details_dialog_loader_tooltip_includes_plugin_description(
 
 
 def test_load_source_details_dialog_marks_missing_source_file(qtbot, tmp_path) -> None:
-    source_path = tmp_path / "missing.nc"
+    source_path = (
+        tmp_path
+        / ("very_long_directory_name_" * 3)
+        / "missing_scan_with_a_long_name.nc"
+    )
     dialog = _LoadSourceDetailsDialog(
         _LoadSourceDetails(
             path=source_path,
@@ -1326,8 +1357,15 @@ def test_load_source_details_dialog_marks_missing_source_file(qtbot, tmp_path) -
     )
     assert status_label is not None
     assert path_label is not None
+    assert isinstance(path_label, manager_widgets._ElidedValueLabel)
     assert status_label.property("manager_source_missing") is True
     assert path_label.property("manager_source_missing") is True
+    assert path_label.text() == str(source_path)
+    assert path_label.full_text == str(source_path)
+    assert not path_label.wordWrap()
+    assert path_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
     assert dialog.reveal_button is None
     assert dialog.data_explorer_button is None
     assert (
