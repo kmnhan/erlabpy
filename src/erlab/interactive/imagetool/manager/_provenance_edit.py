@@ -10,6 +10,7 @@ import warnings
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import dialogs, provenance
 from erlab.interactive.imagetool._load_source import (
     _load_provenance_from_file_details,
@@ -454,6 +455,178 @@ class _ProvenanceEditController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
 
+    def can_paste_steps(
+        self,
+        operations: Sequence[provenance.ToolProvenanceOperation] | None,
+    ) -> tuple[bool, str]:
+        if not operations:
+            return False, "The clipboard does not contain copied ImageTool steps."
+        node = self._metadata_node()
+        if not self._node_editable(node):
+            return False, "Select an available ImageTool row to paste provenance."
+        return True, ""
+
+    def paste_steps(
+        self,
+        operations: Sequence[provenance.ToolProvenanceOperation],
+        *,
+        active_name: str,
+        contains_script: bool,
+    ) -> None:
+        paste_enabled, paste_reason = self.can_paste_steps(operations)
+        if not paste_enabled:
+            self._show_unavailable(paste_reason)
+            return
+        node = typing.cast(
+            "_ImageToolWrapper | _ManagedWindowNode",
+            self._metadata_node(),
+        )
+        steps = tuple(operations)
+        try:
+            if contains_script or any(
+                not operation.live_applicable for operation in steps
+            ):
+                self._paste_detached_steps(
+                    node,
+                    provenance.script(
+                        *steps,
+                        start_label="Start from current ImageTool data",
+                        active_name=active_name or "derived",
+                    ),
+                    where="validating the pasted script provenance steps",
+                )
+            else:
+                self._paste_structured_steps(node, steps)
+        except Exception as exc:
+            self._show_failed(
+                "Could Not Paste Provenance Steps",
+                exc,
+                text="The copied provenance steps could not be applied.",
+                unchanged_reason=(
+                    "The copied steps could not be replayed on the selected "
+                    "ImageTool's current data, so nothing was changed. Check that "
+                    "the destination data has the dimensions, coordinates, and "
+                    "inputs expected by the copied steps."
+                ),
+            )
+
+    def _paste_structured_steps(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        operations: tuple[provenance.ToolProvenanceOperation, ...],
+    ) -> None:
+        for operation in operations:
+            if not operation.live_applicable:
+                raise TypeError("Only live provenance operations can be pasted here")
+
+        if node.parent_uid is not None and node.displayed_source_spec is not None:
+            candidate = node.displayed_source_spec.append_replacement_operations(
+                *operations
+            )
+            try:
+                data, candidate = self._replay_candidate_result(
+                    node,
+                    "source",
+                    candidate,
+                )
+                data = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
+                    data,
+                    copy_values=False,
+                )
+            except Exception as exc:
+                raise _ProvenanceReplayFailure(
+                    "validating the pasted provenance steps: "
+                    "replaying the requested provenance",
+                    exc,
+                ) from exc
+            self._replace_node_data(node, "source", data, candidate, None)
+            self._manager._update_info(uid=node.uid)
+            return
+
+        local = provenance.full_data(*operations)
+        self._paste_detached_steps(
+            node,
+            local,
+            where="validating the pasted provenance steps",
+        )
+
+    def _paste_detached_steps(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        local: provenance.ToolProvenanceSpec,
+        *,
+        where: str,
+    ) -> None:
+        current_data = node.current_source_data()
+        try:
+            if local.kind == "script":
+                data = provenance.replay_script_provenance(
+                    local,
+                    {
+                        "data": current_data,
+                        "derived": current_data,
+                    },
+                )
+            else:
+                data = local.apply(current_data)
+            data = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
+                data,
+                copy_values=False,
+            )
+        except Exception as exc:
+            raise _ProvenanceReplayFailure(
+                f"{where}: replaying the requested provenance",
+                exc,
+            ) from exc
+
+        if local.kind == "script":
+            spec = provenance.compose_full_provenance(
+                node.displayed_provenance_spec,
+                local,
+                script_context_names=("data", "derived"),
+            )
+        else:
+            spec = provenance.compose_full_provenance(
+                node.displayed_provenance_spec,
+                local,
+            )
+        if spec is None:
+            spec = local.to_replay_spec()
+        node.replace_with_detached_data(data, spec, preserve_filter=False)
+        self._manager._update_info(uid=node.uid)
+
+    def can_delete_row(
+        self,
+        row: provenance._ProvenanceDisplayRow | None,
+    ) -> tuple[bool, str]:
+        node = self._metadata_node()
+        if row is None or row.replay_ref is None:
+            return False, "This row cannot be deleted."
+        if row.replay_ref.kind != "operation":
+            return False, "Only operation rows can be deleted."
+        if not self._node_editable(node):
+            return False, "Select an available ImageTool row to delete provenance."
+        node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
+        if self._source_child_parent_row(node, row):
+            return False, "Delete the parent ImageTool row directly."
+        spec = self._display_spec_for_row(node, row)
+        if spec is None:
+            return False, "This row does not have replayable provenance."
+        if spec._operation_for_ref(row.replay_ref) is None:
+            return False, "This operation is not available."
+        if spec.kind == "script":
+            try:
+                candidate = spec._replace_operation_ref(row.replay_ref, ())
+            except (IndexError, ValueError):
+                return False, "This script row is not a replayable step."
+            if not provenance.script_provenance_replayable(candidate):
+                return False, "Deleting this script step would make replay invalid."
+        if spec.kind in {"full_data", "public_data", "selection"}:
+            if row.scope == "source" and node.parent_uid is not None:
+                return True, ""
+            return False, "This live row needs a parent source to replay."
+        return True, ""
+
     def can_edit_row(
         self,
         row: provenance._ProvenanceDisplayRow | None,
@@ -602,6 +775,54 @@ class _ProvenanceEditController:
             ):
                 return
             self._show_failed("Could Not Revert Provenance Step", exc)
+
+    def delete_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
+        deletable, reason = self.can_delete_row(row)
+        if not deletable:
+            self._show_unavailable(reason)
+            return
+        node = typing.cast(
+            "_ImageToolWrapper | _ManagedWindowNode",
+            self._metadata_node(),
+        )
+        row = typing.cast("provenance._ProvenanceDisplayRow", row)
+        ref = typing.cast("provenance._ProvenanceStepRef", row.replay_ref)
+        spec = self._display_spec_for_row(node, row)
+        if spec is None:
+            self._show_failed(
+                "Could Not Delete Provenance Step",
+                RuntimeError("No provenance spec is available"),
+            )
+            return
+        candidate: provenance.ToolProvenanceSpec | None = None
+        try:
+            candidate = spec._replace_operation_ref(ref, ())
+            if candidate.kind == "file":
+                candidate = candidate.model_copy(
+                    update={
+                        "replay_stages": tuple(
+                            stage
+                            for stage in candidate.replay_stages
+                            if stage.operations
+                        )
+                    }
+                )
+            self._validate_and_replace(
+                node,
+                row.scope,
+                candidate,
+                where="validating the provenance delete target",
+            )
+        except Exception as exc:
+            if self._handle_missing_source_file(
+                node,
+                row,
+                title="Could Not Delete Provenance Step",
+                exc=exc,
+                repair_spec=candidate,
+            ):
+                return
+            self._show_failed("Could Not Delete Provenance Step", exc)
 
     def _metadata_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         uid = self._manager._metadata_node_uid
@@ -1175,24 +1396,32 @@ class _ProvenanceEditController:
             reason,
         )
 
-    def _show_failed(self, title: str, exc: Exception) -> None:
+    def _show_failed(
+        self,
+        title: str,
+        exc: Exception,
+        *,
+        text: str = "The provenance change could not be applied.",
+        unchanged_reason: str | None = None,
+    ) -> None:
         exc_text = "".join(traceback.TracebackException.from_exception(exc).format())
         where = (
             exc.where
             if isinstance(exc, _ProvenanceReplayFailure)
             else "replaying the requested provenance"
         )
-        dialog = erlab.interactive.utils.MessageDialog(
-            self._manager,
-            title=title,
-            text="The provenance change could not be applied.",
-            informative_text=(
-                f"Failed while: {where}\n\n"
+        if unchanged_reason is None:
+            unchanged_reason = (
                 "The current ImageTool data was left unchanged because the requested "
                 "provenance could not be replayed. Use Revert to This Step to drop "
                 "later provenance, or adjust the earlier steps so the full chain is "
                 "valid again."
-            ),
+            )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title=title,
+            text=text,
+            informative_text=f"Failed while: {where}\n\n{unchanged_reason}",
             detailed_text=erlab.interactive.utils._format_traceback(exc_text),
             buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,

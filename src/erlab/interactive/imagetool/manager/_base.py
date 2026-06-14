@@ -156,7 +156,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _manager_layout_tracking_enabled: bool
     _metadata_copy_full_action: QtGui.QAction
     _metadata_copy_selected_action: QtGui.QAction
+    _metadata_delete_step_action: QtGui.QAction
     _metadata_edit_step_action: QtGui.QAction
+    _metadata_paste_steps_action: QtGui.QAction
     _metadata_revert_step_action: QtGui.QAction
     _metadata_detail_labels: dict[str, QtWidgets.QLabel]
     _metadata_full_code_available: bool

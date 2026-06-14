@@ -144,6 +144,8 @@ def _reserved_names_from_spec(spec: typing.Any) -> set[str]:
         nested = script_input.parsed_provenance_spec()
         if nested is not None:
             names.update(_reserved_names_from_spec(nested))
+    for binding in getattr(spec, "script_context_bindings", ()):
+        names.update(binding.names)
     return names
 
 
@@ -323,6 +325,22 @@ def _simple_assignment_source_name(code: str, target_name: str) -> str | None:
     return None
 
 
+def _script_codes_output_name(
+    codes: Sequence[str],
+    *,
+    active_name: str,
+    current_name: str | None,
+) -> str | None:
+    candidates = [active_name]
+    for name in (current_name, "derived"):
+        if name is not None and name not in candidates:
+            candidates.append(name)
+    for name in candidates:
+        if any(_provenance_framework._code_stores_name(code, name) for code in codes):
+            return name
+    return current_name
+
+
 def _validate_script_provenance(
     spec: typing.Any,
     *,
@@ -352,6 +370,7 @@ def _validate_script_provenance(
     function_dependencies: dict[str, set[str]] = {}
     has_replay_step = False
     active_available = spec.active_name in available_names
+    current_name: str | None = spec.active_name if active_available else None
     if spec.seed_code:
         has_replay_step = True
         try:
@@ -374,7 +393,21 @@ def _validate_script_provenance(
         active_available = active_available or _provenance_framework._code_stores_name(
             spec.seed_code, spec.active_name
         )
-    for operation in spec.operations:
+        current_name = _script_codes_output_name(
+            (spec.seed_code,),
+            active_name=spec.active_name,
+            current_name=current_name,
+        )
+    context_bindings_by_index: dict[int, list[str]] = {}
+    for binding in spec.script_context_bindings:
+        context_bindings_by_index.setdefault(binding.operation_index, []).extend(
+            binding.names
+        )
+    for index, operation in enumerate(spec.operations):
+        if context_names := context_bindings_by_index.get(index):
+            if current_name is None:
+                raise ReplayGraphError("Script provenance has no replay code")
+            available_names.update(context_names)
         if getattr(operation, "op", None) == "script_code":
             if not operation.copyable or operation.code is None:
                 raise ReplayGraphError("Script provenance contains non-replayable code")
@@ -394,19 +427,24 @@ def _validate_script_provenance(
                     operation.code, spec.active_name
                 )
             )
+            current_name = _script_codes_output_name(
+                (operation.code,),
+                active_name=spec.active_name,
+                current_name=current_name,
+            )
             continue
-        if not active_available:
+        if current_name is None:
             raise ReplayGraphError("Script provenance has no replay code")
         if not operation.live_applicable:
             raise ReplayGraphError(
                 "Script provenance contains non-replayable operation"
             )
         has_replay_step = True
-        available_names.add(spec.active_name)
-        active_available = True
+        available_names.add(current_name)
+        active_available = active_available or current_name == spec.active_name
     if not has_replay_step:
         raise ReplayGraphError("Script provenance has no replay code")
-    if not active_available:
+    if not active_available and current_name != spec.active_name:
         raise ReplayGraphError("Script provenance has no replay code")
 
 
@@ -632,6 +670,7 @@ def _compile_spec(
 
         active_name = typing.cast("str", parsed.active_name)
         script_current_key: str | None = None
+        current_name: str | None = None
         current_bindings = tuple(bindings)
         pending_codes: list[str] = []
 
@@ -663,28 +702,38 @@ def _compile_spec(
             return tuple(output)
 
         def apply_simple_alias(code: str) -> bool:
-            nonlocal current_bindings, script_current_key
+            nonlocal current_bindings, current_name, script_current_key
             if pending_codes:
                 return False
-            source_name = _simple_assignment_source_name(code, active_name)
-            if source_name is None:
-                return False
-            source_key = binding_key(source_name)
-            if source_key is None:
-                return False
-            script_current_key = relay_key(source_key)
-            current_bindings = bind_name(active_name, script_current_key)
-            return True
+            for target_name in dict.fromkeys((active_name, "derived")):
+                source_name = _simple_assignment_source_name(code, target_name)
+                if source_name is None:
+                    continue
+                source_key = binding_key(source_name)
+                if source_key is None:
+                    continue
+                script_current_key = relay_key(source_key)
+                current_name = target_name
+                current_bindings = bind_name(target_name, script_current_key)
+                return True
+            return False
 
         def flush_script() -> None:
-            nonlocal current_bindings, pending_codes, script_current_key
+            nonlocal current_bindings, current_name, pending_codes, script_current_key
             if not pending_codes:
                 return
+            output_name = _script_codes_output_name(
+                pending_codes,
+                active_name=active_name,
+                current_name=current_name,
+            )
+            if output_name is None:  # pragma: no cover - rejected by validation.
+                raise ReplayGraphError("Script provenance has no replay code")
             script_current_key = graph.add_node(
                 _canonical_key(
                     "script",
                     {
-                        "active_name": active_name,
+                        "active_name": output_name,
                         "bindings": current_bindings,
                         "codes": tuple(pending_codes),
                     },
@@ -693,18 +742,48 @@ def _compile_spec(
                 parents=tuple(key for _name, key in current_bindings),
                 cacheable=False,
                 payload={
-                    "active_name": active_name,
+                    "active_name": output_name,
                     "bindings": current_bindings,
                     "codes": tuple(pending_codes),
                 },
             )
-            current_bindings = bind_name(active_name, script_current_key)
+            current_name = output_name
+            current_bindings = bind_name(output_name, script_current_key)
             pending_codes = []
+
+        def apply_context_binding(names: Sequence[str]) -> None:
+            nonlocal current_bindings, current_name, script_current_key
+            flush_script()
+            if script_current_key is None:
+                current_names = tuple(
+                    name for name in (current_name, active_name, "derived") if name
+                )
+                matching_inputs = list(
+                    dict.fromkeys(
+                        key for name, key in current_bindings if name in current_names
+                    )
+                )
+                if len(matching_inputs) != 1:  # pragma: no cover - validation guard.
+                    raise ReplayGraphError("Script provenance has no replay code")
+                script_current_key = relay_key(matching_inputs[0])
+            if display:
+                for name in (current_name, active_name):
+                    if name is not None:
+                        graph.add_alias(name, script_current_key)
+            for name in names:
+                current_bindings = bind_name(name, script_current_key)
 
         if parsed.seed_code and not apply_simple_alias(parsed.seed_code):
             pending_codes.append(parsed.seed_code)
         operations = tuple(parsed.operations)
+        context_bindings_by_index: dict[int, list[str]] = {}
+        for binding in parsed.script_context_bindings:
+            context_bindings_by_index.setdefault(binding.operation_index, []).extend(
+                binding.names
+            )
         for index, operation in enumerate(operations):
+            if context_names := context_bindings_by_index.get(index):
+                apply_context_binding(context_names)
             if display:
                 if getattr(operation, "op", None) == "rename" and not any(
                     getattr(later_operation, "op", None) == "script_code"
@@ -738,21 +817,37 @@ def _compile_spec(
                 continue
 
             if pending_codes:
+                pending_output_name = _script_codes_output_name(
+                    pending_codes,
+                    active_name=active_name,
+                    current_name=current_name,
+                )
+                if pending_output_name is None:  # pragma: no cover - validation guard.
+                    raise ReplayGraphError("Script provenance has no replay code")
                 pending_codes.append(
                     _operation_replay_code(
                         operation,
-                        active_name=active_name,
-                        context_name=active_name,
+                        active_name=pending_output_name,
+                        context_name=pending_output_name,
                     )
                 )
                 continue
 
             flush_script()
             if script_current_key is None:
-                matching_inputs = [key for name, key in bindings if name == active_name]
+                current_names = tuple(
+                    name for name in (current_name, active_name, "derived") if name
+                )
+                matching_inputs = list(
+                    dict.fromkeys(
+                        key for name, key in current_bindings if name in current_names
+                    )
+                )
                 if len(matching_inputs) != 1:
                     raise ReplayGraphError("Script provenance has no replay code")
                 script_current_key = relay_key(matching_inputs[0])
+                current_name = current_names[0]
+            operation_name = current_name or active_name
             script_current_key = graph.add_node(
                 _canonical_key(
                     "operation",
@@ -766,14 +861,24 @@ def _compile_spec(
                 parents=(script_current_key, script_current_key),
                 payload={"operation": operation},
             )
-            current_bindings = bind_name(active_name, script_current_key)
+            current_name = operation_name
+            current_bindings = bind_name(operation_name, script_current_key)
 
         flush_script()
         if script_current_key is None:
-            matching_inputs = [key for name, key in bindings if name == active_name]
+            matching_inputs = [
+                key for name, key in current_bindings if name == active_name
+            ]
             if len(matching_inputs) != 1:
                 raise ReplayGraphError("Script provenance has no replay code")
             script_current_key = relay_key(matching_inputs[0])
+            current_name = active_name
+        if current_name != active_name:
+            active_key = binding_key(active_name)
+            if active_key is None:  # pragma: no cover - validation guard.
+                raise ReplayGraphError("Script provenance has no replay code")
+            script_current_key = relay_key(active_key)
+            current_name = active_name
         if display:
             graph.add_alias(active_name, script_current_key)
         return script_current_key
@@ -1017,6 +1122,28 @@ def _inline_single_use_replay_expressions(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
+def _remove_noop_assignments(code: str) -> str:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    original_count = len(module.body)
+    module.body = [
+        stmt
+        for stmt in module.body
+        if not (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Name)
+            and stmt.targets[0].id == stmt.value.id
+        )
+    ]
+    if len(module.body) == original_count:
+        return code
+    return ast.unparse(ast.fix_missing_locations(module))
+
+
 def _compact_replay_temp_names(code: str) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1076,6 +1203,7 @@ def _code_has_scoped_definition(code: str) -> bool:
 def _cleanup_emitted_replay_code(code: str) -> str:
     code = _inline_adjacent_replay_assignments(code)
     code = _inline_single_use_replay_expressions(code)
+    code = _remove_noop_assignments(code)
     return _compact_replay_temp_names(code)
 
 
@@ -1134,9 +1262,11 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
+            input_names: set[str] = set()
             for input_name, input_key in typing.cast(
                 "tuple[tuple[str, str], ...]", node.payload["bindings"]
             ):
+                input_names.add(input_name)
                 input_value_name = names[input_key]
                 if input_name == input_value_name:
                     continue
@@ -1164,7 +1294,12 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                     raise ReplayGraphError(
                         "Script replay code is not valid Python"
                     ) from exc
-            if graph.display and active_name != name:
+            if (
+                graph.display
+                and active_name != name
+                and active_name not in input_names
+                and active_name not in input_replacements.values()
+            ):
                 try:
                     codes = [
                         _provenance_framework._replace_code_identifiers(
@@ -1188,7 +1323,9 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
-        aliases = [*aliases, (output_name, graph.output_key)]
+        output_alias = (output_name, graph.output_key)
+        if output_alias not in aliases:
+            aliases = [*aliases, output_alias]
     for public_name, key in aliases:
         planned_name = names[key]
         if public_name != planned_name:
