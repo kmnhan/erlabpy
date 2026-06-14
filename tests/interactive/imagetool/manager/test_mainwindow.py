@@ -1480,9 +1480,147 @@ def test_details_panel_file_field_info_button_passes_metadata_node_uid(
     assert_nonempty_tooltip(details_button.toolTip())
     assert details_button.accessibleName()
     assert not details_button.icon().isNull()
+    assert isinstance(
+        details_button,
+        manager_widgets._CenteredIconToolButton,
+    )
+    key_label = typing.cast(
+        "QtWidgets.QLabel",
+        manager.metadata_details_layout.itemAtPosition(0, 0).widget(),
+    )
+    assert key_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    assert value_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    details_button_item = manager.metadata_details_layout.itemAtPosition(0, 2)
+    assert details_button_item is not None
+    assert details_button_item.widget() is details_button
+    assert details_button_item.alignment() & QtCore.Qt.AlignmentFlag.AlignVCenter
     details_button.click()
 
     assert shown == [(details, "node-1")]
+
+
+def test_details_panel_single_line_rows_use_uniform_height_and_elide(
+    qtbot,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "scan.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    metadata_widget = QtWidgets.QWidget()
+    qtbot.addWidget(metadata_widget)
+    manager = types.SimpleNamespace(
+        metadata_details_widget=metadata_widget,
+        metadata_details_layout=QtWidgets.QGridLayout(metadata_widget),
+        _metadata_detail_labels={},
+        _metadata_monospace_font=QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont
+        ),
+        _metadata_node_uid="node-1",
+        _show_load_source_details=lambda _details, *, node_uid=None: None,
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+    long_time = "2024-01-02 03:04:05 Pacific Daylight Time (-0700)"
+
+    controller._set_metadata_fields(
+        [
+            manager_wrapper._MetadataField("Kind", "ImageTool"),
+            manager_wrapper._MetadataField("Added", long_time, monospace=True),
+            manager_wrapper._MetadataField(
+                "File",
+                str(source_path),
+                monospace=True,
+                details=details,
+            ),
+            manager_wrapper._MetadataField("Inputs", "first\nsecond", wrap=True),
+        ]
+    )
+
+    kind_label = manager._metadata_detail_labels["Kind"]
+    added_label = manager._metadata_detail_labels["Added"]
+    file_label = manager._metadata_detail_labels["File"]
+    inputs_label = manager._metadata_detail_labels["Inputs"]
+    assert isinstance(kind_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(added_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(file_label, manager_widgets._ElidedValueLabel)
+    assert not isinstance(inputs_label, manager_widgets._ElidedValueLabel)
+    assert added_label.full_text == long_time
+    assert added_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
+    assert added_label.sizeHint().width() < (
+        added_label.fontMetrics().horizontalAdvance(long_time)
+    )
+
+    layout = manager.metadata_details_layout
+    single_line_row_height = layout.rowMinimumHeight(0)
+    assert single_line_row_height > 0
+    assert layout.rowMinimumHeight(1) == single_line_row_height
+    assert layout.rowMinimumHeight(2) == single_line_row_height
+    assert layout.rowMinimumHeight(3) == 0
+    details_button = metadata_widget.findChild(
+        QtWidgets.QToolButton,
+        "manager_metadata_file_details_button",
+    )
+    assert details_button is not None
+    assert single_line_row_height >= details_button.sizeHint().height()
+    inputs_key_label = typing.cast(
+        "QtWidgets.QLabel",
+        layout.itemAtPosition(3, 0).widget(),
+    )
+    assert inputs_key_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+    )
+    assert inputs_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+    )
+
+
+def test_centered_icon_tool_button_centers_visible_icon_with_stylesheet(
+    qtbot,
+) -> None:
+    pixmap = QtGui.QPixmap(10, 6)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.fillRect(QtCore.QRect(0, 0, 4, 6), QtGui.QColor(255, 0, 0))
+    painter.end()
+
+    button = manager_widgets._CenteredIconToolButton()
+    qtbot.addWidget(button)
+    button.setIcon(QtGui.QIcon(pixmap))
+    button.setIconSize(QtCore.QSize(10, 6))
+    button.setStyleSheet(
+        "QToolButton { padding-left: 9px; padding-top: 4px; "
+        "padding-right: 0px; padding-bottom: 0px; }"
+    )
+    button.resize(28, 22)
+    button.show()
+
+    image = button.grab().toImage()
+    red_pixels: list[tuple[int, int]] = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if color.red() > 220 and color.green() < 40 and color.blue() < 40:
+                red_pixels.append((x, y))
+
+    assert red_pixels
+    min_x = min(x for x, _y in red_pixels)
+    max_x = max(x for x, _y in red_pixels)
+    min_y = min(y for _x, y in red_pixels)
+    max_y = max(y for _x, y in red_pixels)
+    assert abs(((min_x + max_x) / 2) - ((image.width() - 1) / 2)) <= 0.5
+    assert abs(((min_y + max_y) / 2) - ((image.height() - 1) / 2)) <= 0.5
 
 
 def test_load_source_details_controller_opens_file_load_edit_after_dialog(

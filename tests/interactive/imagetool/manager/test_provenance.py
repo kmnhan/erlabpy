@@ -2018,7 +2018,9 @@ def test_manager_metadata_added_label_does_not_force_splitter_width(
         manager._update_metadata_pane()
 
         label = manager._metadata_detail_labels["Added"]
+        assert isinstance(label, manager_widgets._ElidedValueLabel)
         assert label.text() == long_time
+        assert label.full_text == long_time
         assert label.toolTip() == long_time
         assert label.textInteractionFlags() == (
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
@@ -2026,6 +2028,19 @@ def test_manager_metadata_added_label_does_not_force_splitter_width(
         assert (
             label.sizePolicy().horizontalPolicy()
             == QtWidgets.QSizePolicy.Policy.Ignored
+        )
+        key_label = typing.cast(
+            "QtWidgets.QLabel",
+            manager.metadata_details_layout.itemAtPosition(0, 0).widget(),
+        )
+        assert key_label.alignment() == (
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        assert label.alignment() == (
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        assert label.sizeHint().width() < label.fontMetrics().horizontalAdvance(
+            long_time
         )
         assert manager.metadata_details_widget.minimumSizeHint().width() < (
             label.fontMetrics().horizontalAdvance(long_time)

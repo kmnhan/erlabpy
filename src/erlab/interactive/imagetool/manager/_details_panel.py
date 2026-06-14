@@ -12,6 +12,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
+    _CenteredIconToolButton,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
 )
@@ -79,8 +80,12 @@ class _DetailsPanelController:
         self._manager._update_metadata_pane()
 
     def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
-        while self._manager.metadata_details_layout.count():
-            item = self._manager.metadata_details_layout.takeAt(0)
+        layout = self._manager.metadata_details_layout
+        for row in range(layout.rowCount()):
+            layout.setRowMinimumHeight(row, 0)
+            layout.setRowStretch(row, 0)
+        while layout.count():
+            item = layout.takeAt(0)
             if item is None:
                 continue
             widget = item.widget()
@@ -88,14 +93,20 @@ class _DetailsPanelController:
                 widget.deleteLater()
         self._manager._metadata_detail_labels.clear()
 
+        single_line_rows: list[tuple[int, tuple[QtWidgets.QWidget, ...]]] = []
         for row, field in enumerate(fields):
+            row_vertical_alignment = (
+                QtCore.Qt.AlignmentFlag.AlignTop
+                if field.wrap
+                else QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
             key_label = QtWidgets.QLabel(
                 field.label, self._manager.metadata_details_widget
             )
             key_label.setForegroundRole(QtGui.QPalette.ColorRole.Text)
             key_label.setEnabled(False)
             key_label.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+                QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
             )
             value_label: QtWidgets.QLabel
             details_button: QtWidgets.QToolButton | None = None
@@ -103,16 +114,13 @@ class _DetailsPanelController:
                 value_label = _ElidedValueLabel(
                     field.value,
                     self._manager.metadata_details_widget,
+                    elide_mode=QtCore.Qt.TextElideMode.ElideMiddle,
                 )
-                value_label.set_full_text(field.value)
                 node_uid = self._manager._metadata_node_uid
-                details_button = QtWidgets.QToolButton(
+                details_button = _CenteredIconToolButton(
                     self._manager.metadata_details_widget
                 )
                 details_button.setObjectName("manager_metadata_file_details_button")
-                details_button.setToolButtonStyle(
-                    QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
-                )
                 details_button.setAutoRaise(True)
                 details_button.setToolTip("Show data source details")
                 details_button.setAccessibleName("Show data source details")
@@ -129,7 +137,7 @@ class _DetailsPanelController:
                         self._manager._show_load_source_details(d, node_uid=uid)
                     )
                 )
-            else:
+            elif field.wrap:
                 value_label = QtWidgets.QLabel(
                     field.value, self._manager.metadata_details_widget
                 )
@@ -139,29 +147,53 @@ class _DetailsPanelController:
                 value_label.setWordWrap(field.wrap)
                 value_label.setToolTip(field.value)
                 value_label.setMinimumWidth(0)
-                value_label.setAlignment(
-                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
-                )
                 size_policy = QtWidgets.QSizePolicy(
-                    QtWidgets.QSizePolicy.Policy.Expanding
-                    if field.wrap
-                    else QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Expanding,
                     QtWidgets.QSizePolicy.Policy.Preferred,
                 )
-                size_policy.setHeightForWidth(field.wrap)
+                size_policy.setHeightForWidth(True)
                 value_label.setSizePolicy(size_policy)
+            else:
+                value_label = _ElidedValueLabel(
+                    field.value,
+                    self._manager.metadata_details_widget,
+                    elide_mode=QtCore.Qt.TextElideMode.ElideRight,
+                )
+            if not field.wrap:
+                value_label.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Preferred,
+                )
             if field.monospace:
                 value_label.setFont(self._manager._metadata_monospace_font)
-            self._manager.metadata_details_layout.addWidget(key_label, row, 0)
-            self._manager.metadata_details_layout.addWidget(value_label, row, 1)
+            value_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
+            )
+            layout.addWidget(key_label, row, 0)
+            layout.addWidget(value_label, row, 1)
+            row_widgets: tuple[QtWidgets.QWidget, ...] = (key_label, value_label)
             if details_button is not None:
-                self._manager.metadata_details_layout.addWidget(
+                layout.addWidget(
                     details_button,
                     row,
                     2,
-                    alignment=QtCore.Qt.AlignmentFlag.AlignTop,
+                    alignment=QtCore.Qt.AlignmentFlag.AlignVCenter,
                 )
+                row_widgets = (*row_widgets, details_button)
+            if not field.wrap:
+                single_line_rows.append((row, row_widgets))
             self._manager._metadata_detail_labels[field.label] = value_label
+
+        if single_line_rows:
+            single_line_row_height = max(
+                max(
+                    max(widget.sizeHint().height(), widget.minimumSizeHint().height())
+                    for widget in row_widgets
+                )
+                for _row, row_widgets in single_line_rows
+            )
+            for row, _row_widgets in single_line_rows:
+                layout.setRowMinimumHeight(row, single_line_row_height)
 
     def _show_load_source_details(
         self,
