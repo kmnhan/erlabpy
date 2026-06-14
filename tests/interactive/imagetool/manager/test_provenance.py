@@ -807,7 +807,7 @@ def test_manager_provenance_edit_controller_error_paths(
     monkeypatch.setattr(
         controller,
         "_validate_and_replace",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     controller.revert_row(row)
     assert len(failed) == 2
@@ -899,7 +899,10 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
         node: typing.Any,
         scope: typing.Literal["display", "source"],
         candidate: provenance.ToolProvenanceSpec,
+        *,
+        where: str,
     ) -> manager_provenance_edit._ValidatedProvenanceEdit:
+        del where
         if node.uid == "failed":
             raise RuntimeError("peer failed")
         return manager_provenance_edit._ValidatedProvenanceEdit(
@@ -987,7 +990,7 @@ def test_manager_provenance_file_load_batch_current_failure_aborts_all(
     monkeypatch.setattr(
         controller,
         "_validated_edit",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("current failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("current failed")),
     )
     monkeypatch.setattr(
         controller,
@@ -1135,7 +1138,11 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
         _RecordingMessageDialog,
     )
 
-    failure = RuntimeError("missing coord")
+    cause = RuntimeError("missing coord")
+    failure = manager_provenance_edit._ProvenanceReplayFailure(
+        "validating edited provenance",
+        cause,
+    )
     failure.add_note(
         "Warnings emitted while replaying provenance:\n"
         "- UserWarning: inferred scan warning"
@@ -1146,6 +1153,7 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
     assert len(dialogs) == 1
     assert dialogs[0]["parent"] is controller._manager
     assert "provenance" in dialogs[0]["text"].lower()
+    assert "validating edited provenance" in dialogs[0]["informative_text"]
     assert "replay" in dialogs[0]["informative_text"].lower()
     assert "unchanged" in dialogs[0]["informative_text"].lower()
     assert "RuntimeError" in dialogs[0]["detailed_text"]
@@ -1155,6 +1163,277 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
         dialogs[0]["icon_pixmap"]
         == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
     )
+
+
+@pytest.mark.parametrize(
+    ("dialog_result", "expected_opened"),
+    [
+        (int(QtWidgets.QDialog.DialogCode.Accepted), 1),
+        (int(QtWidgets.QDialog.DialogCode.Rejected), 0),
+    ],
+)
+def test_manager_provenance_missing_source_edit_opens_file_load_editor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    dialog_result: int,
+    expected_opened: int,
+) -> None:
+    missing_path = tmp_path / "missing.h5"
+    spec = _manager_replay_file_spec(
+        missing_path,
+        provenance.IselOperation(kwargs={"x": 0}),
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("isel", None),
+        edit_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=0,
+            stage_index=0,
+        ),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=0,
+            stage_index=0,
+        ),
+    )
+    dialogs: list[dict[str, typing.Any]] = []
+    opened: list[tuple[typing.Any, str, provenance.ToolProvenanceSpec]] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+            dialogs.append({"parent": parent, "dialog": self, **kwargs})
+
+        def exec(self) -> int:
+            return dialog_result
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda node_arg, scope, spec_arg, **_kwargs: opened.append(
+            (node_arg, scope, spec_arg)
+        ),
+    )
+
+    controller.edit_row(row)
+
+    assert len(dialogs) == 1
+    assert dialogs[0]["parent"] is controller._manager
+    assert "source file" in dialogs[0]["text"].lower()
+    assert (
+        "preparing data before the selected provenance step"
+        in (dialogs[0]["informative_text"])
+    )
+    assert str(missing_path) in dialogs[0]["informative_text"]
+    assert "Revert to This Step" not in dialogs[0]["informative_text"]
+    assert dialogs[0]["buttons"] == (
+        QtWidgets.QDialogButtonBox.StandardButton.Yes
+        | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+    )
+    assert len(opened) == expected_opened
+    if opened:
+        assert opened[0] == (node, "display", spec)
+
+
+def test_manager_provenance_missing_source_revert_repairs_revert_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    missing_path = tmp_path / "missing.h5"
+    spec = _manager_replay_file_spec(
+        missing_path,
+        provenance.IselOperation(kwargs={"x": 0}),
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("load", None),
+        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    )
+    opened: list[provenance.ToolProvenanceSpec] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, *_args: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda _node, _scope, spec_arg, **_kwargs: opened.append(spec_arg),
+    )
+
+    controller.revert_row(row)
+
+    assert len(opened) == 1
+    assert opened[0].kind == "file"
+    assert opened[0].replay_stages == ()
+
+
+def test_manager_provenance_missing_source_without_file_load_shows_dedicated_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+        tmp_path / "missing.h5",
+    )
+    exc = manager_provenance_edit._ProvenanceReplayFailure("repairing source", missing)
+    exc.__cause__ = missing
+    row = provenance._ProvenanceDisplayRow(provenance.DerivationEntry("row", None))
+    dialogs: list[dict[str, typing.Any]] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+            dialogs.append(kwargs)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda *_args, **_kwargs: pytest.fail("no file-load editor is available"),
+    )
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+        row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+    )
+
+    assert len(dialogs) == 1
+    assert dialogs[0]["buttons"] == QtWidgets.QDialogButtonBox.StandardButton.Ok
+    assert dialogs[0]["default_button"] == (
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert "repairing source" in dialogs[0]["informative_text"]
+
+
+def test_manager_provenance_missing_source_dialog_button_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+        tmp_path / "missing.h5",
+    )
+
+    class _MissingButtonBox:
+        def button(
+            self,
+            _button: QtWidgets.QDialogButtonBox.StandardButton,
+        ) -> QtWidgets.QAbstractButton | None:
+            return None
+
+    class _RecordingMessageDialog:
+        def __init__(self, *_args: typing.Any, **_kwargs: typing.Any) -> None:
+            self._button_box = _MissingButtonBox()
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
+
+    assert controller._show_missing_source_file(
+        "Could Not Apply Provenance Edit",
+        missing,
+        missing,
+        can_edit=True,
+    )
+
+
+@pytest.mark.parametrize("missing_again", [False, True])
+def test_manager_provenance_missing_source_repair_failure_branches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    missing_again: bool,
+) -> None:
+    spec = _manager_replay_file_spec(tmp_path / "missing.h5")
+    assert spec.file_load_source is not None
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+        tmp_path / "missing.h5",
+    )
+    exc = manager_provenance_edit._ProvenanceReplayFailure("replaying file", missing)
+    exc.__cause__ = missing
+    row = provenance._ProvenanceDisplayRow(provenance.DerivationEntry("row", None))
+    failed: list[Exception] = []
+    dialogs: list[str] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+            dialogs.append(kwargs["text"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _raise_repair_failure(*_args: typing.Any, **_kwargs: typing.Any) -> None:
+        if not missing_again:
+            raise RuntimeError("repair failed")
+        replacement_missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+            tmp_path / "still-missing.h5",
+        )
+        repair_exc = manager_provenance_edit._ProvenanceReplayFailure(
+            "validating replacement",
+            replacement_missing,
+        )
+        raise repair_exc from replacement_missing
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(controller, "_edit_file_load_spec", _raise_repair_failure)
+    monkeypatch.setattr(
+        controller,
+        "_show_failed",
+        lambda _title, failure: failed.append(failure),
+    )
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+    )
+
+    if missing_again:
+        assert len(dialogs) == 2
+        assert failed == []
+    else:
+        assert len(dialogs) == 1
+        assert len(failed) == 1
+        assert "repair failed" in str(failed[0])
 
 
 def test_manager_provenance_file_replay_validation_prechecks_missing_path(
@@ -1172,6 +1451,11 @@ def test_manager_provenance_file_replay_validation_prechecks_missing_path(
 
     with pytest.raises(FileNotFoundError, match="no longer accessible"):
         controller._replay_file_candidate(spec)
+    with pytest.raises(
+        manager_provenance_edit._MissingProvenanceSourceFileError
+    ) as exc:
+        controller._replay_file_candidate(spec)
+    assert exc.value.source_path == tmp_path / "missing.h5"
 
 
 def test_manager_provenance_file_replay_validation_captures_loader_warnings(
@@ -1217,6 +1501,13 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
     with pytest.raises(RuntimeError, match="file load"):
         controller._edit_file_load_row(
             typing.cast("typing.Any", _fake_edit_node(None)), file_row
+        )
+    with pytest.raises(RuntimeError, match="file load"):
+        controller._edit_file_load_spec(
+            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            "display",
+            provenance.full_data(),
+            where="testing",
         )
 
     operation_row = provenance._ProvenanceDisplayRow(
@@ -1306,6 +1597,51 @@ def test_manager_provenance_edit_controller_dialog_execution_branches(
             operation,
             manager_provenance_edit.dialogs.AggregateDialog,
         )
+
+
+def test_manager_provenance_validation_reports_active_filter_replay_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    data = xr.DataArray([1.0], dims=("x",))
+    candidate = provenance.full_data()
+    base_candidate = provenance.full_data(provenance.IselOperation(kwargs={"x": 0}))
+    calls = 0
+
+    def _replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return data, spec
+        raise RuntimeError("base replay failed")
+
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        _replay_candidate_result,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_split_active_filter",
+        lambda _node, _spec: (
+            base_candidate,
+            provenance.NormalizeOperation(dims=("x",), mode="area"),
+        ),
+    )
+
+    with pytest.raises(manager_provenance_edit._ProvenanceReplayFailure) as exc:
+        controller._validated_edit(
+            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            "display",
+            candidate,
+            where="validating edited filter",
+        )
+
+    assert "active display filter" in str(exc.value)
 
 
 def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:

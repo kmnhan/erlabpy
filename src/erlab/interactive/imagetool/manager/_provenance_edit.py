@@ -48,6 +48,26 @@ class _ValidatedProvenanceEdit:
     filter_operation: provenance.ToolProvenanceOperation | None
 
 
+class _ProvenanceReplayFailure(RuntimeError):
+    def __init__(self, where: str, cause: Exception) -> None:
+        super().__init__(f"{where}: {cause}")
+        self.where = where
+        self.cause = cause
+        self.__cause__ = cause
+
+    @property
+    def missing_source_file(self) -> _MissingProvenanceSourceFileError | None:
+        if isinstance(self.cause, _MissingProvenanceSourceFileError):
+            return self.cause
+        return None
+
+
+class _MissingProvenanceSourceFileError(FileNotFoundError):
+    def __init__(self, source_path: pathlib.Path) -> None:
+        super().__init__(f"Recorded source file is no longer accessible: {source_path}")
+        self.source_path = source_path
+
+
 def _parse_loader_kwargs(text: str) -> dict[str, typing.Any]:
     text = text.strip()
     if not text or text == "(none)":
@@ -170,6 +190,10 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             self,
         )
         self.batch_apply_check.setObjectName("managerProvenanceBatchApplyCheck")
+        self.batch_apply_check.setToolTip(
+            "Apply the same file-load edit to other ImageTools loaded from the "
+            "same folder with the same original loader arguments."
+        )
         self.batch_apply_check.setEnabled(bool(self._batch_peers))
         layout.addWidget(self.batch_apply_check)
 
@@ -455,6 +479,13 @@ class _ProvenanceEditController:
             else:
                 self._edit_operation_row(node, row)
         except Exception as exc:
+            if self._handle_missing_source_file(
+                node,
+                row,
+                title="Could Not Apply Provenance Edit",
+                exc=exc,
+            ):
+                return
             self._show_failed("Could Not Apply Provenance Edit", exc)
 
     def revert_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
@@ -478,10 +509,24 @@ class _ProvenanceEditController:
                 RuntimeError("No provenance spec is available"),
             )
             return
+        candidate: provenance.ToolProvenanceSpec | None = None
         try:
             candidate = spec._prefix_through_ref(ref)
-            self._validate_and_replace(node, row.scope, candidate)
+            self._validate_and_replace(
+                node,
+                row.scope,
+                candidate,
+                where="validating the provenance revert target",
+            )
         except Exception as exc:
+            if self._handle_missing_source_file(
+                node,
+                row,
+                title="Could Not Revert Provenance Step",
+                exc=exc,
+                repair_spec=candidate,
+            ):
+                return
             self._show_failed("Could Not Revert Provenance Step", exc)
 
     def _metadata_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
@@ -525,10 +570,29 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None or spec.kind != "file" or spec.file_load_source is None:
             raise RuntimeError("Selected row is not a file load step")
+        self._edit_file_load_spec(
+            node,
+            row.scope,
+            spec,
+            where="validating the edited file-load provenance",
+            batch_peers=self._file_load_batch_peers(node, spec),
+        )
+
+    def _edit_file_load_spec(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+        *,
+        where: str,
+        batch_peers: Sequence[_FileLoadBatchPeer] = (),
+    ) -> None:
+        if spec.kind != "file" or spec.file_load_source is None:
+            raise RuntimeError("Selected provenance does not have a file load step")
         dialog = _FileLoadEditDialog(
             spec.file_load_source,
             self._manager,
-            batch_peers=self._file_load_batch_peers(node, spec),
+            batch_peers=batch_peers,
         )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
@@ -537,16 +601,21 @@ class _ProvenanceEditController:
             replay_stages=spec.replay_stages,
         )
         validated_edits = [
-            self._validated_edit(node, row.scope, candidate),
+            self._validated_edit(node, scope, candidate, where=where),
         ]
         failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
         for peer in dialog.selected_batch_peers():
             try:
+                peer_where = (
+                    "validating the edited file-load provenance for "
+                    f"{peer.node.display_text}"
+                )
                 validated_edits.append(
                     self._validated_edit(
                         peer.node,
                         peer.scope,
                         dialog.peer_provenance_spec(peer),
+                        where=peer_where,
                     )
                 )
             except Exception as exc:
@@ -579,7 +648,13 @@ class _ProvenanceEditController:
             return
 
         input_spec = spec._prefix_before_ref(ref)
-        input_data = self._replay_candidate(node, row.scope, input_spec)
+        try:
+            input_data = self._replay_candidate(node, row.scope, input_spec)
+        except Exception as exc:
+            raise _ProvenanceReplayFailure(
+                "preparing data before the selected provenance step",
+                exc,
+            ) from exc
         replacements = self._edited_operations_from_dialog(
             dialog_cls,
             operation,
@@ -588,7 +663,12 @@ class _ProvenanceEditController:
         if replacements is None:
             return
         candidate = spec._replace_operation_ref(ref, replacements)
-        self._validate_and_replace(node, row.scope, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            candidate,
+            where="validating the edited provenance step",
+        )
 
     def _edited_operations_from_dialog(
         self,
@@ -649,29 +729,47 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
         candidate: provenance.ToolProvenanceSpec,
+        *,
+        where: str = "validating the provenance change",
     ) -> None:
-        self._apply_validated_edit(self._validated_edit(node, scope, candidate))
+        self._apply_validated_edit(
+            self._validated_edit(node, scope, candidate, where=where)
+        )
 
     def _validated_edit(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
         candidate: provenance.ToolProvenanceSpec,
+        *,
+        where: str,
     ) -> _ValidatedProvenanceEdit:
-        candidate_data, candidate = self._replay_candidate_result(
-            node,
-            scope,
-            candidate,
-        )
+        try:
+            candidate_data, candidate = self._replay_candidate_result(
+                node,
+                scope,
+                candidate,
+            )
+        except Exception as exc:
+            raise _ProvenanceReplayFailure(
+                f"{where}: replaying the requested provenance",
+                exc,
+            ) from exc
         base_candidate, filter_operation = self._split_active_filter(node, candidate)
         if base_candidate == candidate:
             source_data = candidate_data
         else:
-            source_data, base_candidate = self._replay_candidate_result(
-                node,
-                scope,
-                base_candidate,
-            )
+            try:
+                source_data, base_candidate = self._replay_candidate_result(
+                    node,
+                    scope,
+                    base_candidate,
+                )
+            except Exception as exc:
+                raise _ProvenanceReplayFailure(
+                    f"{where}: replaying provenance before the active display filter",
+                    exc,
+                ) from exc
         return _ValidatedProvenanceEdit(
             node=node,
             scope=scope,
@@ -777,9 +875,7 @@ class _ProvenanceEditController:
         if load_source is not None:
             source_path = pathlib.Path(load_source.path)
             if not source_path.exists():
-                raise FileNotFoundError(
-                    f"Recorded source file is no longer accessible: {source_path}"
-                )
+                raise _MissingProvenanceSourceFileError(source_path)
         with warnings.catch_warnings(record=True) as replay_warnings:
             warnings.simplefilter("always")
             try:
@@ -906,11 +1002,17 @@ class _ProvenanceEditController:
 
     def _show_failed(self, title: str, exc: Exception) -> None:
         exc_text = "".join(traceback.TracebackException.from_exception(exc).format())
+        where = (
+            exc.where
+            if isinstance(exc, _ProvenanceReplayFailure)
+            else "replaying the requested provenance"
+        )
         dialog = erlab.interactive.utils.MessageDialog(
             self._manager,
             title=title,
             text="The provenance change could not be applied.",
             informative_text=(
+                f"Failed while: {where}\n\n"
                 "The current ImageTool data was left unchanged because the requested "
                 "provenance could not be replayed. Use Revert to This Step to drop "
                 "later provenance, or adjust the earlier steps so the full chain is "
@@ -921,6 +1023,112 @@ class _ProvenanceEditController:
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
         )
         dialog.exec()
+
+    def _handle_missing_source_file(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: provenance._ProvenanceDisplayRow,
+        *,
+        title: str,
+        exc: Exception,
+        repair_spec: provenance.ToolProvenanceSpec | None = None,
+    ) -> bool:
+        if isinstance(exc, _ProvenanceReplayFailure):
+            missing = exc.missing_source_file
+        else:
+            missing = (
+                exc if isinstance(exc, _MissingProvenanceSourceFileError) else None
+            )
+        if missing is None:
+            return False
+        spec = repair_spec
+        if spec is None or spec.kind != "file" or spec.file_load_source is None:
+            spec = self._display_spec_for_row(node, row)
+        if spec is None or spec.kind != "file" or spec.file_load_source is None:
+            self._show_missing_source_file(title, exc, missing, can_edit=False)
+            return True
+        if self._show_missing_source_file(title, exc, missing, can_edit=True):
+            try:
+                self._edit_file_load_spec(
+                    node,
+                    row.scope,
+                    spec,
+                    where=(
+                        "validating provenance after selecting a replacement "
+                        "source file"
+                    ),
+                    batch_peers=(),
+                )
+            except Exception as repair_exc:
+                if isinstance(repair_exc, _ProvenanceReplayFailure):
+                    repair_missing = repair_exc.missing_source_file
+                else:
+                    repair_missing = (
+                        repair_exc
+                        if isinstance(
+                            repair_exc,
+                            _MissingProvenanceSourceFileError,
+                        )
+                        else None
+                    )
+                if repair_missing is None:
+                    self._show_failed("Could Not Update Source File", repair_exc)
+                else:
+                    self._show_missing_source_file(
+                        "Could Not Update Source File",
+                        repair_exc,
+                        repair_missing,
+                        can_edit=True,
+                    )
+        return True
+
+    def _show_missing_source_file(
+        self,
+        title: str,
+        exc: Exception,
+        missing: _MissingProvenanceSourceFileError,
+        *,
+        can_edit: bool,
+    ) -> bool:
+        where = (
+            exc.where
+            if isinstance(exc, _ProvenanceReplayFailure)
+            else "replaying the requested provenance"
+        )
+        exc_text = "".join(traceback.TracebackException.from_exception(exc).format())
+        buttons = QtWidgets.QDialogButtonBox.StandardButton.Ok
+        if can_edit:
+            buttons = (
+                QtWidgets.QDialogButtonBox.StandardButton.Yes
+                | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title=title,
+            text="The recorded source file is no longer accessible.",
+            informative_text=(
+                f"Failed while: {where}\n\n"
+                f"Missing file: {missing.source_path}\n\n"
+                "Select the current location of the file to update the file-load "
+                "step and replay the provenance again."
+            ),
+            detailed_text=erlab.interactive.utils._format_traceback(exc_text),
+            buttons=buttons,
+            default_button=(
+                QtWidgets.QDialogButtonBox.StandardButton.Yes
+                if can_edit
+                else QtWidgets.QDialogButtonBox.StandardButton.Ok
+            ),
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        if can_edit:
+            edit_button = dialog._button_box.button(
+                QtWidgets.QDialogButtonBox.StandardButton.Yes
+            )
+            if edit_button is not None:
+                edit_button.setText("Edit File Load…")
+        result = dialog.exec()
+        return can_edit and result == int(QtWidgets.QDialog.DialogCode.Accepted)
 
     def _confirm_apply_valid_batch(
         self,
