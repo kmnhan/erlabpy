@@ -1379,6 +1379,9 @@ class _ActionsController:
         parent_node = self._manager._node_for_target(parent)
         if source_spec is None and source_binding is not None:
             source_spec = source_binding.materialize(parent_node.current_source_data())
+            source_binding = None
+        elif source_spec is not None:
+            source_binding = None
         if provenance_spec is None and source_spec is not None:
             provenance_spec = provenance.compose_display_provenance(
                 parent_node.displayed_provenance_spec,

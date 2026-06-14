@@ -1788,7 +1788,7 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
     assert restored.input_provenance_spec == input_spec.to_replay_spec()
 
 
-def test_tool_window_dataset_roundtrips_source_binding(qtbot) -> None:
+def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data.isel(x=slice(1, 3)))
     qtbot.addWidget(tool)
@@ -1804,15 +1804,36 @@ def test_tool_window_dataset_roundtrips_source_binding(qtbot) -> None:
         auto_update=True,
         state="stale",
     )
+    assert tool.source_binding is None
 
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    saved = tool.to_dataset()
+    assert "tool_source_binding" not in saved.attrs
+    saved.attrs["tool_source_binding"] = json.dumps(
+        provenance.ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"x": 0},
+        ).model_dump(mode="json")
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
 
     assert isinstance(restored, _PersistentTool)
     assert restored.source_spec == source_spec
-    assert restored.source_binding == source_binding
+    assert restored.source_binding is None
     assert restored.source_auto_update is True
     assert restored.source_state == "stale"
+
+    legacy = _PersistentTool(data.isel(x=slice(1, 3))).to_dataset()
+    legacy.attrs["tool_source_binding"] = json.dumps(
+        source_binding.model_dump(mode="json")
+    )
+    legacy_restored = erlab.interactive.utils.ToolWindow.from_dataset(legacy)
+    qtbot.addWidget(legacy_restored)
+
+    assert isinstance(legacy_restored, _PersistentTool)
+    assert legacy_restored.source_spec is None
+    assert legacy_restored.source_binding == source_binding
 
 
 def test_tool_window_dataset_ignores_invalid_saved_provenance(
@@ -2163,7 +2184,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         state="stale",
     )
     assert node.source_spec == source_spec
-    assert node.source_binding == source_binding
+    assert node.source_binding is None
     assert node.source_state == "stale"
     assert node.source_auto_update is True
     assert node.has_source_binding is True
@@ -2355,7 +2376,7 @@ def test_managed_tool_window_node_detached_update_branches(
         source_binding=source_binding,
     )
     manager._tool_graph.nodes["bound"] = bound_node
-    assert bound_node._source_binding == source_binding
+    assert bound_node._source_binding is None
     assert bound_node._source_spec == source_binding.materialize(parent_data)
 
     with pytest.raises(TypeError, match="provenance_spec must be"):

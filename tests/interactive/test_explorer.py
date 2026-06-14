@@ -42,6 +42,24 @@ def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) 
     assert win.close_event_count == 1
 
 
+def test_tabbed_explorer_show_path_adds_selected_file_tab(
+    qtbot, example_loader, example_data_dir: pathlib.Path
+) -> None:
+    source_path = example_data_dir / "data_002.h5"
+    win = _TabbedExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(win)
+    initial_count = win.tab_widget.count()
+
+    win.show_path(source_path)
+
+    assert win.tab_widget.count() == initial_count + 1
+    explorer = win.current_explorer
+    assert explorer is not None
+    assert explorer.current_directory == example_data_dir
+    qtbot.wait_until(lambda: explorer._tree_view.selected_paths == [source_path])
+    qtbot.wait_until(lambda: explorer._displayed_selection == [source_path])
+
+
 def test_explorer_general(
     qtbot,
     example_loader,

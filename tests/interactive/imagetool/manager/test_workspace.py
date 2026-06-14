@@ -1927,9 +1927,10 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         assert "manager_node_output_id" not in child_payload
         assert child_payload["manager_node_source_state"] == "stale"
         assert child_payload["manager_node_source_auto_update"] is True
-        assert child_payload["manager_node_live_source_binding"] == (
-            child_binding.model_dump(mode="json")
+        assert child_payload["manager_node_live_source_spec"] == (
+            child_source_spec.model_dump(mode="json")
         )
+        assert "manager_node_live_source_binding" not in child_payload
 
         output_payload = _workspace_sweep_h5_attr_payload(
             fname,
@@ -1949,9 +1950,10 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         )
         assert tool_payload["tool_source_state"] == "unavailable"
         assert tool_payload["tool_source_auto_update"] is True
-        assert tool_payload["tool_source_binding"] == tool_binding.model_dump(
+        assert tool_payload["tool_source_spec"] == tool_source_spec.model_dump(
             mode="json"
         )
+        assert "tool_source_binding" not in tool_payload
         with h5py.File(fname, "r") as h5_file:
             tool_group = h5_file["0/childtools/sweep-child-tool/tool"]
             assert "auxiliary" in tool_group

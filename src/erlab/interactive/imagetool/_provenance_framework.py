@@ -32,12 +32,10 @@ reload, copied code, and shared-input deduplication compile those specs on deman
 through :mod:`erlab.interactive.imagetool._replay_graph`; the graph itself is not
 saved.
 
-Manager children opened from an ImageTool cursor or bin selection do not keep the
-first generated ``qsel`` arguments as their refresh state. They store the selected
-parent indices in
+Manager children opened from an ImageTool cursor or bin selection keep the explicit
+``qsel`` or ``isel`` arguments generated when the child is opened. Legacy
 :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
-and rebuild ``qsel`` or ``isel`` operations from the current parent data each time
-they refresh.
+payloads are materialized once into a normal source spec before refresh.
 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
@@ -134,7 +132,7 @@ import math
 import pathlib
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pydantic
@@ -203,6 +201,26 @@ class DerivationEntry:
     label: str
     code: str | None
     copyable: bool = False
+
+
+@dataclass(frozen=True)
+class _ProvenanceStepRef:
+    """Location of one replayable provenance row inside a spec."""
+
+    kind: typing.Literal["start", "file_load", "operation", "script_input"]
+    operation_index: int | None = None
+    stage_index: int | None = None
+    script_input_index: int | None = None
+
+
+@dataclass(frozen=True)
+class _ProvenanceDisplayRow:
+    """One displayed provenance row with optional edit/replay references."""
+
+    entry: DerivationEntry
+    edit_ref: _ProvenanceStepRef | None = None
+    replay_ref: _ProvenanceStepRef | None = None
+    scope: typing.Literal["display", "source"] = "display"
 
 
 @dataclass(frozen=True)
@@ -1834,10 +1852,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     A spec records exact operation arguments for live refresh, runtime replay, copied
     code, and derivation display. Manager children opened from ImageTool cursor or bin
-    selections should keep
-    :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
-    as their refresh state; that binding builds a spec before refresh so edited parent
-    coordinates are used.
+    selections refresh by replaying those explicit arguments; legacy selection
+    bindings are converted to source specs once for compatibility.
     """
 
     schema_version: typing.Literal[2] = 2
@@ -2005,6 +2021,83 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         stage = ReplayStage.from_source_spec(source)
         return self.model_copy(update={"replay_stages": (*self.replay_stages, stage)})
 
+    def _operation_for_ref(
+        self, ref: _ProvenanceStepRef
+    ) -> ToolProvenanceOperation | None:
+        if ref.kind != "operation" or ref.operation_index is None:
+            return None
+        if ref.stage_index is None:
+            if 0 <= ref.operation_index < len(self.operations):
+                return self.operations[ref.operation_index]
+            return None
+        if 0 <= ref.stage_index < len(self.replay_stages):
+            operations = self.replay_stages[ref.stage_index].operations
+            if 0 <= ref.operation_index < len(operations):
+                return operations[ref.operation_index]
+        return None
+
+    def _replace_operation_ref(
+        self,
+        ref: _ProvenanceStepRef,
+        replacements: Sequence[ToolProvenanceOperation],
+    ) -> ToolProvenanceSpec:
+        if ref.kind != "operation" or ref.operation_index is None:
+            raise ValueError("Expected an operation provenance row reference")
+        replacement_ops = tuple(_require_operation_instance(op) for op in replacements)
+        if ref.stage_index is None:
+            operations = list(self.operations)
+            operations[ref.operation_index : ref.operation_index + 1] = replacement_ops
+            return self.model_copy(update={"operations": tuple(operations)})
+
+        stages = list(self.replay_stages)
+        stage = stages[ref.stage_index]
+        operations = list(stage.operations)
+        operations[ref.operation_index : ref.operation_index + 1] = replacement_ops
+        stages[ref.stage_index] = stage.model_copy(
+            update={"operations": tuple(operations)}
+        )
+        return self.model_copy(update={"replay_stages": tuple(stages)})
+
+    def _prefix_through_ref(self, ref: _ProvenanceStepRef) -> ToolProvenanceSpec:
+        """Return a spec replaying through the referenced displayed row."""
+        if ref.kind in {"start", "file_load"}:
+            if self.kind == "file":
+                return self.model_copy(update={"replay_stages": ()})
+            if self.kind in {"full_data", "public_data", "selection"}:
+                return self.model_copy(update={"operations": ()})
+            return self.model_copy(update={"operations": ()})
+
+        if ref.kind != "operation" or ref.operation_index is None:
+            raise ValueError("This provenance row cannot be replayed as a prefix")
+
+        end = ref.operation_index + 1
+        if ref.stage_index is None:
+            return self.model_copy(update={"operations": self.operations[:end]})
+
+        stages = list(self.replay_stages[: ref.stage_index])
+        stage = self.replay_stages[ref.stage_index]
+        stages.append(stage.model_copy(update={"operations": stage.operations[:end]}))
+        return self.model_copy(update={"replay_stages": tuple(stages)})
+
+    def _prefix_before_ref(self, ref: _ProvenanceStepRef) -> ToolProvenanceSpec:
+        """Return a spec replaying to the input of the referenced operation row."""
+        if ref.kind != "operation" or ref.operation_index is None:
+            return self._prefix_through_ref(ref)
+
+        if ref.stage_index is None:
+            return self.model_copy(
+                update={"operations": self.operations[: ref.operation_index]}
+            )
+
+        stages = list(self.replay_stages[: ref.stage_index])
+        stage = self.replay_stages[ref.stage_index]
+        stages.append(
+            stage.model_copy(
+                update={"operations": stage.operations[: ref.operation_index]}
+            )
+        )
+        return self.model_copy(update={"replay_stages": tuple(stages)})
+
     def _start_entry(self) -> DerivationEntry:
         if self.kind in {"full_data", "public_data"}:
             return DerivationEntry(
@@ -2048,6 +2141,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         *,
         parent_data: xr.DataArray | None = None,
     ) -> tuple[ToolProvenanceOperation, ...]:
+        return tuple(
+            operation
+            for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
+                source_kind,
+                operations,
+                parent_data=parent_data,
+            )
+        )
+
+    @staticmethod
+    def _streamlined_operation_refs(
+        source_kind: typing.Literal["full_data", "public_data", "selection"],
+        operations: Sequence[ToolProvenanceOperation],
+        *,
+        parent_data: xr.DataArray | None = None,
+    ) -> tuple[tuple[int, ToolProvenanceOperation], ...]:
         current_data: xr.DataArray | None = None
         if parent_data is not None:
             current_data = ToolProvenanceSpec._starting_data_for_kind(
@@ -2055,7 +2164,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 parent_data,
             )
 
-        streamlined: list[ToolProvenanceOperation] = []
+        streamlined: list[tuple[int, ToolProvenanceOperation]] = []
         for index, operation in enumerate(operations):
             hide_operation = False
 
@@ -2109,7 +2218,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
 
             if not hide_operation:
-                streamlined.append(operation)
+                streamlined.append((index, operation))
 
             # Rule 7: keep anything ambiguous. If replaying an operation fails while
             # building the heuristic context, stop making data-dependent decisions for
@@ -2249,55 +2358,118 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return None
         return "\n".join(part for part in (prefix, *step_codes) if part)
 
-    def display_entries(
-        self, *, parent_data: xr.DataArray | None = None
-    ) -> list[DerivationEntry]:
-        """Return streamlined derivation entries for UI and copy-code output.
+    def display_rows(
+        self,
+        *,
+        parent_data: xr.DataArray | None = None,
+        scope: typing.Literal["display", "source"] = "display",
+    ) -> list[_ProvenanceDisplayRow]:
+        """Return streamlined derivation rows for UI, editing, and copy-code output.
 
         The display path hides internal ImageTool normalization steps while keeping the
         recorded replay steps available through :meth:`derivation_entries`.
         """
-        entries = [self._start_entry()]
+
+        def scoped_rows(
+            rows: list[_ProvenanceDisplayRow],
+        ) -> list[_ProvenanceDisplayRow]:
+            if scope == "display":
+                return rows
+            return [replace(row, scope=scope) for row in rows]
+
+        start_ref = _ProvenanceStepRef("file_load" if self.kind == "file" else "start")
+        rows = [
+            _ProvenanceDisplayRow(
+                self._start_entry(),
+                edit_ref=start_ref if self.kind == "file" else None,
+                replay_ref=start_ref,
+            )
+        ]
 
         if self.kind == "script":
-            entries.extend(
-                DerivationEntry(
-                    f"Use {script_input.name} from {script_input.label}",
-                    None,
-                    False,
+            rows.extend(
+                _ProvenanceDisplayRow(
+                    DerivationEntry(
+                        f"Use {script_input.name} from {script_input.label}",
+                        None,
+                        False,
+                    ),
+                    replay_ref=_ProvenanceStepRef(
+                        "script_input", script_input_index=index
+                    ),
                 )
-                for script_input in self.script_inputs
+                for index, script_input in enumerate(self.script_inputs)
             )
-            entries.extend(
-                operation.derivation_entry()
-                for operation in self._streamlined_operations(
+            rows.extend(
+                _ProvenanceDisplayRow(
+                    operation.derivation_entry(),
+                    edit_ref=(
+                        None
+                        if _operation_is(operation, "script_code")
+                        else _ProvenanceStepRef(
+                            "operation", operation_index=operation_index
+                        )
+                    ),
+                    replay_ref=_ProvenanceStepRef(
+                        "operation", operation_index=operation_index
+                    ),
+                )
+                for operation_index, operation in self._streamlined_operation_refs(
                     "full_data",
                     self.operations,
                 )
             )
-            return entries
+            return scoped_rows(rows)
         if self.kind == "file":
             current_data = parent_data
-            for stage in self.replay_stages:
-                for operation in self._streamlined_operations(
+            for stage_index, stage in enumerate(self.replay_stages):
+                for operation_index, operation in self._streamlined_operation_refs(
                     stage.source_kind,
                     stage.operations,
                     parent_data=current_data,
                 ):
-                    operation_entry = operation.derivation_entry()
-                    entries.append(operation_entry)
+                    step_ref = _ProvenanceStepRef(
+                        "operation",
+                        operation_index=operation_index,
+                        stage_index=stage_index,
+                    )
+                    rows.append(
+                        _ProvenanceDisplayRow(
+                            operation.derivation_entry(),
+                            edit_ref=step_ref,
+                            replay_ref=step_ref,
+                        )
+                    )
                 if current_data is not None:
                     try:
                         current_data = _apply_replay_stage(stage, current_data)
                     except Exception:
                         current_data = None
-            return entries
+            return scoped_rows(rows)
 
-        entries.extend(
-            operation.derivation_entry()
-            for operation in self._display_operations(parent_data=parent_data)
+        rows.extend(
+            _ProvenanceDisplayRow(
+                operation.derivation_entry(),
+                edit_ref=_ProvenanceStepRef(
+                    "operation", operation_index=operation_index
+                ),
+                replay_ref=_ProvenanceStepRef(
+                    "operation", operation_index=operation_index
+                ),
+            )
+            for operation_index, operation in self._streamlined_operation_refs(
+                self.kind,
+                self.operations,
+                parent_data=parent_data,
+            )
         )
-        return entries
+        return scoped_rows(rows)
+
+    def display_entries(
+        self, *, parent_data: xr.DataArray | None = None
+    ) -> list[DerivationEntry]:
+        """Return streamlined derivation entries for UI and copy-code output."""
+        return [row.entry for row in self.display_rows(parent_data=parent_data)]
 
     def display_code(self, *, parent_data: xr.DataArray | None = None) -> str | None:
         """Return streamlined replay code for UI and clipboard actions.

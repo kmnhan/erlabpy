@@ -9,9 +9,12 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._widgets import (
+    _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
-    _ElidedInteractiveLabel,
+    _METADATA_DERIVATION_ROW_ROLE,
+    _CenteredIconToolButton,
+    _ElidedValueLabel,
     _LoadSourceDetailsDialog,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -22,6 +25,9 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
+    import pathlib
+
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
@@ -55,26 +61,45 @@ class _DetailsPanelController:
 
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
-            for entry in node.derivation_entries:
+            for row in node.derivation_display_rows:
+                entry = row.entry
                 item = QtWidgets.QListWidgetItem(entry.label)
-                item.setToolTip(entry.label)
+                can_activate, activation_reason = (
+                    self._manager._provenance_edit_controller.can_edit_row(row)
+                )
+                tooltip_lines = [entry.label]
+                if not can_activate and activation_reason:
+                    tooltip_lines.extend(("", activation_reason))
+                if (
+                    not entry.copyable
+                    and entry.code is None
+                    and not entry.label.startswith("Start from ")
+                ):
+                    tooltip_lines.extend(
+                        ("", "Replay code is unavailable for this step.")
+                    )
+                item.setToolTip("\n".join(tooltip_lines))
                 item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
                 item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
-                if not entry.copyable:
+                item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
+                item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
+                if not can_activate:
                     item.setForeground(
                         self._manager.metadata_derivation_list.palette().color(
                             QtGui.QPalette.ColorGroup.Disabled,
                             QtGui.QPalette.ColorRole.Text,
                         )
                     )
-                    if entry.code is None and not entry.label.startswith("Start from "):
-                        item.setToolTip("Replay code is unavailable for this step.")
                 self._manager.metadata_derivation_list.addItem(item)
         self._manager._update_metadata_pane()
 
     def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
-        while self._manager.metadata_details_layout.count():
-            item = self._manager.metadata_details_layout.takeAt(0)
+        layout = self._manager.metadata_details_layout
+        for row in range(layout.rowCount()):
+            layout.setRowMinimumHeight(row, 0)
+            layout.setRowStretch(row, 0)
+        while layout.count():
+            item = layout.takeAt(0)
             if item is None:
                 continue
             widget = item.widget()
@@ -83,26 +108,50 @@ class _DetailsPanelController:
         self._manager._metadata_detail_labels.clear()
 
         for row, field in enumerate(fields):
+            row_vertical_alignment = (
+                QtCore.Qt.AlignmentFlag.AlignTop
+                if field.wrap
+                else QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
             key_label = QtWidgets.QLabel(
                 field.label, self._manager.metadata_details_widget
             )
             key_label.setForegroundRole(QtGui.QPalette.ColorRole.Text)
             key_label.setEnabled(False)
             key_label.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+                QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
             )
             value_label: QtWidgets.QLabel
+            value_widget: QtWidgets.QWidget
+            details_button: QtWidgets.QToolButton | None = None
             if field.details is not None:
-                value_label = _ElidedInteractiveLabel(
+                value_label = _ElidedValueLabel(
                     field.value,
                     self._manager.metadata_details_widget,
+                    elide_mode=QtCore.Qt.TextElideMode.ElideMiddle,
                 )
-                value_label.setForegroundRole(QtGui.QPalette.ColorRole.Link)
-                value_label.set_full_text(field.value)
-                value_label.clicked.connect(
-                    lambda d=field.details: self._manager._show_load_source_details(d)
+                node_uid = self._manager._metadata_node_uid
+                details_button = _CenteredIconToolButton(
+                    self._manager.metadata_details_widget
                 )
-            else:
+                details_button.setObjectName("manager_metadata_file_details_button")
+                details_button.setAutoRaise(True)
+                details_button.setToolTip("Show data source details")
+                details_button.setAccessibleName("Show data source details")
+                icon = QtGui.QIcon.fromTheme("dialog-information")
+                if icon.isNull():
+                    style = details_button.style() or QtWidgets.QApplication.style()
+                    if style is not None:
+                        icon = style.standardIcon(
+                            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
+                        )
+                details_button.setIcon(icon)
+                details_button.clicked.connect(
+                    lambda _checked=False, d=field.details, uid=node_uid: (
+                        self._manager._show_load_source_details(d, node_uid=uid)
+                    )
+                )
+            elif field.wrap:
                 value_label = QtWidgets.QLabel(
                     field.value, self._manager.metadata_details_widget
                 )
@@ -112,25 +161,123 @@ class _DetailsPanelController:
                 value_label.setWordWrap(field.wrap)
                 value_label.setToolTip(field.value)
                 value_label.setMinimumWidth(0)
-                value_label.setAlignment(
-                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
-                )
                 size_policy = QtWidgets.QSizePolicy(
-                    QtWidgets.QSizePolicy.Policy.Expanding
-                    if field.wrap
-                    else QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Expanding,
                     QtWidgets.QSizePolicy.Policy.Preferred,
                 )
-                size_policy.setHeightForWidth(field.wrap)
+                size_policy.setHeightForWidth(True)
                 value_label.setSizePolicy(size_policy)
+            else:
+                value_label = _ElidedValueLabel(
+                    field.value,
+                    self._manager.metadata_details_widget,
+                    elide_mode=QtCore.Qt.TextElideMode.ElideRight,
+                )
+            if not field.wrap:
+                value_label.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Preferred,
+                )
             if field.monospace:
                 value_label.setFont(self._manager._metadata_monospace_font)
-            self._manager.metadata_details_layout.addWidget(key_label, row, 0)
-            self._manager.metadata_details_layout.addWidget(value_label, row, 1)
+            value_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
+            )
+            if details_button is not None:
+                style = details_button.style() or QtWidgets.QApplication.style()
+                small_icon_size = (
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PixelMetric.PM_SmallIconSize,
+                        None,
+                        details_button,
+                    )
+                    if style is not None
+                    else value_label.fontMetrics().height()
+                )
+                row_height = max(
+                    key_label.sizeHint().height(),
+                    value_label.sizeHint().height(),
+                    small_icon_size,
+                )
+                details_button.setIconSize(
+                    QtCore.QSize(small_icon_size, small_icon_size)
+                )
+                details_button.setFixedSize(QtCore.QSize(row_height, row_height))
+                spacing = layout.horizontalSpacing()
+                if spacing < 0:
+                    spacing = (
+                        style.pixelMetric(
+                            QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing,
+                            None,
+                            details_button,
+                        )
+                        if style is not None
+                        else 0
+                    )
+                value_widget = QtWidgets.QWidget(self._manager.metadata_details_widget)
+                value_widget.setMinimumWidth(0)
+                value_layout = QtWidgets.QHBoxLayout(value_widget)
+                value_layout.setContentsMargins(0, 0, 0, 0)
+                value_layout.setSpacing(max(0, spacing))
+                value_layout.addWidget(value_label, 1)
+                value_layout.addWidget(
+                    details_button,
+                    0,
+                    alignment=QtCore.Qt.AlignmentFlag.AlignVCenter,
+                )
+                if spacing > 0:
+                    value_layout.addSpacing(spacing)
+            else:
+                value_widget = value_label
+            layout.addWidget(key_label, row, 0)
+            layout.addWidget(value_widget, row, 1)
             self._manager._metadata_detail_labels[field.label] = value_label
 
-    def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
-        _LoadSourceDetailsDialog(details, self._manager).exec()
+    def _show_load_source_details(
+        self,
+        details: _LoadSourceDetails,
+        *,
+        node_uid: str | None = None,
+    ) -> None:
+        if node_uid is None:
+            node_uid = self._manager._metadata_node_uid
+        node = (
+            None if node_uid is None else self._manager._tool_graph.nodes.get(node_uid)
+        )
+        can_edit_file_load = False
+        edit_file_load_tooltip = (
+            "This source was not recorded as an editable file-load step."
+        )
+        if node is not None:
+            can_edit_file_load, edit_file_load_tooltip = (
+                self._manager._provenance_edit_controller.can_edit_file_load_source(
+                    node,
+                    details.path,
+                )
+            )
+        dialog = _LoadSourceDetailsDialog(
+            details,
+            self._manager,
+            show_in_data_explorer=self._show_load_source_in_data_explorer,
+            can_edit_file_load=can_edit_file_load,
+            edit_file_load_tooltip=edit_file_load_tooltip,
+        )
+        dialog.exec()
+        if not dialog.edit_file_load_requested or node_uid is None:
+            return
+        node = self._manager._tool_graph.nodes.get(node_uid)
+        if node is None:
+            return
+        self._manager._provenance_edit_controller.edit_file_load_source(
+            node,
+            details.path,
+        )
+
+    def _show_load_source_in_data_explorer(self, path: pathlib.Path) -> None:
+        explorer = typing.cast(
+            "_TabbedExplorer", self._manager._show_standalone_app("explorer")
+        )
+        explorer.show_path(path)
 
     def _load_source_for_replay(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -206,10 +353,6 @@ class _DetailsPanelController:
 
     def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
         items = list(self._manager.metadata_derivation_list.selectedItems())
-        if not items:
-            current_item = self._manager.metadata_derivation_list.currentItem()
-            if current_item is not None:
-                items = [current_item]
         return sorted(items, key=self._manager.metadata_derivation_list.row)
 
     def _selected_derivation_code(self) -> str | None:
@@ -224,11 +367,39 @@ class _DetailsPanelController:
             return None
         return "\n".join(codes)
 
+    def _selected_derivation_row(
+        self,
+    ) -> provenance._ProvenanceDisplayRow | None:
+        items = self._manager._selected_derivation_items()
+        if len(items) != 1:
+            return None
+        row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
+        if isinstance(row, provenance._ProvenanceDisplayRow):
+            return row
+        return None
+
     def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
         if self._manager.metadata_derivation_list.count() == 0:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)
+        row = self._manager._selected_derivation_row()
+        edit_enabled, edit_reason = (
+            self._manager._provenance_edit_controller.can_edit_row(row)
+        )
+        revert_enabled, revert_reason = (
+            self._manager._provenance_edit_controller.can_revert_row(row)
+        )
+        self._manager._metadata_edit_step_action.setEnabled(edit_enabled)
+        self._manager._metadata_edit_step_action.setToolTip(edit_reason)
+        self._manager._metadata_revert_step_action.setEnabled(revert_enabled)
+        self._manager._metadata_revert_step_action.setToolTip(revert_reason)
+        menu.addAction(self._manager._metadata_edit_step_action)
+        if edit_enabled:
+            menu.setDefaultAction(self._manager._metadata_edit_step_action)
+        menu.addAction(self._manager._metadata_revert_step_action)
+        menu.addSeparator()
+
         selected_code = self._manager._selected_derivation_code()
         self._manager._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._manager._metadata_copy_selected_action)
@@ -315,6 +486,22 @@ class _DetailsPanelController:
                 code = "\n\n".join(part for part in (load_code, rebased_code) if part)
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
+
+    def _edit_selected_derivation_step(self) -> None:
+        self._manager._provenance_edit_controller.edit_row(
+            self._manager._selected_derivation_row()
+        )
+
+    def _activate_selected_derivation_step(self) -> None:
+        row = self._manager._selected_derivation_row()
+        editable, _reason = self._manager._provenance_edit_controller.can_edit_row(row)
+        if editable:
+            self._manager._edit_selected_derivation_step()
+
+    def _revert_selected_derivation_step(self) -> None:
+        self._manager._provenance_edit_controller.revert_row(
+            self._manager._selected_derivation_row()
+        )
 
     def _update_info(self, *, uid: str | None = None) -> None:
         """Update the information text box.

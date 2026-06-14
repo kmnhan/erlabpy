@@ -553,11 +553,12 @@ def test_name_filter_dialog_name_map_editor_updates_literal(
     dialog.check_filter("Example Raw Data (*.h5)")
     dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
 
-    dialog._open_name_map_editor()
+    assert dialog.name_map_editor_button is not None
+    dialog.name_map_editor_button.click()
 
     assert editor_calls == [
         (
-            dialog,
+            dialog.options_widget,
             erlab.io.loaders["example"],
             file_path,
             {"old_name": "Old Raw"},
@@ -587,7 +588,8 @@ def test_name_filter_dialog_invalid_name_map_editor_literal_shows_error(
     dialog.check_filter("Example Raw Data (*.h5)")
     dialog.loader_extension_lines["name_map"].setText("dict(scan=1)")
 
-    dialog._open_name_map_editor()
+    assert dialog.name_map_editor_button is not None
+    dialog.name_map_editor_button.click()
 
     assert critical_calls
     assert critical_calls[0][1:4] == (
@@ -642,8 +644,10 @@ def test_name_filter_dialog_editor_cancel_leaves_literals(
     dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
     dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
 
-    dialog._open_name_map_editor()
-    dialog._open_coordinate_attrs_picker()
+    assert dialog.name_map_editor_button is not None
+    assert dialog.coordinate_attrs_picker_button is not None
+    dialog.name_map_editor_button.click()
+    dialog.coordinate_attrs_picker_button.click()
 
     assert dialog.loader_extension_lines["name_map"].text() == "{'old_name': 'Old Raw'}"
     assert dialog.loader_extension_lines["coordinate_attrs"].text() == "['old_coord']"
@@ -663,8 +667,10 @@ def test_name_filter_dialog_editor_helpers_ignore_non_loader_functions(qtbot) ->
     dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
     dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
 
-    dialog._open_name_map_editor()
-    dialog._open_coordinate_attrs_picker()
+    assert dialog.name_map_editor_button is not None
+    assert dialog.coordinate_attrs_picker_button is not None
+    dialog.name_map_editor_button.click()
+    dialog.coordinate_attrs_picker_button.click()
 
     assert dialog.loader_extension_lines["name_map"].text() == "{'old_name': 'Old Raw'}"
     assert dialog.loader_extension_lines["coordinate_attrs"].text() == "['old_coord']"
@@ -689,7 +695,8 @@ def test_name_filter_dialog_invalid_coordinate_attrs_picker_literal_shows_error(
     dialog.check_filter("Example Raw Data (*.h5)")
     dialog.loader_extension_lines["coordinate_attrs"].setText("'LensMode'")
 
-    dialog._open_coordinate_attrs_picker()
+    assert dialog.coordinate_attrs_picker_button is not None
+    dialog.coordinate_attrs_picker_button.click()
 
     assert critical_calls
     assert critical_calls[0][1:4] == (
@@ -796,11 +803,12 @@ def test_name_filter_dialog_coordinate_attrs_picker_updates_literal(
     dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
     dialog.loader_extension_lines["name_map"].setText("{'extra_coord': 'Extra Raw'}")
 
-    dialog._open_coordinate_attrs_picker()
+    assert dialog.coordinate_attrs_picker_button is not None
+    dialog.coordinate_attrs_picker_button.click()
 
     assert picker_calls == [
         (
-            dialog,
+            dialog.options_widget,
             erlab.io.loaders["example"],
             file_path,
             ("old_coord",),

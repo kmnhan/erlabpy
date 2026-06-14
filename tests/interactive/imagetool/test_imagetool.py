@@ -161,6 +161,7 @@ def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
 def _clear_selection_dialog(dialog: SelectionDialog) -> None:
     for row in dialog.rows:
         row.use_check.setChecked(False)
+        row.step_check.setChecked(False)
         row.width_check.setChecked(False)
 
 
@@ -1931,14 +1932,12 @@ def test_profile_menu_opens_associated_coord_targets(
         tuple[
             xr.DataArray,
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
-            erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding
-            | None,
             bool,
         ]
     ] = []
 
-    def _capture_open(data, source_spec, *, source_binding=None, use_parent_colormap):
-        captured.append((data, source_spec, source_binding, use_parent_colormap))
+    def _capture_open(data, source_spec, *, use_parent_colormap):
+        captured.append((data, source_spec, use_parent_colormap))
 
     monkeypatch.setattr(profile, "_open_data_in_new_window", _capture_open)
 
@@ -1957,11 +1956,10 @@ def test_profile_menu_opens_associated_coord_targets(
     )
     assert temp_action.menu() is None
     temp_action.trigger()
-    temp_data, temp_spec, temp_binding, use_parent_colormap = captured[-1]
+    temp_data, temp_spec, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(temp_data, data.coords["temp"])
     assert temp_spec.kind == "public_data"
     assert temp_spec.operations[-1].op == "select_coord"
-    assert temp_binding is None
     assert use_parent_colormap is False
 
     coord_menu = _menu_action_by_data(
@@ -1970,19 +1968,17 @@ def test_profile_menu_opens_associated_coord_targets(
     assert coord_menu is not None
 
     _menu_action_by_data(coord_menu, ("associated_coord_full", "plane")).trigger()
-    full_data, full_spec, full_binding, use_parent_colormap = captured[-1]
+    full_data, full_spec, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(full_data, data.coords["plane"])
     assert full_spec.kind == "public_data"
     assert full_spec.operations[-1].op == "select_coord"
-    assert full_binding is None
     assert use_parent_colormap is False
 
     _menu_action_by_data(coord_menu, ("associated_coord_profile", "plane")).trigger()
-    profile_data, profile_spec, profile_binding, use_parent_colormap = captured[-1]
+    profile_data, profile_spec, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(profile_data, data.isel(y=1, z=0).coords["plane"])
     assert profile_spec.kind == "selection"
     assert profile_spec.operations[-1].op == "select_coord"
-    assert profile_binding is None
     assert use_parent_colormap is False
     win.close()
 
@@ -3367,17 +3363,15 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
         staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
     )
 
-    binding = image.make_tool_source_binding()
     spec = image.make_tool_source_spec()
     sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
 
-    assert binding.crop_sel_indexers == {"alpha": slice(1, 5)}
     assert sel_kwargs == {"alpha": slice(1, 4)}
 
     win.close()
 
 
-def test_itool_make_tool_source_binding_uses_index_crop_for_nonuniform_dim(
+def test_itool_make_tool_source_spec_uses_index_crop_for_nonuniform_dim(
     qtbot, monkeypatch
 ) -> None:
     data = xr.DataArray(
@@ -3400,14 +3394,19 @@ def test_itool_make_tool_source_binding_uses_index_crop_for_nonuniform_dim(
         staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
     )
 
-    binding = image.make_tool_source_binding()
+    spec = image.make_tool_source_spec()
+    crop_isel_kwargs = [
+        op.decoded_kwargs
+        for op in spec.operations
+        if op.op == "isel" and op.decoded_kwargs == {"x": slice(None, None)}
+    ]
 
-    assert binding.crop_isel_indexers == {"x": slice(None, None)}
+    assert crop_isel_kwargs == [{"x": slice(None, None)}]
 
     win.close()
 
 
-def test_itool_make_tool_source_binding_falls_back_to_dim_lookup(
+def test_itool_make_tool_source_spec_falls_back_to_dim_lookup(
     qtbot, monkeypatch
 ) -> None:
     win = itool(_TEST_DATA["3D"].copy(), execute=False)
@@ -3426,10 +3425,16 @@ def test_itool_make_tool_source_binding_falls_back_to_dim_lookup(
         staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
     )
 
-    binding = image.make_tool_source_binding()
+    spec = image.make_tool_source_spec()
+    selection_kwargs = next(
+        op.decoded_kwargs
+        for op in spec.operations
+        if op.op in {"qsel", "isel"} and "beta" in op.decoded_kwargs
+    )
+    crop_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
 
-    assert binding.selection_indexers["beta"] == 2
-    assert binding.crop_sel_indexers == {"alpha": slice(1, 5)}
+    assert selection_kwargs["beta"] == _TEST_DATA["3D"].coords["beta"][2].item()
+    assert crop_kwargs == {"alpha": slice(1, 4)}
 
     win.close()
 
@@ -5474,7 +5479,7 @@ def test_itool_open_in_ktool_ignores_non_alpha_beta_guidelines(
     win.close()
 
 
-def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) -> None:
+def test_itool_open_in_ftool_sets_squeezed_source_spec(qtbot, monkeypatch) -> None:
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
     qtbot.addWidget(win)
 
@@ -5485,7 +5490,7 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
     image.open_in_ftool()
 
     assert child.source_spec == image.make_tool_source_spec(squeeze=True)
-    assert child.source_binding == image.make_tool_source_binding(squeeze=True)
+    assert child.source_binding is None
     assert child.source_state == "fresh"
 
     win.close()
@@ -6555,6 +6560,35 @@ def test_selection_dialog_isel_range_executes_code(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_isel_range_step_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    _set_combo_data(row.kind_combo, "range")
+    row.index_start_spin.setValue(0)
+    row.index_stop_spin.setValue(3)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    expected = data.isel(alpha=slice(0, 3, 2))
+    assert dialog.source_operations() == [
+        provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+    ]
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
@@ -6586,6 +6620,33 @@ def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("method", ["sel", "qsel"])
+def test_selection_dialog_label_range_step_executes_code(qtbot, method: str) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[1]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(0.0)
+    row.value_stop_spin.setValue(3.0)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    expected = getattr(data, method)(eV=slice(0.0, 3.0, 2))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_sel_range_executes_code(qtbot) -> None:
     data = _selection_4d_data()
     win = itool(data, execute=False)
@@ -6607,6 +6668,372 @@ def test_selection_dialog_sel_range_executes_code(qtbot) -> None:
     )
 
     dialog.close()
+    win.close()
+
+
+def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    operation = provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+    dialog.restore_transform_operation(operation)
+
+    row = dialog.rows[0]
+    assert row.use_check.isChecked()
+    assert row.step_check.isChecked()
+    assert row.step_spin.value() == 2
+    assert dialog.source_operations() == [operation]
+    expected = data.isel(alpha=slice(0, 3, 2))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
+    qtbot,
+) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    sel_operation = provenance.SelOperation(kwargs={"eV": slice(1.0, 3.0)})
+    dialog.restore_transform_operation(sel_operation)
+    assert dialog.source_operations() == [sel_operation]
+
+    qsel_operation = provenance.QSelOperation(kwargs={"beta": 2.0, "beta_width": 1.5})
+    dialog.restore_transform_operation(qsel_operation)
+    beta_row = next(row for row in dialog.rows if row.dim == "beta")
+    assert beta_row.width_check.isChecked()
+    assert beta_row.width_spin.value() == 1.5
+    assert dialog.source_operations() == [qsel_operation]
+
+    with pytest.raises(ValueError, match="Open-ended selections"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(None, 3)})
+        )
+    with pytest.raises(ValueError, match="integer strides"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})
+        )
+    with pytest.raises(ValueError, match="Reverse or zero-step"):
+        dialog.restore_transform_operation(
+            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 0)})
+        )
+    with pytest.raises(ValueError, match="not available"):
+        dialog.restore_transform_operation(
+            provenance.SelOperation(kwargs={"missing": 1.0})
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_descending_range_step_restore(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=float),
+        dims=("x",),
+        coords={"x": np.arange(5.0, 0.0, -1.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+    row = dialog.rows[0]
+
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "sel")
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(2.0)
+    row.value_stop_spin.setValue(4.0)
+    row.step_check.setChecked(True)
+    row.step_spin.setValue(2)
+
+    assert row.indexer() == ("x", slice(4.0, 2.0, 2))
+
+    dialog.close()
+    win.close()
+
+
+def _restore_dialog_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(20, dtype=float).reshape((4, 5)),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(4.0),
+            "y": np.arange(5.0),
+            "kx": ("x", np.linspace(-0.2, 0.2, 4)),
+            "ky": ("y", np.linspace(-0.3, 0.3, 5)),
+            "temperature": ("x", [20.0, 10.0, 30.0, 15.0]),
+        },
+        attrs={"note": "old"},
+        name="scan",
+    )
+
+
+@pytest.mark.parametrize(
+    ("dialog_cls", "operation", "expected"),
+    [
+        (
+            AggregateDialog,
+            provenance.AverageOperation(dims=("x",)),
+            provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        ),
+        (
+            AggregateDialog,
+            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
+            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
+        ),
+        (
+            InterpolationDialog,
+            provenance.InterpolationOperation(
+                dim="x",
+                values=[0.0, 1.5, 3.0],
+                method="linear",
+            ),
+            provenance.InterpolationOperation(
+                dim="x",
+                values=[0.0, 1.5, 3.0],
+                method="linear",
+            ),
+        ),
+        (
+            LeadingEdgeDialog,
+            provenance.LeadingEdgeOperation(
+                dim="x",
+                fraction=0.4,
+                direction="positive",
+            ),
+            provenance.LeadingEdgeOperation(
+                dim="x",
+                fraction=0.4,
+                direction="positive",
+            ),
+        ),
+        (
+            CoarsenDialog,
+            provenance.CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+            ),
+            provenance.CoarsenOperation(
+                dim={"x": 2},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="sum",
+            ),
+        ),
+        (
+            ThinDialog,
+            provenance.ThinOperation(mode="global", factor=2),
+            provenance.ThinOperation(mode="global", factor=2),
+        ),
+        (
+            ThinDialog,
+            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+        ),
+        (
+            SymmetrizeDialog,
+            provenance.SymmetrizeOperation(
+                dim="x",
+                center=1.0,
+                part="below",
+                mode="full",
+                subtract=True,
+            ),
+            provenance.SymmetrizeOperation(
+                dim="x",
+                center=1.0,
+                part="below",
+                mode="full",
+                subtract=True,
+            ),
+        ),
+        (
+            SymmetrizeNfoldDialog,
+            provenance.SymmetrizeNfoldOperation(
+                fold=4,
+                axes=("x", "y"),
+                center={"x": 1.0, "y": 2.0},
+                reshape=False,
+                order=2,
+            ),
+            provenance.SymmetrizeNfoldOperation(
+                fold=4,
+                axes=("x", "y"),
+                center={"x": 1.0, "y": 2.0},
+                reshape=False,
+                order=2,
+            ),
+        ),
+        (
+            DivideByCoordDialog,
+            provenance.DivideByCoordOperation(coord_name="temperature"),
+            provenance.DivideByCoordOperation(coord_name="temperature"),
+        ),
+        (
+            SwapDimsDialog,
+            provenance.SwapDimsOperation(mapping={"x": "kx"}),
+            provenance.SwapDimsOperation(mapping={"x": "kx"}),
+        ),
+        (
+            RenameDimsCoordsDialog,
+            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignCoordsOperation(
+                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
+            ),
+            provenance.AssignCoordsOperation(
+                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
+            ),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+        ),
+        (
+            AssignCoordsDialog,
+            provenance.AssignCoord1DOperation(
+                coord_name="kx_new",
+                dim="x",
+                values=[0.0, 0.1, 0.2, 0.3],
+            ),
+            provenance.AssignCoord1DOperation(
+                coord_name="kx_new",
+                dim="x",
+                values=[0.0, 0.1, 0.2, 0.3],
+            ),
+        ),
+        (
+            AssignAttrsDialog,
+            provenance.AssignAttrsOperation(
+                attrs={"note": "edited", "temperature": 20.0}
+            ),
+            provenance.AssignAttrsOperation(
+                attrs={"note": "edited", "temperature": 20.0}
+            ),
+        ),
+    ],
+)
+def test_transform_dialog_restore_operation_roundtrip(
+    qtbot,
+    dialog_cls: type[imagetool_dialogs.DataTransformDialog],
+    operation: provenance.ToolProvenanceOperation,
+    expected: provenance.ToolProvenanceOperation,
+) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = dialog_cls(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.source_transform_operation() == expected
+
+    dialog.close()
+    win.close()
+
+
+def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
+    qtbot,
+) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = RotationDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    axes = tuple(win.slicer_area.main_image.axis_dims_uniform)
+    operation = provenance.RotateOperation(
+        angle=12.5,
+        axes=axes,
+        center=(1.0, 2.0),
+        reshape=False,
+        order=2,
+    )
+
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.source_transform_operation() == operation
+    with pytest.raises(ValueError, match="not currently visible"):
+        dialog.restore_transform_operation(
+            provenance.RotateOperation(angle=0.0, axes=("x", "z"), center=(0.0, 0.0))
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_symmetrize_nfold_restore_accepts_mapping_center(qtbot) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = SymmetrizeNfoldDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_transform_operation(
+        provenance.SymmetrizeNfoldOperation(
+            fold=3,
+            axes=("x", "y"),
+            center={"x": 1.0, "y": 2.0},
+        )
+    )
+
+    assert [spin.value() for spin in dialog.center_spins] == [1.0, 2.0]
+    with pytest.raises(ValueError, match="not currently visible"):
+        dialog.restore_transform_operation(
+            provenance.SymmetrizeNfoldOperation(fold=3, axes=("x", "z"))
+        )
+
+    dialog.close()
+    win.close()
+
+
+def test_restore_transform_operation_ignores_unrelated_operations(qtbot) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialogs = [
+        imagetool_dialogs.DataTransformDialog(win.slicer_area),
+        RotationDialog(win.slicer_area),
+        AggregateDialog(win.slicer_area),
+        InterpolationDialog(win.slicer_area),
+        SortByDialog(win.slicer_area),
+        LeadingEdgeDialog(win.slicer_area),
+        CoarsenDialog(win.slicer_area),
+        ThinDialog(win.slicer_area),
+        SymmetrizeDialog(win.slicer_area),
+        SymmetrizeNfoldDialog(win.slicer_area),
+        DivideByCoordDialog(win.slicer_area),
+        SwapDimsDialog(win.slicer_area),
+        RenameDimsCoordsDialog(win.slicer_area),
+        AssignCoordsDialog(win.slicer_area),
+        AssignAttrsDialog(win.slicer_area),
+    ]
+    for dialog in dialogs:
+        qtbot.addWidget(dialog)
+
+    unrelated = provenance.ScriptCodeOperation(label="script", code="derived = data")
+    for dialog in dialogs:
+        dialog.restore_transform_operation(unrelated)
+
+    for dialog in dialogs:
+        dialog.close()
     win.close()
 
 
@@ -7255,6 +7682,14 @@ def test_sortby_dialog_key_table_order_and_empty_items(qtbot) -> None:
     dialog._move_selected_row(-1)
     operation = dialog.source_transform_operation()
     assert operation.variables == ("temperature", "y")
+
+    restored_operation = provenance.SortByOperation(
+        variables=("pressure", "temperature"),
+        ascending=False,
+    )
+    dialog.restore_transform_operation(restored_operation)
+    assert table_keys()[:4] == ["pressure", "temperature", "x", "y"]
+    assert dialog.source_transform_operation() == restored_operation
 
     empty_item_dialog = SortByDialog(win.slicer_area)
     qtbot.addWidget(empty_item_dialog)

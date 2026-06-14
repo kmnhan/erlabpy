@@ -755,16 +755,7 @@ class _WorkspaceIOController:
             ds.attrs["manager_node_live_source_spec"] = json.dumps(
                 source_spec.model_dump(mode="json")
             )
-        source_binding = persistence.source_binding
-        if kind == "imagetool" and source_binding is not None:
-            ds.attrs["manager_node_live_source_binding"] = json.dumps(
-                source_binding.model_dump(mode="json")
-            )
-        if kind == "imagetool" and (
-            source_spec is not None
-            or source_binding is not None
-            or output_id is not None
-        ):
+        if kind == "imagetool" and (source_spec is not None or output_id is not None):
             ds.attrs["manager_node_source_state"] = persistence.source_state
             ds.attrs["manager_node_source_auto_update"] = bool(
                 persistence.source_auto_update
@@ -888,7 +879,7 @@ class _WorkspaceIOController:
                     exc_info=True,
                 )
         parsed_source_binding = None
-        if live_source_binding is not None:
+        if parsed_source_spec is None and live_source_binding is not None:
             try:
                 binding_payload = typing.cast(
                     "Mapping[str, typing.Any]",
@@ -908,7 +899,9 @@ class _WorkspaceIOController:
             "created_time": ds.attrs.get("manager_node_added_at"),
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
-            "source_binding": parsed_source_binding,
+            "source_binding": (
+                parsed_source_binding if parsed_source_spec is None else None
+            ),
             "output_id": ds.attrs.get("manager_node_output_id"),
             "source_auto_update": bool(
                 ds.attrs.get("manager_node_source_auto_update", False)

@@ -1026,7 +1026,7 @@ class _CoordinateAttrsPickerDialog(QtWidgets.QDialog):
         super().accept()
 
 
-class _NameFilterDialog(QtWidgets.QDialog):
+class _LoaderOptionsWidget(QtWidgets.QWidget):
     def __init__(
         self,
         parent: QtWidgets.QWidget,
@@ -1036,7 +1036,6 @@ class _NameFilterDialog(QtWidgets.QDialog):
         sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Select Loader")
 
         self._valid_loaders = valid_loaders
         self._loader_extensions = loader_extensions or {}
@@ -1046,10 +1045,11 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self._extensions_available = False
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         self._button_group = QtWidgets.QButtonGroup(self)
 
         for i, name in enumerate(self._valid_loaders.keys()):
-            radio_button = QtWidgets.QRadioButton(name)
+            radio_button = QtWidgets.QRadioButton(name, self)
             self._button_group.addButton(radio_button, i)
             layout.addWidget(radio_button)
 
@@ -1068,6 +1068,7 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self.highlighter = erlab.interactive.utils.PythonHighlighter(
             self.kwargs_line.document()
         )
+        self.kwargs_line.textChanged.connect(self._clear_checked_values)
 
         layout.addWidget(self.kwargs_line)
 
@@ -1114,6 +1115,7 @@ class _NameFilterDialog(QtWidgets.QDialog):
                 ),
             )
             line.setToolTip(tooltip)
+            line.textChanged.connect(self._clear_checked_values)
             label = QtWidgets.QLabel(key)
             label.setToolTip(tooltip)
             if key in {"name_map", "coordinate_attrs"}:
@@ -1151,15 +1153,9 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self.extensions_toggle.hide()
         self.extensions_group.hide()
 
-        button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-
     def check_filter(self, name_filter: str | None) -> None:
+        if not self._valid_loaders:
+            raise ValueError("No loaders are available")
         index = (
             tuple(self._valid_loaders.keys()).index(name_filter)
             if name_filter in self._valid_loaders
@@ -1170,7 +1166,11 @@ class _NameFilterDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _update_func_kwargs(self) -> None:
-        name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return
+        self._clear_checked_values()
+        name_filter = list(self._valid_loaders.keys())[checked_id]
         func, kargs = self._valid_loaders[name_filter]
         self.func_label.setText(f"Arguments for <code>{func.__name__}</code>:")
         self.kwargs_line.setText(_kwargs_to_text(kargs))
@@ -1192,6 +1192,11 @@ class _NameFilterDialog(QtWidgets.QDialog):
         for key, line in self.loader_extension_lines.items():
             value = loader_extensions.get(key)
             line.setText("" if value is None else repr(value))
+
+    @QtCore.Slot()
+    def _clear_checked_values(self) -> None:
+        self._checked_kwargs = None
+        self._checked_loader_extensions = None
 
     @QtCore.Slot()
     def _open_name_map_editor(self) -> None:
@@ -1263,7 +1268,11 @@ class _NameFilterDialog(QtWidgets.QDialog):
             if expanded
             else QtCore.Qt.ArrowType.RightArrow
         )
+        self.updateGeometry()
         self.adjustSize()
+        window = self.window()
+        if window is not None:
+            window.adjustSize()
 
     def _parse_checked_values(
         self,
@@ -1283,9 +1292,11 @@ class _NameFilterDialog(QtWidgets.QDialog):
                     pass
         return kwargs, loader_extensions
 
-    def accept(self) -> None:
+    def validate_checked_values(self) -> bool:
         try:
-            kwargs, loader_extensions = self._parse_checked_values()
+            self._checked_kwargs, self._checked_loader_extensions = (
+                self._parse_checked_values()
+            )
         except Exception as e:
             erlab.interactive.utils.MessageDialog.critical(
                 self,
@@ -1293,10 +1304,8 @@ class _NameFilterDialog(QtWidgets.QDialog):
                 "Invalid loader arguments.",
                 str(e),
             )
-            return
-        self._checked_kwargs = kwargs
-        self._checked_loader_extensions = loader_extensions
-        super().accept()
+            return False
+        return True
 
     def checked_filter(self) -> tuple[str, Callable, dict[str, typing.Any]]:
         idx = self._button_group.checkedId()
@@ -1310,6 +1319,64 @@ class _NameFilterDialog(QtWidgets.QDialog):
         if self._checked_loader_extensions:
             kwargs["loader_extensions"] = self._checked_loader_extensions.copy()
         return filter_name, func, kwargs
+
+
+class _NameFilterDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget,
+        valid_loaders: dict[str, tuple[Callable, dict]],
+        *,
+        loader_extensions: dict[str, dict[str, typing.Any]] | None = None,
+        sample_paths: Iterable[str | pathlib.Path] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select Loader")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.options_widget = _LoaderOptionsWidget(
+            self,
+            valid_loaders,
+            loader_extensions=loader_extensions,
+            sample_paths=sample_paths,
+        )
+        layout.addWidget(self.options_widget)
+
+        self._valid_loaders = self.options_widget._valid_loaders
+        self._button_group = self.options_widget._button_group
+        self.func_label = self.options_widget.func_label
+        self.kwargs_line = self.options_widget.kwargs_line
+        self.highlighter = self.options_widget.highlighter
+        self.extensions_toggle = self.options_widget.extensions_toggle
+        self.extensions_group = self.options_widget.extensions_group
+        self.loader_extension_lines = self.options_widget.loader_extension_lines
+        self.loader_extension_highlighters = (
+            self.options_widget.loader_extension_highlighters
+        )
+        self.loader_extension_fields = self.options_widget.loader_extension_fields
+        self.name_map_editor_button = self.options_widget.name_map_editor_button
+        self.coordinate_attrs_picker_button = (
+            self.options_widget.coordinate_attrs_picker_button
+        )
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def check_filter(self, name_filter: str | None) -> None:
+        self.options_widget.check_filter(name_filter)
+
+    def accept(self) -> None:
+        if not self.options_widget.validate_checked_values():
+            return
+        super().accept()
+
+    def checked_filter(self) -> tuple[str, Callable, dict[str, typing.Any]]:
+        return self.options_widget.checked_filter()
 
 
 class _ChooseFromDataTreeDialog(QtWidgets.QDialog):

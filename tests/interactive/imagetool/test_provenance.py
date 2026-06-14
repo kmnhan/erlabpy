@@ -2315,6 +2315,66 @@ def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> Non
     assert ".squeeze()" in code
 
 
+def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
+    file_spec = _file_provenance_spec().append_replay_stage(
+        provenance.full_data(provenance.QSelAggregationOperation(dims=("x",)))
+    )
+    file_rows = file_spec.display_rows(parent_data=_base_data())
+
+    assert file_rows[0].edit_ref == provenance._ProvenanceStepRef("file_load")
+    assert file_rows[0].replay_ref == provenance._ProvenanceStepRef("file_load")
+    assert file_rows[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+    assert file_rows[1].replay_ref == file_rows[1].edit_ref
+
+    live_spec = provenance.full_data(
+        provenance.CoarsenOperation(
+            dim={"x": 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        )
+    )
+    live_rows = live_spec.display_rows(parent_data=_base_data(), scope="source")
+
+    assert live_rows[0].scope == "source"
+    assert live_rows[0].edit_ref is None
+    assert live_rows[0].replay_ref == provenance._ProvenanceStepRef("start")
+    assert live_rows[1].scope == "source"
+    assert live_rows[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
+
+    script_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Run code", code="derived = data"),
+        provenance.QSelAggregationOperation(dims=("x",)),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="source", label="Input"),),
+    )
+    script_rows = script_spec.display_rows()
+
+    assert script_rows[1].edit_ref is None
+    assert script_rows[1].replay_ref == provenance._ProvenanceStepRef(
+        "script_input",
+        script_input_index=0,
+    )
+    assert script_rows[2].edit_ref is None
+    assert script_rows[2].replay_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
+    assert script_rows[3].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=1,
+    )
+
+
 def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     file_spec = _file_provenance_spec()
 

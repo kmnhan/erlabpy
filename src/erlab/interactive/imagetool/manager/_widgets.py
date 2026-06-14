@@ -19,6 +19,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.colors
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
+_METADATA_DERIVATION_ROW_ROLE = _METADATA_DERIVATION_CODE_ROLE + 2
+_METADATA_DERIVATION_ACTIVATABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 3
 _QWIDGETSIZE_MAX = 16777215
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
@@ -124,6 +127,12 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
             self.copy_requested.emit()
             event.accept()
             return
+        if event.key() in {QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter}:
+            item = self.currentItem()
+            if item is not None:
+                self.itemActivated.emit(item)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
 
@@ -149,8 +158,7 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
         self.sync_height_for_width()
 
 
-class _ElidedInteractiveLabel(QtWidgets.QLabel):
-    clicked = QtCore.Signal()
+class _ElidedValueLabel(QtWidgets.QLabel):
     _SIZE_HINT_EMS = 24
 
     def __init__(
@@ -164,7 +172,9 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         self._full_text = ""
         self._elide_mode = elide_mode
         self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.setMinimumWidth(0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -224,15 +234,6 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
             self.foregroundRole(),
         )
 
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
-        if event is None:
-            return
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
     def _stable_hint_width(self) -> int:
         padding = 2 * (self.margin() + self.frameWidth())
         if self.indent() > 0:
@@ -240,33 +241,87 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         return self.fontMetrics().horizontalAdvance("m" * self._SIZE_HINT_EMS) + padding
 
 
-class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):
-    _MAX_VISIBLE_ROWS = 4
-    _VERTICAL_PADDING = 12
+class _CenteredIconToolButton(QtWidgets.QToolButton):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
 
-    def setPlainText(self, text: str | None) -> None:
-        super().setPlainText("" if text is None else text)
-        self._update_fixed_height()
-
-    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
-        super().resizeEvent(event)
-        self._update_fixed_height()
-
-    def _visual_row_count(self) -> int:
-        document = typing.cast("QtGui.QTextDocument", self.document())
-        row_count = 0
-        block = document.firstBlock()
-        while block.isValid():
-            layout = typing.cast("QtGui.QTextLayout", block.layout())
-            row_count += max(1, layout.lineCount())
-            block = block.next()
-        return row_count
-
-    def _update_fixed_height(self) -> None:
-        row_count = max(1, min(self._MAX_VISIBLE_ROWS, self._visual_row_count()))
-        self.setFixedHeight(
-            row_count * self.fontMetrics().lineSpacing() + self._VERTICAL_PADDING
+    @staticmethod
+    def _visible_pixmap_rect(pixmap: QtGui.QPixmap) -> QtCore.QRectF:
+        dpr = pixmap.devicePixelRatioF()
+        if dpr <= 0.0:
+            dpr = 1.0
+        image = pixmap.toImage().convertToFormat(QtGui.QImage.Format.Format_ARGB32)
+        min_x = image.width()
+        min_y = image.height()
+        max_x = -1
+        max_y = -1
+        for y in range(image.height()):
+            for x in range(image.width()):
+                if image.pixelColor(x, y).alpha() <= 8:
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+        if max_x < 0 or max_y < 0:
+            return QtCore.QRectF(
+                QtCore.QPointF(0.0, 0.0),
+                QtCore.QSizeF(pixmap.width() / dpr, pixmap.height() / dpr),
+            )
+        return QtCore.QRectF(
+            min_x / dpr,
+            min_y / dpr,
+            (max_x - min_x + 1) / dpr,
+            (max_y - min_y + 1) / dpr,
         )
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        del event
+        option = QtWidgets.QStyleOptionToolButton()
+        self.initStyleOption(option)
+        icon = QtGui.QIcon(option.icon)
+        icon_size = QtCore.QSize(option.iconSize)
+        option.icon = QtGui.QIcon()
+        option.text = ""
+
+        painter = QtWidgets.QStylePainter(self)
+        style = self.style() or QtWidgets.QApplication.style()
+        if style is not None:
+            style.drawComplexControl(
+                QtWidgets.QStyle.ComplexControl.CC_ToolButton,
+                option,
+                painter,
+                self,
+            )
+
+        if icon.isNull() or not icon_size.isValid():
+            return
+        mode = (
+            QtGui.QIcon.Mode.Normal if self.isEnabled() else QtGui.QIcon.Mode.Disabled
+        )
+        state = QtGui.QIcon.State.On if self.isChecked() else QtGui.QIcon.State.Off
+        pixmap = icon.pixmap(icon_size, mode, state)
+        if pixmap.isNull():
+            return
+        dpr = pixmap.devicePixelRatioF()
+        if dpr <= 0.0:
+            dpr = 1.0
+        pixmap_size = QtCore.QSizeF(pixmap.width() / dpr, pixmap.height() / dpr)
+        visible_rect = self._visible_pixmap_rect(pixmap)
+        button_center = QtCore.QRectF(self.rect()).center()
+        visible_center = visible_rect.center()
+        target = QtCore.QRectF(
+            QtCore.QPointF(
+                button_center.x() - visible_center.x(),
+                button_center.y() - visible_center.y(),
+            ),
+            pixmap_size,
+        )
+        painter.drawPixmap(target, pixmap, QtCore.QRectF(pixmap.rect()))
 
 
 class _LoadSourceDetailsDialog(QtWidgets.QDialog):
@@ -274,63 +329,163 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self,
         details: _LoadSourceDetails,
         parent: QtWidgets.QWidget | None = None,
+        *,
+        show_in_data_explorer: Callable[[pathlib.Path], None] | None = None,
+        can_edit_file_load: bool = False,
+        edit_file_load_tooltip: str = (
+            "This source was not recorded as an editable file-load step."
+        ),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Data Source")
         self.setModal(True)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(540)
+        self.setSizeGripEnabled(False)
+        self.value_labels: dict[str, QtWidgets.QLabel] = {}
+        self.reveal_button: QtWidgets.QAbstractButton | None = None
+        self.data_explorer_button: QtWidgets.QAbstractButton | None = None
+        self.edit_file_load_button: QtWidgets.QAbstractButton | None = None
+        self.copy_code_button: QtWidgets.QAbstractButton | None = None
+        self.edit_file_load_requested = False
+        source_exists = details.path.exists()
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
 
-        mono_font = QtGui.QFontDatabase.systemFont(
-            QtGui.QFontDatabase.SystemFont.FixedFont
+        header_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(header_layout)
+
+        icon_label = QtWidgets.QLabel(self)
+        icon_label.setObjectName("manager_load_source_icon_label")
+        style = self.style()
+        icon = (
+            QtGui.QIcon()
+            if style is None
+            else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
         )
+        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
+        )
+        header_layout.addWidget(icon_label, 0)
+
+        title_layout = QtWidgets.QVBoxLayout()
+        header_layout.addLayout(title_layout, 1)
 
         title_label = QtWidgets.QLabel(details.path.name, self)
+        title_label.setObjectName("manager_load_source_name_label")
+        title_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        title_label.setToolTip(details.path.name)
+        title_font = title_label.font()
+        title_font.setPointSize(title_font.pointSize() + 1)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
         title_label.setWordWrap(True)
-        layout.addWidget(title_label)
+        title_layout.addWidget(title_label)
 
-        form_layout = QtWidgets.QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(8)
-        form_layout.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        status_label = QtWidgets.QLabel(
+            "Loaded from file" if source_exists else "Source file not found", self
         )
-        layout.addLayout(form_layout)
+        status_label.setObjectName("manager_load_source_status_label")
+        if source_exists:
+            status_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        else:
+            _mark_missing_source_label(status_label)
+        title_layout.addWidget(status_label)
 
-        self.path_edit = QtWidgets.QLineEdit(str(details.path), self)
-        self.path_edit.setReadOnly(True)
-        self.path_edit.setFont(mono_font)
-        form_layout.addRow("File", self.path_edit)
+        details_layout = QtWidgets.QGridLayout()
+        details_layout.setColumnStretch(1, 1)
+        layout.addLayout(details_layout)
 
-        self.loader_edit = QtWidgets.QLineEdit(details.loader_text, self)
-        self.loader_edit.setReadOnly(True)
-        self.loader_edit.setFont(mono_font)
-        form_layout.addRow(details.loader_label, self.loader_edit)
-
-        self.kwargs_edit = _LoadSourceArgumentsEdit(self)
-        self.kwargs_edit.setReadOnly(True)
-        self.kwargs_edit.setFont(mono_font)
-        self.kwargs_edit.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.kwargs_edit.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        row = self._add_detail(
+            details_layout,
+            0,
+            "path",
+            "Path",
+            str(details.path),
+            elide_mode=QtCore.Qt.TextElideMode.ElideMiddle,
         )
-        self.kwargs_edit.setLineWrapMode(
-            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        if not source_exists:
+            _mark_missing_source_label(self.value_labels["path"])
+            self.edit_file_load_button = QtWidgets.QPushButton(
+                "Locate…",
+                self,
+            )
+            self.edit_file_load_button.setObjectName("manager_edit_load_source_button")
+            self.edit_file_load_button.setAutoDefault(False)
+            self.edit_file_load_button.setEnabled(can_edit_file_load)
+            self.edit_file_load_button.setToolTip(edit_file_load_tooltip)
+            self.edit_file_load_button.clicked.connect(self._request_file_load_edit)
+            details_layout.addWidget(
+                self.edit_file_load_button,
+                row - 1,
+                2,
+                alignment=QtCore.Qt.AlignmentFlag.AlignLeft,
+            )
+        row = self._add_detail(
+            details_layout,
+            row,
+            "loader",
+            details.loader_label,
+            details.loader_text,
+            tool_tip=_load_source_loader_tooltip(details),
+            elide_mode=QtCore.Qt.TextElideMode.ElideRight,
         )
-        self.kwargs_edit.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        self._add_detail(
+            details_layout,
+            row,
+            "arguments",
+            "Load arguments",
+            details.kwargs_text,
+            wrap=True,
         )
-        self.kwargs_highlighter = erlab.interactive.utils.PythonHighlighter(
-            self.kwargs_edit.document()
-        )
-        self.kwargs_edit.setPlainText(details.kwargs_text)
-        form_layout.addRow("Load Arguments", self.kwargs_edit)
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
         self.button_box.setCenterButtons(False)
+        if source_exists:
+            self.reveal_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    _file_manager_action_text(),
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
+            )
+            self.reveal_button.setObjectName("manager_reveal_load_source_path_button")
+            self.reveal_button.setToolTip(
+                "Reveal this file in the system file manager."
+            )
+
+            def reveal_in_file_manager_and_close() -> None:
+                erlab.utils.misc.open_in_file_manager(details.path)
+                self.accept()
+
+            self.reveal_button.clicked.connect(reveal_in_file_manager_and_close)
+            self.data_explorer_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Show in Data Explorer",
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
+            )
+            self.data_explorer_button.setObjectName(
+                "manager_show_load_source_in_explorer_button"
+            )
+            self.data_explorer_button.setEnabled(show_in_data_explorer is not None)
+            self.data_explorer_button.setToolTip(
+                "Show this file in Data Explorer."
+                if show_in_data_explorer is not None
+                else "Data Explorer is unavailable in this context."
+            )
+            if show_in_data_explorer is not None:
+
+                def show_in_data_explorer_and_close() -> None:
+                    show_in_data_explorer(details.path)
+                    self.accept()
+
+                self.data_explorer_button.clicked.connect(
+                    show_in_data_explorer_and_close
+                )
         self.copy_path_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(
@@ -338,42 +493,131 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
             ),
         )
         self.copy_path_button.clicked.connect(
-            lambda: erlab.interactive.utils.copy_to_clipboard(self.path_edit.text())
+            lambda: erlab.interactive.utils.copy_to_clipboard(str(details.path))
         )
-        self.copy_code_button = typing.cast(
-            "QtWidgets.QAbstractButton",
-            self.button_box.addButton(
-                "Copy Load Code", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
-            ),
-        )
-        self.copy_code_button.setEnabled(details.load_code is not None)
-        self.copy_code_button.setToolTip(
-            "Copy a replayable loading snippet for this source."
-            if details.load_code is not None
-            else "Load code is unavailable for this source."
-        )
-        self.copy_code_button.clicked.connect(
-            lambda: (
-                erlab.interactive.utils.copy_to_clipboard(details.load_code)
-                if details.load_code is not None
-                else None
+        load_code = details.load_code
+        if load_code is not None:
+            self.copy_code_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Copy Load Code",
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
             )
-        )
+            self.copy_code_button.setToolTip(
+                "Copy a replayable loading snippet for this source."
+            )
+            self.copy_code_button.clicked.connect(
+                lambda _checked=False, code=load_code: (
+                    erlab.interactive.utils.copy_to_clipboard(code)
+                )
+            )
         close_button = typing.cast(
             "QtWidgets.QAbstractButton",
             self.button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close),
         )
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
-        self.adjustSize()
+        target_width = max(self.minimumWidth(), self.sizeHint().width())
+        self.resize(target_width, self.minimumSizeHint().height())
+        target_height = self.height()
+        self.setFixedSize(target_width, target_height)
+
+    @QtCore.Slot()
+    def _request_file_load_edit(self) -> None:
+        self.edit_file_load_requested = True
+        self.accept()
+
+    def _add_detail(
+        self,
+        layout: QtWidgets.QGridLayout,
+        row: int,
+        key: str,
+        label: str,
+        value: str,
+        *,
+        tool_tip: str | None = None,
+        elide_mode: QtCore.Qt.TextElideMode | None = None,
+        wrap: bool = False,
+    ) -> int:
+        key_label = QtWidgets.QLabel(label, self)
+        key_label.setObjectName(f"manager_load_source_{key}_label")
+        vertical_alignment = (
+            QtCore.Qt.AlignmentFlag.AlignTop
+            if wrap
+            else QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        key_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | vertical_alignment)
+        key_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+
+        if wrap:
+            value_label = QtWidgets.QLabel(value, self)
+            value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            value_label.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            value_label.setWordWrap(True)
+            value_label.setMinimumWidth(0)
+        else:
+            value_label = _ElidedValueLabel(
+                value,
+                self,
+                elide_mode=(
+                    QtCore.Qt.TextElideMode.ElideRight
+                    if elide_mode is None
+                    else elide_mode
+                ),
+            )
+        value_label.setObjectName(f"manager_load_source_{key}_value_label")
+        value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | vertical_alignment)
+        size_policy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding
+            if wrap
+            else QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        size_policy.setHeightForWidth(wrap)
+        value_label.setSizePolicy(size_policy)
+        value_label.setToolTip(value if tool_tip is None else tool_tip)
+
+        layout.addWidget(key_label, row, 0)
+        layout.addWidget(value_label, row, 1)
+        self.value_labels[key] = value_label
+        return row + 1
 
 
-def _workspace_file_manager_action_text() -> str:
+def _file_manager_action_text() -> str:
     if sys.platform == "darwin":
         return "Reveal in Finder"
     if sys.platform.startswith("win"):
         return "Reveal in File Explorer"
     return "Open Containing Folder"
+
+
+def _load_source_loader_tooltip(details: _LoadSourceDetails) -> str:
+    lines = [f"{details.loader_label}: {details.loader_text}"]
+    if details.loader_label == "Loader" and details.loader_text in erlab.io.loaders:
+        description = getattr(erlab.io.loaders[details.loader_text], "description", "")
+        if description:
+            lines.append(str(description))
+    return "\n".join(lines)
+
+
+def _mark_missing_source_label(label: QtWidgets.QLabel) -> None:
+    palette = label.palette()
+    palette.setColor(
+        QtGui.QPalette.ColorRole.WindowText,
+        QtGui.QColor(
+            "#ffb4ab" if erlab.interactive.colors.is_dark_mode() else "#b3261e"
+        ),
+    )
+    label.setForegroundRole(QtGui.QPalette.ColorRole.WindowText)
+    label.setPalette(palette)
+    label.setProperty("manager_source_missing", True)
+
+
+def _workspace_file_manager_action_text() -> str:
+    return _file_manager_action_text()
 
 
 @dataclass(frozen=True)
@@ -435,6 +679,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.setWindowTitle(f"{workspace_name} Properties")
         self.setModal(True)
         self.setMinimumWidth(540)
+        self.setSizeGripEnabled(False)
 
         self._workspace_path = (
             None if workspace_path is None else pathlib.Path(workspace_path).resolve()
@@ -444,12 +689,8 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.reveal_button: QtWidgets.QAbstractButton | None = None
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 12)
-        layout.setSpacing(14)
 
         header_layout = QtWidgets.QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
         layout.addLayout(header_layout)
 
         icon_label = QtWidgets.QLabel(self)
@@ -467,8 +708,6 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         header_layout.addWidget(icon_label, 0)
 
         title_layout = QtWidgets.QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(2)
         header_layout.addLayout(title_layout, 1)
 
         title_label = QtWidgets.QLabel(workspace_name, self)
@@ -476,11 +715,12 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        title_label.setWordWrap(True)
+        title_label.setToolTip(workspace_name)
         title_font = title_label.font()
         title_font.setPointSize(title_font.pointSize() + 1)
         title_font.setBold(True)
         title_label.setFont(title_font)
+        title_label.setWordWrap(True)
         title_layout.addWidget(title_label)
 
         status_label = QtWidgets.QLabel(
@@ -491,9 +731,6 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         title_layout.addWidget(status_label)
 
         details_layout = QtWidgets.QGridLayout()
-        details_layout.setContentsMargins(44, 0, 0, 0)
-        details_layout.setHorizontalSpacing(14)
-        details_layout.setVerticalSpacing(7)
         details_layout.setColumnStretch(1, 1)
         layout.addLayout(details_layout)
 
@@ -597,7 +834,10 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         )
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
-        self.adjustSize()
+        target_width = max(self.minimumWidth(), self.sizeHint().width())
+        self.resize(target_width, self.minimumSizeHint().height())
+        target_height = self.height()
+        self.setFixedSize(target_width, target_height)
 
     @staticmethod
     def _status_text(

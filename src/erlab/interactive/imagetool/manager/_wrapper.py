@@ -311,17 +311,9 @@ class _ManagedWindowNode(QtCore.QObject):
 
         self.window = window
         try:
-            if source_spec is not None:
+            if source_spec is not None or source_binding is not None:
                 self.set_source_binding(
                     source_spec,
-                    source_binding=source_binding,
-                    provenance_spec=provenance_spec,
-                    auto_update=source_auto_update,
-                    state=source_state,
-                )
-            elif source_binding is not None:
-                self.set_source_binding(
-                    None,
                     source_binding=source_binding,
                     provenance_spec=provenance_spec,
                     auto_update=source_auto_update,
@@ -843,10 +835,31 @@ class _ManagedWindowNode(QtCore.QObject):
     def derivation_entries(
         self,
     ) -> list[provenance.DerivationEntry]:
+        return [row.entry for row in self.derivation_display_rows]
+
+    @property
+    def derivation_display_rows(
+        self,
+    ) -> list[provenance._ProvenanceDisplayRow]:
+        if self.parent_uid is not None and self.source_spec is not None:
+            rows: list[provenance._ProvenanceDisplayRow] = []
+            parent = self.manager._parent_node(self)
+            parent_provenance = parent.displayed_provenance_spec
+            if parent_provenance is not None:
+                rows.extend(parent_provenance.display_rows())
+            source_spec = self.displayed_source_spec
+            if source_spec is not None:
+                rows.extend(
+                    source_spec.display_rows(
+                        parent_data=parent.current_source_data(),
+                        scope="source",
+                    )
+                )
+            return rows
         provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return []
-        return provenance_spec.display_entries()
+        return provenance_spec.display_rows()
 
     @property
     def derivation_lines(self) -> list[str]:
@@ -883,12 +896,11 @@ class _ManagedWindowNode(QtCore.QObject):
         Parameters
         ----------
         source_spec
-            Current source spec used for derivation display and older saved
-            workspaces. If ``source_binding`` is not provided, refresh applies this
-            spec as stored.
+            Current source spec used for derivation display and refresh. When provided,
+            refresh applies this spec as stored.
         source_binding
-            Selection state from an ImageTool plot. When provided, refresh first builds
-            a new ``source_spec`` from the current parent data.
+            Legacy selection state from an ImageTool plot. Used only to materialize a
+            missing ``source_spec`` once; explicit ``source_spec`` values take priority.
         provenance_spec
             Displayed provenance to show immediately. If omitted and the source is
             fresh, provenance is rebuilt from the parent and current source spec.
@@ -910,12 +922,12 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
-        self._source_binding = source_binding
-        if source_spec is None and self._source_binding is not None and self.parent_uid:
-            source_spec = self._source_binding.materialize(
+        if source_spec is None and source_binding is not None and self.parent_uid:
+            source_spec = source_binding.materialize(
                 self.manager._parent_node(self).current_source_data()
             )
         self._source_spec = provenance.require_live_source_spec(source_spec)
+        self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
             provenance_spec,
             provenance.ToolProvenanceSpec,
@@ -997,12 +1009,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self, parent_data: xr.DataArray
     ) -> provenance.ToolProvenanceSpec:
         """Return the source spec to apply to ``parent_data``."""
+        if self._source_spec is not None:
+            return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
+            self._source_binding = None
             return self._source_spec
-        if self._source_spec is None:
-            raise RuntimeError("Node is not bound to an ImageTool source.")
-        return self._source_spec
+        raise RuntimeError("Node is not bound to an ImageTool source.")
 
     def _resolved_output_payload(
         self,

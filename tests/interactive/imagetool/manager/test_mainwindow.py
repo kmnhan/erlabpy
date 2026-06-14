@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import logging
 import pathlib
 import types
@@ -13,15 +14,18 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
     _BatchOperationDialog,
@@ -1172,41 +1176,714 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         assert copied == ["derived = xr.DataArray([1.0])"]
 
 
-def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
-    qtbot, tmp_path
+def test_load_source_details_dialog_uses_native_readonly_details(
+    qtbot, monkeypatch, tmp_path
 ) -> None:
     kwargs_text = (
         'engine="h5netcdf", '
         "very_long_keyword_argument_name=123, "
         'another_long_keyword_argument_name="abcdef"'
     )
+    revealed: list[pathlib.Path] = []
+    opened_in_explorer: list[pathlib.Path] = []
+    source_path = tmp_path / "scan.nc"
+    source_path.write_bytes(b"")
+    monkeypatch.setattr(
+        erlab.utils.misc,
+        "open_in_file_manager",
+        lambda path: revealed.append(pathlib.Path(path)),
+    )
     dialog = _LoadSourceDetailsDialog(
         _LoadSourceDetails(
-            path=tmp_path / "scan.nc",
+            path=source_path,
             loader_label="Loader",
             loader_text="xarray.load_dataarray",
             kwargs_text=kwargs_text,
             load_code=None,
-        )
+        ),
+        show_in_data_explorer=lambda path: opened_in_explorer.append(
+            pathlib.Path(path)
+        ),
     )
     qtbot.addWidget(dialog)
     dialog.show()
 
-    qtbot.wait_until(lambda: dialog.kwargs_edit._visual_row_count() > 1, timeout=2000)
+    assert not dialog.findChildren(QtWidgets.QLineEdit)
+    assert not dialog.findChildren(QtWidgets.QPlainTextEdit)
+    assert dialog.minimumSize() == dialog.maximumSize()
+    assert dialog.height() == dialog.minimumSizeHint().height()
+    assert dialog.height() <= dialog.sizeHint().height()
+    assert dialog.reveal_button is not None
+    assert dialog.data_explorer_button is not None
+    assert dialog.reveal_button.isEnabled()
+    assert dialog.data_explorer_button.isEnabled()
+    assert (
+        dialog.findChild(QtWidgets.QAbstractButton, "manager_edit_load_source_button")
+        is None
+    )
 
-    expected_rows = min(
-        dialog.kwargs_edit._MAX_VISIBLE_ROWS,
-        dialog.kwargs_edit._visual_row_count(),
+    path_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_path_value_label"
     )
-    assert dialog.kwargs_edit.height() == (
-        expected_rows * dialog.kwargs_edit.fontMetrics().lineSpacing()
-        + dialog.kwargs_edit._VERTICAL_PADDING
+    loader_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_loader_value_label"
     )
+    arguments_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_arguments_value_label"
+    )
+    assert path_label is not None
+    assert loader_label is not None
+    assert arguments_label is not None
+    assert isinstance(path_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(loader_label, manager_widgets._ElidedValueLabel)
+    assert not isinstance(arguments_label, manager_widgets._ElidedValueLabel)
+    assert path_label.text() == str(source_path)
+    assert path_label.full_text == str(source_path)
+    assert path_label.toolTip() == str(source_path)
+    assert path_label.textFormat() == QtCore.Qt.TextFormat.PlainText
+    assert path_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    assert not path_label.wordWrap()
+    assert path_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
+    assert loader_label.text() == "xarray.load_dataarray"
+    assert not loader_label.wordWrap()
+    assert loader_label.toolTip() != loader_label.text()
+    assert "xarray.load_dataarray" in loader_label.toolTip()
+    assert kwargs_text not in loader_label.toolTip()
+    assert arguments_label.text() == kwargs_text
+    assert arguments_label.toolTip() == kwargs_text
+    assert arguments_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    assert arguments_label.wordWrap()
+
+    dialog.reveal_button.click()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert revealed == [source_path]
+
+    explorer_dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text=kwargs_text,
+            load_code=None,
+        ),
+        show_in_data_explorer=lambda path: opened_in_explorer.append(
+            pathlib.Path(path)
+        ),
+    )
+    qtbot.addWidget(explorer_dialog)
+    assert explorer_dialog.data_explorer_button is not None
+    explorer_dialog.data_explorer_button.click()
+    assert explorer_dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert opened_in_explorer == [source_path]
+
+
+def test_load_source_details_dialog_disables_data_explorer_without_callback(
+    qtbot, tmp_path
+) -> None:
+    source_path = tmp_path / "scan.nc"
+    source_path.write_bytes(b"")
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+
+    data_explorer_button = dialog.findChild(
+        QtWidgets.QAbstractButton, "manager_show_load_source_in_explorer_button"
+    )
+    assert data_explorer_button is not None
+    assert not data_explorer_button.isEnabled()
+
+
+def test_load_source_details_dialog_loader_tooltip_includes_plugin_description(
+    qtbot, tmp_path, example_loader
+) -> None:
+    source_path = tmp_path / "scan.h5"
+    source_path.write_bytes(b"")
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="example",
+            kwargs_text="single=True",
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+
+    loader_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_loader_value_label"
+    )
+    assert loader_label is not None
+    assert "example" in loader_label.toolTip()
+    assert erlab.io.loaders["example"].description in loader_label.toolTip()
+    assert "single=True" not in loader_label.toolTip()
+
+
+def test_load_source_details_dialog_marks_missing_source_file(qtbot, tmp_path) -> None:
+    source_path = (
+        tmp_path
+        / ("very_long_directory_name_" * 3)
+        / "missing_scan_with_a_long_name.nc"
+    )
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            load_code=None,
+        ),
+        show_in_data_explorer=lambda _path: None,
+    )
+    qtbot.addWidget(dialog)
+
+    status_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_status_label"
+    )
+    path_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_load_source_path_value_label"
+    )
+    assert status_label is not None
+    assert path_label is not None
+    assert isinstance(path_label, manager_widgets._ElidedValueLabel)
+    assert status_label.property("manager_source_missing") is True
+    assert path_label.property("manager_source_missing") is True
+    assert path_label.text() == str(source_path)
+    assert path_label.full_text == str(source_path)
+    assert not path_label.wordWrap()
+    assert path_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
+    assert dialog.reveal_button is None
+    assert dialog.data_explorer_button is None
+    assert (
+        dialog.findChild(
+            QtWidgets.QAbstractButton, "manager_reveal_load_source_path_button"
+        )
+        is None
+    )
+    assert (
+        dialog.findChild(
+            QtWidgets.QAbstractButton, "manager_show_load_source_in_explorer_button"
+        )
+        is None
+    )
+    assert path_label.textFormat() == QtCore.Qt.TextFormat.PlainText
+    assert path_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    assert path_label.cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+    edit_button = dialog.findChild(
+        QtWidgets.QAbstractButton, "manager_edit_load_source_button"
+    )
+    assert edit_button is not None
+    assert not edit_button.isEnabled()
+    assert edit_button.toolTip()
+    assert edit_button not in dialog.button_box.buttons()
+    details_layout_item = typing.cast("QtWidgets.QVBoxLayout", dialog.layout()).itemAt(
+        1
+    )
+    details_layout = details_layout_item.layout()
+    assert isinstance(details_layout, QtWidgets.QGridLayout)
+    for index in range(details_layout.count()):
+        if details_layout.itemAt(index).widget() is edit_button:
+            assert details_layout.getItemPosition(index) == (0, 2, 1, 1)
+            break
+    else:
+        pytest.fail("edit button was not placed in the details grid")
+
+
+def test_load_source_details_dialog_missing_source_edit_button_requests_edit(
+    qtbot,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "missing.nc"
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=source_path,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            load_code=None,
+        ),
+        can_edit_file_load=True,
+        edit_file_load_tooltip="Select the current source file.",
+    )
+    qtbot.addWidget(dialog)
+
+    edit_button = dialog.findChild(
+        QtWidgets.QAbstractButton, "manager_edit_load_source_button"
+    )
+    assert edit_button is not None
+    assert edit_button.isEnabled()
+    assert edit_button.toolTip()
+    assert not dialog.edit_file_load_requested
+
+    edit_button.click()
+
+    assert dialog.edit_file_load_requested
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_load_source_details_controller_opens_source_in_data_explorer(tmp_path) -> None:
+    source_path = tmp_path / "scan.nc"
+    shown_paths: list[pathlib.Path] = []
+    requested_apps: list[str] = []
+
+    class _FakeExplorer:
+        def show_path(self, path: pathlib.Path) -> None:
+            shown_paths.append(pathlib.Path(path))
+
+    def _show_standalone_app(key: str) -> _FakeExplorer:
+        requested_apps.append(key)
+        return _FakeExplorer()
+
+    manager = types.SimpleNamespace(_show_standalone_app=_show_standalone_app)
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._show_load_source_in_data_explorer(source_path)
+
+    assert requested_apps == ["explorer"]
+    assert shown_paths == [source_path]
+
+
+def test_details_panel_file_field_info_button_passes_metadata_node_uid(
+    qtbot,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "scan.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    metadata_widget = QtWidgets.QWidget()
+    qtbot.addWidget(metadata_widget)
+    shown: list[tuple[_LoadSourceDetails, str | None]] = []
+    manager = types.SimpleNamespace(
+        metadata_details_widget=metadata_widget,
+        metadata_details_layout=QtWidgets.QGridLayout(metadata_widget),
+        _metadata_detail_labels={},
+        _metadata_monospace_font=QtGui.QFont(),
+        _metadata_node_uid="node-1",
+        _show_load_source_details=lambda details, *, node_uid=None: shown.append(
+            (details, node_uid)
+        ),
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._set_metadata_fields(
+        [
+            manager_wrapper._MetadataField(
+                "File",
+                str(source_path),
+                details=details,
+            )
+        ]
+    )
+
+    value_label = manager._metadata_detail_labels["File"]
+    assert isinstance(value_label, manager_widgets._ElidedValueLabel)
+    assert value_label.foregroundRole() != QtGui.QPalette.ColorRole.Link
+    assert value_label.cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+    assert value_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    qtbot.mouseClick(value_label, QtCore.Qt.MouseButton.LeftButton)
+    assert not shown
+
+    details_button = metadata_widget.findChild(
+        QtWidgets.QToolButton,
+        "manager_metadata_file_details_button",
+    )
+    assert details_button is not None
+    assert_nonempty_tooltip(details_button.toolTip())
+    assert details_button.accessibleName()
+    assert not details_button.icon().isNull()
     assert isinstance(
-        dialog.kwargs_highlighter, erlab.interactive.utils.PythonHighlighter
+        details_button,
+        manager_widgets._CenteredIconToolButton,
     )
-    dialog.kwargs_edit.setPlainText(None)
-    assert dialog.kwargs_edit.toPlainText() == ""
+    key_label = typing.cast(
+        "QtWidgets.QLabel",
+        manager.metadata_details_layout.itemAtPosition(0, 0).widget(),
+    )
+    assert key_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    assert value_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    assert manager.metadata_details_layout.itemAtPosition(0, 2) is None
+    file_value_item = manager.metadata_details_layout.itemAtPosition(0, 1)
+    assert file_value_item is not None
+    file_value_widget = file_value_item.widget()
+    assert file_value_widget is not None
+    assert details_button.parentWidget() is file_value_widget
+    file_value_layout = typing.cast("QtWidgets.QHBoxLayout", file_value_widget.layout())
+    assert file_value_layout.itemAt(0).widget() is value_label
+    details_button_item = file_value_layout.itemAt(1)
+    assert details_button_item.widget() is details_button
+    assert details_button_item.alignment() & QtCore.Qt.AlignmentFlag.AlignVCenter
+    details_button.click()
+
+    assert shown == [(details, "node-1")]
+
+
+def test_details_panel_single_line_rows_stay_compact_and_elide(
+    qtbot,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "scan.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    metadata_widget = QtWidgets.QWidget()
+    qtbot.addWidget(metadata_widget)
+    manager = types.SimpleNamespace(
+        metadata_details_widget=metadata_widget,
+        metadata_details_layout=QtWidgets.QGridLayout(metadata_widget),
+        _metadata_detail_labels={},
+        _metadata_monospace_font=QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont
+        ),
+        _metadata_node_uid="node-1",
+        _show_load_source_details=lambda _details, *, node_uid=None: None,
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+    long_time = "2024-01-02 03:04:05 Pacific Daylight Time (-0700)"
+
+    controller._set_metadata_fields(
+        [
+            manager_wrapper._MetadataField("Kind", "ImageTool"),
+            manager_wrapper._MetadataField("Added", long_time, monospace=True),
+            manager_wrapper._MetadataField(
+                "File",
+                str(source_path),
+                monospace=True,
+                details=details,
+            ),
+            manager_wrapper._MetadataField("Inputs", "first\nsecond", wrap=True),
+        ]
+    )
+
+    kind_label = manager._metadata_detail_labels["Kind"]
+    added_label = manager._metadata_detail_labels["Added"]
+    file_label = manager._metadata_detail_labels["File"]
+    inputs_label = manager._metadata_detail_labels["Inputs"]
+    assert isinstance(kind_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(added_label, manager_widgets._ElidedValueLabel)
+    assert isinstance(file_label, manager_widgets._ElidedValueLabel)
+    assert not isinstance(inputs_label, manager_widgets._ElidedValueLabel)
+    assert added_label.full_text == long_time
+    assert added_label.sizePolicy().horizontalPolicy() == (
+        QtWidgets.QSizePolicy.Policy.Ignored
+    )
+    assert added_label.sizeHint().width() < (
+        added_label.fontMetrics().horizontalAdvance(long_time)
+    )
+
+    layout = manager.metadata_details_layout
+    assert layout.rowMinimumHeight(0) == 0
+    assert layout.rowMinimumHeight(1) == 0
+    assert layout.rowMinimumHeight(2) == 0
+    assert layout.rowMinimumHeight(3) == 0
+    details_button = metadata_widget.findChild(
+        QtWidgets.QToolButton,
+        "manager_metadata_file_details_button",
+    )
+    assert details_button is not None
+    file_key_label = typing.cast(
+        "QtWidgets.QLabel",
+        layout.itemAtPosition(2, 0).widget(),
+    )
+    button_style = details_button.style() or QtWidgets.QApplication.style()
+    small_icon_size = (
+        button_style.pixelMetric(
+            QtWidgets.QStyle.PixelMetric.PM_SmallIconSize,
+            None,
+            details_button,
+        )
+        if button_style is not None
+        else file_label.fontMetrics().height()
+    )
+    compact_row_height = max(
+        file_key_label.sizeHint().height(),
+        file_label.sizeHint().height(),
+        small_icon_size,
+    )
+    assert details_button.minimumHeight() == compact_row_height
+    assert details_button.maximumHeight() == compact_row_height
+    assert details_button.iconSize() == QtCore.QSize(small_icon_size, small_icon_size)
+    assert layout.itemAtPosition(2, 2) is None
+    file_value_widget = typing.cast(
+        "QtWidgets.QWidget",
+        layout.itemAtPosition(2, 1).widget(),
+    )
+    assert details_button.parentWidget() is file_value_widget
+    metadata_widget.resize(360, metadata_widget.sizeHint().height())
+    metadata_widget.show()
+    QtWidgets.QApplication.processEvents()
+    button_rect = details_button.geometry()
+    assert layout.cellRect(1, 1).right() == layout.contentsRect().right()
+    assert button_rect.right() < file_value_widget.rect().right()
+    inputs_key_label = typing.cast(
+        "QtWidgets.QLabel",
+        layout.itemAtPosition(3, 0).widget(),
+    )
+    assert inputs_key_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+    )
+    assert inputs_label.alignment() == (
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+    )
+
+
+def test_centered_icon_tool_button_centers_visible_icon_with_stylesheet(
+    qtbot,
+) -> None:
+    pixmap = QtGui.QPixmap(10, 6)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.fillRect(QtCore.QRect(0, 0, 4, 6), QtGui.QColor(255, 0, 0))
+    painter.end()
+
+    button = manager_widgets._CenteredIconToolButton()
+    qtbot.addWidget(button)
+    button.setIcon(QtGui.QIcon(pixmap))
+    button.setIconSize(QtCore.QSize(10, 6))
+    button.setStyleSheet(
+        "QToolButton { padding-left: 9px; padding-top: 4px; "
+        "padding-right: 0px; padding-bottom: 0px; }"
+    )
+    button.resize(28, 22)
+    button.show()
+
+    image = button.grab().toImage()
+    red_pixels: list[tuple[int, int]] = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if color.red() > 220 and color.green() < 40 and color.blue() < 40:
+                red_pixels.append((x, y))
+
+    assert red_pixels
+    min_x = min(x for x, _y in red_pixels)
+    max_x = max(x for x, _y in red_pixels)
+    min_y = min(y for _x, y in red_pixels)
+    max_y = max(y for _x, y in red_pixels)
+    assert abs(((min_x + max_x) / 2) - ((image.width() - 1) / 2)) <= 0.5
+    assert abs(((min_y + max_y) / 2) - ((image.height() - 1) / 2)) <= 0.5
+
+
+def test_centered_icon_tool_button_visible_rect_fallbacks() -> None:
+    transparent = QtGui.QPixmap(8, 6)
+    transparent.fill(QtCore.Qt.GlobalColor.transparent)
+    transparent.setDevicePixelRatio(0.0)
+
+    rect = manager_widgets._CenteredIconToolButton._visible_pixmap_rect(transparent)
+
+    assert rect == QtCore.QRectF(0.0, 0.0, 8.0, 6.0)
+
+
+def test_centered_icon_tool_button_paint_skips_missing_icon(qtbot) -> None:
+    button = manager_widgets._CenteredIconToolButton()
+    qtbot.addWidget(button)
+    button.resize(24, 24)
+    button.show()
+
+    button.paintEvent(None)
+
+
+def test_load_source_details_controller_opens_file_load_edit_after_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "missing.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    node = types.SimpleNamespace(uid="node-1")
+    events: list[tuple[str, object, object | None]] = []
+
+    class _FakeDialog:
+        edit_file_load_requested = True
+
+        def __init__(
+            self,
+            details: _LoadSourceDetails,
+            parent: QtWidgets.QWidget,
+            *,
+            show_in_data_explorer: Callable[[pathlib.Path], None],
+            can_edit_file_load: bool,
+            edit_file_load_tooltip: str,
+        ) -> None:
+            del parent, show_in_data_explorer
+            events.append(("dialog", details, can_edit_file_load))
+            events.append(("tooltip", edit_file_load_tooltip, None))
+
+        def exec(self) -> int:
+            events.append(("exec", source_path, None))
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _FakeProvenanceEditController:
+        def can_edit_file_load_source(
+            self,
+            edit_node: object,
+            path: pathlib.Path,
+        ) -> tuple[bool, str]:
+            events.append(("can", edit_node, path))
+            return True, "Select the current source file."
+
+        def edit_file_load_source(
+            self,
+            edit_node: object,
+            path: pathlib.Path,
+        ) -> None:
+            events.append(("edit", edit_node, path))
+
+    monkeypatch.setattr(
+        manager_details_panel,
+        "_LoadSourceDetailsDialog",
+        _FakeDialog,
+    )
+    manager = types.SimpleNamespace(
+        _metadata_node_uid="node-1",
+        _tool_graph=types.SimpleNamespace(nodes={"node-1": node}),
+        _provenance_edit_controller=_FakeProvenanceEditController(),
+        _show_standalone_app=lambda _key: None,
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._show_load_source_details(details)
+
+    assert events == [
+        ("can", node, source_path),
+        ("dialog", details, True),
+        ("tooltip", "Select the current source file.", None),
+        ("exec", source_path, None),
+        ("edit", node, source_path),
+    ]
+
+
+def test_load_source_details_controller_skips_edit_when_node_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "missing.nc"
+    details = _LoadSourceDetails(
+        path=source_path,
+        loader_label="Loader",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        load_code=None,
+    )
+    node = types.SimpleNamespace(uid="node-1")
+    events: list[str] = []
+
+    class _FakeDialog:
+        edit_file_load_requested = True
+
+        def __init__(
+            self,
+            _details: _LoadSourceDetails,
+            _parent: QtWidgets.QWidget,
+            *,
+            show_in_data_explorer: Callable[[pathlib.Path], None],
+            can_edit_file_load: bool,
+            edit_file_load_tooltip: str,
+        ) -> None:
+            del show_in_data_explorer, can_edit_file_load, edit_file_load_tooltip
+
+        def exec(self) -> int:
+            manager._tool_graph.nodes.clear()
+            events.append("exec")
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _FakeProvenanceEditController:
+        def can_edit_file_load_source(
+            self,
+            edit_node: object,
+            path: pathlib.Path,
+        ) -> tuple[bool, str]:
+            assert edit_node is node
+            assert path == source_path
+            return True, "Select the current source file."
+
+        def edit_file_load_source(
+            self,
+            _edit_node: object,
+            _path: pathlib.Path,
+        ) -> None:
+            pytest.fail("edit should not run for a missing node")
+
+    monkeypatch.setattr(
+        manager_details_panel,
+        "_LoadSourceDetailsDialog",
+        _FakeDialog,
+    )
+    manager = types.SimpleNamespace(
+        _metadata_node_uid="node-1",
+        _tool_graph=types.SimpleNamespace(nodes={"node-1": node}),
+        _provenance_edit_controller=_FakeProvenanceEditController(),
+        _show_standalone_app=lambda _key: None,
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._show_load_source_details(details)
+
+    assert events == ["exec"]
+
+
+def test_details_panel_selected_derivation_row_rejects_unexpected_item_data(
+    qtbot,
+) -> None:
+    derivation_list = QtWidgets.QListWidget()
+    qtbot.addWidget(derivation_list)
+    item = QtWidgets.QListWidgetItem("row")
+    item.setData(manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
+    derivation_list.addItem(item)
+    item.setSelected(True)
+
+    manager = types.SimpleNamespace(metadata_derivation_list=derivation_list)
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+    manager._selected_derivation_items = controller._selected_derivation_items
+
+    assert controller._selected_derivation_row() is None
 
 
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
@@ -1243,9 +1920,13 @@ def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> No
     assert path_label is not None
     assert path_label.text() == str(workspace_path)
     assert path_label.toolTip() == str(workspace_path)
+    assert path_label.wordWrap()
     assert path_label.textInteractionFlags() == (
         QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
     )
+    assert dialog.minimumSize() == dialog.maximumSize()
+    assert dialog.height() == dialog.minimumSizeHint().height()
+    assert dialog.height() <= dialog.sizeHint().height()
     assert dialog.value_labels["open_windows"].text() == "3"
     assert dialog.value_labels["size"].text()
     assert dialog.value_labels["modified"].text()
@@ -2983,7 +3664,7 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
-def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace_reload(
+def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shift(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3012,12 +3693,20 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: len(root._childtool_indices) == 1, timeout=5000)
         child_uid = root._childtool_indices[0]
         child_node = manager._child_node(child_uid)
-        assert child_node.source_binding is not None
+        assert child_node.source_binding is None
+        assert child_node.source_spec is not None
+        original_source_spec = child_node.source_spec
 
         tree = manager._to_datatree()
         child_attrs = tree[f"0/childtools/{child_uid}/imagetool"].attrs
-        assert "manager_node_live_source_binding" in child_attrs
+        assert "manager_node_live_source_binding" not in child_attrs
         assert "manager_node_live_source_spec" in child_attrs
+        child_attrs["manager_node_live_source_binding"] = json.dumps(
+            provenance.ImageToolSelectionSourceBinding(
+                selection_mode="isel",
+                selection_indexers={"z": 0},
+            ).model_dump(mode="json")
+        )
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -3026,7 +3715,8 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         loaded_child = manager._child_node(child_uid)
-        assert loaded_child.source_binding is not None
+        assert loaded_child.source_binding is None
+        assert loaded_child.source_spec == original_source_spec
 
         shifted = data.assign_coords(z=[10.0, 11.0, 12.0])
         with qtbot.wait_signal(manager._sigDataReplaced):
@@ -3035,10 +3725,9 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         qtbot.wait_until(lambda: loaded_child.source_state == "stale", timeout=5000)
         assert loaded_child._update_from_parent_source() is True
         child_data = manager.get_imagetool(child_uid).slicer_area._data.rename(None)
-        assert not np.isnan(child_data.values).all()
         xarray.testing.assert_identical(
             child_data,
-            shifted.qsel(z=11.0, z_width=3.0).rename(None),
+            original_source_spec.apply(shifted).rename(None),
         )
 
 
@@ -3078,7 +3767,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         )
         child_node = manager._child_node(child_uid)
 
-        assert child_node.source_binding == source_binding
+        assert child_node.source_binding is None
         assert child_node.source_spec == source_spec
 
 
