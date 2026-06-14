@@ -761,6 +761,132 @@ def test_manager_provenance_edit_file_load_source_falls_back_to_source_spec(
     assert calls == [(node, "source", source_display_spec)]
 
 
+def test_manager_provenance_edit_file_load_source_prefers_source_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.h5"
+    source_display_spec = _manager_replay_file_spec(source_path)
+    node = _fake_edit_node(
+        _manager_replay_file_spec(source_path),
+        source_spec=provenance.full_data(),
+        source_display_spec=source_display_spec,
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(node)
+    calls: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+        ]
+    ] = []
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda edit_node, scope, spec, **_kwargs: calls.append(
+            (edit_node, scope, spec)
+        ),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+    assert editable
+    assert reason
+
+    controller.edit_file_load_source(typing.cast("typing.Any", node), source_path)
+
+    assert calls == [(node, "source", source_display_spec)]
+
+
+def test_manager_provenance_edit_file_load_source_uses_parent_display_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.h5"
+    parent_spec = _manager_replay_file_spec(source_path)
+    parent = _fake_edit_node(parent_spec, uid="parent")
+    node = _fake_edit_node(
+        _manager_replay_file_spec(source_path),
+        uid="child",
+        source_spec=provenance.full_data(),
+        source_display_spec=provenance.full_data(),
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(
+        node,
+        nodes={"parent": parent, "child": node},
+        parent=parent,
+        metadata_uid="child",
+    )
+    calls: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+        ]
+    ] = []
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda edit_node, scope, spec, **_kwargs: calls.append(
+            (edit_node, scope, spec)
+        ),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+    assert editable
+    assert reason
+
+    controller.edit_file_load_source(typing.cast("typing.Any", node), source_path)
+
+    assert calls == [(parent, "display", parent_spec)]
+
+
+def test_manager_provenance_edit_file_load_source_rejects_source_bound_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    parent = _fake_edit_node(_manager_replay_file_spec(tmp_path / "parent.h5"))
+    node = _fake_edit_node(
+        _manager_replay_file_spec(tmp_path / "child.h5"),
+        source_spec=provenance.full_data(),
+        source_display_spec=provenance.full_data(),
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(
+        node,
+        nodes={"parent": parent, "node": node},
+        parent=parent,
+    )
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda *_args, **_kwargs: pytest.fail("unexpected edit"),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "other.h5",
+    )
+    assert not editable
+    assert reason
+
+    controller.edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "other.h5",
+    )
+
+    assert unavailable == [reason]
+
+
 def test_manager_provenance_edit_file_load_source_rejects_mismatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
@@ -815,6 +941,36 @@ def test_manager_provenance_edit_file_load_source_rejects_unreplayable_file(
 
     assert not editable
     assert "replay" in reason
+
+
+def test_manager_provenance_edit_file_load_source_rejects_unavailable_node(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    node = _fake_edit_node(_manager_replay_file_spec(tmp_path / "source.h5"))
+    node.imagetool = None
+    controller = _fake_edit_controller(node)
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda *_args, **_kwargs: pytest.fail("unexpected edit"),
+    )
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "source.h5",
+    )
+    assert not editable
+    assert reason
+
+    controller.edit_file_load_source(
+        typing.cast("typing.Any", node),
+        tmp_path / "source.h5",
+    )
+
+    assert unavailable == [reason]
 
 
 def test_manager_provenance_edit_controller_availability_branches() -> None:
@@ -1564,6 +1720,15 @@ def test_manager_provenance_missing_source_repair_failure_branches(
     row = provenance._ProvenanceDisplayRow(provenance.DerivationEntry("row", None))
     failed: list[Exception] = []
     dialogs: list[str] = []
+    repair_attempts = 0
+    dialog_results = [int(QtWidgets.QDialog.DialogCode.Accepted)]
+    if missing_again:
+        dialog_results.extend(
+            [
+                int(QtWidgets.QDialog.DialogCode.Accepted),
+                int(QtWidgets.QDialog.DialogCode.Rejected),
+            ]
+        )
 
     class _AcceptingMessageDialog:
         def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
@@ -1571,9 +1736,11 @@ def test_manager_provenance_missing_source_repair_failure_branches(
             dialogs.append(kwargs["text"])
 
         def exec(self) -> int:
-            return int(QtWidgets.QDialog.DialogCode.Accepted)
+            return dialog_results.pop(0)
 
     def _raise_repair_failure(*_args: typing.Any, **_kwargs: typing.Any) -> None:
+        nonlocal repair_attempts
+        repair_attempts += 1
         if not missing_again:
             raise RuntimeError("repair failed")
         replacement_missing = manager_provenance_edit._MissingProvenanceSourceFileError(
@@ -1605,10 +1772,12 @@ def test_manager_provenance_missing_source_repair_failure_branches(
     )
 
     if missing_again:
-        assert len(dialogs) == 2
+        assert len(dialogs) == 3
+        assert repair_attempts == 2
         assert failed == []
     else:
         assert len(dialogs) == 1
+        assert repair_attempts == 1
         assert len(failed) == 1
         assert "repair failed" in str(failed[0])
 

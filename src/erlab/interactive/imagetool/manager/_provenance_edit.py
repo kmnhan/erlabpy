@@ -567,19 +567,24 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         path: pathlib.Path,
     ) -> tuple[
+        _ImageToolWrapper | _ManagedWindowNode | None,
         typing.Literal["display", "source"] | None,
         provenance.ToolProvenanceSpec | None,
         str,
     ]:
         target_path = _normalized_path(path)
-        candidates: list[
+        source_bound = node.parent_uid is not None and node.source_spec is not None
+        candidates: tuple[
             tuple[
                 typing.Literal["display", "source"],
                 provenance.ToolProvenanceSpec | None,
-            ]
-        ] = [("display", node.displayed_provenance_spec)]
-        if node.parent_uid is not None and node.source_spec is not None:
-            candidates.append(("source", node.displayed_source_spec))
+            ],
+            ...,
+        ] = (
+            (("source", node.displayed_source_spec),)
+            if source_bound
+            else (("display", node.displayed_provenance_spec),)
+        )
 
         for scope, spec in candidates:
             if spec is None or spec.kind != "file" or spec.file_load_source is None:
@@ -588,14 +593,24 @@ class _ProvenanceEditController:
             if _normalized_path(pathlib.Path(load_source.path)) != target_path:
                 continue
             if load_source.replay_call is None:
-                return None, None, "This file load step cannot be replayed."
+                return None, None, None, "This file load step cannot be replayed."
             return (
+                node,
                 scope,
                 spec,
                 "Select the current source file and update the recorded "
                 "file-load step.",
             )
+        if source_bound:
+            parent = self._manager._parent_node(node)
+            parent_node, parent_scope, parent_spec, parent_reason = (
+                self._file_load_source_edit_target(parent, path)
+            )
+            if parent_node is not None and parent_scope is not None:
+                return parent_node, parent_scope, parent_spec, parent_reason
+            return None, None, None, parent_reason
         return (
+            None,
             None,
             None,
             "This source was not recorded as an editable file-load step.",
@@ -608,7 +623,7 @@ class _ProvenanceEditController:
     ) -> tuple[bool, str]:
         if not self._node_editable(node):
             return False, "This ImageTool is not available for editing."
-        _scope, spec, reason = self._file_load_source_edit_target(node, path)
+        _node, _scope, spec, reason = self._file_load_source_edit_target(node, path)
         return spec is not None, reason
 
     def edit_file_load_source(
@@ -619,17 +634,17 @@ class _ProvenanceEditController:
         if not self._node_editable(node):
             self._show_unavailable("This ImageTool is not available for editing.")
             return
-        scope, spec, reason = self._file_load_source_edit_target(node, path)
-        if scope is None or spec is None:
+        edit_node, scope, spec, reason = self._file_load_source_edit_target(node, path)
+        if edit_node is None or scope is None or spec is None:
             self._show_unavailable(reason)
             return
         try:
             self._edit_file_load_spec(
-                node,
+                edit_node,
                 scope,
                 spec,
                 where="validating the edited file-load provenance",
-                batch_peers=self._file_load_batch_peers(node, spec),
+                batch_peers=self._file_load_batch_peers(edit_node, spec),
             )
         except Exception as exc:
             if isinstance(exc, _ProvenanceReplayFailure):
@@ -1133,7 +1148,13 @@ class _ProvenanceEditController:
         if spec is None or spec.kind != "file" or spec.file_load_source is None:
             self._show_missing_source_file(title, exc, missing, can_edit=False)
             return True
-        if self._show_missing_source_file(title, exc, missing, can_edit=True):
+        prompt_title = title
+        while self._show_missing_source_file(
+            prompt_title,
+            exc,
+            missing,
+            can_edit=True,
+        ):
             try:
                 self._edit_file_load_spec(
                     node,
@@ -1145,6 +1166,7 @@ class _ProvenanceEditController:
                     ),
                     batch_peers=self._file_load_batch_peers(node, spec),
                 )
+                break
             except Exception as repair_exc:
                 if isinstance(repair_exc, _ProvenanceReplayFailure):
                     repair_missing = repair_exc.missing_source_file
@@ -1159,13 +1181,10 @@ class _ProvenanceEditController:
                     )
                 if repair_missing is None:
                     self._show_failed("Could Not Update Source File", repair_exc)
-                else:
-                    self._show_missing_source_file(
-                        "Could Not Update Source File",
-                        repair_exc,
-                        repair_missing,
-                        can_edit=True,
-                    )
+                    break
+                prompt_title = "Could Not Update Source File"
+                exc = repair_exc
+                missing = repair_missing
         return True
 
     def _show_missing_source_file(
