@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import typing
 
@@ -34,6 +35,59 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TOOL_PREVIEW_UPDATE_DELAY_MS = 250
+_PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
+_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
+_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+
+
+def _provenance_step_clipboard_payload(
+    mime_data: QtCore.QMimeData | None,
+) -> tuple[tuple[provenance.ToolProvenanceOperation, ...], str, bool] | None:
+    if mime_data is None:
+        return None
+    payload_text: str | None = None
+    if mime_data.hasFormat(_PROVENANCE_STEPS_CLIPBOARD_MIME):
+        try:
+            payload_text = bytes(
+                mime_data.data(_PROVENANCE_STEPS_CLIPBOARD_MIME)
+            ).decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    elif mime_data.hasText():
+        text = mime_data.text().strip()
+        if text.startswith("{"):
+            payload_text = text
+    if payload_text is None:
+        return None
+    try:
+        payload = json.loads(payload_text)
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE:
+            return None
+        if payload.get("version") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION:
+            return None
+        operations_payload = payload.get("operations")
+        if not isinstance(operations_payload, list):
+            return None
+        operations = tuple(
+            provenance.parse_tool_provenance_operation(operation)
+            for operation in operations_payload
+        )
+    except (
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return None
+    active_name = payload.get("active_name")
+    if not isinstance(active_name, str) or not active_name:
+        active_name = "derived"
+    return (
+        operations,
+        active_name,
+        any(not operation.live_applicable for operation in operations),
+    )
 
 
 class _DetailsPanelController:
@@ -367,6 +421,60 @@ class _DetailsPanelController:
             return None
         return "\n".join(codes)
 
+    def _selected_derivation_step_payload(
+        self,
+    ) -> tuple[tuple[provenance.ToolProvenanceOperation, ...], str, bool] | None:
+        if self._manager._metadata_node_uid is None:
+            return None
+        node = self._manager._tool_graph.nodes.get(self._manager._metadata_node_uid)
+        if node is None:
+            return None
+
+        operations: list[provenance.ToolProvenanceOperation] = []
+        script_active_names: list[str] = []
+        for item in self._manager._selected_derivation_items():
+            row = item.data(_METADATA_DERIVATION_ROW_ROLE)
+            if not isinstance(row, provenance._ProvenanceDisplayRow):
+                continue
+            ref = row.replay_ref
+            if ref is None or ref.kind != "operation":
+                continue
+            if not bool(item.data(_METADATA_DERIVATION_COPYABLE_ROLE)):
+                continue
+            if not item.data(_METADATA_DERIVATION_CODE_ROLE):
+                continue
+            spec = self._manager._provenance_edit_controller._display_spec_for_row(
+                node,
+                row,
+            )
+            if spec is None:
+                continue
+            operation = spec._operation_for_ref(ref)
+            if operation is None:
+                continue
+            if isinstance(operation, provenance.ScriptCodeOperation):
+                if operation.copyable and operation.code:
+                    operations.append(operation)
+                    script_active_names.append(spec.active_name or "derived")
+                continue
+            if operation.live_applicable:
+                operations.append(operation)
+
+        if not operations:
+            return None
+        script_active_name = (
+            script_active_names[0] if script_active_names else "derived"
+        )
+        if any(
+            active_name != script_active_name for active_name in script_active_names
+        ):
+            return None
+        return (
+            tuple(operations),
+            script_active_name,
+            any(not operation.live_applicable for operation in operations),
+        )
+
     def _selected_derivation_row(
         self,
     ) -> provenance._ProvenanceDisplayRow | None:
@@ -406,6 +514,17 @@ class _DetailsPanelController:
         if self._manager._metadata_full_code_available:
             self._manager._metadata_copy_full_action.setEnabled(True)
             menu.addAction(self._manager._metadata_copy_full_action)
+        paste_payload = _provenance_step_clipboard_payload(
+            QtWidgets.QApplication.clipboard().mimeData()
+        )
+        paste_enabled, paste_reason = (
+            self._manager._provenance_edit_controller.can_paste_steps(
+                None if paste_payload is None else paste_payload[0]
+            )
+        )
+        self._manager._metadata_paste_steps_action.setEnabled(paste_enabled)
+        self._manager._metadata_paste_steps_action.setToolTip(paste_reason)
+        menu.addAction(self._manager._metadata_paste_steps_action)
         return menu
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
@@ -421,8 +540,46 @@ class _DetailsPanelController:
 
     def _copy_selected_derivation_code(self) -> None:
         code = self._manager._selected_derivation_code()
-        if code:
+        if not code:
+            return
+        payload = self._selected_derivation_step_payload()
+        if payload is None:
             erlab.interactive.utils.copy_to_clipboard(code)
+            return
+        operations, active_name, _contains_script = payload
+        payload_text = json.dumps(
+            {
+                "type": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+                "version": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
+                "active_name": active_name,
+                "operations": [
+                    operation.model_dump(mode="json") for operation in operations
+                ],
+            },
+            separators=(",", ":"),
+        )
+        mime_data = QtCore.QMimeData()
+        mime_data.setData(
+            _PROVENANCE_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8")
+        )
+        mime_data.setText(code)
+        QtWidgets.QApplication.clipboard().setMimeData(mime_data)
+
+    def _paste_provenance_steps_from_clipboard(self) -> None:
+        payload = _provenance_step_clipboard_payload(
+            QtWidgets.QApplication.clipboard().mimeData()
+        )
+        if payload is None:
+            self._manager._provenance_edit_controller._show_unavailable(
+                "The clipboard does not contain copied ImageTool provenance steps."
+            )
+            return
+        operations, active_name, contains_script = payload
+        self._manager._provenance_edit_controller.paste_steps(
+            operations,
+            active_name=active_name,
+            contains_script=contains_script,
+        )
 
     def _unavailable_replay_code_details(
         self, node: _ImageToolWrapper | _ManagedWindowNode

@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
@@ -108,6 +109,15 @@ def _add_file_replay_tool(
     assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
     manager.add_imagetool(tool, show=False, provenance_spec=spec)
     return tool
+
+
+def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(3 * 4 * 5, dtype=float).reshape(3, 4, 5),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        name=name,
+    )
 
 
 def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
@@ -5868,13 +5878,16 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert "Aggregate" in derivation[2]
         assert "dims=" in derivation[2]
         manager.metadata_derivation_list.setFocus()
+        clipboard = QtWidgets.QApplication.clipboard()
         select_metadata_rows(manager, [0])
+        clipboard.clear()
         qtbot.keyClick(
             manager.metadata_derivation_list,
             QtCore.Qt.Key.Key_C,
             QtCore.Qt.KeyboardModifier.ControlModifier,
         )
         assert copied == []
+        assert clipboard.text() == ""
 
         select_metadata_rows(manager, [1, 2])
         qtbot.keyClick(
@@ -5883,8 +5896,11 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             QtCore.Qt.KeyboardModifier.ControlModifier,
         )
         selected_namespace = _exec_generated_code(
-            copied[-1],
+            clipboard.text(),
             {"derived": data.copy(deep=True)},
+        )
+        assert clipboard.mimeData().hasFormat(
+            manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME
         )
         selected_result = selected_namespace["derived"]
         assert isinstance(selected_result, xr.DataArray)
@@ -5897,7 +5913,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_selected_action)
         selected_namespace = _exec_generated_code(
-            copied[-1],
+            clipboard.text(),
             {"derived": data.copy(deep=True)},
         )
         selected_result = selected_namespace["derived"]
@@ -6032,6 +6048,307 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert metadata_detail_map(manager) == {}
         assert metadata_derivation_texts(manager) == []
         assert manager._build_metadata_derivation_menu() is None
+
+
+def test_manager_copy_paste_structured_provenance_steps(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_base = _provenance_paste_test_data("source")
+    source_operations = (
+        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
+        provenance.AverageOperation(dims=("z",)),
+    )
+    source_spec = provenance.full_data(*source_operations)
+    source_data = source_spec.apply(source_base)
+
+    dest_base = _provenance_paste_test_data("dest") + 100.0
+    dest_seed_op = provenance.ScriptCodeOperation(
+        label="Keep existing destination provenance",
+        code="derived = derived.assign_attrs({'existing': 'yes'})",
+    )
+    dest_spec = provenance.script(
+        dest_seed_op,
+        start_label="Start from destination data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    dest_data = provenance.replay_script_provenance(dest_spec, {"data": dest_base})
+
+    with manager_context() as manager:
+        source_tool = itool(source_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(
+            source_tool,
+            show=False,
+            provenance_spec=source_spec,
+        )
+        dest_tool = itool(dest_data, manager=False, execute=False)
+        assert isinstance(dest_tool, erlab.interactive.imagetool.ImageTool)
+        dest_index = manager.add_imagetool(
+            dest_tool,
+            show=False,
+            provenance_spec=dest_spec,
+        )
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.clear()
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1, 2])
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert payload is not None
+        payload_operations, _active_name, contains_script = payload
+        assert payload_operations == source_operations
+        assert not contains_script
+        assert clipboard.mimeData().hasFormat(
+            manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME
+        )
+        copied_namespace = _exec_generated_code(
+            clipboard.text(),
+            {"derived": dest_data.copy(deep=True)},
+        )
+        copied_result = copied_namespace["derived"]
+        assert isinstance(copied_result, xr.DataArray)
+        expected = source_spec.apply(dest_data)
+        xr.testing.assert_identical(copied_result, expected)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [dest_index])
+        manager._update_info()
+        select_metadata_rows(manager, [0])
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_paste_steps_action in menu.actions()
+        assert manager._metadata_paste_steps_action.isEnabled()
+
+        manager.metadata_derivation_list.setFocus()
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        xr.testing.assert_identical(dest_tool.slicer_area._data, expected)
+
+        dest_node = manager._tool_graph.root_wrappers[dest_index]
+        assert dest_node.displayed_provenance_spec is not None
+        replay_namespace = _exec_generated_code(
+            dest_node.displayed_provenance_spec.derivation_code(),
+            {"data": dest_base.copy(deep=True)},
+        )
+        replayed = replay_namespace["derived"]
+        assert isinstance(replayed, xr.DataArray)
+        xr.testing.assert_identical(replayed, expected)
+
+        bad_mime = QtCore.QMimeData()
+        bad_mime.setData(
+            manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+            b"{not-json",
+        )
+        clipboard.setMimeData(bad_mime)
+        failures: list[str] = []
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_unavailable",
+            lambda reason: failures.append(reason),
+        )
+        before = dest_tool.slicer_area._data.copy(deep=True)
+        manager._paste_provenance_steps_from_clipboard()
+        assert failures
+        xr.testing.assert_identical(dest_tool.slicer_area._data, before)
+
+
+def test_manager_paste_structured_steps_preserves_source_binding(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    parent_data = _provenance_paste_test_data("parent")
+    copied_operation = provenance.AverageOperation(dims=("z",))
+    source_spec = provenance.full_data(copied_operation)
+    source_data = source_spec.apply(parent_data)
+    child_base_spec = provenance.full_data(
+        provenance.AssignAttrsOperation(attrs={"child": "bound"})
+    )
+    child_data = child_base_spec.apply(parent_data)
+
+    with manager_context() as manager:
+        parent_tool = itool(parent_data, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        parent_index = manager.add_imagetool(parent_tool, show=False)
+        child_tool = itool(child_data, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            parent_index,
+            show=False,
+            source_spec=child_base_spec,
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+        filter_operation = provenance.GaussianFilterOperation(sigma={"z": 1.0})
+        child_tool.slicer_area.apply_filter_operation(filter_operation)
+        displayed_child_source = child_node.displayed_source_spec
+        assert displayed_child_source is not None
+        source_tool = itool(source_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(
+            source_tool,
+            show=False,
+            provenance_spec=source_spec,
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        manager._copy_selected_derivation_code()
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+
+        child_node = manager._child_node(child_uid)
+        assert (
+            child_node.parent_uid == manager._tool_graph.root_wrappers[parent_index].uid
+        )
+        assert child_node.source_auto_update is True
+        expected_source_spec = displayed_child_source.append_replacement_operations(
+            copied_operation
+        )
+        assert child_node.source_spec == expected_source_spec
+        assert child_tool.slicer_area._accepted_filter_provenance_operation is None
+        expected = child_node.source_spec.apply(parent_data)
+        xr.testing.assert_identical(child_tool.slicer_area._data, expected)
+
+
+def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("scan")
+    child_source_spec = provenance.full_data(
+        provenance.AssignAttrsOperation(attrs={"before": "script paste"})
+    )
+    child_data = child_source_spec.apply(data)
+    script_operations = (
+        provenance.ScriptCodeOperation(
+            label="Offset data",
+            code="result = derived + 2.0",
+        ),
+        provenance.AverageOperation(dims=("z",)),
+    )
+    script_spec = provenance.script(
+        *script_operations,
+        start_label="Run copied script",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    script_data = provenance.replay_script_provenance(script_spec, {"data": data})
+
+    with manager_context() as manager:
+        parent_tool = itool(data, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        parent_index = manager.add_imagetool(parent_tool, show=False)
+        child_tool = itool(child_data, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            parent_index,
+            show=False,
+            source_spec=child_source_spec,
+            source_auto_update=True,
+        )
+        source_tool = itool(script_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(
+            source_tool,
+            show=False,
+            provenance_spec=script_spec,
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1, 2])
+        manager._copy_selected_derivation_code()
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            QtWidgets.QApplication.clipboard().mimeData()
+        )
+        assert payload is not None
+        payload_operations, _active_name, contains_script = payload
+        assert payload_operations == script_operations
+        assert contains_script
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+
+        child_node = manager._child_node(child_uid)
+        expected = provenance.replay_script_provenance(
+            script_spec,
+            {"data": child_data},
+        )
+        xr.testing.assert_identical(child_tool.slicer_area._data, expected)
+        assert child_node.source_spec is None
+        assert child_node.source_auto_update is False
+
+        bad_operation = provenance.ScriptCodeOperation(
+            label="Use unavailable scratch value",
+            code="result = scratch + 1.0",
+        )
+        bad_spec = provenance.script(
+            bad_operation,
+            start_label="Run invalid copied script",
+            seed_code="derived = data",
+            active_name="result",
+        )
+        bad_tool = itool(data, manager=False, execute=False)
+        assert isinstance(bad_tool, erlab.interactive.imagetool.ImageTool)
+        bad_index = manager.add_imagetool(
+            bad_tool,
+            show=False,
+            provenance_spec=bad_spec,
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [bad_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        manager._copy_selected_derivation_code()
+
+        failures: list[tuple[str, Exception]] = []
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_failed",
+            lambda title, exc: failures.append((title, exc)),
+        )
+        before = child_tool.slicer_area._data.copy(deep=True)
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+
+        assert failures
+        assert failures[0][0] == "Could Not Paste Provenance Steps"
+        xr.testing.assert_identical(child_tool.slicer_area._data, before)
+        assert child_node.source_spec is None
 
 
 def test_manager_divide_by_coord_child_refresh_and_code(

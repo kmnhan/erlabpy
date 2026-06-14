@@ -972,6 +972,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list.copy_requested.connect(
             self._copy_selected_derivation_code
         )
+        self.metadata_derivation_list.paste_requested.connect(
+            self._paste_provenance_steps_from_clipboard
+        )
         self.metadata_derivation_list.context_menu_requested.connect(
             self._show_metadata_derivation_menu
         )
@@ -1005,6 +1008,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_copy_full_action.setObjectName("manager_copy_full_code_action")
         self._metadata_copy_full_action.triggered.connect(
             self._copy_full_derivation_code
+        )
+        self._metadata_paste_steps_action = QtGui.QAction("Paste Steps", self)
+        self._metadata_paste_steps_action.setObjectName(
+            "manager_paste_provenance_steps_action"
+        )
+        self._metadata_paste_steps_action.triggered.connect(
+            self._paste_provenance_steps_from_clipboard
         )
         self._metadata_edit_step_action = QtGui.QAction("Edit Step…", self)
         self._metadata_edit_step_action.setObjectName(
@@ -2394,6 +2404,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _copy_full_derivation_code(self) -> None:
         self._details_panel._copy_full_derivation_code()
+
+    def _paste_provenance_steps_from_clipboard(self) -> None:
+        self._details_panel._paste_provenance_steps_from_clipboard()
 
     def _edit_selected_derivation_step(self) -> None:
         self._details_panel._edit_selected_derivation_step()

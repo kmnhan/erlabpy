@@ -113,6 +113,7 @@ class _WarningEmitter(QtCore.QObject):
 
 class _MetadataDerivationListWidget(QtWidgets.QListWidget):
     copy_requested = QtCore.Signal()
+    paste_requested = QtCore.Signal()
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
@@ -125,6 +126,10 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
             return
         if event.matches(QtGui.QKeySequence.StandardKey.Copy):
             self.copy_requested.emit()
+            event.accept()
+            return
+        if event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
             event.accept()
             return
         if event.key() in {QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter}:
