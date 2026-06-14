@@ -1143,7 +1143,7 @@ class _ProvenanceEditController:
                         "validating provenance after selecting a replacement "
                         "source file"
                     ),
-                    batch_peers=(),
+                    batch_peers=self._file_load_batch_peers(node, spec),
                 )
             except Exception as repair_exc:
                 if isinstance(repair_exc, _ProvenanceReplayFailure):

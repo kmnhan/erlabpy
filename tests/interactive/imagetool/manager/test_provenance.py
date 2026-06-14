@@ -1320,12 +1320,22 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
     expected_opened: int,
 ) -> None:
     missing_path = tmp_path / "missing.h5"
+    peer_path = tmp_path / "peer.h5"
     spec = _manager_replay_file_spec(
         missing_path,
         provenance.IselOperation(kwargs={"x": 0}),
     )
-    node = _fake_edit_node(spec)
-    controller = _fake_edit_controller(node)
+    node = _fake_edit_node(spec, uid="current", display_text="Current")
+    peer = _fake_edit_node(
+        _manager_replay_file_spec(peer_path),
+        uid="peer",
+        display_text="Peer",
+    )
+    controller = _fake_edit_controller(
+        node,
+        nodes={node.uid: node, peer.uid: peer},
+        metadata_uid=node.uid,
+    )
     row = provenance._ProvenanceDisplayRow(
         provenance.DerivationEntry("isel", None),
         edit_ref=provenance._ProvenanceStepRef(
@@ -1340,7 +1350,14 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
         ),
     )
     dialogs: list[dict[str, typing.Any]] = []
-    opened: list[tuple[typing.Any, str, provenance.ToolProvenanceSpec]] = []
+    opened: list[
+        tuple[
+            typing.Any,
+            str,
+            provenance.ToolProvenanceSpec,
+            tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+        ]
+    ] = []
 
     class _RecordingMessageDialog:
         def __init__(self, parent: typing.Any, **kwargs: typing.Any) -> None:
@@ -1358,8 +1375,8 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
     monkeypatch.setattr(
         controller,
         "_edit_file_load_spec",
-        lambda node_arg, scope, spec_arg, **_kwargs: opened.append(
-            (node_arg, scope, spec_arg)
+        lambda node_arg, scope, spec_arg, **kwargs: opened.append(
+            (node_arg, scope, spec_arg, kwargs["batch_peers"])
         ),
     )
 
@@ -1380,7 +1397,9 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
     )
     assert len(opened) == expected_opened
     if opened:
-        assert opened[0] == (node, "display", spec)
+        edit_node, scope, opened_spec, batch_peers = opened[0]
+        assert (edit_node, scope, opened_spec) == (node, "display", spec)
+        assert [batch_peer.node.uid for batch_peer in batch_peers] == [peer.uid]
 
 
 def test_manager_provenance_missing_source_revert_repairs_revert_target(

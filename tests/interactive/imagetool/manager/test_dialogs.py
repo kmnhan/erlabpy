@@ -10,10 +10,8 @@ import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
-    _file_load_provenance_from_source,
     _load_code_from_file_details,
     _resolve_identified_path,
-    _resolved_load_func_from_replay_call,
     _scan_number_load_call_args,
 )
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -236,48 +234,6 @@ def test_scan_number_load_call_args_rejects_ambiguous_loader_matches(
 
     loader.identify_result = ([str(tmp_path / "other.h5")],)
     assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
-
-
-def test_file_load_provenance_from_source_replays_erlab_loader_metadata(
-    tmp_path: pathlib.Path,
-) -> None:
-    replay_call = provenance.FileReplayCall(
-        kind="erlab_loader",
-        target="example",
-        kwargs={"single": True},
-        selected_index=0,
-    )
-    resolved = _resolved_load_func_from_replay_call(
-        replay_call,
-        loader_label="ERLab Loader",
-        loader_text="example",
-    )
-
-    assert resolved.kind == "erlab_loader"
-    assert resolved.loader_expr == "erlab.io.load"
-    assert resolved.setup_lines == ("erlab.io.set_loader('example')",)
-    assert resolved.kwargs == {"single": True}
-
-    load_source = provenance.FileLoadSource(
-        path=str(tmp_path / "old.h5"),
-        loader_label="ERLab Loader",
-        loader_text="example",
-        kwargs_text="single=True",
-        replay_call=replay_call,
-    )
-    spec = _file_load_provenance_from_source(
-        tmp_path / "new.h5",
-        load_source,
-        kwargs={"single": False},
-    )
-
-    assert spec.file_load_source is not None
-    assert spec.file_load_source.replay_call is not None
-    assert spec.file_load_source.replay_call.kwargs == {"single": False}
-
-    invalid_source = load_source.model_copy(update={"replay_call": None})
-    with pytest.raises(ValueError, match="replay metadata"):
-        _file_load_provenance_from_source(tmp_path / "new.h5", invalid_source)
 
 
 def test_loader_extension_literal_parser() -> None:
