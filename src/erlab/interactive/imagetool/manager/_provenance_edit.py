@@ -440,11 +440,15 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             return False, "This row does not have replayable provenance."
-        if spec.kind == "script":
-            try:
-                candidate = spec._prefix_through_ref(row.replay_ref)
-            except ValueError:
+        try:
+            candidate = spec._prefix_through_ref(row.replay_ref)
+        except ValueError:
+            if spec.kind == "script":
                 return False, "This script row is not a replayable step."
+            return False, "This row is not a replayable step."
+        if candidate == spec:
+            return False, "Already at this provenance step."
+        if spec.kind == "script":
             if not provenance.script_provenance_replayable(candidate):
                 return False, "This script step cannot be replayed automatically."
             if not all(
@@ -1214,8 +1218,7 @@ class _ProvenanceEditController:
             informative_text=(
                 f"Failed while: {where}\n\n"
                 f"Missing file: {missing.source_path}\n\n"
-                "Select the current location of the file to update the file-load "
-                "step and replay the provenance again."
+                "Update the file load step and try again."
             ),
             detailed_text=erlab.interactive.utils._format_traceback(exc_text),
             buttons=buttons,

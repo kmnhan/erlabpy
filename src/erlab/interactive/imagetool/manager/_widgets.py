@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 _METADATA_DERIVATION_ROW_ROLE = _METADATA_DERIVATION_CODE_ROLE + 2
+_METADATA_DERIVATION_ACTIVATABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 3
 _QWIDGETSIZE_MAX = 16777215
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
@@ -126,6 +127,12 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
             self.copy_requested.emit()
             event.accept()
             return
+        if event.key() in {QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter}:
+            item = self.currentItem()
+            if item is not None:
+                self.itemActivated.emit(item)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
 

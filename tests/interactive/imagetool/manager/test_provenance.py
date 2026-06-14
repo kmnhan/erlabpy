@@ -11,7 +11,7 @@ import pydantic
 import pytest
 import xarray
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
@@ -1077,14 +1077,119 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert not controller.can_revert_row(script_input_row)[0]
 
+    earlier_source_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("source", None),
+        edit_ref=edit_ref,
+        replay_ref=edit_ref,
+        scope="source",
+    )
     controller = _fake_edit_controller(
         _fake_edit_node(
             provenance.selection(provenance.IselOperation()),
-            source_display_spec=provenance.selection(provenance.IselOperation()),
+            source_display_spec=provenance.selection(
+                provenance.IselOperation(kwargs={"x": 0}),
+                provenance.IselOperation(kwargs={"y": 0}),
+            ),
             parent_uid="parent",
         )
     )
-    assert controller.can_revert_row(source_row)[0]
+    assert controller.can_revert_row(earlier_source_row)[0]
+
+
+def test_manager_provenance_revert_rejects_current_prefixes(
+    tmp_path: pathlib.Path,
+) -> None:
+    invalid_operation_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("invalid", None),
+        replay_ref=provenance._ProvenanceStepRef("operation"),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    revertible, reason = controller.can_revert_row(invalid_operation_row)
+    assert not revertible
+    assert reason
+
+    file_load_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("load", None),
+        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(_manager_replay_file_spec(tmp_path / "scan.h5"))
+    )
+    revertible, reason = controller.can_revert_row(file_load_row)
+    assert not revertible
+    assert reason
+
+    file_stage_spec = _manager_replay_file_spec(
+        tmp_path / "scan.h5",
+        provenance.IselOperation(kwargs={"x": 0}),
+        provenance.IselOperation(kwargs={"y": 0}),
+    )
+    earlier_stage_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("isel", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=0,
+            stage_index=0,
+        ),
+    )
+    latest_stage_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("isel", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=1,
+            stage_index=0,
+        ),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(file_stage_spec))
+    assert controller.can_revert_row(earlier_stage_row)[0]
+    revertible, reason = controller.can_revert_row(latest_stage_row)
+    assert not revertible
+    assert reason
+
+    script_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Run script",
+            code="derived = xr.DataArray([1.0], dims=('x',))",
+        ),
+        provenance.IselOperation(kwargs={"x": 0}),
+        start_label="Run script",
+        active_name="derived",
+    )
+    controller = _fake_edit_controller(_fake_edit_node(script_spec))
+    revertible, reason = controller.can_revert_row(invalid_operation_row)
+    assert not revertible
+    assert reason
+
+    latest_script_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("isel", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=1,
+        ),
+    )
+    revertible, reason = controller.can_revert_row(latest_script_row)
+    assert not revertible
+    assert reason
+
+    source_latest_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("source", None),
+        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=1),
+        scope="source",
+    )
+    source_spec = provenance.selection(
+        provenance.IselOperation(kwargs={"x": 0}),
+        provenance.IselOperation(kwargs={"y": 0}),
+    )
+    controller = _fake_edit_controller(
+        _fake_edit_node(
+            provenance.full_data(),
+            source_display_spec=source_spec,
+            parent_uid="parent",
+        )
+    )
+    revertible, reason = controller.can_revert_row(source_latest_row)
+    assert not revertible
+    assert reason
 
 
 def test_manager_provenance_edit_controller_error_paths(
@@ -4694,6 +4799,203 @@ def test_manager_provenance_file_load_batch_edit_updates_matching_peer(
         assert second_spec.file_load_source is not None
         assert pathlib.Path(first_spec.file_load_source.path) == paths["new_a"]
         assert pathlib.Path(second_spec.file_load_source.path) == paths["new_b"]
+
+
+def test_manager_provenance_rows_dim_when_not_activatable(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+
+    script_data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        name="scripted",
+    )
+    script_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        _add_file_replay_tool(manager, test_data, _manager_replay_file_spec(file_path))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        select_tools(manager, [0])
+        manager._update_info()
+
+        load_item = manager.metadata_derivation_list.item(0)
+        assert load_item is not None
+        assert (
+            load_item.data(manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE)
+            is True
+        )
+        assert (
+            load_item.data(manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE) is False
+        )
+        assert load_item.foreground().style() == QtCore.Qt.BrushStyle.NoBrush
+        select_metadata_rows(manager, [0])
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert menu.defaultAction() is manager._metadata_edit_step_action
+
+        tool = itool(script_data.qsel.mean("x"), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, provenance_spec=script_spec)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [1])
+        manager._update_info()
+
+        script_operation_item = None
+        for row in range(manager.metadata_derivation_list.count()):
+            item = manager.metadata_derivation_list.item(row)
+            if item is None:
+                continue
+            if item.data(
+                manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
+            ) and not item.data(manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE):
+                script_operation_item = item
+                break
+        assert script_operation_item is not None
+        assert script_operation_item.toolTip()
+        assert script_operation_item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
+        assert script_operation_item.foreground().color() == (
+            manager.metadata_derivation_list.palette().color(
+                QtGui.QPalette.ColorGroup.Disabled,
+                QtGui.QPalette.ColorRole.Text,
+            )
+        )
+        select_metadata_rows(
+            manager,
+            [manager.metadata_derivation_list.row(script_operation_item)],
+        )
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert menu.defaultAction() is None
+
+
+def test_manager_provenance_row_activation_uses_edit_default_action(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(manager, test_data.qsel.mean("alpha"), spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        activated_rows: list[provenance._ProvenanceDisplayRow | None] = []
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "edit_row",
+            activated_rows.append,
+        )
+
+        select_metadata_rows(manager, [0])
+        manager.metadata_derivation_list.setFocus()
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_Return,
+        )
+        assert activated_rows == [manager._selected_derivation_row()]
+
+        activated_rows.clear()
+        item = manager.metadata_derivation_list.item(0)
+        assert item is not None
+        manager.metadata_derivation_list.itemActivated.emit(item)
+        assert activated_rows == [manager._selected_derivation_row()]
+
+        activated_rows.clear()
+        manager.metadata_derivation_list.clearSelection()
+        selection_model = manager.metadata_derivation_list.selectionModel()
+        assert selection_model is not None
+        for row in (0, 1):
+            selection_model.select(
+                manager.metadata_derivation_list.model().index(row, 0),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+        selection_model.setCurrentIndex(
+            manager.metadata_derivation_list.model().index(0, 0),
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        manager.metadata_derivation_list.itemActivated.emit(item)
+        assert activated_rows == []
+
+
+def test_manager_provenance_row_activation_ignores_noneditable_row(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        name="scan",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
+        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = itool(data.qsel.mean("x"), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        select_tools(manager, [0])
+        manager._update_info()
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "edit_row",
+            lambda _row: pytest.fail("non-editable activation should be ignored"),
+        )
+        item = None
+        for row in range(manager.metadata_derivation_list.count()):
+            candidate = manager.metadata_derivation_list.item(row)
+            if candidate is None:
+                continue
+            if candidate.data(
+                manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
+            ) and not candidate.data(
+                manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE
+            ):
+                item = candidate
+                break
+        assert item is not None
+        select_metadata_rows(manager, [manager.metadata_derivation_list.row(item)])
+        manager.metadata_derivation_list.itemActivated.emit(item)
 
 
 def test_manager_provenance_context_menu_preserves_extended_selection(

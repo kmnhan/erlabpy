@@ -9,6 +9,7 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._widgets import (
+    _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
@@ -63,19 +64,32 @@ class _DetailsPanelController:
             for row in node.derivation_display_rows:
                 entry = row.entry
                 item = QtWidgets.QListWidgetItem(entry.label)
-                item.setToolTip(entry.label)
+                can_activate, activation_reason = (
+                    self._manager._provenance_edit_controller.can_edit_row(row)
+                )
+                tooltip_lines = [entry.label]
+                if not can_activate and activation_reason:
+                    tooltip_lines.extend(("", activation_reason))
+                if (
+                    not entry.copyable
+                    and entry.code is None
+                    and not entry.label.startswith("Start from ")
+                ):
+                    tooltip_lines.extend(
+                        ("", "Replay code is unavailable for this step.")
+                    )
+                item.setToolTip("\n".join(tooltip_lines))
                 item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
                 item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
                 item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
-                if not entry.copyable:
+                item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
+                if not can_activate:
                     item.setForeground(
                         self._manager.metadata_derivation_list.palette().color(
                             QtGui.QPalette.ColorGroup.Disabled,
                             QtGui.QPalette.ColorRole.Text,
                         )
                     )
-                    if entry.code is None and not entry.label.startswith("Start from "):
-                        item.setToolTip("Replay code is unavailable for this step.")
                 self._manager.metadata_derivation_list.addItem(item)
         self._manager._update_metadata_pane()
 
@@ -361,6 +375,8 @@ class _DetailsPanelController:
         self._manager._metadata_revert_step_action.setEnabled(revert_enabled)
         self._manager._metadata_revert_step_action.setToolTip(revert_reason)
         menu.addAction(self._manager._metadata_edit_step_action)
+        if edit_enabled:
+            menu.setDefaultAction(self._manager._metadata_edit_step_action)
         menu.addAction(self._manager._metadata_revert_step_action)
         menu.addSeparator()
 
@@ -455,6 +471,12 @@ class _DetailsPanelController:
         self._manager._provenance_edit_controller.edit_row(
             self._manager._selected_derivation_row()
         )
+
+    def _activate_selected_derivation_step(self) -> None:
+        row = self._manager._selected_derivation_row()
+        editable, _reason = self._manager._provenance_edit_controller.can_edit_row(row)
+        if editable:
+            self._manager._edit_selected_derivation_step()
 
     def _revert_selected_derivation_step(self) -> None:
         self._manager._provenance_edit_controller.revert_row(

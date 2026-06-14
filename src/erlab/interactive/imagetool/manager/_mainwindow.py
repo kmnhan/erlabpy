@@ -975,6 +975,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list.context_menu_requested.connect(
             self._show_metadata_derivation_menu
         )
+        self.metadata_derivation_list.itemActivated.connect(
+            self._activate_selected_derivation_step
+        )
         self.metadata_derivation_list.setVisible(False)
         metadata_layout.addWidget(self.metadata_derivation_list)
         right_layout.addWidget(self.metadata_group, 0)
@@ -2394,6 +2397,11 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _edit_selected_derivation_step(self) -> None:
         self._details_panel._edit_selected_derivation_step()
+
+    def _activate_selected_derivation_step(
+        self, _item: QtWidgets.QListWidgetItem | None = None
+    ) -> None:
+        self._details_panel._activate_selected_derivation_step()
 
     def _revert_selected_derivation_step(self) -> None:
         self._details_panel._revert_selected_derivation_step()
