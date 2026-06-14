@@ -1532,8 +1532,15 @@ def test_details_panel_file_field_info_button_passes_metadata_node_uid(
     assert value_label.alignment() == (
         QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
     )
-    details_button_item = manager.metadata_details_layout.itemAtPosition(0, 2)
-    assert details_button_item is not None
+    assert manager.metadata_details_layout.itemAtPosition(0, 2) is None
+    file_value_item = manager.metadata_details_layout.itemAtPosition(0, 1)
+    assert file_value_item is not None
+    file_value_widget = file_value_item.widget()
+    assert file_value_widget is not None
+    assert details_button.parentWidget() is file_value_widget
+    file_value_layout = typing.cast("QtWidgets.QHBoxLayout", file_value_widget.layout())
+    assert file_value_layout.itemAt(0).widget() is value_label
+    details_button_item = file_value_layout.itemAt(1)
     assert details_button_item.widget() is details_button
     assert details_button_item.alignment() & QtCore.Qt.AlignmentFlag.AlignVCenter
     details_button.click()
@@ -1632,6 +1639,18 @@ def test_details_panel_single_line_rows_stay_compact_and_elide(
     assert details_button.minimumHeight() == compact_row_height
     assert details_button.maximumHeight() == compact_row_height
     assert details_button.iconSize() == QtCore.QSize(small_icon_size, small_icon_size)
+    assert layout.itemAtPosition(2, 2) is None
+    file_value_widget = typing.cast(
+        "QtWidgets.QWidget",
+        layout.itemAtPosition(2, 1).widget(),
+    )
+    assert details_button.parentWidget() is file_value_widget
+    metadata_widget.resize(360, metadata_widget.sizeHint().height())
+    metadata_widget.show()
+    QtWidgets.QApplication.processEvents()
+    button_rect = details_button.geometry()
+    assert layout.cellRect(1, 1).right() == layout.contentsRect().right()
+    assert button_rect.right() < file_value_widget.rect().right()
     inputs_key_label = typing.cast(
         "QtWidgets.QLabel",
         layout.itemAtPosition(3, 0).widget(),

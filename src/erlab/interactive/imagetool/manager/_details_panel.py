@@ -122,6 +122,7 @@ class _DetailsPanelController:
                 QtCore.Qt.AlignmentFlag.AlignLeft | row_vertical_alignment
             )
             value_label: QtWidgets.QLabel
+            value_widget: QtWidgets.QWidget
             details_button: QtWidgets.QToolButton | None = None
             if field.details is not None:
                 value_label = _ElidedValueLabel(
@@ -202,15 +203,34 @@ class _DetailsPanelController:
                     QtCore.QSize(small_icon_size, small_icon_size)
                 )
                 details_button.setFixedSize(QtCore.QSize(row_height, row_height))
-            layout.addWidget(key_label, row, 0)
-            layout.addWidget(value_label, row, 1)
-            if details_button is not None:
-                layout.addWidget(
+                spacing = layout.horizontalSpacing()
+                if spacing < 0:
+                    spacing = (
+                        style.pixelMetric(
+                            QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing,
+                            None,
+                            details_button,
+                        )
+                        if style is not None
+                        else 0
+                    )
+                value_widget = QtWidgets.QWidget(self._manager.metadata_details_widget)
+                value_widget.setMinimumWidth(0)
+                value_layout = QtWidgets.QHBoxLayout(value_widget)
+                value_layout.setContentsMargins(0, 0, 0, 0)
+                value_layout.setSpacing(max(0, spacing))
+                value_layout.addWidget(value_label, 1)
+                value_layout.addWidget(
                     details_button,
-                    row,
-                    2,
+                    0,
                     alignment=QtCore.Qt.AlignmentFlag.AlignVCenter,
                 )
+                if spacing > 0:
+                    value_layout.addSpacing(spacing)
+            else:
+                value_widget = value_label
+            layout.addWidget(key_label, row, 0)
+            layout.addWidget(value_widget, row, 1)
             self._manager._metadata_detail_labels[field.label] = value_label
 
     def _show_load_source_details(
