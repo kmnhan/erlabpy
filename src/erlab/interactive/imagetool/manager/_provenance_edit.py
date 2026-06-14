@@ -499,7 +499,17 @@ class _ProvenanceEditController:
             else:
                 self._paste_structured_steps(node, steps)
         except Exception as exc:
-            self._show_failed("Could Not Paste Provenance Steps", exc)
+            self._show_failed(
+                "Could Not Paste Provenance Steps",
+                exc,
+                text="The copied provenance steps could not be applied.",
+                unchanged_reason=(
+                    "The copied steps could not be replayed on the selected "
+                    "ImageTool's current data, so nothing was changed. Check that "
+                    "the destination data has the dimensions, coordinates, and "
+                    "inputs expected by the copied steps."
+                ),
+            )
 
     def _paste_structured_steps(
         self,
@@ -1297,24 +1307,32 @@ class _ProvenanceEditController:
             reason,
         )
 
-    def _show_failed(self, title: str, exc: Exception) -> None:
+    def _show_failed(
+        self,
+        title: str,
+        exc: Exception,
+        *,
+        text: str = "The provenance change could not be applied.",
+        unchanged_reason: str | None = None,
+    ) -> None:
         exc_text = "".join(traceback.TracebackException.from_exception(exc).format())
         where = (
             exc.where
             if isinstance(exc, _ProvenanceReplayFailure)
             else "replaying the requested provenance"
         )
-        dialog = erlab.interactive.utils.MessageDialog(
-            self._manager,
-            title=title,
-            text="The provenance change could not be applied.",
-            informative_text=(
-                f"Failed while: {where}\n\n"
+        if unchanged_reason is None:
+            unchanged_reason = (
                 "The current ImageTool data was left unchanged because the requested "
                 "provenance could not be replayed. Use Revert to This Step to drop "
                 "later provenance, or adjust the earlier steps so the full chain is "
                 "valid again."
-            ),
+            )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title=title,
+            text=text,
+            informative_text=f"Failed while: {where}\n\n{unchanged_reason}",
             detailed_text=erlab.interactive.utils._format_traceback(exc_text),
             buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,

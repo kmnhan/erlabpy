@@ -48,9 +48,9 @@ def _provenance_step_clipboard_payload(
     payload_text: str | None = None
     if mime_data.hasFormat(_PROVENANCE_STEPS_CLIPBOARD_MIME):
         try:
-            payload_text = bytes(
-                mime_data.data(_PROVENANCE_STEPS_CLIPBOARD_MIME)
-            ).decode("utf-8")
+            payload_text = (
+                mime_data.data(_PROVENANCE_STEPS_CLIPBOARD_MIME).data().decode("utf-8")
+            )
         except UnicodeDecodeError:
             return None
     elif mime_data.hasText():
@@ -514,8 +514,9 @@ class _DetailsPanelController:
         if self._manager._metadata_full_code_available:
             self._manager._metadata_copy_full_action.setEnabled(True)
             menu.addAction(self._manager._metadata_copy_full_action)
+        clipboard = QtWidgets.QApplication.clipboard()
         paste_payload = _provenance_step_clipboard_payload(
-            QtWidgets.QApplication.clipboard().mimeData()
+            None if clipboard is None else clipboard.mimeData()
         )
         paste_enabled, paste_reason = (
             self._manager._provenance_edit_controller.can_paste_steps(
@@ -563,11 +564,15 @@ class _DetailsPanelController:
             _PROVENANCE_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8")
         )
         mime_data.setText(code)
-        QtWidgets.QApplication.clipboard().setMimeData(mime_data)
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is None:
+            return
+        clipboard.setMimeData(mime_data)
 
     def _paste_provenance_steps_from_clipboard(self) -> None:
+        clipboard = QtWidgets.QApplication.clipboard()
         payload = _provenance_step_clipboard_payload(
-            QtWidgets.QApplication.clipboard().mimeData()
+            None if clipboard is None else clipboard.mimeData()
         )
         if payload is None:
             self._manager._provenance_edit_controller._show_unavailable(

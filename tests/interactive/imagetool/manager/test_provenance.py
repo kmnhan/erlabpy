@@ -1544,6 +1544,7 @@ def test_manager_provenance_file_load_batch_failure_confirmation_dialog(
         dialogs[0]["icon_pixmap"]
         == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
     )
+
     assert "RuntimeError" in dialogs[0]["detailed_text"]
     assert "peer failed" in dialogs[0]["detailed_text"]
 
@@ -1633,6 +1634,17 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
         dialogs[0]["icon_pixmap"]
         == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
     )
+
+    controller._show_failed(
+        "Could Not Paste Provenance Steps",
+        failure,
+        text="The copied provenance steps could not be applied.",
+        unchanged_reason="The copied steps could not be replayed.",
+    )
+
+    assert len(dialogs) == 2
+    assert dialogs[1]["text"] == "The copied provenance steps could not be applied."
+    assert "The copied steps could not be replayed." in dialogs[1]["informative_text"]
 
 
 @pytest.mark.parametrize(
@@ -6050,6 +6062,288 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert manager._build_metadata_derivation_menu() is None
 
 
+def test_manager_provenance_step_clipboard_payload_validation() -> None:
+    operation_payload = provenance.AverageOperation(dims=("z",)).model_dump(mode="json")
+    valid_payload = {
+        "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+        "version": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
+        "operations": [operation_payload],
+    }
+
+    mime_data = QtCore.QMimeData()
+    mime_data.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        json.dumps(valid_payload).encode("utf-8"),
+    )
+    payload = manager_details_panel._provenance_step_clipboard_payload(mime_data)
+    assert payload is not None
+    assert payload[0] == (provenance.AverageOperation(dims=("z",)),)
+    assert payload[1] == "derived"
+    assert not payload[2]
+
+    text_mime_data = QtCore.QMimeData()
+    text_mime_data.setText(json.dumps({**valid_payload, "active_name": "result"}))
+    payload = manager_details_panel._provenance_step_clipboard_payload(text_mime_data)
+    assert payload is not None
+    assert payload[1] == "result"
+
+    plain_text_mime_data = QtCore.QMimeData()
+    plain_text_mime_data.setText("derived = data")
+    assert (
+        manager_details_panel._provenance_step_clipboard_payload(plain_text_mime_data)
+        is None
+    )
+    assert (
+        manager_details_panel._provenance_step_clipboard_payload(QtCore.QMimeData())
+        is None
+    )
+
+    invalid_utf8_mime_data = QtCore.QMimeData()
+    invalid_utf8_mime_data.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        b"\xff",
+    )
+    assert (
+        manager_details_panel._provenance_step_clipboard_payload(invalid_utf8_mime_data)
+        is None
+    )
+
+    for malformed_payload in (
+        [],
+        {**valid_payload, "type": "other"},
+        {**valid_payload, "version": -1},
+        {**valid_payload, "operations": {}},
+        {**valid_payload, "operations": [{"op": "unknown"}]},
+    ):
+        malformed_mime_data = QtCore.QMimeData()
+        malformed_mime_data.setData(
+            manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+            json.dumps(malformed_payload).encode("utf-8"),
+        )
+        assert (
+            manager_details_panel._provenance_step_clipboard_payload(
+                malformed_mime_data
+            )
+            is None
+        )
+
+
+def test_manager_selected_derivation_step_payload_filters_rows() -> None:
+    def item(
+        row: provenance._ProvenanceDisplayRow | str,
+        *,
+        copyable: bool = True,
+        code: str | None = "derived = data",
+    ) -> QtWidgets.QListWidgetItem:
+        list_item = QtWidgets.QListWidgetItem()
+        list_item.setData(manager_details_panel._METADATA_DERIVATION_ROW_ROLE, row)
+        list_item.setData(
+            manager_details_panel._METADATA_DERIVATION_COPYABLE_ROLE,
+            copyable,
+        )
+        list_item.setData(manager_details_panel._METADATA_DERIVATION_CODE_ROLE, code)
+        return list_item
+
+    operation_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    script_row_a = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("script a", None),
+        replay_ref=operation_ref,
+    )
+    script_row_b = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("script b", None),
+        replay_ref=operation_ref,
+    )
+    missing_operation_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("missing op", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=10,
+        ),
+    )
+    non_copyable_script_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("non-copyable script", None),
+        replay_ref=operation_ref,
+    )
+    non_live_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("non-live", None),
+        replay_ref=operation_ref,
+    )
+    row_to_spec = {
+        script_row_a: provenance.script(
+            provenance.ScriptCodeOperation(label="script a", code="a = data"),
+            start_label="Start script a",
+            active_name="a",
+        ),
+        script_row_b: provenance.script(
+            provenance.ScriptCodeOperation(label="script b", code="b = data"),
+            start_label="Start script b",
+            active_name="b",
+        ),
+        missing_operation_row: provenance.full_data(
+            provenance.AverageOperation(dims=("x",))
+        ),
+        non_copyable_script_row: types.SimpleNamespace(
+            _operation_for_ref=lambda _ref: provenance.ScriptCodeOperation(
+                label="hidden script",
+                code="derived = data",
+                copyable=False,
+            )
+        ),
+        non_live_row: types.SimpleNamespace(
+            _operation_for_ref=lambda _ref: types.SimpleNamespace(live_applicable=False)
+        ),
+    }
+    edit_controller = types.SimpleNamespace(
+        _display_spec_for_row=lambda _node, row: row_to_spec.get(row)
+    )
+    selected_items: list[QtWidgets.QListWidgetItem] = []
+    manager = types.SimpleNamespace(
+        _metadata_node_uid="node",
+        _tool_graph=types.SimpleNamespace(nodes={"node": object()}),
+        _selected_derivation_items=lambda: selected_items,
+        _provenance_edit_controller=edit_controller,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+
+    manager._metadata_node_uid = None
+    assert controller._selected_derivation_step_payload() is None
+
+    manager._metadata_node_uid = "missing"
+    assert controller._selected_derivation_step_payload() is None
+
+    manager._metadata_node_uid = "node"
+    selected_items = [
+        item("not a row"),
+        item(
+            provenance._ProvenanceDisplayRow(provenance.DerivationEntry("start", None))
+        ),
+        item(
+            provenance._ProvenanceDisplayRow(
+                provenance.DerivationEntry("file", None),
+                replay_ref=provenance._ProvenanceStepRef("file_load"),
+            )
+        ),
+        item(script_row_a, copyable=False),
+        item(script_row_a, code=None),
+        item(
+            provenance._ProvenanceDisplayRow(
+                provenance.DerivationEntry("no spec", None),
+                replay_ref=operation_ref,
+            )
+        ),
+        item(missing_operation_row),
+        item(non_copyable_script_row),
+        item(non_live_row),
+    ]
+    assert controller._selected_derivation_step_payload() is None
+
+    selected_items = [item(script_row_a), item(script_row_b)]
+    assert controller._selected_derivation_step_payload() is None
+
+
+def test_manager_copy_selected_derivation_code_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = types.SimpleNamespace(_selected_derivation_code=lambda: "derived = data")
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+
+    copied: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda text: copied.append(text) or text,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_selected_derivation_step_payload",
+        lambda: None,
+    )
+    controller._copy_selected_derivation_code()
+    assert copied == ["derived = data"]
+
+    monkeypatch.setattr(
+        controller,
+        "_selected_derivation_step_payload",
+        lambda: ((provenance.AverageOperation(dims=("x",)),), "derived", False),
+    )
+    monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: None)
+    controller._copy_selected_derivation_code()
+
+
+def test_manager_paste_steps_validation_error_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller(None, metadata_uid=None)
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    controller.paste_steps(
+        (provenance.AverageOperation(dims=("x",)),),
+        active_name="derived",
+        contains_script=False,
+    )
+    assert unavailable
+
+    node = _fake_edit_node(
+        provenance.full_data(),
+        parent_uid="parent",
+        source_display_spec=provenance.full_data(),
+    )
+    with pytest.raises(TypeError, match="Only live provenance operations"):
+        controller._paste_structured_steps(
+            node,
+            (provenance.ScriptCodeOperation(label="script", code="derived = data"),),
+        )
+
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad replay")),
+    )
+    with pytest.raises(manager_provenance_edit._ProvenanceReplayFailure) as exc_info:
+        controller._paste_structured_steps(
+            node,
+            (provenance.AverageOperation(dims=("x",)),),
+        )
+    assert "pasted provenance steps" in exc_info.value.where
+
+
+def test_manager_paste_detached_steps_uses_replay_spec_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _provenance_paste_test_data()
+    local = provenance.full_data(provenance.AverageOperation(dims=("z",)))
+    controller = _fake_edit_controller(None, metadata_uid=None)
+    replaced: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec, bool]] = []
+    node = types.SimpleNamespace(
+        uid="node",
+        displayed_provenance_spec=provenance.full_data(),
+        current_source_data=lambda: data,
+        replace_with_detached_data=lambda data, spec, preserve_filter: replaced.append(
+            (data, spec, preserve_filter)
+        ),
+    )
+    monkeypatch.setattr(
+        provenance,
+        "compose_full_provenance",
+        lambda _parent, _local: None,
+    )
+
+    controller._paste_detached_steps(
+        typing.cast("typing.Any", node),
+        local,
+        where="testing fallback",
+    )
+
+    assert len(replaced) == 1
+    xr.testing.assert_identical(replaced[0][0], local.apply(data))
+    assert replaced[0][1] == local.to_replay_spec()
+    assert replaced[0][2] is False
+
+
 def test_manager_copy_paste_structured_provenance_steps(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -6333,11 +6627,11 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         select_metadata_rows(manager, [1])
         manager._copy_selected_derivation_code()
 
-        failures: list[tuple[str, Exception]] = []
+        failures: list[tuple[str, Exception, dict[str, str]]] = []
         monkeypatch.setattr(
             manager._provenance_edit_controller,
             "_show_failed",
-            lambda title, exc: failures.append((title, exc)),
+            lambda title, exc, **kwargs: failures.append((title, exc, kwargs)),
         )
         before = child_tool.slicer_area._data.copy(deep=True)
         manager.tree_view.clearSelection()
@@ -6347,6 +6641,13 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
 
         assert failures
         assert failures[0][0] == "Could Not Paste Provenance Steps"
+        assert failures[0][2]["text"] == (
+            "The copied provenance steps could not be applied."
+        )
+        assert (
+            "dimensions, coordinates, and inputs" in failures[0][2]["unchanged_reason"]
+        )
+        assert "Revert to This Step" not in failures[0][2]["unchanged_reason"]
         xr.testing.assert_identical(child_tool.slicer_area._data, before)
         assert child_node.source_spec is None
 
