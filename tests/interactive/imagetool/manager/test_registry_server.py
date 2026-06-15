@@ -1131,6 +1131,20 @@ def test_server_stop_logs_when_cooperative_wait_times_out(monkeypatch, caplog) -
     assert "Manager server did not stop within timeout" in caplog.text
 
 
+def test_manager_server_stop_wakes_receive_loop(qtbot) -> None:
+    server = manager_server._ManagerServer(port=0)
+    server.start()
+    try:
+        assert server.wait_until_bound(timeout_ms=5000) > 0
+        server.stop(timeout_ms=1000)
+        assert not server.isRunning()
+    finally:
+        if server.isRunning():
+            server.stop(timeout_ms=1000)
+        server.wait(1000)
+        server.deleteLater()
+
+
 def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
     class _ServerDouble(QtCore.QObject):
         sigReceived = QtCore.Signal(list, dict)

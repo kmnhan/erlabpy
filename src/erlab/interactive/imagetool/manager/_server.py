@@ -26,6 +26,7 @@ __all__ = [
 ]
 
 
+import contextlib
 import errno
 import html
 import io
@@ -590,8 +591,27 @@ class _ManagerServer(QtCore.QThread):
         self.stopped.set()
         with self._condition:
             self._condition.notify_all()
+        self._wake_receiver()
         if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Manager server did not stop within timeout")
+
+    def _wake_receiver(self) -> None:
+        if self._bound_port is None:
+            return
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.SNDTIMEO, 100)
+        sock.setsockopt(zmq.RCVTIMEO, 100)
+        try:
+            sock.connect(f"tcp://{HOST_IP}:{self._bound_port}")
+            _send_multipart(sock, {"packet_type": "command", "command": "ping"})
+            with contextlib.suppress(zmq.Again, zmq.ZMQError):
+                sock.recv_multipart()
+        except Exception:
+            logger.debug("Failed to wake manager server receive loop", exc_info=True)
+        finally:
+            sock.close()
 
     def _wait_for_return_value(self) -> typing.Any:
         with self._condition:
