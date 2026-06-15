@@ -8052,6 +8052,28 @@ def test_manager_workspace_restore_event_drain_avoids_event_loop(
     assert not erlab.interactive.utils.qt_is_valid(deferred_widget)
 
 
+def test_manager_workspace_save_drain_does_not_force_deferred_delete(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager, monkeypatch.context() as save_drain_patch:
+        event_types: list[int] = []
+        save_drain_patch.setattr(
+            QtWidgets.QApplication,
+            "sendPostedEvents",
+            lambda _receiver, event_type: event_types.append(event_type),
+        )
+        save_drain_patch.setattr(
+            QtWidgets.QApplication, "processEvents", lambda *_args, **_kwargs: None
+        )
+
+        manager._drain_workspace_deferred_events()
+
+        assert event_types == [int(QtCore.QEvent.Type.MetaCall.value)] * 3
+
+
 def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
     qtbot,
     monkeypatch,

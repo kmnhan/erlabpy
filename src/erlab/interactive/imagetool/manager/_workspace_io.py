@@ -671,7 +671,6 @@ class _WorkspaceIOController:
 
     def _drain_workspace_deferred_events(self) -> None:
         self._send_workspace_posted_events(QtCore.QEvent.Type.MetaCall)
-        self._send_workspace_posted_events(QtCore.QEvent.Type.DeferredDelete)
         for _ in range(3):
             QtWidgets.QApplication.processEvents()
 
