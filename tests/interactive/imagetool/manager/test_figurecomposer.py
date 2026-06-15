@@ -5281,30 +5281,50 @@ def test_figure_composer_export_dpi_must_be_positive(dpi: int) -> None:
 
 def test_figure_composer_generated_code_uses_available_stylesheets(
     qtbot,
+    monkeypatch,
     restore_interactive_options,
+    tmp_path: Path,
 ) -> None:
-    _set_figure_stylesheets(["classic", "missing-style"])
-    data = xr.DataArray(
-        np.arange(4.0),
-        dims=("x",),
-        coords={"x": np.arange(4.0)},
-        name="data",
-    )
-    tool = FigureComposerTool(data)
-    qtbot.addWidget(tool)
+    style_name = "erlab-test-available-style"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text("axes.facecolor: white\n")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
 
-    code = tool.generated_code()
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        monkeypatch.setattr(
+            figurecomposer_defaults,
+            "_configured_stylesheets",
+            lambda: (style_name, "missing-style"),
+        )
+        data = xr.DataArray(
+            np.arange(4.0),
+            dims=("x",),
+            coords={"x": np.arange(4.0)},
+            name="data",
+        )
+        tool = FigureComposerTool(data)
+        qtbot.addWidget(tool)
 
-    assert "plt.style.use(['classic'])" in code
-    assert "# Skipped unavailable stylesheets: 'missing-style'" in code
-    assert tool.preview_pixmap is None
-    assert tool.refresh_preview_pixmap() is None
-    assert tool.refresh_preview_pixmap(allow_offscreen=True) is not None
-    assert tool.preview_pixmap is not None
-    namespace = {"data": data}
-    with mpl.rc_context():
-        exec(code, namespace)  # noqa: S102
-    namespace["plt"].close(namespace["fig"])
+        code = tool.generated_code()
+
+        assert f"plt.style.use(['{style_name}'])" in code
+        assert "# Skipped unavailable stylesheets: 'missing-style'" in code
+        assert tool.preview_pixmap is None
+        assert tool.refresh_preview_pixmap() is None
+        assert tool.refresh_preview_pixmap(allow_offscreen=True) is not None
+        assert tool.preview_pixmap is not None
+        namespace = {"data": data}
+        with mpl.rc_context():
+            exec(code, namespace)  # noqa: S102
+        namespace["plt"].close(namespace["fig"])
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
 
 
 def test_figure_composer_preview_uses_live_canvas_without_rerender(
@@ -5483,7 +5503,11 @@ def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
         "load_erlab_plotting_stylesheets",
         lambda: available.append("classic"),
     )
-    _set_figure_stylesheets(["classic"])
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic",),
+    )
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
@@ -5532,7 +5556,11 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
     )
     erlab.interactive._stylesheets._ERLAB_REGISTERED_STYLESHEETS.clear()
     monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
-    _set_figure_stylesheets(["erlab-test-style"])
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("erlab-test-style",),
+    )
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
@@ -5561,9 +5589,14 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
 
 def test_figure_composer_generated_code_imports_erlab_for_preloaded_erlab_style(
     qtbot,
+    monkeypatch,
     restore_interactive_options,
 ) -> None:
-    _set_figure_stylesheets(["nature"])
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("nature",),
+    )
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),

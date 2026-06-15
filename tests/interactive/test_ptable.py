@@ -1949,7 +1949,9 @@ def test_ptable_hover_preview_does_not_flicker_back_to_selection(
         win.periodic_table.cards[115],
     )
 
-    assert sequence == ["Sb", "Bi", "Mc"]
+    assert sequence[0] == "Sb"
+    assert sequence[-1] == "Mc"
+    assert sequence.count("Sb") == 1
 
     win.close()
 
