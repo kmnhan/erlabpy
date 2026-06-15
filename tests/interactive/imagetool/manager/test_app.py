@@ -498,6 +498,8 @@ def test_manager_macos_dock_menu_actions(
     ],
 ) -> None:
     dock_menus: list[QtWidgets.QMenu] = []
+    deleted_menus: list[QtWidgets.QMenu] = []
+    original_delete_later = manager_desktop.QtWidgets.QMenu.deleteLater
 
     monkeypatch.setattr(manager_desktop.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -505,6 +507,11 @@ def test_manager_macos_dock_menu_actions(
         "setAsDockMenu",
         lambda menu: dock_menus.append(menu),
         raising=False,
+    )
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QMenu,
+        "deleteLater",
+        lambda menu: (deleted_menus.append(menu), original_delete_later(menu)),
     )
 
     with manager_context() as manager:
@@ -529,6 +536,11 @@ def test_manager_macos_dock_menu_actions(
 
         assert load_calls == [True]
         assert new_manager_calls == [True]
+
+        manager.close()
+
+        assert deleted_menus == [dock_menu]
+        assert manager._macos_dock_menu is None
 
 
 def test_manager_desktop_configure_process_platform_branch(monkeypatch) -> None:

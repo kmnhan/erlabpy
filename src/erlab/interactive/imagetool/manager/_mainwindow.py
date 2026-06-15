@@ -1110,6 +1110,14 @@ class ImageToolManager(_ImageToolManagerBase):
             for widget in dict(self._additional_windows).values():
                 widget.close()
                 widget.deleteLater()
+            dock_menu = typing.cast(
+                "QtWidgets.QMenu | None", getattr(self, "_macos_dock_menu", None)
+            )
+            if dock_menu is not None:
+                dock_menu.close()
+                if erlab.interactive.utils.qt_is_valid(dock_menu):
+                    dock_menu.deleteLater()
+                self._macos_dock_menu = None
 
             logger.debug("Removing event filters...")
             qapp = QtWidgets.QApplication.instance()

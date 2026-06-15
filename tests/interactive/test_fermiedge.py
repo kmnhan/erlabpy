@@ -13,6 +13,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.fermiedge import (
+    EdgeFitSignals,
+    EdgeFitTask,
     GoldTool,
     ResolutionFitThread,
     ResolutionTool,
@@ -303,6 +305,7 @@ def test_goldtool_update_data_ignores_late_results_from_aborted_task(
     class _DummyTask:
         def __init__(self) -> None:
             self.aborted = False
+            self.signals = EdgeFitSignals()
 
         def abort_fit(self) -> None:
             self.aborted = True
@@ -330,6 +333,55 @@ def test_goldtool_update_data_ignores_late_results_from_aborted_task(
     assert not perform_called
 
 
+def test_goldtool_abort_fit_task_disconnects_late_worker_signals(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    win._fit_task = task
+
+    late_calls: list[str] = []
+    task.signals.sigIterated.connect(lambda _n: late_calls.append("iterated"))
+    task.signals.sigFinished.connect(
+        lambda _center, _stderr: late_calls.append("finished")
+    )
+    task.signals.sigFailed.connect(lambda _message: late_calls.append("failed"))
+
+    win._abort_fit_task()
+    task.signals.sigIterated.emit(1)
+    edge_center = gold.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+    task.signals.sigFinished.emit(edge_center, edge_stderr)
+    task.signals.sigFailed.emit("late failure")
+
+    assert win._fit_task is None
+    assert late_calls == []
+
+
+def test_goldtool_late_task_results_do_not_update_while_closing(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    win._fit_task = task
+    win._fit_closing = True
+
+    edge_center = gold.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+    win.post_fit(edge_center, edge_stderr, task=task)
+
+    assert win._fit_task is task
+    assert not hasattr(win, "edge_center")
+
+
 def test_goldtool_update_data_defers_until_fit_worker_drains(
     qtbot, gold, monkeypatch
 ) -> None:
@@ -339,6 +391,7 @@ def test_goldtool_update_data_defers_until_fit_worker_drains(
     class _DummyTask:
         def __init__(self) -> None:
             self.aborted = False
+            self.signals = EdgeFitSignals()
 
         def abort_fit(self) -> None:
             self.aborted = True
@@ -381,6 +434,7 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     class _DummyTask:
         def __init__(self) -> None:
             self.aborted = False
+            self.signals = EdgeFitSignals()
 
         def abort_fit(self) -> None:
             self.aborted = True
@@ -475,6 +529,7 @@ def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
     assert event.isAccepted()
     win.closeEvent(event)
     assert not event.isAccepted()
+    assert not win._fit_closing
 
 
 def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
@@ -1302,6 +1357,35 @@ def test_restool_queue_fit_action_runs_immediately_when_no_thread(qtbot) -> None
 
     assert called["value"]
     assert win._pending_fit_action is None
+
+
+def test_restool_finalize_fit_thread_drops_actions_while_closing(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _ThreadPlaceholder()
+    called: list[str] = []
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._pending_fit_action = lambda: called.append("action")
+    win._fit_queued = True
+    win._fit_closing = True
+
+    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+    assert called == []
+    assert win._fit_thread is None
+    assert not win._fit_queued
+    assert thread.deleted
 
 
 def test_restool_start_fit_worker_returns_false_when_thread_exists(qtbot) -> None:

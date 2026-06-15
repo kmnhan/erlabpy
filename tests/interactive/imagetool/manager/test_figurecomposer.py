@@ -5242,9 +5242,15 @@ def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -
 
 
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
+    monkeypatch,
     restore_interactive_options,
 ) -> None:
     _set_figure_stylesheets(["classic"])
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic",),
+    )
 
     with mpl_style.context(["classic"]):
         expected_figsize = tuple(

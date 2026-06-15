@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 import typing
+import warnings
 from collections.abc import Callable, Iterable
 
 import numpy as np
@@ -59,6 +60,17 @@ LMFIT_METHODS = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _disconnect_signal(signal: typing.Any) -> None:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"libpyside: Failed to disconnect .*",
+            category=RuntimeWarning,
+        )
+        with contextlib.suppress(TypeError, RuntimeError):
+            signal.disconnect()
 
 
 class EdgeFitSignals(QtCore.QObject):
@@ -485,6 +497,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         # This allows the GUI to remain responsive during fitting so it can be aborted
         self._threadpool = QtCore.QThreadPool(self)
         self._fit_task: EdgeFitTask | None = None
+        self._fit_closing = False
         self.sigAbortFitting.connect(self._abort_fit_task)
         self._pending_update_request: _GoldUpdateRequest | None = None
         self._pending_update_timer = QtCore.QTimer(self)
@@ -912,7 +925,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
     def iterated(self, n: int, *, task: EdgeFitTask | None = None) -> None:
-        if task is not None and task is not self._fit_task:
+        if task is not None and not self._accept_fit_task_result(task):
             return
         if n == 0:
             self.progress.setLabelText("")
@@ -939,7 +952,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
-        if self._pending_update_request is not None:
+        if (
+            self._pending_update_request is not None
+            or self._fit_closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+        ):
             return
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
@@ -973,6 +990,19 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def abort_fit(self) -> None:
         self.sigAbortFitting.emit()
 
+    def _accept_fit_task_result(self, task: EdgeFitTask) -> bool:
+        return (
+            task is self._fit_task
+            and not self._fit_closing
+            and erlab.interactive.utils.qt_is_valid(self)
+        )
+
+    @staticmethod
+    def _disconnect_fit_task_signals(task: EdgeFitTask) -> None:
+        _disconnect_signal(task.signals.sigIterated)
+        _disconnect_signal(task.signals.sigFinished)
+        _disconnect_signal(task.signals.sigFailed)
+
     def post_fit(
         self,
         edge_center: xr.DataArray,
@@ -980,9 +1010,15 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         *,
         task: EdgeFitTask | None = None,
     ) -> None:
-        if task is not None and task is not self._fit_task:
+        if task is not None and not self._accept_fit_task_result(task):
+            return
+        if task is None and (
+            self._fit_closing or not erlab.interactive.utils.qt_is_valid(self)
+        ):
             return
         self.progress.reset()
+        if task is not None:
+            self._disconnect_fit_task_signals(task)
         self.edge_center, self.edge_stderr = edge_center, edge_stderr
         self._fit_task = None
 
@@ -1004,6 +1040,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if task is None:
             return
         self._fit_task = None
+        self._disconnect_fit_task_signals(task)
         task.abort_fit()
         self.progress.reset()
         self._emit_info_changed()
@@ -1011,8 +1048,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _handle_fit_failed(
         self, message: str, *, task: EdgeFitTask | None = None
     ) -> None:
-        if task is not None and task is not self._fit_task:
+        if task is not None and not self._accept_fit_task_result(task):
             return
+        if task is None and (
+            self._fit_closing or not erlab.interactive.utils.qt_is_valid(self)
+        ):
+            return
+        if task is not None:
+            self._disconnect_fit_task_signals(task)
         self.progress.reset()
         self._fit_task = None
         self._emit_info_changed()
@@ -1321,7 +1364,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
+        self._fit_closing = True
         if not self._stop_server():
+            self._fit_closing = False
             logger.warning(
                 "Gold fit worker did not stop within timeout; aborting window close"
             )
@@ -1670,6 +1715,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         self._result_ds: xr.Dataset | None = None
         self._fit_thread: ResolutionFitThread | None = None
+        self._fit_closing = False
         self._fit_cancel_requested: bool = False
         self._fit_queued: bool = False
         self._pending_fit_action: Callable[[], None] | None = None
@@ -1781,7 +1827,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         return True
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._fit_closing = True
         if not self._cancel_fit(wait=True):
+            self._fit_closing = False
             logger.warning(
                 "Resolution fit worker did not stop within timeout; "
                 "aborting window close"
@@ -1916,6 +1964,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     ) -> None:
         if self._fit_thread is not thread:
             return
+        if self._fit_closing or not erlab.interactive.utils.qt_is_valid(self):
+            return
         if self._fit_cancel_requested and not allow_when_cancelled:
             return
         self._pending_fit_action = action
@@ -1931,15 +1981,22 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._fit_thread = None
         was_cancelled = self._fit_cancel_requested
         self._fit_cancel_requested = False
-        if action is not None:
+        closing = self._fit_closing or not erlab.interactive.utils.qt_is_valid(self)
+        if action is not None and not closing:
             action()
-        if self._fit_queued and not was_cancelled:
+        if self._fit_queued and not was_cancelled and not closing:
             self._fit_queued = False
             self._start_fit_worker()
+        elif closing:
+            self._fit_queued = False
         thread.deleteLater()
 
     def _start_fit_worker(self) -> bool:
-        if self._fit_thread is not None:
+        if (
+            self._fit_thread is not None
+            or self._fit_closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+        ):
             return False
 
         fit_signature = self._fit_signature_current
