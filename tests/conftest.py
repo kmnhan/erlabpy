@@ -304,6 +304,16 @@ def manager_context() -> Callable[
             if manager is not None:
                 manager._workspace_state.loading_depth += 1
                 try:
+
+                    def _thread_is_running(thread: object) -> bool:
+                        with contextlib.suppress(RuntimeError):
+                            return qt_is_valid(thread) and thread.isRunning()
+                        return False
+
+                    def _stop_thread(thread: object) -> None:
+                        if qt_is_valid(thread):
+                            thread.stop(timeout_ms=1000)
+
                     qapp = QtWidgets.QApplication.instance()
                     if (
                         isinstance(qapp, QtWidgets.QApplication)
@@ -313,8 +323,8 @@ def manager_context() -> Callable[
                         manager._application_quit_filter = None
                     manager._registry_heartbeat_timer.stop()
                     manager._registry_heartbeat.stop()
-                    manager.server.stop(timeout_ms=1000)
-                    manager.watcher_server.stop(timeout_ms=1000)
+                    _stop_thread(manager.server)
+                    _stop_thread(manager.watcher_server)
                     QtWidgets.QApplication.sendPostedEvents(None, 0)
                     QtWidgets.QApplication.processEvents()
                     clipboard = QtWidgets.QApplication.clipboard()
@@ -325,15 +335,16 @@ def manager_context() -> Callable[
                     manager.close()
                     deadline = time.perf_counter() + 5.0
                     while (
-                        manager.server.isRunning() or manager.watcher_server.isRunning()
+                        _thread_is_running(manager.server)
+                        or _thread_is_running(manager.watcher_server)
                     ) and time.perf_counter() < deadline:
                         QtWidgets.QApplication.sendPostedEvents(None, 0)
                         QtWidgets.QApplication.processEvents()
                         time.sleep(0.01)
-                    if manager.server.isRunning():
-                        manager.server.stop(timeout_ms=1000)
-                    if manager.watcher_server.isRunning():
-                        manager.watcher_server.stop(timeout_ms=1000)
+                    if _thread_is_running(manager.server):
+                        _stop_thread(manager.server)
+                    if _thread_is_running(manager.watcher_server):
+                        _stop_thread(manager.watcher_server)
                     manager.deleteLater()
                     for _ in range(3):
                         QtWidgets.QApplication.sendPostedEvents(None, 0)

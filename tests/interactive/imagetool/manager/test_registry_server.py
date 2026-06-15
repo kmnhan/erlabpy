@@ -20,6 +20,7 @@ import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool.manager._heartbeat as manager_heartbeat
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._magic import _normalize_manager_target_args
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch
@@ -1128,6 +1129,140 @@ def test_server_stop_logs_when_cooperative_wait_times_out(monkeypatch, caplog) -
 
     assert "Watcher server did not stop within timeout" in caplog.text
     assert "Manager server did not stop within timeout" in caplog.text
+
+
+def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
+    class _ServerDouble(QtCore.QObject):
+        sigReceived = QtCore.Signal(list, dict)
+        sigLoadRequested = QtCore.Signal(list, str, dict)
+        sigReplaceRequested = QtCore.Signal(list, list)
+        sigWatchedVarChanged = QtCore.Signal(str, str, object, object)
+        sigDataRequested = QtCore.Signal(object)
+        sigWatchInfoRequested = QtCore.Signal()
+        sigRemoveIndex = QtCore.Signal(int)
+        sigShowIndex = QtCore.Signal(int)
+        sigRemoveUID = QtCore.Signal(str)
+        sigShowUID = QtCore.Signal(str)
+        sigUnwatchUID = QtCore.Signal(str)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.running = True
+            self.deleted = False
+            self.return_values: list[object] = []
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+        def set_return_value(self, value: object) -> None:
+            self.return_values.append(value)
+
+    class _WatcherDouble(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.running = True
+            self.deleted = False
+            self.parameters: list[tuple[str, str, str]] = []
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+        def send_parameters(self, varname: str, uid: str, event: str) -> None:
+            self.parameters.append((varname, uid, event))
+
+    class _ManagerDouble(QtCore.QObject):
+        _sigReplyData = QtCore.Signal(object)
+        _sigWatchedDataEdited = QtCore.Signal(str, str, str)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.server = _ServerDouble()
+            self.watcher_server = _WatcherDouble()
+            self.calls: list[tuple[str, object]] = []
+
+        def _record(self, name: str, *args) -> None:
+            self.calls.append((name, args))
+
+        def _data_recv(self, *args) -> None:
+            self._record("data_recv", *args)
+
+        def _data_load(self, *args) -> None:
+            self._record("data_load", *args)
+
+        def _data_replace(self, *args) -> None:
+            self._record("data_replace", *args)
+
+        def _send_imagetool_data(self, *args) -> None:
+            self._record("send_imagetool_data", *args)
+
+        def _send_watch_info(self) -> None:
+            self._record("send_watch_info")
+
+        def remove_imagetool(self, *args) -> None:
+            self._record("remove_imagetool", *args)
+
+        def show_imagetool(self, *args) -> None:
+            self._record("show_imagetool", *args)
+
+        def _remove_watched(self, *args) -> None:
+            self._record("remove_watched", *args)
+
+        def _show_watched(self, *args) -> None:
+            self._record("show_watched", *args)
+
+        def _data_unwatch(self, *args) -> None:
+            self._record("data_unwatch", *args)
+
+        def _data_watched_update(self, *args) -> None:
+            self._record("data_watched_update", *args)
+
+    manager = _ManagerDouble()
+    server = manager.server
+    watcher_server = manager.watcher_server
+
+    for signal, slot in (
+        (server.sigReceived, manager._data_recv),
+        (server.sigLoadRequested, manager._data_load),
+        (server.sigReplaceRequested, manager._data_replace),
+        (server.sigDataRequested, manager._send_imagetool_data),
+        (server.sigWatchInfoRequested, manager._send_watch_info),
+        (manager._sigReplyData, server.set_return_value),
+        (server.sigRemoveIndex, manager.remove_imagetool),
+        (server.sigShowIndex, manager.show_imagetool),
+        (server.sigRemoveUID, manager._remove_watched),
+        (server.sigShowUID, manager._show_watched),
+        (server.sigUnwatchUID, manager._data_unwatch),
+        (server.sigWatchedVarChanged, manager._data_watched_update),
+        (manager._sigWatchedDataEdited, watcher_server.send_parameters),
+    ):
+        signal.connect(slot)
+
+    manager_widgets._WidgetsController(manager)._stop_servers()
+
+    assert not server.running
+    assert server.deleted
+    assert not watcher_server.running
+    assert watcher_server.deleted
+
+    server.sigRemoveIndex.emit(0)
+    manager._sigReplyData.emit("value")
+    manager._sigWatchedDataEdited.emit("data", "uid", "updated")
+
+    assert manager.calls == []
+    assert server.return_values == []
+    assert watcher_server.parameters == []
 
 
 def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
