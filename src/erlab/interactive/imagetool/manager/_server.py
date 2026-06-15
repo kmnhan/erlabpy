@@ -589,6 +589,7 @@ class _ManagerServer(QtCore.QThread):
 
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
+        self.requestInterruption()
         with self._condition:
             self._condition.notify_all()
         self._wake_receiver()
@@ -604,7 +605,7 @@ class _ManagerServer(QtCore.QThread):
         sock.setsockopt(zmq.SNDTIMEO, 100)
         sock.setsockopt(zmq.RCVTIMEO, 100)
         try:
-            sock.connect(f"tcp://{HOST_IP}:{self._bound_port}")
+            sock.connect(f"tcp://127.0.0.1:{self._bound_port}")
             _send_multipart(sock, {"packet_type": "command", "command": "ping"})
             with contextlib.suppress(zmq.Again, zmq.ZMQError):
                 sock.recv_multipart()
@@ -631,6 +632,8 @@ class _ManagerServer(QtCore.QThread):
         sock.setsockopt(zmq.SNDHWM, 0)
         sock.setsockopt(zmq.RCVHWM, 0)
         sock.setsockopt(zmq.RCVTIMEO, 100)
+        poller = zmq.Poller()
+        poller.register(sock, zmq.POLLIN)
 
         try:
             try:
@@ -647,9 +650,14 @@ class _ManagerServer(QtCore.QThread):
             self._bound_event.set()
             logger.debug("Server is listening on port %s...", self.port)
 
-            while not self.stopped.is_set():
+            while not self.stopped.is_set() and not self.isInterruptionRequested():
+                events = dict(poller.poll(100))
+                if sock not in events:
+                    continue
                 try:
-                    payload = Packet.validate_python(_recv_multipart(sock))
+                    payload = Packet.validate_python(
+                        _recv_multipart(sock, flags=zmq.NOBLOCK)
+                    )
                 except zmq.Again:
                     continue
                 except Exception:
@@ -757,6 +765,8 @@ class _ManagerServer(QtCore.QThread):
                 self._bound_event.set()
             logger.exception("Server encountered an error")
         finally:
+            with contextlib.suppress(zmq.ZMQError):
+                poller.unregister(sock)
             sock.close()
             logger.debug("Socket closed")
 

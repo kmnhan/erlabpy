@@ -1145,6 +1145,113 @@ def test_manager_server_stop_wakes_receive_loop(qtbot) -> None:
         server.deleteLater()
 
 
+def test_manager_server_wake_receiver_uses_loopback(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.options: list[tuple[int, int]] = []
+            self.connections: list[str] = []
+            self.sent = False
+            self.closed = False
+
+        def setsockopt(self, option: int, value: int) -> None:
+            self.options.append((option, value))
+
+        def connect(self, endpoint: str) -> None:
+            self.connections.append(endpoint)
+
+        def send_multipart(self, *_args, **_kwargs) -> None:
+            self.sent = True
+
+        def recv_multipart(self) -> None:
+            raise zmq.Again
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self) -> None:
+            self.sockets: list[_DummySocket] = []
+
+        def socket(self, *_args) -> _DummySocket:
+            socket = _DummySocket()
+            self.sockets.append(socket)
+            return socket
+
+    context = _DummyContext()
+    monkeypatch.setattr(zmq.Context, "instance", staticmethod(lambda: context))
+
+    unbound_server = manager_server._ManagerServer()
+    unbound_server._wake_receiver()
+
+    server = manager_server._ManagerServer()
+    server._bound_port = 45555
+    server._wake_receiver()
+
+    assert len(context.sockets) == 1
+    socket = context.sockets[0]
+    assert socket.connections == ["tcp://127.0.0.1:45555"]
+    assert socket.sent
+    assert socket.closed
+
+
+def test_manager_server_run_exits_after_empty_poll(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.options: list[tuple[int, int]] = []
+            self.bound: list[str] = []
+            self.closed = False
+
+        def setsockopt(self, option: int, value: int) -> None:
+            self.options.append((option, value))
+
+        def bind(self, endpoint: str) -> None:
+            self.bound.append(endpoint)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, socket_type: int) -> _DummySocket:
+            assert socket_type == zmq.REP
+            return self._socket
+
+    class _DummyPoller:
+        def __init__(self) -> None:
+            self.registered: list[tuple[_DummySocket, int]] = []
+            self.unregistered: list[_DummySocket] = []
+            self.poll_timeouts: list[int] = []
+
+        def register(self, socket: _DummySocket, event: int) -> None:
+            self.registered.append((socket, event))
+
+        def poll(self, timeout: int) -> dict[_DummySocket, int]:
+            self.poll_timeouts.append(timeout)
+            server.stopped.set()
+            return {}
+
+        def unregister(self, socket: _DummySocket) -> None:
+            self.unregistered.append(socket)
+
+    socket = _DummySocket()
+    poller = _DummyPoller()
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+    monkeypatch.setattr(zmq, "Poller", lambda: poller)
+
+    server = manager_server._ManagerServer(port=45555)
+    server.run()
+
+    assert socket.bound == ["tcp://*:45555"]
+    assert poller.registered == [(socket, zmq.POLLIN)]
+    assert poller.poll_timeouts == [100]
+    assert poller.unregistered == [socket]
+    assert socket.closed
+
+
 def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
     class _ServerDouble(QtCore.QObject):
         sigReceived = QtCore.Signal(list, dict)

@@ -624,12 +624,85 @@ def test_close_shortcut_filter_removed_with_widget(qtbot) -> None:
     shortcut_filter = window._erlab_close_shortcut_refs[1]
 
     assert shortcut_filter.parent() is QtWidgets.QApplication.instance()
+    assert shortcut_filter._widget_ref() is window
+    assert shortcut_filter._callback_or_none() is not None
 
     window.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     qtbot.wait_until(lambda: not qt_is_valid(window), timeout=1000)
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     qtbot.wait_until(lambda: not qt_is_valid(shortcut_filter), timeout=1000)
+
+
+def test_close_shortcut_filter_weakly_refs_bound_callback(qtbot) -> None:
+    calls: list[str] = []
+
+    class _Window(QtWidgets.QMainWindow):
+        def record_close(self) -> None:
+            calls.append("close")
+
+    window = _Window()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, window.record_close)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    assert shortcut_filter._callback is None
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    callback()
+
+    assert calls == ["close"]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    event.ignore()
+
+    assert shortcut_filter.eventFilter(window, event)
+    assert event.isAccepted()
+    assert calls == ["close", "close"]
+
+
+def test_close_shortcut_default_callback_closes_live_widget(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    callback()
+
+    qtbot.wait_until(lambda: not window.isVisible(), timeout=1000)
+
+
+def test_close_shortcut_filter_ignores_missing_callback(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, window.hide)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+    shortcut_filter._callback_ref = None
+    shortcut_filter._callback = None
+
+    with qtbot.waitExposed(window):
+        window.show()
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    event.ignore()
+
+    assert not shortcut_filter.eventFilter(window, event)
+    assert not event.isAccepted()
 
 
 def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
