@@ -343,7 +343,6 @@ def test_batch_dialog_defensive_paths_and_launch(
         )
         select_tools(manager, [0, 1])
         dialog = _BatchOperationDialog(manager)
-        qtbot.addWidget(dialog)
 
         with monkeypatch.context() as mp:
             mp.setattr(
@@ -708,7 +707,6 @@ def test_batch_dialog_categories_and_target_checks_update_manager_selection(
 
         select_tools(manager, [0, 1])
         dialog = _BatchOperationDialog(manager)
-        qtbot.addWidget(dialog)
 
         assert dialog._operation_tree.topLevelItemCount() == 4
         rendered_dialogs = []
@@ -758,7 +756,6 @@ def test_batch_dialog_open_refreshes_cached_targets(
 
         manager.show_batch_operations()
         dialog = manager._actions_controller._batch_dialog
-        qtbot.addWidget(dialog)
         qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
         assert set(dialog._target_items) == {0, 1}
 
@@ -813,7 +810,6 @@ def test_batch_dialog_expands_child_targets(
 
         manager.show_batch_operations()
         dialog = manager._actions_controller._batch_dialog
-        qtbot.addWidget(dialog)
         qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
 
         parent_item = dialog._target_tree.topLevelItem(0)

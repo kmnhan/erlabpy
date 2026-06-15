@@ -6616,7 +6616,6 @@ def test_manager_save_and_wait_dialog_error_paths(
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
     with manager_context() as manager:
         wait_dialog = manager._open_workspace_save_wait_dialog(manager)
-        qtbot.addWidget(wait_dialog)
         assert wait_dialog.windowTitle() == "Saving Workspace"
         assert typing.cast("QtWidgets.QProgressDialog", wait_dialog).labelText() == (
             "Saving workspace..."

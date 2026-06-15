@@ -967,7 +967,6 @@ def test_multi_manager_integer_targets(
     manager_mod = erlab.interactive.imagetool.manager
     with manager_context() as manager0:
         manager1 = ImageToolManager()
-        qtbot.addWidget(manager1, before_close_func=lambda w: w.remove_all_tools())
         try:
             qtbot.wait_until(
                 lambda: (
