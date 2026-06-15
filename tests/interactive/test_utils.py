@@ -724,7 +724,7 @@ def test_close_shortcut_destroyed_cleanup_ignores_invalid_filter(
 
     monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", _qt_is_valid)
 
-    window.destroyed.emit(window)
+    window.destroyed.emit()
 
     assert qt_is_valid(shortcut_filter)
 
