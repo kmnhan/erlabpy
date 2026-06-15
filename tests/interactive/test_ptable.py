@@ -31,6 +31,7 @@ from erlab.interactive.ptable._shared import (
     _effective_point_size,
     _format_mass,
 )
+from erlab.interactive.ptable._table import ElementCard
 from erlab.interactive.ptable._window import PeriodicTableState
 
 
@@ -322,25 +323,34 @@ def _cam02_distance(
 
 def _hover_sequence_between_cards(
     win: PeriodicTableWindow,
-    start_card: QtWidgets.QWidget,
-    end_card: QtWidgets.QWidget,
+    start_card: ElementCard,
+    end_card: ElementCard,
 ) -> list[str | None]:
     app = QtWidgets.QApplication.instance()
     assert app is not None
 
-    start_pos = _viewport_pos_for_table_child(win, start_card)
-    end_pos = _viewport_pos_for_table_child(win, end_card)
-    if start_pos.x() != end_pos.x():
-        raise AssertionError("Hover path helper expects vertically aligned cards")
+    start_row = start_card.record.row
+    end_row = end_card.record.row
+    column = start_card.record.column
+    if column != end_card.record.column:
+        raise ValueError("Hover path helper expects vertically aligned cards")
 
-    step = 1 if end_pos.y() >= start_pos.y() else -1
+    min_row, max_row = sorted((start_row, end_row))
+    cards = [
+        card
+        for card in win.periodic_table.cards.values()
+        if card.record.column == column and min_row <= card.record.row <= max_row
+    ]
+    cards.sort(key=lambda card: card.record.row, reverse=end_row < start_row)
     seen: list[str | None] = []
     last: str | None | object = object()
 
-    for y in range(start_pos.y(), end_pos.y() + step, step):
-        card = win.table_view._card_at_viewport_pos(QtCore.QPoint(start_pos.x(), y))
-        atomic_number = None if card is None else card.record.atomic_number
-        win.table_view._set_hovered_atomic_number(atomic_number)
+    for card in cards:
+        viewport_pos = _viewport_pos_for_table_child(win, card)
+        hit_card = win.table_view._card_at_viewport_pos(viewport_pos)
+        if hit_card is not card:
+            raise ValueError("Hover path helper could not hit-test card center")
+        win.table_view._set_hovered_atomic_number(card.record.atomic_number)
         app.processEvents()
         current = win.current_record.symbol if win.current_record else None
         if current != last:
