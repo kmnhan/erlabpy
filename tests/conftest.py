@@ -55,6 +55,9 @@ DATA_KNOWN_HASH = "de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb7
 DATA_RETRIEVE_ATTEMPTS = 4
 """Maximum attempts for transient test data download failures."""
 
+DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS = 20 * 60
+"""Maximum time to wait for another worker to finish downloading test data."""
+
 log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
@@ -131,6 +134,41 @@ def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
     return bool(getattr(pytestconfig.option, "cov_source", None))
 
 
+@contextlib.contextmanager
+def _test_data_download_lock(lock_path: pathlib.Path) -> Iterator[None]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS
+    lock_fd: int | None = None
+    while lock_fd is None:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            try:
+                lock_age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                continue
+            if lock_age > DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS:
+                with contextlib.suppress(OSError):
+                    lock_path.unlink()
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for erlabpy test data lock {lock_path}"
+                ) from None
+            time.sleep(0.25)
+    try:
+        os.write(lock_fd, f"{os.getpid()}\n".encode())
+        yield
+    finally:
+        os.close(lock_fd)
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
+
+
+def _test_data_dir_ready(path: pathlib.Path) -> bool:
+    return all((path / dirname).is_dir() for dirname in ("da30", "erpes", "merlin"))
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         rel_path = pathlib.Path(item.path).resolve().relative_to(REPO_ROOT).as_posix()
@@ -182,42 +220,50 @@ def test_data_dir() -> pathlib.Path:
     path = os.getenv("ERLAB_TEST_DATA_DIR", None)
     if path is None:
         cache_folder = pooch.os_cache("erlabpy")
+        path = cache_folder / f"kmnhan-erlabpy-data-{DATA_COMMIT_HASH[:7]}"
         data_url = (
-            "https://api.github.com/repos/kmnhan/erlabpy-data/tarball/"
+            "https://codeload.github.com/kmnhan/erlabpy-data/legacy.tar.gz/"
             + DATA_COMMIT_HASH
         )
-        for attempt in range(1, DATA_RETRIEVE_ATTEMPTS + 1):
-            try:
-                pooch.retrieve(
-                    data_url,
-                    known_hash=DATA_KNOWN_HASH,
-                    path=cache_folder,
-                    processor=pooch.Untar(extract_dir=""),
-                )
-                break
-            except (
-                requests.exceptions.ConnectionError,
-                requests.exceptions.HTTPError,
-                requests.exceptions.Timeout,
-            ) as exc:
-                if isinstance(exc, requests.exceptions.HTTPError):
-                    response = exc.response
-                    if response is not None and response.status_code < 500:
-                        raise
-                if attempt == DATA_RETRIEVE_ATTEMPTS:
-                    raise
-                delay = 2 ** (attempt - 1)
-                log.warning(
-                    "Failed to retrieve erlabpy test data from %s on attempt %d/%d; "
-                    "retrying in %d seconds.",
-                    data_url,
-                    attempt,
-                    DATA_RETRIEVE_ATTEMPTS,
-                    delay,
-                    exc_info=True,
-                )
-                time.sleep(delay)
-        path = cache_folder / f"kmnhan-erlabpy-data-{DATA_COMMIT_HASH[:7]}"
+        if not _test_data_dir_ready(path):
+            lock_path = cache_folder / f".erlabpy-data-{DATA_COMMIT_HASH[:7]}.lock"
+            with _test_data_download_lock(lock_path):
+                if not _test_data_dir_ready(path):
+                    for attempt in range(1, DATA_RETRIEVE_ATTEMPTS + 1):
+                        try:
+                            pooch.retrieve(
+                                data_url,
+                                known_hash=DATA_KNOWN_HASH,
+                                path=cache_folder,
+                                processor=pooch.Untar(extract_dir=""),
+                            )
+                            break
+                        except (
+                            requests.exceptions.ConnectionError,
+                            requests.exceptions.HTTPError,
+                            requests.exceptions.Timeout,
+                        ) as exc:
+                            if isinstance(exc, requests.exceptions.HTTPError):
+                                response = exc.response
+                                if response is not None and response.status_code < 500:
+                                    raise
+                            if attempt == DATA_RETRIEVE_ATTEMPTS:
+                                raise
+                            delay = 2 ** (attempt - 1)
+                            log.warning(
+                                "Failed to retrieve erlabpy test data from %s on "
+                                "attempt %d/%d; retrying in %d seconds.",
+                                data_url,
+                                attempt,
+                                DATA_RETRIEVE_ATTEMPTS,
+                                delay,
+                                exc_info=True,
+                            )
+                            time.sleep(delay)
+                    if not _test_data_dir_ready(path):
+                        raise FileNotFoundError(
+                            f"Retrieved erlabpy test data is incomplete: {path}"
+                        )
 
     return pathlib.Path(path)
 

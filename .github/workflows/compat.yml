@@ -15,10 +15,63 @@ permissions:
 
 env:
   FORCE_COLOR: 1
+  ERLAB_TEST_DATA_COMMIT: a90b37654184b9bf3378b032646c9c5b6231a0fa
+  ERLAB_TEST_DATA_ARCHIVE_SHA256: de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be
+  ERLAB_TEST_DATA_CACHE_DIR: /home/runner/.cache/erlabpy
+  ERLAB_TEST_DATA_DIR: /home/runner/.cache/erlabpy/kmnhan-erlabpy-data-a90b376
 
 jobs:
+  test-data-cache:
+    name: Cache Test Data
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore test data cache
+        id: restore-test-data
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
+          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+
+      - name: Populate test data cache
+        if: steps.restore-test-data.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/erlabpy-data.tar.gz"
+          curl \
+            --fail \
+            --location \
+            --retry 4 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            "https://codeload.github.com/kmnhan/erlabpy-data/legacy.tar.gz/${ERLAB_TEST_DATA_COMMIT}" \
+            --output "$archive"
+          echo "${ERLAB_TEST_DATA_ARCHIVE_SHA256}  ${archive}" | sha256sum --check
+          mkdir -p "$ERLAB_TEST_DATA_CACHE_DIR"
+          rm -rf "$ERLAB_TEST_DATA_DIR"
+          tar -xzf "$archive" -C "$ERLAB_TEST_DATA_CACHE_DIR"
+          test -d "$ERLAB_TEST_DATA_DIR/da30"
+          test -d "$ERLAB_TEST_DATA_DIR/erpes"
+          test -d "$ERLAB_TEST_DATA_DIR/merlin"
+
+      - name: Save test data cache
+        if: steps.restore-test-data.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
+          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+
+      - name: Verify test data cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$ERLAB_TEST_DATA_DIR/da30"
+          test -d "$ERLAB_TEST_DATA_DIR/erpes"
+          test -d "$ERLAB_TEST_DATA_DIR/merlin"
+
   compat:
     name: Compat Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+    needs: test-data-cache
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -47,6 +100,21 @@ jobs:
 
       - name: Install project with upgraded dependencies
         run: uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
+
+      - name: Restore test data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
+          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          fail-on-cache-miss: true
+
+      - name: Verify test data cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$ERLAB_TEST_DATA_DIR/da30"
+          test -d "$ERLAB_TEST_DATA_DIR/erpes"
+          test -d "$ERLAB_TEST_DATA_DIR/merlin"
 
       - name: Run compatibility suite
         run: |
