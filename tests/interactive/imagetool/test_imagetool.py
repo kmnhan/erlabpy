@@ -126,7 +126,7 @@ def _press_alt(monkeypatch):
     monkeypatch.setattr(
         QtWidgets.QApplication,
         "queryKeyboardModifiers",
-        lambda: QtCore.Qt.KeyboardModifier.AltModifier,
+        lambda *_args: QtCore.Qt.KeyboardModifier.AltModifier,
     )
 
 

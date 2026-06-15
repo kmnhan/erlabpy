@@ -33,6 +33,7 @@ import numexpr
 import numpy as np
 import pooch
 import pytest
+import requests
 import xarray as xr
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
@@ -50,6 +51,9 @@ DATA_COMMIT_HASH = "a90b37654184b9bf3378b032646c9c5b6231a0fa"
 
 DATA_KNOWN_HASH = "de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be"
 """The SHA-256 checksum of the `.tar.gz` file."""
+
+DATA_RETRIEVE_ATTEMPTS = 4
+"""Maximum attempts for transient test data download failures."""
 
 log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -163,13 +167,41 @@ def test_data_dir() -> pathlib.Path:
     path = os.getenv("ERLAB_TEST_DATA_DIR", None)
     if path is None:
         cache_folder = pooch.os_cache("erlabpy")
-        pooch.retrieve(
+        data_url = (
             "https://api.github.com/repos/kmnhan/erlabpy-data/tarball/"
-            + DATA_COMMIT_HASH,
-            known_hash=DATA_KNOWN_HASH,
-            path=cache_folder,
-            processor=pooch.Untar(extract_dir=""),
+            + DATA_COMMIT_HASH
         )
+        for attempt in range(1, DATA_RETRIEVE_ATTEMPTS + 1):
+            try:
+                pooch.retrieve(
+                    data_url,
+                    known_hash=DATA_KNOWN_HASH,
+                    path=cache_folder,
+                    processor=pooch.Untar(extract_dir=""),
+                )
+                break
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.HTTPError,
+                requests.exceptions.Timeout,
+            ) as exc:
+                if isinstance(exc, requests.exceptions.HTTPError):
+                    response = exc.response
+                    if response is not None and response.status_code < 500:
+                        raise
+                if attempt == DATA_RETRIEVE_ATTEMPTS:
+                    raise
+                delay = 2 ** (attempt - 1)
+                log.warning(
+                    "Failed to retrieve erlabpy test data from %s on attempt %d/%d; "
+                    "retrying in %d seconds.",
+                    data_url,
+                    attempt,
+                    DATA_RETRIEVE_ATTEMPTS,
+                    delay,
+                    exc_info=True,
+                )
+                time.sleep(delay)
         path = cache_folder / f"kmnhan-erlabpy-data-{DATA_COMMIT_HASH[:7]}"
 
     return pathlib.Path(path)
