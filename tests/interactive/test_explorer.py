@@ -19,18 +19,6 @@ from erlab.interactive.explorer._tabbed_explorer import (
 from erlab.interactive.imagetool.manager import _dialogs
 
 
-class _FakePreviewThreadPool:
-    def __init__(self) -> None:
-        self.cleared = False
-        self.waited = False
-
-    def clear(self) -> None:
-        self.cleared = True
-
-    def waitForDone(self) -> None:
-        self.waited = True
-
-
 def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
 
@@ -55,7 +43,7 @@ def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) 
 
 
 def test_tabbed_explorer_close_tab_stops_preview_workers(
-    qtbot, example_loader, example_data_dir: pathlib.Path
+    qtbot, monkeypatch, example_loader, example_data_dir: pathlib.Path
 ) -> None:
     win = _TabbedExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(win)
@@ -63,46 +51,62 @@ def test_tabbed_explorer_close_tab_stops_preview_workers(
     explorer = win.get_explorer(0)
     assert explorer is not None
     assert explorer.centralWidget() is None
-    fake_threadpool = _FakePreviewThreadPool()
-    explorer._preview_threadpool = fake_threadpool
+    stopped_explorers: list[_DataExplorer] = []
+    stop_preview_workers = explorer._stop_preview_workers
+
+    def _track_stop_preview_workers() -> None:
+        stopped_explorers.append(explorer)
+        stop_preview_workers()
+
+    monkeypatch.setattr(explorer, "_stop_preview_workers", _track_stop_preview_workers)
 
     win.close_tab(0)
 
     assert win.tab_widget.count() == 1
-    assert fake_threadpool.cleared
-    assert fake_threadpool.waited
+    assert stopped_explorers == [explorer]
 
 
 def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(
-    qtbot, example_loader, example_data_dir: pathlib.Path
+    qtbot, monkeypatch, example_loader, example_data_dir: pathlib.Path
 ) -> None:
     win = _TabbedExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(win)
     explorer = win.current_explorer
     assert explorer is not None
-    fake_threadpool = _FakePreviewThreadPool()
-    explorer._preview_threadpool = fake_threadpool
+    stopped_explorers: list[_DataExplorer] = []
+    stop_preview_workers = explorer._stop_preview_workers
+
+    def _track_stop_preview_workers() -> None:
+        stopped_explorers.append(explorer)
+        stop_preview_workers()
+
+    monkeypatch.setattr(explorer, "_stop_preview_workers", _track_stop_preview_workers)
 
     win.closeEvent(QtGui.QCloseEvent())
 
     assert win.tab_widget.count() == 1
     assert win.current_explorer is explorer
-    assert fake_threadpool.cleared
-    assert fake_threadpool.waited
+    assert stopped_explorers == [explorer]
 
 
 def test_explorer_close_stops_preview_workers(
     qtbot, example_loader, example_data_dir: pathlib.Path
 ) -> None:
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    class _TrackingDataExplorer(_DataExplorer):
+        def __init__(self, *args, **kwargs) -> None:
+            self.stopped_preview_workers = False
+            super().__init__(*args, **kwargs)
+
+        def _stop_preview_workers(self) -> None:
+            self.stopped_preview_workers = True
+            super()._stop_preview_workers()
+
+    explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
-    fake_threadpool = _FakePreviewThreadPool()
-    explorer._preview_threadpool = fake_threadpool
 
     explorer.closeEvent(QtGui.QCloseEvent())
 
-    assert fake_threadpool.cleared
-    assert fake_threadpool.waited
+    assert explorer.stopped_preview_workers
 
 
 def test_tabbed_explorer_show_path_adds_selected_file_tab(

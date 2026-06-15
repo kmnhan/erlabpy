@@ -91,6 +91,21 @@ def install_macos_dock_menu(manager: QtWidgets.QWidget) -> QtWidgets.QMenu | Non
     return dock_menu
 
 
+def uninstall_macos_dock_menu(manager: QtWidgets.QWidget) -> None:
+    """Remove the running-app macOS Dock actions installed for the manager."""
+    dock_menu = typing.cast(
+        "QtWidgets.QMenu | None", getattr(manager, "_macos_dock_menu", None)
+    )
+    if dock_menu is None:
+        return
+    try:
+        dock_menu.close()
+        dock_menu.deleteLater()
+    except RuntimeError:
+        pass
+    typing.cast("typing.Any", manager)._macos_dock_menu = None
+
+
 def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
     """Set the process AppUserModelID used for taskbar grouping."""
     if not sys.platform.startswith("win"):

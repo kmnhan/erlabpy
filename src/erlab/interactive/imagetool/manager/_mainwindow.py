@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
@@ -1110,14 +1111,7 @@ class ImageToolManager(_ImageToolManagerBase):
             for widget in dict(self._additional_windows).values():
                 widget.close()
                 widget.deleteLater()
-            dock_menu = typing.cast(
-                "QtWidgets.QMenu | None", getattr(self, "_macos_dock_menu", None)
-            )
-            if dock_menu is not None:
-                dock_menu.close()
-                if erlab.interactive.utils.qt_is_valid(dock_menu):
-                    dock_menu.deleteLater()
-                self._macos_dock_menu = None
+            _desktop.uninstall_macos_dock_menu(self)
 
             logger.debug("Removing event filters...")
             qapp = QtWidgets.QApplication.instance()
