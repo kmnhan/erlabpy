@@ -1020,17 +1020,23 @@ def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -
         def socket(self, *_args) -> _DummySocket:
             return self._socket
 
-    class _DummyWaitCondition:
+    class _DummyCondition:
         def __init__(self, server: _WatcherServer) -> None:
             self.server = server
             self.calls = 0
 
-        def wait(self, *_args) -> bool:
+        def __enter__(self) -> typing.Self:
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def wait(self, _timeout: float) -> bool:
             self.calls += 1
             self.server.stopped.set()
             return True
 
-        def wakeAll(self) -> None:
+        def notify_all(self) -> None:
             return None
 
     socket = _DummySocket()
@@ -1039,12 +1045,12 @@ def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -
     )
 
     server = _WatcherServer()
-    wait_condition = _DummyWaitCondition(server)
-    server._cv = wait_condition
+    condition = _DummyCondition(server)
+    server._condition = condition
 
     server.run()
 
-    assert wait_condition.calls == 1
+    assert condition.calls == 1
     assert socket.bound == [f"tcp://*:{erlab.interactive.imagetool.manager.PORT_WATCH}"]
     assert socket.sent == []
     assert socket.closed

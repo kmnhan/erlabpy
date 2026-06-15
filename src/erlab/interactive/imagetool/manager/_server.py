@@ -469,8 +469,7 @@ class _WatcherServer(QtCore.QThread):
         self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
-        self._mutex = QtCore.QMutex()
-        self._cv = QtCore.QWaitCondition()
+        self._condition = threading.Condition()
 
     def wait_until_bound(self, timeout_ms: int = 5000) -> int:
         if not self._bound_event.wait(timeout_ms / 1000):
@@ -488,9 +487,9 @@ class _WatcherServer(QtCore.QThread):
         uid: str,
         event: typing.Literal["updated", "removed", "shutdown"],
     ) -> None:
-        with QtCore.QMutexLocker(self._mutex):
+        with self._condition:
             self._ret_val = (varname, uid, event)
-            self._cv.wakeAll()
+            self._condition.notify_all()
 
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
@@ -522,11 +521,9 @@ class _WatcherServer(QtCore.QThread):
             logger.debug("Watcher server is listening on port %s...", self.port)
 
             while not self.stopped.is_set():
-                with QtCore.QMutexLocker(self._mutex):
-                    while self._ret_val is _UNSET:
-                        self._cv.wait(self._mutex, 100)
-                        if self.stopped.is_set():
-                            break
+                with self._condition:
+                    while self._ret_val is _UNSET and not self.stopped.is_set():
+                        self._condition.wait(0.1)
                     if self._ret_val is _UNSET:
                         continue
                     varname, uid, event = self._ret_val
@@ -574,8 +571,7 @@ class _ManagerServer(QtCore.QThread):
         self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
-        self._mutex = QtCore.QMutex()
-        self._cv = QtCore.QWaitCondition()
+        self._condition = threading.Condition()
 
     def wait_until_bound(self, timeout_ms: int = 5000) -> int:
         if not self._bound_event.wait(timeout_ms / 1000):
@@ -588,23 +584,21 @@ class _ManagerServer(QtCore.QThread):
 
     @QtCore.Slot(object)
     def set_return_value(self, value: typing.Any) -> None:
-        with QtCore.QMutexLocker(self._mutex):
+        with self._condition:
             self._ret_val = value
-            self._cv.wakeAll()
+            self._condition.notify_all()
 
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
-        with QtCore.QMutexLocker(self._mutex):
-            self._cv.wakeAll()
+        with self._condition:
+            self._condition.notify_all()
         if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Manager server did not stop within timeout")
 
     def _wait_for_return_value(self) -> typing.Any:
-        with QtCore.QMutexLocker(self._mutex):
-            while self._ret_val is _UNSET:
-                if self.stopped.is_set():
-                    break
-                self._cv.wait(self._mutex, 100)
+        with self._condition:
+            while self._ret_val is _UNSET and not self.stopped.is_set():
+                self._condition.wait(0.1)
             value = self._ret_val
             self._ret_val = _UNSET
             return value
