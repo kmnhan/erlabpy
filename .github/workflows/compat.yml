@@ -117,20 +117,32 @@ jobs:
           test -d "$ERLAB_TEST_DATA_DIR/merlin"
 
       - name: Run compatibility suite
+        shell: bash
+        env:
+          PYTEST_QT_API: ${{ matrix.qt-api }}
+          QT_API: ${{ matrix.qt-api }}
         run: |
-          PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
-            uv run pytest \
-            -v \
+          set -euo pipefail
+          common_args=(
+            -v
+            -o faulthandler_timeout=300
+            -o junit_family=legacy
+          )
+          uv run pytest \
+            "${common_args[@]}" \
+            -m "not serial" \
             -n auto \
             --dist=loadgroup \
-            -o faulthandler_timeout=300 \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
-            -o junit_family=legacy
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-parallel.xml"
+          uv run pytest \
+            "${common_args[@]}" \
+            -m serial \
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-serial.xml"
 
       - name: Upload compatibility JUnit artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}
-          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
+          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-*.xml
           if-no-files-found: error
