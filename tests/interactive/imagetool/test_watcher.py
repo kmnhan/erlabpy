@@ -1,4 +1,5 @@
 import builtins
+import contextlib
 import logging
 import threading
 import types
@@ -1126,100 +1127,106 @@ def test_watcher_real(
         ip_shell.user_ns.update({"darr": darr})
 
         watcher = ip_shell.magics_manager.registry.get("WatcherMagics")._watcher
-
-        # Try watching
-        ip_shell.run_line_magic("watch", "darr")
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        # Check watched
-        assert manager._tool_graph.root_wrappers[0].watched
-
-        # Get selection code
-        assert (
-            manager.get_imagetool(0).slicer_area.main_image.get_selection_code()
-            == "darr.qsel(eV=2.0)"
-        )
-
-        # Watched tooltip
-        text = None
-
-        def fake_show_text(pos, s, *args, **kwargs):
-            nonlocal text
-            text = s
-
-        monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
-
-        index = manager.tree_view._model.index(0, 0)  # first tool
-        option = QtWidgets.QStyleOptionViewItem()
-        manager.tree_view._delegate.initStyleOption(option, index)
-        option.rect = manager.tree_view.visualRect(index)
-        _, _, _, watched_rect = manager.tree_view._delegate._compute_icons_info(
-            option, index.internalPointer()
-        )
-        pos = watched_rect.center()
-        event = QtGui.QHelpEvent(
-            QtCore.QEvent.Type.ToolTip,
-            pos,
-            manager.tree_view.viewport().mapToGlobal(pos),
-        )
-        handled = manager.tree_view._delegate.helpEvent(
-            event, manager.tree_view, option, index
-        )
-
-        assert handled
-        assert isinstance(text, str)
-        assert text.strip()
-
-        # Update data
-        with qtbot.wait_signal(manager.server.sigWatchedVarChanged, timeout=10000):
-            watcher._last_send = 0  # Bypass rate limit for deterministic update
-            ip_shell.user_ns["darr"] = darr * 2
-            watcher._maybe_push()
-
-        xr.testing.assert_equal(
-            manager.get_imagetool(0).slicer_area._data, ip_shell.user_ns["darr"]
-        )
-
-        # Modify data from manager side
-        manager.get_imagetool(0).slicer_area.set_data(darr + 10)
-
-        with qtbot.wait_signal(manager._sigWatchedDataEdited):
-            manager._tool_graph.root_wrappers[0]._trigger_watched_update()
-
-        qtbot.wait(1000)  # wait for async update to complete
-        xr.testing.assert_equal(ip_shell.user_ns["darr"], darr + 10)
-
-        # Unwatch
-        ip_shell.run_line_magic("watch", "-d darr")
-        qtbot.wait_until(lambda: not manager._tool_graph.root_wrappers[0].watched)
-
-        # Watch again
-        ip_shell.run_line_magic("watch", "darr")
-        qtbot.wait_until(lambda: manager.ntools == 2)
-        assert manager._tool_graph.root_wrappers[1].watched
-
-        # Remove watched
-        ip_shell.run_line_magic("watch", "-x darr")
-        qtbot.wait_until(lambda: manager.ntools == 1)
-
-        # Watch again
-        ip_shell.run_line_magic("watch", "darr")
-        qtbot.wait_until(lambda: manager.ntools == 2)
-        assert manager._tool_graph.root_wrappers[1].watched
-
-        # Stop watching all
-        ip_shell.run_line_magic("watch", "-z")
-        qtbot.wait_until(lambda: not manager._tool_graph.root_wrappers[1].watched)
-
-        # Watch again
-        ip_shell.run_line_magic("watch", "darr")
-        qtbot.wait_until(lambda: manager.ntools == 3)
-        assert manager._tool_graph.root_wrappers[2].watched
-
-        # Stop watching and close all watched
-        ip_shell.run_line_magic("watch", "-xz")
-        qtbot.wait_until(lambda: manager.ntools == 2)
-
+        with contextlib.suppress(Exception):
+            watcher.stop_watching_all(remove=True)
         watcher.shutdown()
-        manager.remove_all_tools()
-        qtbot.wait_until(lambda: manager.ntools == 0)
+
+        try:
+            # Try watching
+            ip_shell.run_line_magic("watch", "darr")
+            qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+            # Check watched
+            assert manager._tool_graph.root_wrappers[0].watched
+
+            # Get selection code
+            assert (
+                manager.get_imagetool(0).slicer_area.main_image.get_selection_code()
+                == "darr.qsel(eV=2.0)"
+            )
+
+            # Watched tooltip
+            text = None
+
+            def fake_show_text(pos, s, *args, **kwargs):
+                nonlocal text
+                text = s
+
+            monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
+
+            index = manager.tree_view._model.index(0, 0)  # first tool
+            option = QtWidgets.QStyleOptionViewItem()
+            manager.tree_view._delegate.initStyleOption(option, index)
+            option.rect = manager.tree_view.visualRect(index)
+            _, _, _, watched_rect = manager.tree_view._delegate._compute_icons_info(
+                option, index.internalPointer()
+            )
+            pos = watched_rect.center()
+            event = QtGui.QHelpEvent(
+                QtCore.QEvent.Type.ToolTip,
+                pos,
+                manager.tree_view.viewport().mapToGlobal(pos),
+            )
+            handled = manager.tree_view._delegate.helpEvent(
+                event, manager.tree_view, option, index
+            )
+
+            assert handled
+            assert isinstance(text, str)
+            assert text.strip()
+
+            # Update data
+            with qtbot.wait_signal(manager.server.sigWatchedVarChanged, timeout=10000):
+                watcher._last_send = 0  # Bypass rate limit for deterministic update
+                ip_shell.user_ns["darr"] = darr * 2
+                watcher._maybe_push()
+
+            xr.testing.assert_equal(
+                manager.get_imagetool(0).slicer_area._data, ip_shell.user_ns["darr"]
+            )
+
+            # Modify data from manager side
+            manager.get_imagetool(0).slicer_area.set_data(darr + 10)
+
+            with qtbot.wait_signal(manager._sigWatchedDataEdited):
+                manager._tool_graph.root_wrappers[0]._trigger_watched_update()
+
+            qtbot.wait(1000)  # wait for async update to complete
+            xr.testing.assert_equal(ip_shell.user_ns["darr"], darr + 10)
+
+            # Unwatch
+            ip_shell.run_line_magic("watch", "-d darr")
+            qtbot.wait_until(lambda: not manager._tool_graph.root_wrappers[0].watched)
+
+            # Watch again
+            ip_shell.run_line_magic("watch", "darr")
+            qtbot.wait_until(lambda: manager.ntools == 2)
+            assert manager._tool_graph.root_wrappers[1].watched
+
+            # Remove watched
+            ip_shell.run_line_magic("watch", "-x darr")
+            qtbot.wait_until(lambda: manager.ntools == 1)
+
+            # Watch again
+            ip_shell.run_line_magic("watch", "darr")
+            qtbot.wait_until(lambda: manager.ntools == 2)
+            assert manager._tool_graph.root_wrappers[1].watched
+
+            # Stop watching all
+            ip_shell.run_line_magic("watch", "-z")
+            qtbot.wait_until(lambda: not manager._tool_graph.root_wrappers[1].watched)
+
+            # Watch again
+            ip_shell.run_line_magic("watch", "darr")
+            qtbot.wait_until(lambda: manager.ntools == 3)
+            assert manager._tool_graph.root_wrappers[2].watched
+
+            # Stop watching and close all watched
+            ip_shell.run_line_magic("watch", "-xz")
+            qtbot.wait_until(lambda: manager.ntools == 2)
+        finally:
+            with contextlib.suppress(Exception):
+                watcher.stop_watching_all(remove=True)
+            watcher.shutdown()
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0)

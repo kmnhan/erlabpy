@@ -2398,7 +2398,7 @@ def test_remove_childtool_delete_shortcut(
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
 
 
-def test_remove_child_imagetool_delete_shortcut(
+def test_remove_child_imagetool_remove_action(
     qtbot,
     accept_dialog,
     test_data,
@@ -2427,7 +2427,7 @@ def test_remove_child_imagetool_delete_shortcut(
 
         assert child.remove_act.isVisible()
 
-        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        accept_dialog(child.remove_act.trigger)
         qtbot.wait_until(
             lambda: child_uid not in manager._tool_graph.nodes, timeout=5000
         )
