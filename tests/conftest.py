@@ -58,6 +58,7 @@ DATA_RETRIEVE_ATTEMPTS = 4
 log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
+_TEST_OPTIONS_MANAGED_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH_TEST_MANAGED"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
 _DELETED_QT_WRAPPER_PATTERN = re.compile(r"wrapped C/C\+\+ object .* has been deleted")
 
@@ -67,12 +68,17 @@ def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if _TEST_OPTIONS_ENV_VAR not in os.environ:
-        settings_path = (
-            pathlib.Path(tempfile.gettempdir())
-            / f"erlabpy-test-interactive-options-{os.getpid()}-{uuid.uuid4().hex}.ini"
+    if (
+        _TEST_OPTIONS_ENV_VAR not in os.environ
+        or os.environ.get(_TEST_OPTIONS_MANAGED_ENV_VAR) == "1"
+    ):
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        settings_path = pathlib.Path(tempfile.gettempdir()) / (
+            "erlabpy-test-interactive-options-"
+            f"{worker_id}-{os.getpid()}-{uuid.uuid4().hex}.ini"
         )
         os.environ[_TEST_OPTIONS_ENV_VAR] = str(settings_path)
+        os.environ[_TEST_OPTIONS_MANAGED_ENV_VAR] = "1"
         _TEST_INTERACTIVE_OPTIONS_PATHS.append(settings_path)
 
 

@@ -422,9 +422,6 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
     qtbot,
     monkeypatch,
     tmp_path,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
 ) -> None:
     lock_calls: list[pathlib.Path] = []
     fname = tmp_path / "locked.itws"
@@ -445,8 +442,10 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
         erlab.interactive.utils, "file_loaders", _file_loaders_should_not_run
     )
 
-    with manager_context() as manager:
-        manager.open_multiple_files([fname], try_workspace=True)
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    controller = manager_actions._ActionsController(manager)
+    controller.open_multiple_files([fname], try_workspace=True)
 
     assert lock_calls == [fname]
 
