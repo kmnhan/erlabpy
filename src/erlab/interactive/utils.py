@@ -303,6 +303,8 @@ class _CloseShortcutEventFilter(QtCore.QObject):
     ) -> None:
         super().__init__(parent)
         self._widget_ref = weakref.ref(widget)
+        self._callback_ref: weakref.WeakMethod[Callable[[], None]] | None
+        self._callback: Callable[[], None] | None
         try:
             self._callback_ref = weakref.WeakMethod(callback)
         except TypeError:

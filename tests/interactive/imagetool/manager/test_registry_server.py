@@ -29,6 +29,23 @@ from erlab.interactive.imagetool.manager._server import Response, _WatcherServer
 from .helpers import _use_isolated_manager_registry
 
 
+class _ReadyPoller:
+    def __init__(self) -> None:
+        self.socket: object | None = None
+
+    def register(self, socket: object, _event: int) -> None:
+        self.socket = socket
+
+    def poll(self, _timeout: int) -> dict[object, int]:
+        if self.socket is None:
+            return {}
+        return {self.socket: zmq.POLLIN}
+
+    def unregister(self, socket: object) -> None:
+        if self.socket is socket:
+            self.socket = None
+
+
 def test_manager_selection_info_single_manager(
     tmp_path,
     qtbot,
@@ -1425,6 +1442,7 @@ def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
         "instance",
         staticmethod(lambda: _DummyContext(manager_socket)),
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     manager = manager_server._ManagerServer(port=45555)
     manager.run()
     assert manager._bound_event.is_set()
@@ -1470,10 +1488,14 @@ def test_manager_server_run_returns_watch_info(monkeypatch) -> None:
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+        lambda _socket, **_kwargs: {
+            "packet_type": "command",
+            "command": "watch-info",
+        },
     )
     monkeypatch.setattr(
         manager_server,
@@ -1520,10 +1542,11 @@ def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {
+        lambda _socket, **_kwargs: {
             "packet_type": "command",
             "command": "get-data",
             "command_arg": 0,
@@ -1571,10 +1594,14 @@ def test_manager_server_run_errors_when_watch_info_request_stops(monkeypatch) ->
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+        lambda _socket, **_kwargs: {
+            "packet_type": "command",
+            "command": "watch-info",
+        },
     )
     monkeypatch.setattr(
         manager_server,
