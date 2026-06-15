@@ -661,17 +661,17 @@ class _WorkspaceIOController:
         with self._manager._workspace_state.load_context():
             yield
 
-    def _send_workspace_posted_events(self) -> None:
+    def _send_workspace_posted_events(self, event_type: QtCore.QEvent.Type) -> None:
         for _ in range(3):
-            QtWidgets.QApplication.sendPostedEvents(
-                None, int(QtCore.QEvent.Type.MetaCall.value)
-            )
+            QtWidgets.QApplication.sendPostedEvents(None, int(event_type.value))
 
     def _drain_workspace_restore_events(self) -> None:
-        self._send_workspace_posted_events()
+        self._send_workspace_posted_events(QtCore.QEvent.Type.MetaCall)
+        self._send_workspace_posted_events(QtCore.QEvent.Type.DeferredDelete)
 
     def _drain_workspace_deferred_events(self) -> None:
-        self._send_workspace_posted_events()
+        self._send_workspace_posted_events(QtCore.QEvent.Type.MetaCall)
+        self._send_workspace_posted_events(QtCore.QEvent.Type.DeferredDelete)
         for _ in range(3):
             QtWidgets.QApplication.processEvents()
 
@@ -1448,6 +1448,7 @@ class _WorkspaceIOController:
                     backup_snapshot = self._manager._workspace_state_snapshot()
                     backup_tree = self._manager._to_datatree()
                     self._manager.remove_all_tools()
+                    self._manager._drain_workspace_restore_events()
                 for root_path in root_paths:
                     _load_path(root_path)
                 for figure_path in figure_paths:
@@ -1485,6 +1486,7 @@ class _WorkspaceIOController:
     ) -> None:
         with self._manager._workspace_load_context():
             self._manager.remove_all_tools()
+            self._manager._drain_workspace_restore_events()
             self._manager._load_workspace_roots(
                 backup_tree, [str(key) for key in backup_tree]
             )
@@ -1566,6 +1568,7 @@ class _WorkspaceIOController:
                         backup_snapshot = self._manager._workspace_state_snapshot()
                         backup_tree = self._manager._to_datatree()
                         self._manager.remove_all_tools()
+                        self._manager._drain_workspace_restore_events()
                     root_item = (
                         None
                         if dialog is None

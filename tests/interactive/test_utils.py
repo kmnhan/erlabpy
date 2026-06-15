@@ -618,6 +618,20 @@ def test_close_shortcut_reaches_child_line_edit(qtbot) -> None:
     )
 
 
+def test_close_shortcut_filter_removed_with_widget(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    erlab.interactive.utils._install_close_shortcut(window, lambda: None)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    assert shortcut_filter.parent() is QtWidgets.QApplication.instance()
+
+    window.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(window), timeout=1000)
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(shortcut_filter), timeout=1000)
+
+
 def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
     sentinel = object()
     other = object()

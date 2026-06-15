@@ -296,8 +296,13 @@ def _application_quit_requested() -> bool:
 
 
 class _CloseShortcutEventFilter(QtCore.QObject):
-    def __init__(self, widget: QtWidgets.QWidget, callback: Callable[[], None]) -> None:
-        super().__init__(widget)
+    def __init__(
+        self,
+        widget: QtWidgets.QWidget,
+        callback: Callable[[], None],
+        parent: QtCore.QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
         self._widget = widget
         self._callback = callback
 
@@ -308,6 +313,7 @@ class _CloseShortcutEventFilter(QtCore.QObject):
     ) -> bool:
         if (
             event is None
+            or not qt_is_valid(self._widget)
             or event.type() != QtCore.QEvent.Type.KeyPress
             or not isinstance(event, QtGui.QKeyEvent)
         ):
@@ -362,9 +368,15 @@ def _install_close_shortcut(
 
     application = QtWidgets.QApplication.instance()
     if isinstance(application, QtWidgets.QApplication):
-        shortcut_filter = _CloseShortcutEventFilter(widget, callback)
+        shortcut_filter = _CloseShortcutEventFilter(widget, callback, application)
         application.installEventFilter(shortcut_filter)
-        widget.destroyed.connect(lambda: application.removeEventFilter(shortcut_filter))
+
+        def _remove_shortcut_filter(*_args: object) -> None:
+            if qt_is_valid(application, shortcut_filter):
+                application.removeEventFilter(shortcut_filter)
+                shortcut_filter.deleteLater()
+
+        widget.destroyed.connect(_remove_shortcut_filter)
         widget._erlab_close_shortcut_refs = (shortcut, shortcut_filter)  # type: ignore[attr-defined]
     else:
         widget._erlab_close_shortcut_refs = (shortcut,)  # type: ignore[attr-defined]

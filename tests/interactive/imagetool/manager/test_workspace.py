@@ -8030,11 +8030,13 @@ def test_manager_workspace_restore_event_drain_avoids_event_loop(
         calls: list[str] = []
         emitter = _Emitter(manager)
         receiver = _Receiver(manager)
+        deferred_widget = QtWidgets.QWidget(manager)
         emitter.sigRecord.connect(
             receiver.record,
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
         emitter.sigRecord.emit()
+        deferred_widget.deleteLater()
 
         with monkeypatch.context() as restore_drain_patch:
             restore_drain_patch.setattr(
@@ -8047,6 +8049,7 @@ def test_manager_workspace_restore_event_drain_avoids_event_loop(
             manager._drain_workspace_restore_events()
 
     assert calls == ["record"]
+    assert not erlab.interactive.utils.qt_is_valid(deferred_widget)
 
 
 def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
