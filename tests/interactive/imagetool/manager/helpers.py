@@ -33,6 +33,8 @@ CONSOLE_HELPER_OFFSET = 2.5
 
 
 class InMemoryClipboard(QtCore.QObject):
+    Mode = QtGui.QClipboard.Mode
+
     dataChanged = QtCore.Signal()
 
     def __init__(self) -> None:
@@ -40,33 +42,58 @@ class InMemoryClipboard(QtCore.QObject):
         self._mime_data = QtCore.QMimeData()
         self._pixmap = QtGui.QPixmap()
 
-    def clear(self) -> None:
+    def clear(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> None:
+        if mode != self.Mode.Clipboard:
+            return
         self._mime_data = QtCore.QMimeData()
         self._pixmap = QtGui.QPixmap()
         self.dataChanged.emit()
 
-    def setMimeData(self, mime_data: QtCore.QMimeData) -> None:
+    def setMimeData(
+        self,
+        mime_data: QtCore.QMimeData,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> None:
+        if mode != self.Mode.Clipboard:
+            return
         self._mime_data = mime_data
         self._pixmap = QtGui.QPixmap()
         self.dataChanged.emit()
 
-    def mimeData(self) -> QtCore.QMimeData:
+    def mimeData(
+        self,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> QtCore.QMimeData:
+        if mode != self.Mode.Clipboard:
+            return QtCore.QMimeData()
         return self._mime_data
 
-    def setText(self, text: str) -> None:
+    def setText(self, text: str, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> None:
+        if mode != self.Mode.Clipboard:
+            return
         mime_data = QtCore.QMimeData()
         mime_data.setText(text)
         self.setMimeData(mime_data)
 
-    def text(self) -> str:
+    def text(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> str:
+        if mode != self.Mode.Clipboard:
+            return ""
         return self._mime_data.text()
 
-    def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+    def setPixmap(
+        self,
+        pixmap: QtGui.QPixmap,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> None:
+        if mode != self.Mode.Clipboard:
+            return
         self._mime_data = QtCore.QMimeData()
         self._pixmap = QtGui.QPixmap(pixmap)
         self.dataChanged.emit()
 
-    def pixmap(self) -> QtGui.QPixmap:
+    def pixmap(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> QtGui.QPixmap:
+        if mode != self.Mode.Clipboard:
+            return QtGui.QPixmap()
         return QtGui.QPixmap(self._pixmap)
 
 

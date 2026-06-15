@@ -253,7 +253,7 @@ def test_manager_cloudpickle(
             sock.connect(
                 "tcp://"
                 f"{erlab.interactive.imagetool.manager.HOST_IP}:"
-                f"{erlab.interactive.imagetool.manager.PORT}"
+                f"{manager._manager_record.port}"
             )
             frames = _create_frames(content, pickler_cls=pickle.Pickler)
             del sys.modules[modname]
