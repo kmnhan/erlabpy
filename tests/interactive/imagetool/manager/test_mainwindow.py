@@ -3563,18 +3563,18 @@ def test_manager_selected_reload_targets_handles_stale_selection(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    with manager_context() as manager:
-        monkeypatch.setattr(
+    with manager_context() as manager, monkeypatch.context() as stale_selection:
+        stale_selection.setattr(
             type(manager.tree_view),
             "selected_imagetool_indices",
             property(lambda _view: []),
         )
-        monkeypatch.setattr(
+        stale_selection.setattr(
             type(manager.tree_view),
             "selected_childtool_uids",
             property(lambda _view: ["stale-child"]),
         )
-        monkeypatch.setattr(
+        stale_selection.setattr(
             manager,
             "_child_node",
             lambda _uid: (_ for _ in ()).throw(KeyError("missing")),
@@ -3583,8 +3583,8 @@ def test_manager_selected_reload_targets_handles_stale_selection(
         assert manager._selected_reload_targets() is None
 
         child_node = types.SimpleNamespace(has_source_binding=True)
-        monkeypatch.setattr(manager, "_child_node", lambda _uid: child_node)
-        monkeypatch.setattr(
+        stale_selection.setattr(manager, "_child_node", lambda _uid: child_node)
+        stale_selection.setattr(
             manager,
             "_parent_node",
             lambda _node: (_ for _ in ()).throw(KeyError("missing-parent")),
@@ -3599,18 +3599,19 @@ def test_manager_reload_selected_skips_child_refresh_when_parent_reload_fails(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    with manager_context() as manager:
+    with manager_context() as manager, monkeypatch.context() as reload_failure:
         node = types.SimpleNamespace(
             imagetool=object(),
             slicer_area=types.SimpleNamespace(_reload=lambda: False),
         )
         refreshed: list[str] = []
-        monkeypatch.setattr(
+        reload_failure.setattr(
             manager, "_selected_reload_targets", lambda: ([0], {0: ["child"]})
         )
-        monkeypatch.setattr(manager, "_node_for_target", lambda _target: node)
-        monkeypatch.setattr(manager, "_refresh_source_chain_to_uid", refreshed.append)
-
+        reload_failure.setattr(manager, "_node_for_target", lambda _target: node)
+        reload_failure.setattr(
+            manager, "_refresh_source_chain_to_uid", refreshed.append
+        )
         manager.reload_selected()
 
         assert refreshed == []
