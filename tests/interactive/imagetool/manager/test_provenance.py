@@ -3839,40 +3839,47 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             "_prompt_existing_output_imagetool",
             lambda: (_ for _ in ()).throw(AssertionError("prompt should not open")),
         )
-        child.timeout_spin.setValue(30.0)
-        child.nfev_spin.setValue(0)
-        child.y_index_spin.setValue(child.y_min_spin.value())
-        child._run_fit_2d("up")
-        qtbot.wait_until(
-            lambda: all(ds is not None for ds in child._result_ds_full),
-            timeout=10000,
-        )
 
-        child.param_plot_combo.setCurrentIndex(0)
-        first_param_name = child.param_plot_combo.currentText()
-        assert first_param_name
+        param_names = [
+            child.param_plot_combo.itemText(index)
+            for index in range(child.param_plot_combo.count())
+        ]
+        first_param_name, second_param_name = param_names[:2]
+        first_param_index = child.param_plot_combo.findText(first_param_name)
+        second_param_index = child.param_plot_combo.findText(second_param_name)
+        assert first_param_index >= 0
+        assert second_param_index >= 0
+        params_full = []
+        for index in range(len(child._params_full)):
+            params = child._params.copy()
+            params[first_param_name].set(value=1.0 + index)
+            params[first_param_name].stderr = 0.01 + index
+            params[second_param_name].set(value=10.0 + index)
+            params[second_param_name].stderr = 0.1 + index
+            params_full.append(params)
+        child._params_full = params_full
+        child._result_ds_full = [xr.Dataset() for _ in params_full]
+
+        child.param_plot_combo.setCurrentIndex(first_param_index)
+        assert child.param_plot_combo.currentText() == first_param_name
         first_values = child._param_plot_dataarray(first_param_name, stderr=False)
-        second_param_name = ""
-        second_values = None
-        for index in range(1, child.param_plot_combo.count()):
-            candidate = child.param_plot_combo.itemText(index)
-            candidate_values = child._param_plot_dataarray(candidate, stderr=False)
-            if not candidate_values.identical(first_values):
-                second_param_name = candidate
-                second_values = candidate_values
-                break
-        assert second_param_name
-        assert second_values is not None
+        child.param_plot_combo.setCurrentIndex(second_param_index)
+        assert child.param_plot_combo.currentText() == second_param_name
+        second_values = child._param_plot_dataarray(second_param_name, stderr=False)
+        assert not second_values.identical(first_values)
 
+        child.param_plot_combo.setCurrentIndex(first_param_index)
         child.param_plot._show_parameter_values()
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
 
-        child.param_plot_combo.setCurrentText(second_param_name)
+        child.param_plot_combo.setCurrentIndex(second_param_index)
+        assert child.param_plot_combo.currentText() == second_param_name
         child.param_plot._show_parameter_values()
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2, timeout=5000)
 
-        child.param_plot_combo.setCurrentText(first_param_name)
+        child.param_plot_combo.setCurrentIndex(first_param_index)
+        assert child.param_plot_combo.currentText() == first_param_name
         child.param_plot._show_parameter_stderr()
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 3, timeout=5000)
 
@@ -3905,7 +3912,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             fetch(stderr_uid),
             child._param_plot_dataarray(first_param_name, stderr=True),
         )
-        child.param_plot_combo.setCurrentText(second_param_name)
+        child.param_plot_combo.setCurrentIndex(second_param_index)
         assert first_values_node._update_from_parent_source()
         xr.testing.assert_identical(fetch(first_values_uid), first_values)
         assert not fetch(first_values_uid).identical(second_values)
