@@ -2,7 +2,7 @@ import pathlib
 import typing
 from collections.abc import Callable
 
-from qtpy import QtCore, QtGui
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.explorer._base_explorer import (
@@ -17,6 +17,28 @@ from erlab.interactive.explorer._tabbed_explorer import (
     _TabbedExplorer,
 )
 from erlab.interactive.imagetool.manager import _dialogs
+
+
+class _PreviewTrackingExplorer(QtWidgets.QWidget):
+    def __init__(self, name: str, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.current_directory = pathlib.Path(name)
+        self.menu_bar = QtWidgets.QMenuBar(self)
+        self.stopped_preview_workers = 0
+
+    def _stop_preview_workers(self) -> None:
+        self.stopped_preview_workers += 1
+
+
+class _PreviewTrackingTabbedExplorer(_TabbedExplorer):
+    def add_tab(self, **kwargs) -> None:
+        tab = QtWidgets.QWidget()
+        explorer = _PreviewTrackingExplorer(
+            f"tab-{self.tab_widget.count()}", parent=tab
+        )
+        tab._explorer = explorer  # type: ignore[attr-defined]
+        self.tab_widget.addTab(tab, explorer.current_directory.name)
+        self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
 
 
 def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) -> None:
@@ -43,50 +65,66 @@ def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) 
 
 
 def test_tabbed_explorer_close_tab_stops_preview_workers(
-    qtbot, monkeypatch, example_loader, example_data_dir: pathlib.Path
+    qtbot,
 ) -> None:
-    win = _TabbedExplorer(root_path=example_data_dir, loader_name="example")
+    win = _PreviewTrackingTabbedExplorer()
     qtbot.addWidget(win)
+    discarded_explorer = win.get_explorer(0)
+    assert isinstance(discarded_explorer, _PreviewTrackingExplorer)
+
     win.add_tab()
-    explorer = win.get_explorer(0)
-    assert explorer is not None
-    assert explorer.centralWidget() is None
-    stopped_explorers: list[_DataExplorer] = []
-    stop_preview_workers = explorer._stop_preview_workers
-
-    def _track_stop_preview_workers() -> None:
-        stopped_explorers.append(explorer)
-        stop_preview_workers()
-
-    monkeypatch.setattr(explorer, "_stop_preview_workers", _track_stop_preview_workers)
 
     win.close_tab(0)
 
     assert win.tab_widget.count() == 1
-    assert stopped_explorers == [explorer]
+    assert discarded_explorer.stopped_preview_workers == 1
+
+
+def test_tabbed_explorer_clear_tabs_discards_each_tab(qtbot) -> None:
+    win = _PreviewTrackingTabbedExplorer()
+    qtbot.addWidget(win)
+    win.add_tab()
+    win.add_tab()
+    explorers = [win.get_explorer(index) for index in range(win.tab_widget.count())]
+    assert all(isinstance(explorer, _PreviewTrackingExplorer) for explorer in explorers)
+
+    win._clear_tabs()
+
+    assert win.tab_widget.count() == 0
+    assert [
+        typing.cast("_PreviewTrackingExplorer", explorer).stopped_preview_workers
+        for explorer in explorers
+    ] == [1, 1, 1]
+
+
+def test_tabbed_explorer_discard_tab_handles_missing_explorer(qtbot) -> None:
+    win = _PreviewTrackingTabbedExplorer()
+    qtbot.addWidget(win)
+    empty_tab = QtWidgets.QWidget()
+    empty_index = win.tab_widget.addTab(empty_tab, "empty")
+
+    win._discard_tab(empty_index)
+
+    assert win.tab_widget.count() == 1
+
+    win._discard_tab(win.tab_widget.count())
+
+    assert win.tab_widget.count() == 1
 
 
 def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(
-    qtbot, monkeypatch, example_loader, example_data_dir: pathlib.Path
+    qtbot,
 ) -> None:
-    win = _TabbedExplorer(root_path=example_data_dir, loader_name="example")
+    win = _PreviewTrackingTabbedExplorer()
     qtbot.addWidget(win)
     explorer = win.current_explorer
-    assert explorer is not None
-    stopped_explorers: list[_DataExplorer] = []
-    stop_preview_workers = explorer._stop_preview_workers
-
-    def _track_stop_preview_workers() -> None:
-        stopped_explorers.append(explorer)
-        stop_preview_workers()
-
-    monkeypatch.setattr(explorer, "_stop_preview_workers", _track_stop_preview_workers)
+    assert isinstance(explorer, _PreviewTrackingExplorer)
 
     win.closeEvent(QtGui.QCloseEvent())
 
     assert win.tab_widget.count() == 1
     assert win.current_explorer is explorer
-    assert stopped_explorers == [explorer]
+    assert explorer.stopped_preview_workers == 1
 
 
 def test_explorer_close_stops_preview_workers(

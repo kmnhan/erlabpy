@@ -336,6 +336,19 @@ def test_goldtool_update_data_ignores_late_results_from_aborted_task(
     assert not hasattr(win, "edge_center")
     assert not perform_called
 
+    win.progress.setMaximum(5)
+    win.progress.setValue(0)
+    win.pbar.setFormat("unchanged")
+    win.iterated(3, task=typing.cast("typing.Any", stale_task))
+
+    assert win.progress.value() == 0
+    assert win.pbar.format() == "unchanged"
+
+    win.iterated(0)
+
+    assert win.progress.value() == 0
+    assert win.pbar.format() == f"0/{win.progress.maximum()} finished"
+
 
 def test_goldtool_abort_fit_task_disconnects_late_worker_signals(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
@@ -384,6 +397,143 @@ def test_goldtool_late_task_results_do_not_update_while_closing(qtbot, gold) -> 
 
     assert win._fit_task is task
     assert not hasattr(win, "edge_center")
+
+
+def test_goldtool_perform_edge_fit_ignores_pending_or_closing_updates(
+    qtbot, gold
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._pending_update_request = object()  # type: ignore[assignment]
+    win.perform_edge_fit()
+
+    assert win._fit_task is None
+
+    class _ThreadPoolDouble:
+        def __init__(self) -> None:
+            self.started_tasks: list[EdgeFitTask] = []
+
+        def activeThreadCount(self) -> int:
+            return 0
+
+        def start(self, task: EdgeFitTask) -> None:
+            self.started_tasks.append(task)
+
+    threadpool = _ThreadPoolDouble()
+    win._pending_update_request = None
+    win._fit_closing = False
+    win._threadpool = threadpool  # type: ignore[assignment]
+    win.perform_edge_fit()
+
+    assert threadpool.started_tasks == [win._fit_task]
+
+    win._abort_fit_task()
+    win._fit_closing = True
+    win.perform_edge_fit()
+
+    assert win._fit_task is None
+
+
+def test_goldtool_post_fit_accepts_current_task_and_disconnects(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    win._fit_task = task
+
+    disconnected: list[EdgeFitTask] = []
+    perform_called: list[bool] = []
+    replace_called: list[bool] = []
+    monkeypatch.setattr(
+        GoldTool,
+        "_disconnect_fit_task_signals",
+        staticmethod(lambda fit_task: disconnected.append(fit_task)),
+    )
+    monkeypatch.setattr(win, "perform_fit", lambda: perform_called.append(True))
+    monkeypatch.setattr(win, "_replace_last_state", lambda: replace_called.append(True))
+
+    edge_center = gold.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+    win.post_fit(edge_center, edge_stderr, task=task)
+
+    assert disconnected == [task]
+    assert win._fit_task is None
+    assert perform_called == [True]
+    assert replace_called == [True]
+    xr.testing.assert_identical(win.edge_center, edge_center)
+    xr.testing.assert_identical(win.edge_stderr, edge_stderr)
+
+    win._fit_closing = True
+    rejected_center = edge_center + 1.0
+    win.post_fit(rejected_center, edge_stderr)
+
+    assert perform_called == [True]
+    assert replace_called == [True]
+    xr.testing.assert_identical(win.edge_center, edge_center)
+
+
+def test_goldtool_handle_fit_failed_ignores_stale_and_closing_tasks(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    current_task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    stale_task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    win._fit_task = current_task
+
+    critical_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    disconnected: list[EdgeFitTask] = []
+    monkeypatch.setattr(
+        GoldTool,
+        "_disconnect_fit_task_signals",
+        staticmethod(lambda fit_task: disconnected.append(fit_task)),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **kwargs: critical_calls.append((args, kwargs)),
+    )
+
+    win._handle_fit_failed("stale failure", task=stale_task)
+
+    assert win._fit_task is current_task
+    assert disconnected == []
+    assert critical_calls == []
+
+    win._fit_closing = True
+    win._handle_fit_failed("closing failure")
+
+    assert win._fit_task is current_task
+    assert disconnected == []
+    assert critical_calls == []
+
+    win._fit_closing = False
+    win._handle_fit_failed("current failure", task=current_task)
+
+    assert win._fit_task is None
+    assert disconnected == [current_task]
+    assert len(critical_calls) == 1
+
+    win._handle_fit_failed("taskless failure")
+
+    assert len(critical_calls) == 2
 
 
 def test_goldtool_update_data_defers_until_fit_worker_drains(
@@ -1341,6 +1491,38 @@ def test_restool_queue_fit_action_drops_when_cancel_requested(qtbot) -> None:
     win._fit_cancel_requested = True
     win._pending_fit_action = None
     win._queue_fit_action(None, lambda: called.__setitem__("value", True))  # type: ignore[arg-type]
+
+    assert not called["value"]
+    assert win._pending_fit_action is None
+
+
+def test_restool_queue_fit_action_drops_while_closing(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def cancel(self) -> None:
+            return
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return True
+
+        def deleteLater(self) -> None:
+            return
+
+    thread = _ThreadPlaceholder()
+    called = {"value": False}
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_closing = True
+    win._pending_fit_action = None
+
+    win._queue_fit_action(thread, lambda: called.__setitem__("value", True))  # type: ignore[arg-type]
 
     assert not called["value"]
     assert win._pending_fit_action is None

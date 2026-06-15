@@ -547,6 +547,28 @@ def test_manager_macos_dock_menu_actions(
     assert manager._macos_dock_menu is None
 
 
+def test_manager_macos_dock_menu_uninstall_ignores_deleted_menu(qtbot) -> None:
+    class _DeletedDockMenu:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def close(self) -> None:
+            raise RuntimeError("menu wrapper already deleted")
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    dock_menu = _DeletedDockMenu()
+    manager._macos_dock_menu = dock_menu  # type: ignore[attr-defined]
+
+    manager_desktop.uninstall_macos_dock_menu(manager)
+
+    assert manager._macos_dock_menu is None  # type: ignore[attr-defined]
+    assert not dock_menu.deleted
+
+
 def test_manager_desktop_configure_process_platform_branch(monkeypatch) -> None:
     calls: list[str] = []
 

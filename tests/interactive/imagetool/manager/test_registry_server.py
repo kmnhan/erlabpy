@@ -1114,6 +1114,32 @@ def test_server_thread_stop_wait_is_cooperative(monkeypatch) -> None:
     assert finishing_thread.waits
     assert 0 < finishing_thread.waits[0] <= 10
 
+    class _StoppedThread:
+        def isRunning(self) -> bool:
+            return False
+
+        def wait(self, timeout_ms: int) -> bool:
+            raise AssertionError("wait should not be called for a stopped thread")
+
+    assert manager_server._wait_for_qthread_to_stop(_StoppedThread(), 100)
+
+    class _SlowStoppingThread:
+        def __init__(self) -> None:
+            self.running_checks = 0
+            self.waits: list[int] = []
+
+        def isRunning(self) -> bool:
+            self.running_checks += 1
+            return self.running_checks < 3
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.waits.append(timeout_ms)
+            return False
+
+    slow_stopping_thread = _SlowStoppingThread()
+    assert manager_server._wait_for_qthread_to_stop(slow_stopping_thread, 100)
+    assert slow_stopping_thread.waits
+
     class _RunningThread:
         def isRunning(self) -> bool:
             return True
@@ -1208,6 +1234,29 @@ def test_manager_server_wake_receiver_uses_loopback(monkeypatch) -> None:
     assert socket.connections == ["tcp://127.0.0.1:45555"]
     assert socket.sent
     assert socket.closed
+
+    class _FailingSocket(_DummySocket):
+        def connect(self, endpoint: str) -> None:
+            self.connections.append(endpoint)
+            raise RuntimeError("connect failed")
+
+    class _FailingContext:
+        def __init__(self) -> None:
+            self.sockets: list[_FailingSocket] = []
+
+        def socket(self, *_args) -> _FailingSocket:
+            socket = _FailingSocket()
+            self.sockets.append(socket)
+            return socket
+
+    failing_context = _FailingContext()
+    monkeypatch.setattr(zmq.Context, "instance", staticmethod(lambda: failing_context))
+
+    server._wake_receiver()
+
+    failing_socket = failing_context.sockets[0]
+    assert failing_socket.connections == ["tcp://127.0.0.1:45555"]
+    assert failing_socket.closed
 
 
 def test_manager_server_run_exits_after_empty_poll(monkeypatch) -> None:
@@ -1400,6 +1449,85 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
     assert manager.calls == []
     assert server.return_values == []
     assert watcher_server.parameters == []
+
+
+def test_widgets_controller_stop_servers_ignores_invalid_wrappers(monkeypatch) -> None:
+    class _ThreadDouble:
+        def __init__(self) -> None:
+            self.running = True
+            self.stopped = False
+            self.deleted = False
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.stopped = True
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    class _ManagerDouble:
+        def __init__(self) -> None:
+            self.server = _ThreadDouble()
+            self.watcher_server = _ThreadDouble()
+
+    manager = _ManagerDouble()
+    invalid_threads = {manager.server, manager.watcher_server}
+
+    def _qt_is_valid(*objects) -> bool:
+        return all(obj not in invalid_threads for obj in objects)
+
+    monkeypatch.setattr(
+        manager_widgets.erlab.interactive.utils, "qt_is_valid", _qt_is_valid
+    )
+
+    manager_widgets._WidgetsController(
+        typing.cast("typing.Any", manager)
+    )._stop_servers()
+
+    assert manager.server.running
+    assert not manager.server.stopped
+    assert not manager.server.deleted
+    assert manager.watcher_server.running
+    assert not manager.watcher_server.stopped
+    assert not manager.watcher_server.deleted
+
+
+def test_widgets_controller_stop_servers_keeps_running_wrappers(monkeypatch) -> None:
+    class _ThreadDouble:
+        def __init__(self) -> None:
+            self.stopped = False
+            self.deleted = False
+
+        def isRunning(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    class _ManagerDouble:
+        def __init__(self) -> None:
+            self.server = _ThreadDouble()
+            self.watcher_server = _ThreadDouble()
+
+    manager = _ManagerDouble()
+    monkeypatch.setattr(
+        manager_widgets.erlab.interactive.utils, "qt_is_valid", lambda *_objects: True
+    )
+
+    manager_widgets._WidgetsController(
+        typing.cast("typing.Any", manager)
+    )._stop_servers()
+
+    assert manager.server.stopped
+    assert not manager.server.deleted
+    assert manager.watcher_server.stopped
+    assert not manager.watcher_server.deleted
 
 
 def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:

@@ -93,6 +93,24 @@ def test_format_darr_html_falls_back_when_coordinate_formatting_fails(
     assert '["0",  ... , "2"]' in html
 
 
+def test_format_coord_values_falls_back_to_metadata_for_empty_values(
+    monkeypatch,
+) -> None:
+    def fail_array_format(_value):
+        raise RuntimeError("failed to format coordinate values")
+
+    monkeypatch.setattr(
+        erlab.utils.formatting, "_format_array_values", fail_array_format
+    )
+
+    coord = xr.DataArray(np.array([], dtype=np.float64), dims=("x",))
+
+    assert (
+        erlab.utils.formatting._format_coord_values(coord, load_values=True)
+        == "float64 [0]"
+    )
+
+
 def test_format_coord_values_falls_back_when_coordinate_values_fail() -> None:
     class BrokenCoord:
         dtype = np.dtype("float64")

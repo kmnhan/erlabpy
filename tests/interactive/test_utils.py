@@ -684,6 +684,51 @@ def test_close_shortcut_default_callback_closes_live_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not window.isVisible(), timeout=1000)
 
 
+def test_close_shortcut_default_callback_ignores_invalid_widget(
+    qtbot, monkeypatch
+) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    def _qt_is_valid(*objects) -> bool:
+        if window in objects:
+            return False
+        return qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", _qt_is_valid)
+
+    callback()
+
+    assert window.isVisible()
+
+
+def test_close_shortcut_destroyed_cleanup_ignores_invalid_filter(
+    qtbot, monkeypatch
+) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, lambda: None)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    def _qt_is_valid(*objects) -> bool:
+        if shortcut_filter in objects:
+            return False
+        return qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", _qt_is_valid)
+
+    window.destroyed.emit(window)
+
+    assert qt_is_valid(shortcut_filter)
+
+
 def test_close_shortcut_filter_ignores_missing_callback(qtbot) -> None:
     window = QtWidgets.QMainWindow()
     qtbot.addWidget(window)
