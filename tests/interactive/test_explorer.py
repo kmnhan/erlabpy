@@ -62,6 +62,7 @@ def test_tabbed_explorer_close_tab_stops_preview_workers(
     win.add_tab()
     explorer = win.get_explorer(0)
     assert explorer is not None
+    assert explorer.centralWidget() is None
     fake_threadpool = _FakePreviewThreadPool()
     explorer._preview_threadpool = fake_threadpool
 

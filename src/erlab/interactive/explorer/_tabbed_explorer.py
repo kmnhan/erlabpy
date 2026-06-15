@@ -294,9 +294,9 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        content = new_explorer.centralWidget()
+        content = new_explorer.takeCentralWidget()
         if content:
-            # Embed the DataExplorer's central widget into the tab
+            # Transfer UI ownership from the hidden QMainWindow wrapper to the tab.
             layout.addWidget(content)
         current_tab = typing.cast("QtWidgets.QWidget", self.tab_widget.widget(tab_idx))
         current_tab.setLayout(layout)

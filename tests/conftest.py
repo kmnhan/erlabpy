@@ -13,7 +13,7 @@ import threading
 import time
 import typing
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import dask
 import dask.distributed
@@ -141,6 +141,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     for settings_path in _TEST_INTERACTIVE_OPTIONS_PATHS:
         with contextlib.suppress(OSError):
             settings_path.unlink()
+
+
+@pytest.fixture(autouse=True)
+def _restore_interactive_options_between_tests() -> Iterator[None]:
+    erlab.interactive.options.restore()
+    try:
+        yield
+    finally:
+        erlab.interactive.options.restore()
 
 
 @pytest.fixture(scope="session")
