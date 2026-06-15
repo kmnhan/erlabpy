@@ -109,6 +109,15 @@ GUI_TARGETS: tuple[str, ...] = ()
 
 SERIAL_PREFIXES: tuple[str, ...] = ("tests/interactive/imagetool/",)
 SERIAL_TARGETS: tuple[str, ...] = ()
+SERIAL_NODEIDS: frozenset[str] = frozenset(
+    {
+        "tests/interactive/test_explorer.py::test_explorer_general",
+        (
+            "tests/interactive/test_utils.py::"
+            "test_tool_window_managed_detached_output_preserves_provenance"
+        ),
+    }
+)
 
 COMPAT_NODEIDS: frozenset[str] = frozenset(
     target for target in COMPAT_TARGETS if "::" in target
@@ -214,6 +223,10 @@ def is_gui_path(rel_path: str) -> bool:
 
 def is_serial_path(rel_path: str) -> bool:
     return rel_path in SERIAL_TARGETS or rel_path.startswith(SERIAL_PREFIXES)
+
+
+def is_serial_nodeid(nodeid: str) -> bool:
+    return nodeid in SERIAL_NODEIDS
 
 
 def is_compat_path(rel_path: str) -> bool:

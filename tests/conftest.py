@@ -102,6 +102,7 @@ _CI_TEST_GROUPS = _load_ci_test_groups_module()
 is_compat_nodeid = _CI_TEST_GROUPS.is_compat_nodeid
 is_compat_path = _CI_TEST_GROUPS.is_compat_path
 is_gui_path = _CI_TEST_GROUPS.is_gui_path
+is_serial_nodeid = _CI_TEST_GROUPS.is_serial_nodeid
 is_serial_path = _CI_TEST_GROUPS.is_serial_path
 
 
@@ -175,8 +176,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
         if is_gui_path(rel_path):
             item.add_marker(pytest.mark.gui)
-        if is_serial_path(rel_path):
+        if is_serial_path(rel_path) or is_serial_nodeid(item.nodeid):
             item.add_marker(pytest.mark.serial)
+            item.add_marker(pytest.mark.xdist_group("serial"))
         if is_compat_path(rel_path) or is_compat_nodeid(item.nodeid):
             item.add_marker(pytest.mark.compat)
 

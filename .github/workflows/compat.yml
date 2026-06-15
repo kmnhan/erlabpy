@@ -122,7 +122,7 @@ jobs:
             uv run pytest \
             -v \
             -n auto \
-            --dist=worksteal \
+            --dist=loadgroup \
             -o faulthandler_timeout=300 \
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy

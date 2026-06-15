@@ -107,7 +107,7 @@ jobs:
             -o junit_family=legacy
           )
           if [[ "${{ matrix.use-xdist }}" == "true" ]]; then
-            pytest_args+=(-n auto --dist=worksteal)
+            pytest_args+=(-n auto --dist=loadgroup)
           fi
           uv run pytest "${pytest_args[@]}" "${targets[@]}"
 
@@ -194,7 +194,7 @@ jobs:
             uv run pytest \
             -m compat \
             -n auto \
-            --dist=worksteal \
+            --dist=loadgroup \
             -o faulthandler_timeout=300 \
             --junitxml "junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy \
