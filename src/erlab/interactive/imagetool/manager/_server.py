@@ -447,14 +447,12 @@ _UNSET = object()
 
 def _wait_for_qthread_to_stop(thread: QtCore.QThread, timeout_ms: int) -> bool:
     deadline = time.monotonic() + timeout_ms / 1000
-    app = QtCore.QCoreApplication.instance()
     while thread.isRunning():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        if app is not None and QtCore.QThread.currentThread() == app.thread():
-            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 10)
-        time.sleep(min(0.01, remaining))
+        if thread.wait(min(10, max(1, int(remaining * 1000)))):
+            return True
     return True
 
 

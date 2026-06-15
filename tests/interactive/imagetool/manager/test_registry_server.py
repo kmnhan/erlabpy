@@ -1081,24 +1081,28 @@ def test_manager_server_wait_until_bound_errors() -> None:
 def test_server_thread_stop_wait_is_cooperative(monkeypatch) -> None:
     class _FinishingThread:
         def __init__(self) -> None:
-            self.running_checks = 0
+            self.running = True
+            self.waits: list[int] = []
 
         def isRunning(self) -> bool:
-            self.running_checks += 1
-            return self.running_checks == 1
+            return self.running
 
-    sleeps: list[float] = []
-    monkeypatch.setattr(manager_server.time, "sleep", sleeps.append)
+        def wait(self, timeout_ms: int) -> bool:
+            self.waits.append(timeout_ms)
+            self.running = False
+            return True
 
     finishing_thread = _FinishingThread()
     assert manager_server._wait_for_qthread_to_stop(finishing_thread, 100)
-    assert finishing_thread.running_checks == 2
-    assert sleeps
-    assert sleeps[0] <= 0.01
+    assert finishing_thread.waits
+    assert 0 < finishing_thread.waits[0] <= 10
 
     class _RunningThread:
         def isRunning(self) -> bool:
             return True
+
+        def wait(self, timeout_ms: int) -> bool:
+            raise AssertionError("wait should not be called after the timeout")
 
     monotonic_values = iter([0.0, 0.002])
     monkeypatch.setattr(
