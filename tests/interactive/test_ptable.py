@@ -345,6 +345,7 @@ def _hover_sequence_between_cards(
     seen: list[str | None] = []
     last: str | None | object = object()
 
+    win.table_view.clear_hover_tracking()
     for card in cards:
         viewport_pos = _viewport_pos_for_table_child(win, card)
         hit_card = win.table_view._card_at_viewport_pos(viewport_pos)
