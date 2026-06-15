@@ -102,8 +102,7 @@ _CI_TEST_GROUPS = _load_ci_test_groups_module()
 is_compat_nodeid = _CI_TEST_GROUPS.is_compat_nodeid
 is_compat_path = _CI_TEST_GROUPS.is_compat_path
 is_gui_path = _CI_TEST_GROUPS.is_gui_path
-is_serial_nodeid = _CI_TEST_GROUPS.is_serial_nodeid
-is_serial_path = _CI_TEST_GROUPS.is_serial_path
+serial_xdist_group = _CI_TEST_GROUPS.serial_xdist_group
 
 
 def _qt_msg_filter(msg_type, context, message):
@@ -176,9 +175,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
         if is_gui_path(rel_path):
             item.add_marker(pytest.mark.gui)
-        if is_serial_path(rel_path) or is_serial_nodeid(item.nodeid):
+        serial_group = serial_xdist_group(rel_path, item.nodeid)
+        if serial_group is not None:
             item.add_marker(pytest.mark.serial)
-            item.add_marker(pytest.mark.xdist_group("serial"))
+            item.add_marker(pytest.mark.xdist_group(serial_group))
         if is_compat_path(rel_path) or is_compat_nodeid(item.nodeid):
             item.add_marker(pytest.mark.compat)
 

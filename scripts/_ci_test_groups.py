@@ -107,17 +107,25 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
-SERIAL_PREFIXES: tuple[str, ...] = ("tests/interactive/imagetool/",)
-SERIAL_TARGETS: tuple[str, ...] = ()
-SERIAL_NODEIDS: frozenset[str] = frozenset(
-    {
-        "tests/interactive/test_explorer.py::test_explorer_general",
-        (
-            "tests/interactive/test_utils.py::"
-            "test_tool_window_managed_detached_output_preserves_provenance"
-        ),
-    }
+SERIAL_PREFIX_GROUPS: tuple[tuple[str, str], ...] = (
+    ("tests/interactive/imagetool/", "qt"),
 )
+SERIAL_TARGET_GROUPS: dict[str, str] = {
+    "tests/io/plugins/test_erpes.py": "hdf5-cache",
+    "tests/io/plugins/test_maestro.py": "hdf5-cache",
+}
+SERIAL_NODEID_GROUPS: dict[str, str] = {
+    "tests/interactive/test_explorer.py::test_explorer_general": "qt",
+    (
+        "tests/interactive/test_utils.py::"
+        "test_tool_window_managed_detached_output_preserves_provenance"
+    ): "qt",
+}
+SERIAL_PREFIXES: tuple[str, ...] = tuple(
+    prefix for prefix, _group in SERIAL_PREFIX_GROUPS
+)
+SERIAL_TARGETS: tuple[str, ...] = tuple(SERIAL_TARGET_GROUPS)
+SERIAL_NODEIDS: frozenset[str] = frozenset(SERIAL_NODEID_GROUPS)
 
 COMPAT_NODEIDS: frozenset[str] = frozenset(
     target for target in COMPAT_TARGETS if "::" in target
@@ -227,6 +235,17 @@ def is_serial_path(rel_path: str) -> bool:
 
 def is_serial_nodeid(nodeid: str) -> bool:
     return nodeid in SERIAL_NODEIDS
+
+
+def serial_xdist_group(rel_path: str, nodeid: str) -> str | None:
+    if nodeid in SERIAL_NODEID_GROUPS:
+        return SERIAL_NODEID_GROUPS[nodeid]
+    if rel_path in SERIAL_TARGET_GROUPS:
+        return SERIAL_TARGET_GROUPS[rel_path]
+    for prefix, group in SERIAL_PREFIX_GROUPS:
+        if rel_path.startswith(prefix):
+            return group
+    return None
 
 
 def is_compat_path(rel_path: str) -> bool:
