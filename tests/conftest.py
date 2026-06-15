@@ -7,7 +7,6 @@ import logging
 import os
 import pathlib
 import re
-import socket
 import sys
 import tempfile
 import threading
@@ -259,20 +258,6 @@ def manager_context() -> Callable[
             QtWidgets.QApplication.sendPostedEvents(None, 0)
             QtWidgets.QApplication.processEvents()
 
-    def _unused_port_pair() -> tuple[int, int]:
-        sockets: list[socket.socket] = []
-        try:
-            for _ in range(2):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.bind(("127.0.0.1", 0))
-                sockets.append(sock)
-            return typing.cast("int", sockets[0].getsockname()[1]), typing.cast(
-                "int", sockets[1].getsockname()[1]
-            )
-        finally:
-            for sock in sockets:
-                sock.close()
-
     @contextlib.contextmanager
     def _ctx(
         use_socket: bool = False,
@@ -287,7 +272,6 @@ def manager_context() -> Callable[
             validate=False
         )
 
-        port, port_watch = _unused_port_pair()
         registry_path = (
             pathlib.Path(tempfile.gettempdir())
             / f"erlab-test-manager-{os.getpid()}-{time.time_ns()}.json"
@@ -297,10 +281,10 @@ def manager_context() -> Callable[
             registry_path.suffix + ".lock"
         )
         imagetool_manager_registry.clear_default_manager()
-        imagetool_manager.PORT = port
-        imagetool_manager.PORT_WATCH = port_watch
-        imagetool_manager_server.PORT = port
-        imagetool_manager_server.PORT_WATCH = port_watch
+        imagetool_manager.PORT = 0
+        imagetool_manager.PORT_WATCH = 0
+        imagetool_manager_server.PORT = 0
+        imagetool_manager_server.PORT_WATCH = 0
         imagetool_manager._always_use_socket = use_socket
 
         _drain_qt_events()

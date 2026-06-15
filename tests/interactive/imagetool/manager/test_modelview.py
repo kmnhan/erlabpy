@@ -293,7 +293,6 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
     first_row_rect = manager.tree_view.visualRect(model.index(0, 0))
 
     # Click on first row
-    qtbot.mouseMove(manager.tree_view.viewport(), first_row_rect.center())
     qtbot.mousePress(
         manager.tree_view.viewport(),
         QtCore.Qt.MouseButton.LeftButton,

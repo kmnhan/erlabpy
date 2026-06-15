@@ -44,6 +44,7 @@ from erlab.interactive.imagetool.manager._widgets import (
 
 from .helpers import (
     _exec_generated_code,
+    activate_widget_shortcut,
     assert_nonempty_tooltip,
     bring_manager_to_top,
     child_status_badge,
@@ -129,20 +130,18 @@ def _selection_shortcut_sequences(
 
 
 @pytest.mark.parametrize(
-    ("platform", "rename_key", "show_key", "show_modifier", "expected_shortcuts"),
+    ("platform", "rename_shortcut", "show_shortcut", "expected_shortcuts"),
     [
         (
             "darwin",
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.Key.Key_Down,
-            QtCore.Qt.KeyboardModifier.ControlModifier,
+            "Return",
+            "Ctrl+Down",
             {"Return", "Enter", "Ctrl+Down"},
         ),
         (
             "linux",
-            QtCore.Qt.Key.Key_F2,
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.KeyboardModifier.NoModifier,
+            "F2",
+            "Return",
             {"F2", "Return", "Enter"},
         ),
     ],
@@ -155,9 +154,8 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
     platform: str,
-    rename_key: QtCore.Qt.Key,
-    show_key: QtCore.Qt.Key,
-    show_modifier: QtCore.Qt.KeyboardModifier,
+    rename_shortcut: str,
+    show_shortcut: str,
     expected_shortcuts: set[str],
 ) -> None:
     monkeypatch.setattr(manager_mainwindow.sys, "platform", platform)
@@ -174,11 +172,8 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
 
         tool = manager.get_imagetool(0)
         tool.hide()
-        bring_manager_to_top(qtbot, manager)
-        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
 
-        qtbot.keyClick(manager.tree_view, rename_key)
+        activate_widget_shortcut(manager.tree_view, rename_shortcut)
         qtbot.wait_until(
             lambda: (
                 manager.tree_view.state()
@@ -199,9 +194,7 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
         )
         assert not tool.isVisible()
 
-        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
-        qtbot.keyClick(manager.tree_view, show_key, show_modifier)
+        activate_widget_shortcut(manager.tree_view, show_shortcut)
         qtbot.wait_until(tool.isVisible, timeout=5000)
 
 
@@ -2288,18 +2281,21 @@ def test_manager(
             manager.raise_()
             manager.preview_action.setChecked(True)
 
-        # Test mouse hover over list view
-        # This may not work on all systems due to the way the mouse events are generated
-        delegate._force_hover = True
-
+        # Test hover-preview delegate painting without moving the shared display cursor.
         first_index = manager.tree_view.model().index(0, 0)
-        first_rect_center = manager.tree_view.visualRect(first_index).center()
-        qtbot.mouseMove(manager.tree_view.viewport())
-        qtbot.mouseMove(manager.tree_view.viewport(), first_rect_center)
-        qtbot.mouseMove(
-            manager.tree_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
+        option = delegate._option_for_index(manager.tree_view, first_index)
+        option.state |= QtWidgets.QStyle.StateFlag.State_MouseOver
+        pixmap = QtGui.QPixmap(manager.tree_view.viewport().size())
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        try:
+            delegate.paint(painter, option, first_index)
+        finally:
+            painter.end()
+        delegate.eventFilter(
+            manager.tree_view.viewport(),
+            QtCore.QEvent(QtCore.QEvent.Type.Leave),
         )
-        qtbot.mouseMove(manager.tree_view.viewport())  # move to blank should hide popup
 
         # Remove third tool
         select_tools(manager, [3])

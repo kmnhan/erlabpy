@@ -338,9 +338,9 @@ def _hover_sequence_between_cards(
     last: str | None | object = object()
 
     for y in range(start_pos.y(), end_pos.y() + step, step):
-        QtTest.QTest.mouseMove(
-            win.table_view.viewport(), QtCore.QPoint(start_pos.x(), y)
-        )
+        card = win.table_view._card_at_viewport_pos(QtCore.QPoint(start_pos.x(), y))
+        atomic_number = None if card is None else card.record.atomic_number
+        win.table_view._set_hovered_atomic_number(atomic_number)
         app.processEvents()
         current = win.current_record.symbol if win.current_record else None
         if current != last:
@@ -394,42 +394,13 @@ def _hover_sequence_between_widgets(
     seen: list[str | None] = []
     last: str | None | object = object()
     sync_hovered = getattr(container, "_sync_hovered_category_from_position", None)
+    if not callable(sync_hovered):
+        raise TypeError("Hover path helper requires local hover routing")
 
     for y in range(start_pos.y(), end_pos.y() + step, step):
-        position = QtCore.QPoint(start_pos.x(), y)
-        QtTest.QTest.mouseMove(container, position)
-        app.processEvents()
-        if callable(sync_hovered):
-            sync_hovered(position)
+        sync_hovered(QtCore.QPoint(start_pos.x(), y))
         current = current_value()
-        if current != last:
-            seen.append(current)
-            last = current
-
-    return seen
-
-
-def _hover_sequence_from_widget_to_point(
-    container: QtWidgets.QWidget,
-    start_widget: QtWidgets.QWidget,
-    end_pos: QtCore.QPoint,
-    current_value: Callable[[], str | None],
-) -> list[str | None]:
-    app = QtWidgets.QApplication.instance()
-    assert app is not None
-
-    start_pos = start_widget.mapTo(container, start_widget.rect().center())
-    if start_pos.x() != end_pos.x():
-        raise AssertionError("Hover path helper expects a vertically aligned path")
-
-    step = 1 if end_pos.y() >= start_pos.y() else -1
-    seen: list[str | None] = []
-    last: str | None | object = object()
-
-    for y in range(start_pos.y(), end_pos.y() + step, step):
-        QtTest.QTest.mouseMove(container, QtCore.QPoint(start_pos.x(), y))
         app.processEvents()
-        current = current_value()
         if current != last:
             seen.append(current)
             last = current

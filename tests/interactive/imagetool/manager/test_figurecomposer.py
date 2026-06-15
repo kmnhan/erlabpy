@@ -86,7 +86,10 @@ from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool, provenance
 from tests.interactive.imagetool.manager.helpers import (
+    InMemoryClipboard,
     _exec_generated_code,
+    activate_widget_shortcut,
+    install_in_memory_clipboard,
     select_child_tool,
     select_tools,
     trigger_menu_action,
@@ -109,9 +112,82 @@ def restore_interactive_options():
         plt.close("all")
 
 
+@pytest.fixture(autouse=True)
+def isolate_qt_clipboard(monkeypatch: pytest.MonkeyPatch) -> InMemoryClipboard:
+    return install_in_memory_clipboard(monkeypatch)
+
+
 def _set_figure_stylesheets(stylesheets: list[str]) -> None:
     options.model = options.model.model_copy(
         update={"figure": FigureOptions(stylesheets=stylesheets)}
+    )
+
+
+def _send_mouse_event(
+    widget: QtWidgets.QWidget,
+    event_type: QtCore.QEvent.Type,
+    pos: QtCore.QPoint,
+    *,
+    button: QtCore.Qt.MouseButton = QtCore.Qt.MouseButton.NoButton,
+    buttons: QtCore.Qt.MouseButton = QtCore.Qt.MouseButton.NoButton,
+    modifiers: QtCore.Qt.KeyboardModifier = QtCore.Qt.KeyboardModifier.NoModifier,
+) -> None:
+    global_pos = widget.mapToGlobal(pos)
+    event = QtGui.QMouseEvent(
+        event_type,
+        QtCore.QPointF(pos),
+        QtCore.QPointF(global_pos),
+        button,
+        buttons,
+        modifiers,
+    )
+    QtWidgets.QApplication.sendEvent(widget, event)
+    QtWidgets.QApplication.processEvents()
+
+
+def _send_mouse_move(
+    widget: QtWidgets.QWidget,
+    pos: QtCore.QPoint,
+    *,
+    buttons: QtCore.Qt.MouseButton = QtCore.Qt.MouseButton.NoButton,
+    modifiers: QtCore.Qt.KeyboardModifier = QtCore.Qt.KeyboardModifier.NoModifier,
+) -> None:
+    _send_mouse_event(
+        widget,
+        QtCore.QEvent.Type.MouseMove,
+        pos,
+        buttons=buttons,
+        modifiers=modifiers,
+    )
+
+
+def _drag_widget(
+    widget: QtWidgets.QWidget,
+    start: QtCore.QPoint,
+    end: QtCore.QPoint,
+    *,
+    modifiers: QtCore.Qt.KeyboardModifier = QtCore.Qt.KeyboardModifier.NoModifier,
+) -> None:
+    _send_mouse_event(
+        widget,
+        QtCore.QEvent.Type.MouseButtonPress,
+        start,
+        button=QtCore.Qt.MouseButton.LeftButton,
+        buttons=QtCore.Qt.MouseButton.LeftButton,
+        modifiers=modifiers,
+    )
+    _send_mouse_move(
+        widget,
+        end,
+        buttons=QtCore.Qt.MouseButton.LeftButton,
+        modifiers=modifiers,
+    )
+    _send_mouse_event(
+        widget,
+        QtCore.QEvent.Type.MouseButtonRelease,
+        end,
+        button=QtCore.Qt.MouseButton.LeftButton,
+        modifiers=modifiers,
     )
 
 
@@ -187,7 +263,7 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
-def _clear_clipboard() -> QtGui.QClipboard:
+def _clear_clipboard() -> InMemoryClipboard:
     clipboard = QtWidgets.QApplication.clipboard()
     clipboard.clear()
     return clipboard
@@ -3050,17 +3126,11 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
         pos=selector.cell_rect((0, 0)).center(),
     )
 
-    qtbot.mousePress(
+    _drag_widget(
         selector,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.ControlModifier,
-        pos=selector.cell_rect((0, 0)).center(),
-    )
-    qtbot.mouseMove(selector, selector.cell_rect((1, 1)).center())
-    qtbot.mouseRelease(
-        selector,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=selector.cell_rect((1, 1)).center(),
+        selector.cell_rect((0, 0)).center(),
+        selector.cell_rect((1, 1)).center(),
+        modifiers=QtCore.Qt.KeyboardModifier.ControlModifier,
     )
     assert selected[-1] == ((0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2))
     selector.mousePressEvent(None)
@@ -3070,7 +3140,7 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
     add_requests: list[str] = []
     selector.sigAddRowRequested.connect(lambda: add_requests.append("row"))
     selector.sigAddColumnRequested.connect(lambda: add_requests.append("column"))
-    qtbot.mouseMove(selector, selector._add_pill_rect("row").center())
+    _send_mouse_move(selector, selector._add_pill_rect("row").center())
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
@@ -3258,17 +3328,11 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         pos=selector.axis_rect("main-axis").center(),
     )
     assert selected[-1] == ("child-axis",)
-    qtbot.mousePress(
+    _drag_widget(
         selector,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.ControlModifier,
-        pos=selector.axis_rect("main-axis").center(),
-    )
-    qtbot.mouseMove(selector, selector.axis_rect("child-axis").center())
-    qtbot.mouseRelease(
-        selector,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=selector.axis_rect("child-axis").center(),
+        selector.axis_rect("main-axis").center(),
+        selector.axis_rect("child-axis").center(),
+        modifiers=QtCore.Qt.KeyboardModifier.ControlModifier,
     )
     assert selected[-1] == ("main-axis", "child-axis")
     selector.mouseMoveEvent(None)
@@ -3402,16 +3466,10 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         pos=QtCore.QPoint(-10, -10),
     )
     assert created == []
-    qtbot.mousePress(
+    _drag_widget(
         editor,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=editor.cell_rect((1, 0)).center(),
-    )
-    qtbot.mouseMove(editor, editor.cell_rect((1, 0)).center())
-    qtbot.mouseRelease(
-        editor,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=editor.cell_rect((1, 0)).center(),
+        editor.cell_rect((1, 0)).center(),
+        editor.cell_rect((1, 0)).center(),
     )
     assert created[-1] == FigureGridSpecSpanState(
         row_start=1,
@@ -7766,9 +7824,7 @@ def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:
 
     handle_pos = widget.span_rect(original_span).bottomRight() - QtCore.QPoint(2, 2)
     end_pos = widget.cell_rect((0, 1)).center()
-    qtbot.mousePress(widget, QtCore.Qt.MouseButton.LeftButton, pos=handle_pos)
-    qtbot.mouseMove(widget, end_pos)
-    qtbot.mouseRelease(widget, QtCore.Qt.MouseButton.LeftButton, pos=end_pos)
+    _drag_widget(widget, handle_pos, end_pos)
 
     assert len(tool.tool_status.setup.gridspec.root.axes) == 1
     assert tool.tool_status.setup.gridspec.root.axes[0].span == (
@@ -7802,16 +7858,10 @@ def test_figure_composer_gridspec_widget_moves_selected_region(qtbot) -> None:
     widget = tool.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
-    qtbot.mousePress(
+    _drag_widget(
         widget,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=widget.span_rect(original_span).center(),
-    )
-    qtbot.mouseMove(widget, widget.cell_rect((1, 2)).center())
-    qtbot.mouseRelease(
-        widget,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=widget.cell_rect((1, 2)).center(),
+        widget.span_rect(original_span).center(),
+        widget.cell_rect((1, 2)).center(),
     )
 
     assert len(tool.tool_status.setup.gridspec.root.axes) == 1
@@ -7958,7 +8008,7 @@ def test_figure_composer_gridspec_row_shrink_ignores_invalid_regions(qtbot) -> N
     assert any(not region.valid for region in widget._regions)
     assert widget.span_rect(removed_span) == QtCore.QRect()
     assert widget._region_at(widget.cell_rect((0, 0)).center()) is not None
-    qtbot.mouseMove(widget, widget.cell_rect((0, 0)).center())
+    _send_mouse_move(widget, widget.cell_rect((0, 0)).center())
 
 
 def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> None:
@@ -8487,9 +8537,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     tool._target_current_operation_valid_axes()
     start = selector.cell_rect((0, 0)).center()
     end = selector.cell_rect((0, 1)).center()
-    qtbot.mousePress(selector, QtCore.Qt.MouseButton.LeftButton, pos=start)
-    qtbot.mouseMove(selector, end)
-    qtbot.mouseRelease(selector, QtCore.Qt.MouseButton.LeftButton, pos=end)
+    _drag_widget(selector, start, end)
     qtbot.wait(1)
     assert tool.tool_status.operations[0].axes.axes == ((0, 0), (0, 1))
     assert (
@@ -16690,20 +16738,18 @@ def _selection_shortcut_sequences(widget: QtWidgets.QWidget) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    ("platform", "rename_key", "show_key", "show_modifier", "expected_shortcuts"),
+    ("platform", "rename_shortcut", "show_shortcut", "expected_shortcuts"),
     [
         (
             "darwin",
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.Key.Key_Down,
-            QtCore.Qt.KeyboardModifier.ControlModifier,
+            "Return",
+            "Ctrl+Down",
             {"Return", "Enter", "Ctrl+Down"},
         ),
         (
             "linux",
-            QtCore.Qt.Key.Key_F2,
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.KeyboardModifier.NoModifier,
+            "F2",
+            "Return",
             {"F2", "Return", "Enter"},
         ),
     ],
@@ -16715,9 +16761,8 @@ def test_manager_figure_list_selection_shortcuts_are_platform_native(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
     platform: str,
-    rename_key: QtCore.Qt.Key,
-    show_key: QtCore.Qt.Key,
-    show_modifier: QtCore.Qt.KeyboardModifier,
+    rename_shortcut: str,
+    show_shortcut: str,
     expected_shortcuts: set[str],
 ) -> None:
     monkeypatch.setattr(manager_mainwindow.sys, "platform", platform)
@@ -16735,9 +16780,7 @@ def test_manager_figure_list_selection_shortcuts_are_platform_native(
         assert manager.show_action.shortcut().isEmpty()
         assert _selection_shortcut_sequences(manager.figure_list) == expected_shortcuts
 
-        manager.figure_list.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.figure_list.hasFocus, timeout=5000)
-        qtbot.keyClick(manager.figure_list, rename_key)
+        activate_widget_shortcut(manager.figure_list, rename_shortcut)
         qtbot.wait_until(
             lambda: (
                 manager.figure_list.state()
@@ -16756,9 +16799,7 @@ def test_manager_figure_list_selection_shortcuts_are_platform_native(
 
         shown: list[str] = []
         monkeypatch.setattr(manager, "show_childtool", shown.append)
-        manager.figure_list.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.figure_list.hasFocus, timeout=5000)
-        qtbot.keyClick(manager.figure_list, show_key, show_modifier)
+        activate_widget_shortcut(manager.figure_list, show_shortcut)
         qtbot.wait_until(lambda: shown == [figure_uid], timeout=5000)
 
 

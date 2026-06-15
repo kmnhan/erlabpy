@@ -34,12 +34,14 @@ from erlab.interactive.imagetool.manager._modelview import (
 from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
 
 from .helpers import (
+    InMemoryClipboard,
     _assert_modelfit_code_replays_source,
     _exec_generated_code,
     child_status_badge,
     click_child_status_badge,
     configure_goldtool_child,
     copy_full_code_for_uid,
+    install_in_memory_clipboard,
     make_fit1d_child,
     make_fit2d_child,
     manager_preview_pixmap,
@@ -52,6 +54,11 @@ from .helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_qt_clipboard(monkeypatch: pytest.MonkeyPatch) -> InMemoryClipboard:
+    return install_in_memory_clipboard(monkeypatch)
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
@@ -4494,6 +4501,10 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         assert promoted.provenance_spec is not None
         assert promoted._childtool_indices == [nested_uid]
         assert manager._child_node(nested_uid).parent_uid == child_uid
+        qtbot.wait_until(
+            lambda: manager.tree_view.selected_imagetool_indices == [promoted_index],
+            timeout=5000,
+        )
         assert manager.tree_view.selected_imagetool_indices == [promoted_index]
         assert manager.tree_view.selected_childtool_uids == []
         assert manager._root_wrapper_for_uid(nested_uid).index == promoted_index
