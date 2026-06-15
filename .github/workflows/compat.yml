@@ -7,8 +7,8 @@ on:
     - cron: "0 22 * * FRI"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
@@ -53,6 +53,8 @@ jobs:
           PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
             uv run pytest \
             -v \
+            -n auto \
+            --dist=worksteal \
             -o faulthandler_timeout=300 \
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy

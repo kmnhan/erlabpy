@@ -286,7 +286,7 @@ qt_log_ignore = [
 markers = [
     "compat: compatibility smoke tests for non-primary CI lanes",
     "gui: tests that require Qt or GUI-related infrastructure",
-    "serial: tests that should not be run under pytest-xdist",
+    "serial: tests with legacy process-isolation risk",
 ]
 
 [tool.pytest_env]
