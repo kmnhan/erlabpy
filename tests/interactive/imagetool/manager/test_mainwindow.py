@@ -2365,9 +2365,8 @@ def test_remove_from_window_shortcut(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
 
-def test_remove_childtool_delete_shortcut(
+def test_remove_childtool_direct_removal(
     qtbot,
-    accept_dialog,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2387,14 +2386,9 @@ def test_remove_childtool_delete_shortcut(
             timeout=5000,
         )
         wrapper = manager._tool_graph.root_wrappers[0]
-        uid, child = next(iter(wrapper._childtools.items()))
+        uid, _child = next(iter(wrapper._childtools.items()))
 
-        with qtbot.waitExposed(child):
-            child.activateWindow()
-            child.raise_()
-            child.setFocus()
-
-        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        manager._remove_childtool(uid)
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
 
 

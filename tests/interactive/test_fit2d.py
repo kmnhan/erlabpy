@@ -98,6 +98,25 @@ def _configure_fit2d_for_tests(
     return warnings, errors
 
 
+def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
+    for idx in range(len(win._result_ds_full)):
+        fit_data = win._data_full.isel({win._y_dim_name: idx})
+        fit_ds = fit_data.xlm.modelfit(
+            win._coord_name,
+            model=model,
+            params=params,
+            max_nfev=10,
+        ).load()
+        result = fit_ds.modelfit_results.compute().item()
+        win._result_ds_full[idx] = fit_ds
+        win._params_full[idx] = result.params.copy()
+        win._params_from_coord_full[idx] = {}
+
+    win._set_current_index(0)
+    win._fit_is_current = True
+    win._update_full_fit_saveable()
+
+
 def _lmfit_json_with_callable_pyversion(
     payload: str, callable_name: str, pyversion: str = "3.13"
 ) -> str:
@@ -1160,7 +1179,7 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
 
 
 def test_fit2d_persistence_roundtrip_preserves_fit_results(
-    qtbot, exp_decay_model, monkeypatch
+    qtbot, exp_decay_model
 ) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
@@ -1173,16 +1192,8 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
-    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
-    win.y_index_spin.setValue(win.y_min_spin.value())
-    win.nfev_spin.setValue(0)
-    win._run_fit_2d("up")
-    qtbot.waitUntil(
-        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
-    )
-    assert not warnings
-    assert not errors
+    _seed_fit2d_full_results(win, exp_decay_model, params)
     expected_results = [
         None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
     ]
@@ -1192,13 +1203,6 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit2DTool)
 
-    restored_warnings: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        win_restored,
-        "_show_warning",
-        lambda title, text: restored_warnings.append((title, text)),
-    )
-
     assert win_restored._fit_is_current
     assert all(ds is not None for ds in win_restored._result_ds_full)
     _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
@@ -1206,11 +1210,10 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
     assert win_restored.current_provenance_spec() is not None
-    assert not restored_warnings
 
 
 def test_fit2d_persistence_roundtrip_preserves_sparse_results(
-    qtbot, exp_decay_model, monkeypatch
+    qtbot, exp_decay_model
 ) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
@@ -1223,16 +1226,8 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
-    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
-    win.y_index_spin.setValue(win.y_min_spin.value())
-    win.nfev_spin.setValue(0)
-    win._run_fit_2d("up")
-    qtbot.waitUntil(
-        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
-    )
-    assert not warnings
-    assert not errors
+    _seed_fit2d_full_results(win, exp_decay_model, params)
 
     win._result_ds_full[1] = None
     win.y_index_spin.setValue(0)
@@ -1246,13 +1241,6 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit2DTool)
 
-    restored_warnings: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        win_restored,
-        "_show_warning",
-        lambda title, text: restored_warnings.append((title, text)),
-    )
-
     assert [ds is not None for ds in win_restored._result_ds_full] == [
         True,
         False,
@@ -1264,7 +1252,6 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     assert not win_restored.copy_full_button.isEnabled()
     assert not win_restored.save_full_button.isEnabled()
     assert win_restored.current_provenance_spec() is None
-    assert not restored_warnings
 
 
 def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> None:

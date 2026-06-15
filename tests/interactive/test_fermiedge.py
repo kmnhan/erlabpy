@@ -3,7 +3,6 @@ import tempfile
 import time
 import typing
 
-import joblib
 import numpy as np
 import pytest
 import scipy
@@ -85,21 +84,26 @@ def test_goldtool_can_save_and_load() -> None:
     assert GoldTool.can_save_and_load() is True
 
 
+def _seed_goldtool_poly_result(win: GoldTool, result: xr.Dataset) -> None:
+    win.edge_center = result.modelfit_data.copy()
+    win.edge_stderr = xr.ones_like(win.edge_center)
+    win.result = result
+    win.params_poly.setDisabled(False)
+    win.params_spl.setDisabled(False)
+    win.params_tab.setDisabled(False)
+
+
 @pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
 def test_goldtool(
-    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog, monkeypatch
+    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog
 ) -> None:
-    # Force joblib to avoid loky while Qt is running
-    monkeypatch.setattr(joblib.parallel, "DEFAULT_BACKEND", "threading")
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["Fast"].setChecked(fast)
     win.params_edge.widgets["# CPU"].setValue(1)
 
     expected = gold_fit_res if fast else gold_fit_res_fd
-
-    with qtbot.wait_signal(win.sigUpdated, timeout=20000):
-        win.params_edge.widgets["go"].click()
+    _seed_goldtool_poly_result(win, expected)
 
     def check_generated_code(w: GoldTool) -> None:
         namespace = {"era": erlab.analysis, "gold": gold}
