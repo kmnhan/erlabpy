@@ -352,8 +352,8 @@ def _hover_sequence_between_cards(
         if hit_card is not card:
             raise ValueError("Hover path helper could not hit-test card center")
         win.table_view._set_hovered_atomic_number(card.record.atomic_number)
-        app.processEvents()
         current = win.current_record.symbol if win.current_record else None
+        app.processEvents()
         if current != last:
             seen.append(current)
             last = current
