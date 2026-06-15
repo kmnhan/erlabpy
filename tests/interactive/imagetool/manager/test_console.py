@@ -3251,8 +3251,6 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
 
     with manager_context() as manager:
         manager.show()
-        manager.toggle_console()
-        qtbot.wait_until(manager.console.isVisible, timeout=5000)
 
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
@@ -3264,6 +3262,9 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
             timeout=5000,
         )
         child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
+
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
 
         manager.console._console_widget.execute(
             "tools[0].data = tools[0].assign_coords(time=tools[1].time)"
