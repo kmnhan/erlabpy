@@ -251,6 +251,14 @@ def gold_fine():
 def manager_context() -> Callable[
     ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
 ]:
+    def _drain_qt_events(iterations: int = 1) -> None:
+        for _ in range(iterations):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.processEvents()
+
     def _unused_port_pair() -> tuple[int, int]:
         sockets: list[socket.socket] = []
         try:
@@ -295,6 +303,7 @@ def manager_context() -> Callable[
         imagetool_manager_server.PORT_WATCH = port_watch
         imagetool_manager._always_use_socket = use_socket
 
+        _drain_qt_events()
         imagetool_manager.main(execute=False)
 
         try:
@@ -303,6 +312,8 @@ def manager_context() -> Callable[
             manager = imagetool_manager._manager_instance
             if manager is not None:
                 manager._workspace_state.loading_depth += 1
+                server = manager.server
+                watcher_server = manager.watcher_server
                 try:
 
                     def _thread_is_running(thread: object) -> bool:
@@ -323,10 +334,9 @@ def manager_context() -> Callable[
                         manager._application_quit_filter = None
                     manager._registry_heartbeat_timer.stop()
                     manager._registry_heartbeat.stop()
-                    _stop_thread(manager.server)
-                    _stop_thread(manager.watcher_server)
-                    QtWidgets.QApplication.sendPostedEvents(None, 0)
-                    QtWidgets.QApplication.processEvents()
+                    _stop_thread(server)
+                    _stop_thread(watcher_server)
+                    _drain_qt_events()
                     clipboard = QtWidgets.QApplication.clipboard()
                     if clipboard is not None:
                         clipboard.clear()
@@ -335,23 +345,27 @@ def manager_context() -> Callable[
                     manager.close()
                     deadline = time.perf_counter() + 5.0
                     while (
-                        _thread_is_running(manager.server)
-                        or _thread_is_running(manager.watcher_server)
+                        _thread_is_running(server) or _thread_is_running(watcher_server)
                     ) and time.perf_counter() < deadline:
-                        QtWidgets.QApplication.sendPostedEvents(None, 0)
-                        QtWidgets.QApplication.processEvents()
+                        _drain_qt_events()
                         time.sleep(0.01)
-                    if _thread_is_running(manager.server):
-                        _stop_thread(manager.server)
-                    if _thread_is_running(manager.watcher_server):
-                        _stop_thread(manager.watcher_server)
-                    manager.deleteLater()
-                    for _ in range(3):
-                        QtWidgets.QApplication.sendPostedEvents(None, 0)
-                        QtWidgets.QApplication.processEvents()
+                    if _thread_is_running(server):
+                        _stop_thread(server)
+                    if _thread_is_running(watcher_server):
+                        _stop_thread(watcher_server)
                 finally:
-                    manager._workspace_state.loading_depth -= 1
-                    manager._mark_workspace_clean()
+                    if qt_is_valid(manager):
+                        manager._workspace_state.loading_depth -= 1
+                        manager._mark_workspace_clean()
+                if qt_is_valid(manager):
+                    manager.deleteLater()
+                    delete_deadline = time.perf_counter() + 1.0
+                    while (
+                        qt_is_valid(manager) and time.perf_counter() < delete_deadline
+                    ):
+                        _drain_qt_events()
+                        time.sleep(0.01)
+                _drain_qt_events(iterations=3)
             imagetool_manager._manager_instance = None
             imagetool_manager._always_use_socket = False
             imagetool_manager.PORT = original_port
