@@ -2113,6 +2113,49 @@ def test_manager_provenance_edit_controller_dialog_execution_branches(
         )
 
 
+def test_manager_provenance_edit_controller_skips_deleted_temp_tool_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller()
+    data = xr.DataArray(np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y"))
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    original_itool = erlab.interactive.itool
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    created_tools: list[QtWidgets.QWidget] = []
+
+    def recording_itool(*args, **kwargs):
+        tool = original_itool(*args, **kwargs)
+        created_tools.append(tool)
+        return tool
+
+    def fake_qt_is_valid(*objects: object) -> bool:
+        if created_tools and any(obj is created_tools[-1] for obj in objects):
+            return False
+        return original_qt_is_valid(*objects)
+
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "exec",
+        lambda self: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive, "itool", recording_itool)
+        context.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
+        assert (
+            controller._edited_operations_from_dialog(
+                manager_provenance_edit.dialogs.NormalizeDialog,
+                operation,
+                data,
+            )
+            is None
+        )
+
+    for tool in created_tools:
+        if original_qt_is_valid(tool):
+            tool.close()
+            tool.deleteLater()
+
+
 def test_manager_provenance_validation_reports_active_filter_replay_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

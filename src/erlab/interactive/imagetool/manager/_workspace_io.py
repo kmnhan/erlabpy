@@ -666,9 +666,6 @@ class _WorkspaceIOController:
             QtWidgets.QApplication.sendPostedEvents(
                 None, int(QtCore.QEvent.Type.MetaCall.value)
             )
-            QtWidgets.QApplication.sendPostedEvents(
-                None, int(QtCore.QEvent.Type.DeferredDelete.value)
-            )
 
     def _drain_workspace_restore_events(self) -> None:
         self._send_workspace_posted_events()

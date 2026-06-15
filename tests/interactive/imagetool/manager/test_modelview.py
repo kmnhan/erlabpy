@@ -303,12 +303,8 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
 
     # Show context menu
     manager.tree_view._show_menu(first_row_rect.center())
-    menu = None
-    for tl in QtWidgets.QApplication.topLevelWidgets():
-        if isinstance(tl, QtWidgets.QMenu):
-            menu = tl
-            break
-    assert isinstance(menu, QtWidgets.QMenu)
+    menu = manager.tree_view._menu
+    qtbot.wait_until(menu.isVisible)
     menu.close()
     QtWidgets.QApplication.processEvents()
 

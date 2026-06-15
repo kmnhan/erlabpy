@@ -2,8 +2,10 @@ import datetime
 import math
 
 import numpy as np
+import xarray as xr
 
-from erlab.utils.formatting import format_html_table, format_value
+import erlab.utils.formatting
+from erlab.utils.formatting import format_darr_html, format_html_table, format_value
 
 
 def test_format_html_table_basic() -> None:
@@ -48,6 +50,62 @@ def test_format_html_table_no_thead() -> None:
         "<tr><td>Row2Col1</td><td>Row2Col2</td></tr></table></div>"
     )
     assert format_html_table(rows, header_rows=1, use_thead=False) == expected
+
+
+def test_format_darr_html_can_skip_coordinate_value_loading(monkeypatch) -> None:
+    def fail_if_values_are_loaded(_value):
+        raise AssertionError("metadata-only formatting should not load values")
+
+    monkeypatch.setattr(
+        erlab.utils.formatting, "_format_array_values", fail_if_values_are_loaded
+    )
+
+    data = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+
+    html = format_darr_html(data, load_values=False)
+
+    assert "int64 [2]" in html
+    assert "int64 [3]" in html
+
+
+def test_format_darr_html_falls_back_when_coordinate_formatting_fails(
+    monkeypatch,
+) -> None:
+    def fail_array_format(_value):
+        raise RuntimeError("failed to format coordinate values")
+
+    monkeypatch.setattr(
+        erlab.utils.formatting, "_format_array_values", fail_array_format
+    )
+
+    data = xr.DataArray(
+        np.zeros(3),
+        dims=("x",),
+        coords={"x": np.arange(3)},
+    )
+
+    html = format_darr_html(data)
+
+    assert '["0",  ... , "2"]' in html
+
+
+def test_format_coord_values_falls_back_when_coordinate_values_fail() -> None:
+    class BrokenCoord:
+        dtype = np.dtype("float64")
+        shape = (2,)
+
+        @property
+        def values(self):
+            raise RuntimeError("failed to load coordinate values")
+
+    assert (
+        erlab.utils.formatting._format_coord_values(BrokenCoord(), load_values=True)
+        == "float64 [2]"
+    )
 
 
 def test_format_value_numpy_array_len2() -> None:

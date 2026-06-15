@@ -16,26 +16,25 @@ import typing
 import uuid
 from collections.abc import Callable, Sequence
 
+import dask
 import dask.distributed
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
 
-# Qt platform backend for tests:
-# - Prefer xcb when a display is available (e.g. CI under Xvfb)
-# - Fall back to offscreen in truly headless environments
 if "QT_QPA_PLATFORM" not in os.environ:
-    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+    qt_api = os.environ.get("QT_API") or os.environ.get("PYTEST_QT_API")
+    if qt_api is not None and qt_api.lower() == "pyside6":
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    elif sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     else:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-import dask
 import lmfit
 import numexpr
 import numpy as np
 import pooch
 import pytest
 import xarray as xr
-from dask.distributed import LocalCluster
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
@@ -43,7 +42,7 @@ import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._registry as imagetool_manager_registry
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
-from erlab.interactive.utils import _WaitDialog
+from erlab.interactive.utils import _WaitDialog, qt_is_valid
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
@@ -57,6 +56,11 @@ log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
+_DELETED_QT_WRAPPER_PATTERN = re.compile(r"wrapped C/C\+\+ object .* has been deleted")
+
+
+def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
+    return _DELETED_QT_WRAPPER_PATTERN.search(str(exc)) is not None
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -115,7 +119,7 @@ dask.config.set(
 
 def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
     """Return whether pytest-cov is actively collecting coverage."""
-    return pytestconfig.pluginmanager.hasplugin("_cov")
+    return bool(getattr(pytestconfig.option, "cov_source", None))
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -300,10 +304,22 @@ def manager_context() -> Callable[
             if manager is not None:
                 manager._workspace_state.loading_depth += 1
                 try:
-                    QtWidgets.QApplication.sendPostedEvents(None, 0)
-                    QtWidgets.QApplication.processEvents()
+                    qapp = QtWidgets.QApplication.instance()
+                    if (
+                        isinstance(qapp, QtWidgets.QApplication)
+                        and manager._application_quit_filter is not None
+                    ):
+                        qapp.removeEventFilter(manager._application_quit_filter)
+                        manager._application_quit_filter = None
+                    manager._registry_heartbeat_timer.stop()
+                    manager._registry_heartbeat.stop()
                     manager.server.stop(timeout_ms=1000)
                     manager.watcher_server.stop(timeout_ms=1000)
+                    QtWidgets.QApplication.sendPostedEvents(None, 0)
+                    QtWidgets.QApplication.processEvents()
+                    clipboard = QtWidgets.QApplication.clipboard()
+                    if clipboard is not None:
+                        clipboard.clear()
                     manager.remove_all_tools()
                     manager._mark_workspace_clean()
                     manager.close()
@@ -601,13 +617,15 @@ def cover_qthreads(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2286288111
     from qtpy.QtCore import QThread
 
-    base_constructor = QThread.__init__
     coverage_active = _coverage_is_active(pytestconfig)
+    if not coverage_active:
+        return
+
+    base_constructor = QThread.__init__
 
     def run_with_trace(self):  # pragma: no cover
-        if coverage_active:
-            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-            sys.settrace(threading._trace_hook)
+        # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+        sys.settrace(threading._trace_hook)
         self._base_run()
 
     def init_with_trace(self, *args, **kwargs):
@@ -626,16 +644,17 @@ def cover_qthreadpool(monkeypatch, qtbot, pytestconfig):
     base_start = QThreadPool.start
     QThreadPool.globalInstance().setMaxThreadCount(1)
     coverage_active = _coverage_is_active(pytestconfig)
+    if not coverage_active:
+        return
 
     def start_with_trace(self, runnable, *args, **kwargs):
-        if coverage_active:
-            original_run = runnable.run
+        original_run = runnable.run
 
-            def wrapped_run(*a, **kw):
-                sys.settrace(threading._trace_hook)
-                return original_run(*a, **kw)
+        def wrapped_run(*a, **kw):
+            sys.settrace(threading._trace_hook)
+            return original_run(*a, **kw)
 
-            runnable.run = wrapped_run
+        runnable.run = wrapped_run
         return base_start(self, runnable, *args, **kwargs)
 
     monkeypatch.setattr(QThreadPool, "start", start_with_trace)
@@ -670,7 +689,7 @@ def serialize_hdf5_loads():
 
 @pytest.fixture(scope="session", autouse=True)
 def patch_pyqtgraph_boundingrect():
-    """Guard pyqtgraph InfiniteLine boundingRect from None viewboxes during teardown."""
+    """Guard pyqtgraph InfiniteLine boundingRect during Qt teardown."""
     mp = pytest.MonkeyPatch()
     import pyqtgraph as pg
     from qtpy import QtCore
@@ -678,10 +697,22 @@ def patch_pyqtgraph_boundingrect():
     original_br = pg.InfiniteLine.boundingRect
 
     def safe_br(self):
-        vb = self.getViewBox()
+        if not qt_is_valid(self):
+            return QtCore.QRectF()
+        try:
+            vb = self.getViewBox()
+        except RuntimeError as exc:
+            if _is_deleted_qt_wrapper_error(exc):
+                return QtCore.QRectF()
+            raise
         if vb is None:
             return QtCore.QRectF()
-        return original_br(self)
+        try:
+            return original_br(self)
+        except RuntimeError as exc:
+            if _is_deleted_qt_wrapper_error(exc):
+                return QtCore.QRectF()
+            raise
 
     mp.setattr(pg.InfiniteLine, "boundingRect", safe_br, raising=False)
     try:

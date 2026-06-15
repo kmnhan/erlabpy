@@ -16589,6 +16589,7 @@ def test_manager_append_figure_warns_for_uneditable_plot_slices_selection(
 
 
 def test_manager_figures_tab_does_not_set_empty_minimum_width(
+    qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -16610,8 +16611,13 @@ def test_manager_figures_tab_does_not_set_empty_minimum_width(
 
         assert manager.left_tabs.count() == 2
         assert manager.left_tabs.indexOf(manager.figure_tab) == 1
+        manager._show_figure_menu(QtCore.QPoint())
+        menu = manager._figure_menu
+        assert isinstance(menu, QtWidgets.QMenu)
+        qtbot.wait_until(menu.isVisible, timeout=5000)
 
         manager._remove_childtool(figure_uid)
+        qtbot.wait_until(lambda: manager._figure_menu is None, timeout=5000)
 
         assert manager.left_tabs.count() == 1
         assert not hasattr(manager, "figure_tab")
@@ -16621,6 +16627,58 @@ def test_manager_figures_tab_does_not_set_empty_minimum_width(
         manager._figure_selection_changed()
         manager._show_figure_item(QtWidgets.QListWidgetItem("removed"))
         manager._show_figure_menu(QtCore.QPoint())
+
+
+def test_manager_figure_menu_helpers_release_stale_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._close_figure_menu()
+        assert manager._figure_menu is None
+
+        menu = QtWidgets.QMenu(manager)
+        manager._figure_menu = menu
+        manager._close_figure_menu()
+        assert manager._figure_menu is None
+
+        stale_menu = QtWidgets.QMenu(manager)
+        manager._figure_menu = stale_menu
+        original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+        def fake_qt_is_valid(*objects: object) -> bool:
+            if any(obj is stale_menu for obj in objects):
+                return False
+            return original_qt_is_valid(*objects)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
+            manager._close_figure_menu()
+            assert manager._figure_menu is None
+            manager._release_figure_menu(stale_menu)
+
+
+def test_manager_figure_menu_releases_menu_without_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        manager.add_figuretool(FigureComposerTool(data), show=False)
+        monkeypatch.setattr(type(manager.figure_list), "viewport", lambda _self: None)
+
+        manager._show_figure_menu(QtCore.QPoint())
+
+        assert manager._figure_menu is None
 
 
 def _selection_shortcut_sequences(widget: QtWidgets.QWidget) -> set[str]:

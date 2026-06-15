@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import xarray as xr
 from IPython.core.interactiveshell import InteractiveShell
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
@@ -148,6 +148,202 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_console_show_event_defers_kernel_initialization(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.ensure_console_initialized()
+        scheduled: list[
+            tuple[
+                QtCore.QObject,
+                int,
+                Callable[[], None],
+                tuple[QtCore.QObject | None, ...],
+            ]
+        ] = []
+        initialized: list[str] = []
+
+        def fake_single_shot(
+            receiver: QtCore.QObject,
+            msec: int,
+            callback: Callable[[], None],
+            *guards: QtCore.QObject | None,
+        ) -> None:
+            scheduled.append((receiver, msec, callback, guards))
+
+        monkeypatch.setattr(erlab.interactive.utils, "single_shot", fake_single_shot)
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "initialize_kernel",
+            lambda: initialized.append("kernel"),
+        )
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "_update_colors",
+            lambda: initialized.append("colors"),
+        )
+
+        assert not manager.console.eventFilter(
+            manager.console._console_widget,
+            QtCore.QEvent(QtCore.QEvent.Type.Show),
+        )
+
+        assert initialized == []
+        assert len(scheduled) == 1
+        receiver, msec, callback, guards = scheduled[0]
+        assert receiver is manager.console._console_widget
+        assert msec == 0
+        assert guards == (manager.console,)
+
+        callback()
+        assert initialized == ["kernel", "colors"]
+
+
+def test_manager_console_queued_show_callback_ignores_shutdown_kernel(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.ensure_console_initialized()
+        scheduled: list[
+            tuple[
+                QtCore.QObject,
+                int,
+                Callable[[], None],
+                tuple[QtCore.QObject | None, ...],
+            ]
+        ] = []
+        initialized: list[str] = []
+
+        def fake_single_shot(
+            receiver: QtCore.QObject,
+            msec: int,
+            callback: Callable[[], None],
+            *guards: QtCore.QObject | None,
+        ) -> None:
+            scheduled.append((receiver, msec, callback, guards))
+
+        monkeypatch.setattr(erlab.interactive.utils, "single_shot", fake_single_shot)
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "initialize_kernel",
+            lambda: initialized.append("kernel"),
+        )
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "_update_colors",
+            lambda: initialized.append("colors"),
+        )
+
+        assert not manager.console.eventFilter(
+            manager.console._console_widget,
+            QtCore.QEvent(QtCore.QEvent.Type.Show),
+        )
+        assert len(scheduled) == 1
+
+        manager.console._console_widget.shutdown_kernel()
+        scheduled[0][2]()
+
+        assert initialized == []
+
+
+def test_manager_console_shutdown_blocks_late_kernel_start(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.ensure_console_initialized()
+        console_widget = manager.console._console_widget
+
+        console_widget.shutdown_kernel()
+        console_widget.initialize_kernel()
+        console_widget.execute("late_value = 1")
+
+        assert console_widget.kernel_manager.kernel is None
+
+
+def test_manager_console_event_filter_ignores_invalid_events(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.ensure_console_initialized()
+        scheduled: list[object] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "single_shot",
+            lambda *args: scheduled.append(args),
+        )
+
+        assert not manager.console.eventFilter(manager.console._console_widget, None)
+
+        other = QtWidgets.QWidget()
+        qtbot.addWidget(other)
+        assert not manager.console.eventFilter(
+            other,
+            QtCore.QEvent(QtCore.QEvent.Type.Show),
+        )
+
+        assert not manager.console.eventFilter(
+            manager.console._console_widget,
+            QtCore.QEvent(QtCore.QEvent.Type.Hide),
+        )
+        assert scheduled == []
+
+        initialized: list[str] = []
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "initialize_kernel",
+            lambda: initialized.append("kernel"),
+        )
+        monkeypatch.setattr(
+            manager.console._console_widget,
+            "_update_colors",
+            lambda: initialized.append("colors"),
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils, "qt_is_valid", lambda *_objs: False
+        )
+        manager.console._initialize_visible_console()
+        assert initialized == []
+
+        invalid_event = QtCore.QEvent(QtCore.QEvent.Type.Show)
+        original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+        def fake_qt_is_valid(*objects: object) -> bool:
+            if any(obj is invalid_event for obj in objects):
+                return False
+            return original_qt_is_valid(*objects)
+
+        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
+        assert not manager.console.eventFilter(
+            manager.console._console_widget,
+            invalid_event,
+        )
+
+        class DeletedEvent:
+            def type(self) -> QtCore.QEvent.Type:
+                raise RuntimeError("wrapped C/C++ object has been deleted")
+
+        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_objs: True)
+        assert not manager.console.eventFilter(
+            manager.console._console_widget,
+            typing.cast("QtCore.QEvent", DeletedEvent()),
+        )
+        assert scheduled == []
 
 
 def test_manager_console_handles_use_filtered_display_data(

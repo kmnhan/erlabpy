@@ -34,6 +34,7 @@ import os
 import pathlib
 import pickle
 import threading
+import time
 import typing
 import warnings
 
@@ -444,6 +445,19 @@ def _load_paths_and_loader(
 _UNSET = object()
 
 
+def _wait_for_qthread_to_stop(thread: QtCore.QThread, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000
+    app = QtCore.QCoreApplication.instance()
+    while thread.isRunning():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if app is not None and QtCore.QThread.currentThread() == app.thread():
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 10)
+        time.sleep(min(0.01, remaining))
+    return True
+
+
 class _WatcherServer(QtCore.QThread):
     def __init__(self, port: int | None = None) -> None:
         super().__init__()
@@ -481,7 +495,7 @@ class _WatcherServer(QtCore.QThread):
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
         self.send_parameters("", "", "shutdown")
-        if self.isRunning() and not self.wait(timeout_ms):
+        if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Watcher server did not stop within timeout")
 
     def run(self) -> None:
@@ -582,7 +596,7 @@ class _ManagerServer(QtCore.QThread):
         self.stopped.set()
         with QtCore.QMutexLocker(self._mutex):
             self._cv.wakeAll()
-        if self.isRunning() and not self.wait(timeout_ms):
+        if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Manager server did not stop within timeout")
 
     def _wait_for_return_value(self) -> typing.Any:

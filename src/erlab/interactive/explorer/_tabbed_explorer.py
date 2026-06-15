@@ -242,13 +242,27 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
     def _clear_tabs(self) -> None:
         while self.tab_widget.count() > 0:
-            tab = self.tab_widget.widget(0)
-            explorer = self.get_explorer(0)
-            self.tab_widget.removeTab(0)
+            self._discard_tab(0)
+
+    def _discard_tab(self, index: int) -> None:
+        tab = self.tab_widget.widget(index)
+        explorer = self.get_explorer(index)
+        self.tab_widget.removeTab(index)
+        if explorer is not None:
+            explorer._stop_preview_workers()
+            explorer.deleteLater()
+        if tab is not None:
+            tab.deleteLater()
+
+    def _stop_preview_workers(self) -> None:
+        for index in range(self.tab_widget.count()):
+            explorer = self.get_explorer(index)
             if explorer is not None:
-                explorer.deleteLater()
-            if tab is not None:
-                tab.deleteLater()
+                explorer._stop_preview_workers()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._stop_preview_workers()
+        super().closeEvent(event)
 
     @QtCore.Slot()
     def add_tab(self, **kwargs) -> None:
@@ -374,9 +388,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                     if self.get_explorer(i) is index:
                         index = i
                         break
-            self.tab_widget.removeTab(
-                self.tab_widget.currentIndex() if index < 0 else index
-            )
+            self._discard_tab(self.tab_widget.currentIndex() if index < 0 else index)
         self.update_menubar()
         self._emit_workspace_state_changed()
 

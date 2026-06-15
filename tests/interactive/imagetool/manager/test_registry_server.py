@@ -63,6 +63,18 @@ def test_manager_selection_info_single_manager(
         assert info["managers"][0]["is_default"] is True
 
 
+def test_manager_server_threads_are_explicitly_managed(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        assert manager.server.parent() is None
+        assert manager.watcher_server.parent() is None
+        assert manager.server.isRunning()
+        assert manager.watcher_server.isRunning()
+
+
 def test_manager_registry_object_repr_and_mapping(monkeypatch, tmp_path) -> None:
     registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
@@ -1058,6 +1070,54 @@ def test_manager_server_wait_until_bound_errors() -> None:
     with pytest.raises(RuntimeError, match="Manager server failed") as exc_info:
         manager.wait_until_bound(timeout_ms=1)
     assert exc_info.value.__cause__ is manager_error
+
+
+def test_server_thread_stop_wait_is_cooperative(monkeypatch) -> None:
+    class _FinishingThread:
+        def __init__(self) -> None:
+            self.running_checks = 0
+
+        def isRunning(self) -> bool:
+            self.running_checks += 1
+            return self.running_checks == 1
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(manager_server.time, "sleep", sleeps.append)
+
+    finishing_thread = _FinishingThread()
+    assert manager_server._wait_for_qthread_to_stop(finishing_thread, 100)
+    assert finishing_thread.running_checks == 2
+    assert sleeps
+    assert sleeps[0] <= 0.01
+
+    class _RunningThread:
+        def isRunning(self) -> bool:
+            return True
+
+    monotonic_values = iter([0.0, 0.002])
+    monkeypatch.setattr(
+        manager_server.time, "monotonic", lambda: next(monotonic_values)
+    )
+
+    assert not manager_server._wait_for_qthread_to_stop(_RunningThread(), 1)
+
+
+def test_server_stop_logs_when_cooperative_wait_times_out(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=manager_server.__name__)
+    monkeypatch.setattr(
+        manager_server, "_wait_for_qthread_to_stop", lambda *_args: False
+    )
+    monkeypatch.setattr(_WatcherServer, "isRunning", lambda _self: True)
+    monkeypatch.setattr(manager_server._ManagerServer, "isRunning", lambda _self: True)
+
+    watcher_server = _WatcherServer()
+    watcher_server.stop(timeout_ms=1)
+
+    manager = manager_server._ManagerServer()
+    manager.stop(timeout_ms=1)
+
+    assert "Watcher server did not stop within timeout" in caplog.text
+    assert "Manager server did not stop within timeout" in caplog.text
 
 
 def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:

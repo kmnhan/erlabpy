@@ -560,7 +560,10 @@ class _ReprFetcher(QtCore.QRunnable):
             text = erlab.interactive.utils._format_traceback(traceback.format_exc())
         else:
             text = erlab.utils.formatting.format_darr_html(
-                dat, additional_info=[], show_size=self.include_values
+                dat,
+                additional_info=[],
+                show_size=self.include_values,
+                load_values=self.include_values,
             )
             if not self.include_values:
                 dat = None
@@ -904,6 +907,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = {}
         self._loader_extensions_by_name: dict[str, dict[str, typing.Any]] = {}
         self._workspace_state_restoring = False
+        self._preview_threadpool = QtCore.QThreadPool(self)
+        self._preview_threadpool.setExpiryTimeout(0)
 
         self._setup_actions()
         self._setup_ui()
@@ -1279,7 +1284,15 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
+        return self._preview_threadpool
+
+    def _stop_preview_workers(self) -> None:
+        self._preview_threadpool.clear()
+        self._preview_threadpool.waitForDone()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._stop_preview_workers()
+        super().closeEvent(event)
 
     @property
     def _current_selection(self) -> list[pathlib.Path]:

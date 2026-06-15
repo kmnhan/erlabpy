@@ -919,6 +919,7 @@ class _ActionsController:
             self._manager.console.activateWindow()
             self._manager.console.raise_()
             self._manager.console._console_widget._control.setFocus()
+            self._manager.console._initialize_visible_console()
 
     @property
     def _recent_loader_name(self) -> str | None:

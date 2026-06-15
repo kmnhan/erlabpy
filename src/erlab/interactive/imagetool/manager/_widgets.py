@@ -975,12 +975,18 @@ class _ApplicationQuitFilter(QtCore.QObject):
     ) -> bool:
         if event is None:
             return False
-        if event.type() == QtCore.QEvent.Type.Quit:
+        if not erlab.interactive.utils.qt_is_valid(self, self._manager, obj, event):
+            return False
+        try:
+            event_type = event.type()
+        except RuntimeError:
+            return False
+        if event_type == QtCore.QEvent.Type.Quit:
             event.accept()
             self._close_manager_for_application_quit()
             return True
         if (
-            event.type() == QtCore.QEvent.Type.KeyPress
+            event_type == QtCore.QEvent.Type.KeyPress
             and isinstance(event, QtGui.QKeyEvent)
             and event.matches(QtGui.QKeySequence.StandardKey.Quit)
         ):
