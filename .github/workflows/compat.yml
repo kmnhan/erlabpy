@@ -127,17 +127,22 @@ jobs:
             -v
             -o faulthandler_timeout=300
             -o junit_family=legacy
+            -n auto
+            --dist=loadgroup
           )
           uv run pytest \
             "${common_args[@]}" \
-            -n auto \
-            --dist=loadgroup \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml"
+            -m "not gui" \
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml"
+          uv run pytest \
+            "${common_args[@]}" \
+            -m gui \
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-gui.xml"
 
       - name: Upload compatibility JUnit artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}
-          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
+          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}*.xml
           if-no-files-found: error
