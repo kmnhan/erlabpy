@@ -107,9 +107,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
-SERIAL_PREFIX_GROUPS: tuple[tuple[str, str], ...] = (
-    ("tests/interactive/imagetool/", "qt"),
-)
+SERIAL_PREFIX_GROUPS: tuple[str, ...] = ("tests/interactive/imagetool/",)
 SERIAL_TARGET_GROUPS: dict[str, str] = {
     "tests/io/plugins/test_erpes.py": "hdf5-cache",
     "tests/io/plugins/test_maestro.py": "hdf5-cache",
@@ -121,9 +119,7 @@ SERIAL_NODEID_GROUPS: dict[str, str] = {
         "test_tool_window_managed_detached_output_preserves_provenance"
     ): "qt",
 }
-SERIAL_PREFIXES: tuple[str, ...] = tuple(
-    prefix for prefix, _group in SERIAL_PREFIX_GROUPS
-)
+SERIAL_PREFIXES: tuple[str, ...] = SERIAL_PREFIX_GROUPS
 SERIAL_TARGETS: tuple[str, ...] = tuple(SERIAL_TARGET_GROUPS)
 SERIAL_NODEIDS: frozenset[str] = frozenset(SERIAL_NODEID_GROUPS)
 
@@ -242,9 +238,9 @@ def serial_xdist_group(rel_path: str, nodeid: str) -> str | None:
         return SERIAL_NODEID_GROUPS[nodeid]
     if rel_path in SERIAL_TARGET_GROUPS:
         return SERIAL_TARGET_GROUPS[rel_path]
-    for prefix, group in SERIAL_PREFIX_GROUPS:
+    for prefix in SERIAL_PREFIX_GROUPS:
         if rel_path.startswith(prefix):
-            return group
+            return f"qt-{rel_path.removesuffix('.py').replace('/', '-')}"
     return None
 
 

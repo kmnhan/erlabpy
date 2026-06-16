@@ -913,7 +913,9 @@ def test_ptable_launcher_and_search_highlight(
     assert win.inspector.mode_label.text() == "No selection"
     assert win.inspector.copy_values_button.isEnabled() is False
     assert win.inspector.copy_table_button.isEnabled() is False
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
     win.search_edit.setText("gold")
+    qtbot.waitUntil(lambda: win.periodic_table.cards[79].is_search_match)
 
     assert win.selected_atomic_number is None
     assert win.selected_atomic_numbers == ()

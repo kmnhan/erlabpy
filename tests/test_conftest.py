@@ -90,6 +90,21 @@ def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
     assert hook_options["tryfirst"]
 
 
+def test_serial_xdist_group_scopes_imagetool_by_file() -> None:
+    slicer_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/imagetool/test_slicer.py",
+        "tests/interactive/imagetool/test_slicer.py::test_array_rect",
+    )
+    workspace_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/imagetool/manager/test_workspace.py",
+        "tests/interactive/imagetool/manager/test_workspace.py::test_roundtrip",
+    )
+
+    assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
+    assert workspace_group == ("qt-tests-interactive-imagetool-manager-test_workspace")
+    assert slicer_group != workspace_group
+
+
 def test_pyqtgraph_boundingrect_ignores_deleted_infinite_line(qtbot) -> None:
     import pyqtgraph as pg
     from qtpy import QtCore, QtWidgets
