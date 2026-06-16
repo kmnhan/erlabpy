@@ -12,6 +12,7 @@ import os
 import pathlib
 import stat
 import sys
+import threading
 import time
 import traceback
 import typing
@@ -39,6 +40,7 @@ _TRANSLATE_MIME_TYPES = {
     "application/octet-stream": "Unknown",
     "text/csv": "CSV Document",
 }
+_PREVIEW_WORKER_STOP_TIMEOUT_MS = 5000
 
 
 class DataExplorerTabState(pydantic.BaseModel):
@@ -524,6 +526,7 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
 
 class _ReprFetcherSignals(QtCore.QObject):
     fetched = QtCore.Signal(str, str, object)
+    finished = QtCore.Signal(object)
 
 
 class _ReprFetcher(QtCore.QRunnable):
@@ -545,11 +548,19 @@ class _ReprFetcher(QtCore.QRunnable):
         self.file_path = pathlib.Path(file_path)
         self.load_method = load_method
         self.include_values = include_values
+        self._aborted = threading.Event()
+
+    def abort(self) -> None:
+        self._aborted.set()
 
     @QtCore.Slot()
     def run(self) -> None:
+        if self._aborted.is_set():
+            self.signals.finished.emit(self)
+            return
         file_path = str(self.file_path)
         dat = None
+        text: str | None = None
         try:
             dat = self.load_method(
                 file_path,
@@ -559,12 +570,20 @@ class _ReprFetcher(QtCore.QRunnable):
         except Exception:
             text = erlab.interactive.utils._format_traceback(traceback.format_exc())
         else:
+            if self._aborted.is_set():
+                return
             text = erlab.utils.formatting.format_darr_html(
-                dat, additional_info=[], show_size=self.include_values
+                dat,
+                additional_info=[],
+                show_size=self.include_values,
+                load_values=self.include_values,
             )
             if not self.include_values:
                 dat = None
-        self.signals.fetched.emit(file_path, text, dat)
+        finally:
+            if text is not None and not self._aborted.is_set():
+                self.signals.fetched.emit(file_path, text, dat)
+            self.signals.finished.emit(self)
 
 
 class _LoaderInfoModel(QtCore.QAbstractTableModel):
@@ -904,6 +923,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = {}
         self._loader_extensions_by_name: dict[str, dict[str, typing.Any]] = {}
         self._workspace_state_restoring = False
+        self._preview_threadpool = QtCore.QThreadPool(self)
+        self._preview_threadpool.setExpiryTimeout(0)
+        self._preview_workers: set[_ReprFetcher] = set()
+        self._preview_stopping = False
 
         self._setup_actions()
         self._setup_ui()
@@ -1279,7 +1302,35 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
+        return self._preview_threadpool
+
+    def _stop_preview_workers(
+        self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
+    ) -> bool:
+        self._preview_stopping = True
+        for worker in tuple(self._preview_workers):
+            worker.abort()
+        self._preview_threadpool.clear()
+        if self._preview_threadpool.waitForDone(timeout_ms):
+            self._preview_workers.clear()
+            return True
+        return False
+
+    def _delete_when_preview_workers_done(self) -> None:
+        self._preview_threadpool.clear()
+        if self._preview_threadpool.activeThreadCount() > 0:
+            erlab.interactive.utils.single_shot(
+                self,
+                100,
+                self._delete_when_preview_workers_done,
+            )
+            return
+        self._preview_workers.clear()
+        self.deleteLater()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._stop_preview_workers()
+        super().closeEvent(event)
 
     @property
     def _current_selection(self) -> list[pathlib.Path]:
@@ -1370,6 +1421,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _on_selection_changed(self) -> None:
+        if self._preview_stopping:
+            return
         selected_files: list[pathlib.Path] = self._current_selection
         n_sel = len(selected_files)
         self._to_manager_act.setEnabled(n_sel >= 1)
@@ -1385,6 +1438,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 include_values=self._preview_check.isChecked(),
             )
             worker.signals.fetched.connect(self._show_file_info)
+            worker.signals.finished.connect(self._preview_worker_finished)
+            self._preview_workers.add(worker)
             self._threadpool.start(worker)
 
         else:
@@ -1397,14 +1452,21 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _show_loading_text_if_needed(self) -> None:
-        if not self._up_to_date:
+        if not self._preview_stopping and not self._up_to_date:
             self._preview.setVisible(False)
             self._text_edit.setText(self.TEXT_LOADING)
+
+    @QtCore.Slot(object)
+    def _preview_worker_finished(self, worker: object) -> None:
+        if isinstance(worker, _ReprFetcher):
+            self._preview_workers.discard(worker)
 
     @QtCore.Slot(str, str, object)
     def _show_file_info(
         self, file_path: str, text: str, data: xr.DataArray | None
     ) -> None:
+        if self._preview_stopping or not erlab.interactive.utils.qt_is_valid(self):
+            return
         selected_files: list[pathlib.Path] = self._current_selection
         if len(selected_files) == 1 and selected_files[0] == pathlib.Path(file_path):
             # Update text and restore scroll position

@@ -1324,6 +1324,30 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
     assert not np.shares_memory(replayed.data, data.data)
 
 
+def test_replay_graph_disables_numbagg_only_during_execution() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Record option",
+            code=(
+                "derived = data_0.copy()\n"
+                "derived.attrs['use_numbagg_during_replay'] = "
+                "xr.get_options()['use_numbagg']"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
+
+    with xr.set_options(use_numbagg=True):
+        replayed = _replay_graph.execute_replay_graph(graph)
+        assert xr.get_options()["use_numbagg"] is True
+
+    assert replayed.attrs["use_numbagg_during_replay"] is False
+
+
 def test_replay_graph_display_skips_whole_array_rename(
     tmp_path: pathlib.Path,
 ) -> None:

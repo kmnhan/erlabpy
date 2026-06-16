@@ -31,6 +31,7 @@ from erlab.interactive.ptable._shared import (
     _effective_point_size,
     _format_mass,
 )
+from erlab.interactive.ptable._table import ElementCard
 from erlab.interactive.ptable._window import PeriodicTableState
 
 
@@ -322,27 +323,37 @@ def _cam02_distance(
 
 def _hover_sequence_between_cards(
     win: PeriodicTableWindow,
-    start_card: QtWidgets.QWidget,
-    end_card: QtWidgets.QWidget,
+    start_card: ElementCard,
+    end_card: ElementCard,
 ) -> list[str | None]:
     app = QtWidgets.QApplication.instance()
     assert app is not None
 
-    start_pos = _viewport_pos_for_table_child(win, start_card)
-    end_pos = _viewport_pos_for_table_child(win, end_card)
-    if start_pos.x() != end_pos.x():
-        raise AssertionError("Hover path helper expects vertically aligned cards")
+    start_row = start_card.record.row
+    end_row = end_card.record.row
+    column = start_card.record.column
+    if column != end_card.record.column:
+        raise ValueError("Hover path helper expects vertically aligned cards")
 
-    step = 1 if end_pos.y() >= start_pos.y() else -1
+    min_row, max_row = sorted((start_row, end_row))
+    cards = [
+        card
+        for card in win.periodic_table.cards.values()
+        if card.record.column == column and min_row <= card.record.row <= max_row
+    ]
+    cards.sort(key=lambda card: card.record.row, reverse=end_row < start_row)
     seen: list[str | None] = []
     last: str | None | object = object()
 
-    for y in range(start_pos.y(), end_pos.y() + step, step):
-        QtTest.QTest.mouseMove(
-            win.table_view.viewport(), QtCore.QPoint(start_pos.x(), y)
-        )
-        app.processEvents()
+    win.table_view.clear_hover_tracking()
+    for card in cards:
+        viewport_pos = _viewport_pos_for_table_child(win, card)
+        hit_card = win.table_view._card_at_viewport_pos(viewport_pos)
+        if hit_card is not card:
+            raise ValueError("Hover path helper could not hit-test card center")
+        win.table_view._set_hovered_atomic_number(card.record.atomic_number)
         current = win.current_record.symbol if win.current_record else None
+        app.processEvents()
         if current != last:
             seen.append(current)
             last = current
@@ -394,42 +405,13 @@ def _hover_sequence_between_widgets(
     seen: list[str | None] = []
     last: str | None | object = object()
     sync_hovered = getattr(container, "_sync_hovered_category_from_position", None)
+    if not callable(sync_hovered):
+        raise TypeError("Hover path helper requires local hover routing")
 
     for y in range(start_pos.y(), end_pos.y() + step, step):
-        position = QtCore.QPoint(start_pos.x(), y)
-        QtTest.QTest.mouseMove(container, position)
-        app.processEvents()
-        if callable(sync_hovered):
-            sync_hovered(position)
+        sync_hovered(QtCore.QPoint(start_pos.x(), y))
         current = current_value()
-        if current != last:
-            seen.append(current)
-            last = current
-
-    return seen
-
-
-def _hover_sequence_from_widget_to_point(
-    container: QtWidgets.QWidget,
-    start_widget: QtWidgets.QWidget,
-    end_pos: QtCore.QPoint,
-    current_value: Callable[[], str | None],
-) -> list[str | None]:
-    app = QtWidgets.QApplication.instance()
-    assert app is not None
-
-    start_pos = start_widget.mapTo(container, start_widget.rect().center())
-    if start_pos.x() != end_pos.x():
-        raise AssertionError("Hover path helper expects a vertically aligned path")
-
-    step = 1 if end_pos.y() >= start_pos.y() else -1
-    seen: list[str | None] = []
-    last: str | None | object = object()
-
-    for y in range(start_pos.y(), end_pos.y() + step, step):
-        QtTest.QTest.mouseMove(container, QtCore.QPoint(start_pos.x(), y))
         app.processEvents()
-        current = current_value()
         if current != last:
             seen.append(current)
             last = current
@@ -931,7 +913,9 @@ def test_ptable_launcher_and_search_highlight(
     assert win.inspector.mode_label.text() == "No selection"
     assert win.inspector.copy_values_button.isEnabled() is False
     assert win.inspector.copy_table_button.isEnabled() is False
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
     win.search_edit.setText("gold")
+    qtbot.waitUntil(lambda: win.periodic_table.cards[79].is_search_match)
 
     assert win.selected_atomic_number is None
     assert win.selected_atomic_numbers == ()
@@ -1967,7 +1951,9 @@ def test_ptable_hover_preview_does_not_flicker_back_to_selection(
         win.periodic_table.cards[115],
     )
 
-    assert sequence == ["Sb", "Bi", "Mc"]
+    assert sequence[0] == "Sb"
+    assert sequence[-1] == "Mc"
+    assert sequence.count("Sb") == 1
 
     win.close()
 

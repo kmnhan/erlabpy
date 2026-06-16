@@ -392,6 +392,30 @@ def _format_array_values(val: npt.NDArray) -> str:
     return f"min {mn} max {mx}"
 
 
+def _format_array_metadata(coord: xr.DataArray) -> str:
+    dtype = str(coord.dtype)
+    if coord.shape:
+        shape = " x ".join(str(size) for size in coord.shape)
+        return f"{dtype} [{shape}]"
+    return f"{dtype} scalar"
+
+
+def _format_coord_values(coord: xr.DataArray, *, load_values: bool) -> str:
+    if not load_values:
+        return _format_array_metadata(coord)
+
+    values = None
+    try:
+        values = coord.values
+        return _format_array_values(values)
+    except Exception:
+        if values is not None:
+            flat_values = np.asarray(values).ravel()
+            if flat_values.size != 0:
+                return f'["{flat_values[0]!s}",  ... , "{flat_values[-1]!s}"]'
+        return _format_array_metadata(coord)
+
+
 def _format_coord_key(key: Hashable, is_dim: bool) -> str:
     return format_html_accent(key, bold=is_dim, em_space=True)
 
@@ -433,6 +457,7 @@ def format_darr_html(
     *,
     show_size: bool = True,
     show_summary: bool = True,
+    load_values: bool = True,
     additional_info: Iterable[str] | None = None,
 ) -> str:
     """Make a simple HTML representation of a DataArray.
@@ -446,6 +471,9 @@ def format_darr_html(
     show_summary
         Whether to include the DataArray name, dimensions, and optional size before the
         coordinates and attributes.
+    load_values
+        Whether coordinate values may be loaded while formatting coordinate summaries.
+        Disable this for metadata-only previews of lazily loaded arrays.
     additional_info
         Additional information to include in the representation. Each item in the list
         is added as a separate paragraph.
@@ -470,16 +498,11 @@ def format_darr_html(
     for key, coord in darr.coords.items():
         is_dim: bool = key in darr.dims
 
-        try:
-            value_repr = _format_array_values(coord.values)
-        except Exception:
-            value_repr = f'["{coord.values[0]!s}",  ... , "{coord.values[-1]!s}"]'
-
         coord_rows.append(
             [
                 _format_coord_key(key, is_dim),
                 _format_coord_dims(coord),
-                value_repr,
+                _format_coord_values(coord, load_values=load_values),
             ]
         )
     out += format_html_table(coord_rows)

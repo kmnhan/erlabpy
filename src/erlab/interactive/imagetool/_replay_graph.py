@@ -1371,6 +1371,17 @@ def execute_replay_graph(
     *,
     cache: dict[str, xr.DataArray] | None = None,
 ) -> xr.DataArray:
+    # Replay runs from manager actions; avoid optional native reduction accelerators
+    # that can crash PySide6/Python 3.14 while Qt threads are alive.
+    with xr.set_options(use_numbagg=False):
+        return _execute_replay_graph(graph, cache=cache)
+
+
+def _execute_replay_graph(
+    graph: ReplayGraph,
+    *,
+    cache: dict[str, xr.DataArray] | None = None,
+) -> xr.DataArray:
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
 

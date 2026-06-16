@@ -107,8 +107,31 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
-SERIAL_PREFIXES: tuple[str, ...] = ("tests/interactive/imagetool/",)
-SERIAL_TARGETS: tuple[str, ...] = ()
+SERIAL_PREFIX_GROUPS: tuple[tuple[str, str | None], ...] = (
+    ("tests/interactive/imagetool/manager/", None),
+    ("tests/interactive/imagetool/", None),
+)
+SERIAL_TARGET_GROUPS: dict[str, str] = {
+    "tests/io/plugins/test_erpes.py": "hdf5-cache",
+    "tests/io/plugins/test_maestro.py": "hdf5-cache",
+}
+SERIAL_NODEID_GROUPS: dict[str, str] = {
+    "tests/interactive/test_explorer.py::test_explorer_general": (
+        "qt-tests-interactive-test_explorer"
+    ),
+    "tests/interactive/imagetool/test_watcher.py::test_watcher_real": (
+        "qt-tests-interactive-imagetool-test_watcher"
+    ),
+    (
+        "tests/interactive/test_utils.py::"
+        "test_tool_window_managed_detached_output_preserves_provenance"
+    ): "qt-tests-interactive-test_utils",
+}
+SERIAL_PREFIXES: tuple[str, ...] = tuple(
+    prefix for prefix, _group in SERIAL_PREFIX_GROUPS
+)
+SERIAL_TARGETS: tuple[str, ...] = tuple(SERIAL_TARGET_GROUPS)
+SERIAL_NODEIDS: frozenset[str] = frozenset(SERIAL_NODEID_GROUPS)
 
 COMPAT_NODEIDS: frozenset[str] = frozenset(
     target for target in COMPAT_TARGETS if "::" in target
@@ -214,6 +237,23 @@ def is_gui_path(rel_path: str) -> bool:
 
 def is_serial_path(rel_path: str) -> bool:
     return rel_path in SERIAL_TARGETS or rel_path.startswith(SERIAL_PREFIXES)
+
+
+def is_serial_nodeid(nodeid: str) -> bool:
+    return nodeid in SERIAL_NODEIDS
+
+
+def serial_xdist_group(rel_path: str, nodeid: str) -> str | None:
+    if nodeid in SERIAL_NODEID_GROUPS:
+        return SERIAL_NODEID_GROUPS[nodeid]
+    if rel_path in SERIAL_TARGET_GROUPS:
+        return SERIAL_TARGET_GROUPS[rel_path]
+    for prefix, group_name in SERIAL_PREFIX_GROUPS:
+        if rel_path.startswith(prefix):
+            if group_name is not None:
+                return group_name
+            return f"qt-{rel_path.removesuffix('.py').replace('/', '-')}"
+    return None
 
 
 def is_compat_path(rel_path: str) -> bool:

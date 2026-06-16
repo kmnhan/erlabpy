@@ -12,7 +12,6 @@ import collections
 import contextlib
 import enum
 import fnmatch
-import functools
 import importlib
 import inspect
 import itertools
@@ -296,18 +295,39 @@ def _application_quit_requested() -> bool:
 
 
 class _CloseShortcutEventFilter(QtCore.QObject):
-    def __init__(self, widget: QtWidgets.QWidget, callback: Callable[[], None]) -> None:
-        super().__init__(widget)
-        self._widget = widget
-        self._callback = callback
+    def __init__(
+        self,
+        widget: QtWidgets.QWidget,
+        callback: Callable[[], None],
+        parent: QtCore.QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._widget_ref = weakref.ref(widget)
+        self._callback_ref: weakref.WeakMethod[Callable[[], None]] | None
+        self._callback: Callable[[], None] | None
+        try:
+            self._callback_ref = weakref.WeakMethod(callback)
+        except TypeError:
+            self._callback_ref = None
+            self._callback = callback
+        else:
+            self._callback = None
+
+    def _callback_or_none(self) -> Callable[[], None] | None:
+        if self._callback_ref is None:
+            return self._callback
+        return self._callback_ref()
 
     def eventFilter(
         self,
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
+        widget = self._widget_ref()
         if (
             event is None
+            or widget is None
+            or not qt_is_valid(widget)
             or event.type() != QtCore.QEvent.Type.KeyPress
             or not isinstance(event, QtGui.QKeyEvent)
         ):
@@ -316,8 +336,8 @@ class _CloseShortcutEventFilter(QtCore.QObject):
         focused = watched if isinstance(watched, QtWidgets.QWidget) else None
         if (
             focused is None
-            or not self._widget.isVisible()
-            or (focused is not self._widget and focused.window() is not self._widget)
+            or not widget.isVisible()
+            or (focused is not widget and focused.window() is not widget)
         ):
             return False
 
@@ -335,7 +355,10 @@ class _CloseShortcutEventFilter(QtCore.QObject):
         if not close_shortcut:
             return False
 
-        self._callback()
+        callback = self._callback_or_none()
+        if callback is None:
+            return False
+        callback()
         event.accept()
         return True
 
@@ -352,7 +375,12 @@ def _install_close_shortcut(
 ) -> QtWidgets.QShortcut:
     """Install robust Ctrl+W handling on a widget and its child widgets."""
     if callback is None:
-        callback = functools.partial(_hide_or_close_with_manager, widget)
+        widget_ref = weakref.ref(widget)
+
+        def callback() -> None:
+            target = widget_ref()
+            if target is not None and qt_is_valid(target):
+                _hide_or_close_with_manager(target)
 
     if isinstance(widget, QtWidgets.QMainWindow):
         widget.menuBar()
@@ -362,9 +390,15 @@ def _install_close_shortcut(
 
     application = QtWidgets.QApplication.instance()
     if isinstance(application, QtWidgets.QApplication):
-        shortcut_filter = _CloseShortcutEventFilter(widget, callback)
+        shortcut_filter = _CloseShortcutEventFilter(widget, callback, application)
         application.installEventFilter(shortcut_filter)
-        widget.destroyed.connect(lambda: application.removeEventFilter(shortcut_filter))
+
+        def _remove_shortcut_filter(*_args: object) -> None:
+            if qt_is_valid(application, shortcut_filter):
+                application.removeEventFilter(shortcut_filter)
+                shortcut_filter.deleteLater()
+
+        widget.destroyed.connect(_remove_shortcut_filter)
         widget._erlab_close_shortcut_refs = (shortcut, shortcut_filter)  # type: ignore[attr-defined]
     else:
         widget._erlab_close_shortcut_refs = (shortcut,)  # type: ignore[attr-defined]

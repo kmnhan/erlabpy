@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
@@ -997,6 +998,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
         self._refreshing_figure_list = False
+        self._figure_menu: QtWidgets.QMenu | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy", self)
         self._metadata_copy_selected_action.setObjectName(
             "manager_copy_selected_code_action"
@@ -1109,6 +1111,7 @@ class ImageToolManager(_ImageToolManagerBase):
             for widget in dict(self._additional_windows).values():
                 widget.close()
                 widget.deleteLater()
+            _desktop.uninstall_macos_dock_menu(self)
 
             logger.debug("Removing event filters...")
             qapp = QtWidgets.QApplication.instance()
@@ -1346,6 +1349,7 @@ class ImageToolManager(_ImageToolManagerBase):
             add_shortcut("Enter", self.show_selected)
 
     def _destroy_figures_ui(self) -> None:
+        self._close_figure_menu()
         figure_tab = getattr(self, "figure_tab", None)
         if figure_tab is None:
             return
@@ -1752,7 +1756,10 @@ class ImageToolManager(_ImageToolManagerBase):
     def _show_figure_menu(self, position: QtCore.QPoint) -> None:
         if not hasattr(self, "figure_list"):
             return
+        self._close_figure_menu()
         menu = QtWidgets.QMenu("Figures", self.figure_list)
+        self._figure_menu = menu
+        menu.aboutToHide.connect(lambda *, popup=menu: self._release_figure_menu(popup))
         menu.addAction(self.show_action)
         menu.addAction(self.hide_action)
         menu.addSeparator()
@@ -1760,8 +1767,27 @@ class ImageToolManager(_ImageToolManagerBase):
         menu.addAction(self.remove_action)
         menu.addAction(self.rename_action)
         viewport = self.figure_list.viewport()
-        if viewport is not None:  # pragma: no branch
-            menu.popup(viewport.mapToGlobal(position))
+        if viewport is None:  # pragma: no cover
+            self._release_figure_menu(menu)
+            return
+        menu.popup(viewport.mapToGlobal(position))
+
+    def _close_figure_menu(self) -> None:
+        menu = self._figure_menu
+        if menu is None:
+            return
+        if not erlab.interactive.utils.qt_is_valid(menu):
+            self._figure_menu = None
+            return
+        menu.close()
+        if self._figure_menu is menu:
+            self._release_figure_menu(menu)
+
+    def _release_figure_menu(self, menu: QtWidgets.QMenu) -> None:
+        if self._figure_menu is menu:
+            self._figure_menu = None
+        if erlab.interactive.utils.qt_is_valid(menu):
+            menu.deleteLater()
 
     @staticmethod
     def _figure_all_axes(nrows: int, ncols: int) -> tuple[tuple[int, int], ...]:

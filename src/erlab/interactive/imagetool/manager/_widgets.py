@@ -975,12 +975,18 @@ class _ApplicationQuitFilter(QtCore.QObject):
     ) -> bool:
         if event is None:
             return False
-        if event.type() == QtCore.QEvent.Type.Quit:
+        if not erlab.interactive.utils.qt_is_valid(self, self._manager, obj, event):
+            return False
+        try:
+            event_type = event.type()
+        except RuntimeError:
+            return False
+        if event_type == QtCore.QEvent.Type.Quit:
             event.accept()
             self._close_manager_for_application_quit()
             return True
         if (
-            event.type() == QtCore.QEvent.Type.KeyPress
+            event_type == QtCore.QEvent.Type.KeyPress
             and isinstance(event, QtGui.QKeyEvent)
             and event.matches(QtGui.QKeySequence.StandardKey.Quit)
         ):
@@ -1452,10 +1458,39 @@ class _WidgetsController:
 
     def _stop_servers(self) -> None:
         """Stop the server thread properly."""
-        if self._manager.server.isRunning():  # pragma: no branch
-            self._manager.server.stop()
-        if self._manager.watcher_server.isRunning():  # pragma: no branch
-            self._manager.watcher_server.stop()
+        server = self._manager.server
+        if erlab.interactive.utils.qt_is_valid(server):
+            if server.isRunning():  # pragma: no branch
+                server.stop()
+            if not server.isRunning():
+                for signal, slot in (
+                    (server.sigReceived, self._manager._data_recv),
+                    (server.sigLoadRequested, self._manager._data_load),
+                    (server.sigReplaceRequested, self._manager._data_replace),
+                    (server.sigDataRequested, self._manager._send_imagetool_data),
+                    (server.sigWatchInfoRequested, self._manager._send_watch_info),
+                    (self._manager._sigReplyData, server.set_return_value),
+                    (server.sigRemoveIndex, self._manager.remove_imagetool),
+                    (server.sigShowIndex, self._manager.show_imagetool),
+                    (server.sigRemoveUID, self._manager._remove_watched),
+                    (server.sigShowUID, self._manager._show_watched),
+                    (server.sigUnwatchUID, self._manager._data_unwatch),
+                    (server.sigWatchedVarChanged, self._manager._data_watched_update),
+                ):
+                    with contextlib.suppress(TypeError, RuntimeError):
+                        signal.disconnect(slot)
+                server.deleteLater()
+
+        watcher_server = self._manager.watcher_server
+        if erlab.interactive.utils.qt_is_valid(watcher_server):
+            if watcher_server.isRunning():  # pragma: no branch
+                watcher_server.stop()
+            if not watcher_server.isRunning():
+                with contextlib.suppress(TypeError, RuntimeError):
+                    self._manager._sigWatchedDataEdited.disconnect(
+                        watcher_server.send_parameters
+                    )
+                watcher_server.deleteLater()
 
     def open_settings(self) -> None:
         """Open the settings dialog for the ImageTool manager."""

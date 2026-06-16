@@ -7,35 +7,34 @@ import logging
 import os
 import pathlib
 import re
-import socket
 import sys
 import tempfile
 import threading
 import time
 import typing
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
+import dask
 import dask.distributed
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
 
-# Qt platform backend for tests:
-# - Prefer xcb when a display is available (e.g. CI under Xvfb)
-# - Fall back to offscreen in truly headless environments
 if "QT_QPA_PLATFORM" not in os.environ:
-    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+    qt_api = os.environ.get("QT_API") or os.environ.get("PYTEST_QT_API")
+    if qt_api is not None and qt_api.lower() == "pyside6":
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    elif sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     else:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-import dask
 import lmfit
 import numexpr
 import numpy as np
 import pooch
 import pytest
+import requests
 import xarray as xr
-from dask.distributed import LocalCluster
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
@@ -43,7 +42,7 @@ import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._registry as imagetool_manager_registry
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
-from erlab.interactive.utils import _WaitDialog
+from erlab.interactive.utils import _WaitDialog, qt_is_valid
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
@@ -53,19 +52,36 @@ DATA_COMMIT_HASH = "a90b37654184b9bf3378b032646c9c5b6231a0fa"
 DATA_KNOWN_HASH = "de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
+DATA_RETRIEVE_ATTEMPTS = 4
+"""Maximum attempts for transient test data download failures."""
+
+DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS = 20 * 60
+"""Maximum time to wait for another worker to finish downloading test data."""
+
 log = logging.getLogger(__name__)
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
+_TEST_OPTIONS_MANAGED_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH_TEST_MANAGED"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
+_DELETED_QT_WRAPPER_PATTERN = re.compile(r"wrapped C/C\+\+ object .* has been deleted")
+
+
+def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
+    return _DELETED_QT_WRAPPER_PATTERN.search(str(exc)) is not None
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if _TEST_OPTIONS_ENV_VAR not in os.environ:
-        settings_path = (
-            pathlib.Path(tempfile.gettempdir())
-            / f"erlabpy-test-interactive-options-{os.getpid()}-{uuid.uuid4().hex}.ini"
+    if (
+        _TEST_OPTIONS_ENV_VAR not in os.environ
+        or os.environ.get(_TEST_OPTIONS_MANAGED_ENV_VAR) == "1"
+    ):
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        settings_path = pathlib.Path(tempfile.gettempdir()) / (
+            "erlabpy-test-interactive-options-"
+            f"{worker_id}-{os.getpid()}-{uuid.uuid4().hex}.ini"
         )
         os.environ[_TEST_OPTIONS_ENV_VAR] = str(settings_path)
+        os.environ[_TEST_OPTIONS_MANAGED_ENV_VAR] = "1"
         _TEST_INTERACTIVE_OPTIONS_PATHS.append(settings_path)
 
 
@@ -86,7 +102,7 @@ _CI_TEST_GROUPS = _load_ci_test_groups_module()
 is_compat_nodeid = _CI_TEST_GROUPS.is_compat_nodeid
 is_compat_path = _CI_TEST_GROUPS.is_compat_path
 is_gui_path = _CI_TEST_GROUPS.is_gui_path
-is_serial_path = _CI_TEST_GROUPS.is_serial_path
+serial_xdist_group = _CI_TEST_GROUPS.serial_xdist_group
 
 
 def _qt_msg_filter(msg_type, context, message):
@@ -115,17 +131,55 @@ dask.config.set(
 
 def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
     """Return whether pytest-cov is actively collecting coverage."""
-    return pytestconfig.pluginmanager.hasplugin("_cov")
+    return bool(getattr(pytestconfig.option, "cov_source", None))
 
 
+@contextlib.contextmanager
+def _test_data_download_lock(lock_path: pathlib.Path) -> Iterator[None]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS
+    lock_fd: int | None = None
+    while lock_fd is None:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            try:
+                lock_age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                continue
+            if lock_age > DATA_DOWNLOAD_LOCK_TIMEOUT_SECONDS:
+                with contextlib.suppress(OSError):
+                    lock_path.unlink()
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for erlabpy test data lock {lock_path}"
+                ) from None
+            time.sleep(0.25)
+    try:
+        os.write(lock_fd, f"{os.getpid()}\n".encode())
+        yield
+    finally:
+        os.close(lock_fd)
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
+
+
+def _test_data_dir_ready(path: pathlib.Path) -> bool:
+    return all((path / dirname).is_dir() for dirname in ("da30", "erpes", "merlin"))
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         rel_path = pathlib.Path(item.path).resolve().relative_to(REPO_ROOT).as_posix()
 
         if is_gui_path(rel_path):
             item.add_marker(pytest.mark.gui)
-        if is_serial_path(rel_path):
+        serial_group = serial_xdist_group(rel_path, item.nodeid)
+        if serial_group is not None:
             item.add_marker(pytest.mark.serial)
+            item.add_marker(pytest.mark.xdist_group(serial_group))
         if is_compat_path(rel_path) or is_compat_nodeid(item.nodeid):
             item.add_marker(pytest.mark.compat)
 
@@ -134,6 +188,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     for settings_path in _TEST_INTERACTIVE_OPTIONS_PATHS:
         with contextlib.suppress(OSError):
             settings_path.unlink()
+
+
+@pytest.fixture(autouse=True)
+def _restore_interactive_options_between_tests() -> Iterator[None]:
+    erlab.interactive.options.restore()
+    try:
+        yield
+    finally:
+        erlab.interactive.options.restore()
 
 
 @pytest.fixture(scope="session")
@@ -160,14 +223,50 @@ def test_data_dir() -> pathlib.Path:
     path = os.getenv("ERLAB_TEST_DATA_DIR", None)
     if path is None:
         cache_folder = pooch.os_cache("erlabpy")
-        pooch.retrieve(
-            "https://api.github.com/repos/kmnhan/erlabpy-data/tarball/"
-            + DATA_COMMIT_HASH,
-            known_hash=DATA_KNOWN_HASH,
-            path=cache_folder,
-            processor=pooch.Untar(extract_dir=""),
-        )
         path = cache_folder / f"kmnhan-erlabpy-data-{DATA_COMMIT_HASH[:7]}"
+        data_url = (
+            "https://codeload.github.com/kmnhan/erlabpy-data/legacy.tar.gz/"
+            + DATA_COMMIT_HASH
+        )
+        if not _test_data_dir_ready(path):
+            lock_path = cache_folder / f".erlabpy-data-{DATA_COMMIT_HASH[:7]}.lock"
+            with _test_data_download_lock(lock_path):
+                if not _test_data_dir_ready(path):
+                    for attempt in range(1, DATA_RETRIEVE_ATTEMPTS + 1):
+                        try:
+                            pooch.retrieve(
+                                data_url,
+                                known_hash=DATA_KNOWN_HASH,
+                                path=cache_folder,
+                                processor=pooch.Untar(extract_dir=""),
+                            )
+                            break
+                        except (
+                            requests.exceptions.ConnectionError,
+                            requests.exceptions.HTTPError,
+                            requests.exceptions.Timeout,
+                        ) as exc:
+                            if isinstance(exc, requests.exceptions.HTTPError):
+                                response = exc.response
+                                if response is not None and response.status_code < 500:
+                                    raise
+                            if attempt == DATA_RETRIEVE_ATTEMPTS:
+                                raise
+                            delay = 2 ** (attempt - 1)
+                            log.warning(
+                                "Failed to retrieve erlabpy test data from %s on "
+                                "attempt %d/%d; retrying in %d seconds.",
+                                data_url,
+                                attempt,
+                                DATA_RETRIEVE_ATTEMPTS,
+                                delay,
+                                exc_info=True,
+                            )
+                            time.sleep(delay)
+                    if not _test_data_dir_ready(path):
+                        raise FileNotFoundError(
+                            f"Retrieved erlabpy test data is incomplete: {path}"
+                        )
 
     return pathlib.Path(path)
 
@@ -247,19 +346,13 @@ def gold_fine():
 def manager_context() -> Callable[
     ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
 ]:
-    def _unused_port_pair() -> tuple[int, int]:
-        sockets: list[socket.socket] = []
-        try:
-            for _ in range(2):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.bind(("127.0.0.1", 0))
-                sockets.append(sock)
-            return typing.cast("int", sockets[0].getsockname()[1]), typing.cast(
-                "int", sockets[1].getsockname()[1]
+    def _drain_qt_events(iterations: int = 1) -> None:
+        for _ in range(iterations):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
             )
-        finally:
-            for sock in sockets:
-                sock.close()
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.processEvents()
 
     @contextlib.contextmanager
     def _ctx(
@@ -275,7 +368,6 @@ def manager_context() -> Callable[
             validate=False
         )
 
-        port, port_watch = _unused_port_pair()
         registry_path = (
             pathlib.Path(tempfile.gettempdir())
             / f"erlab-test-manager-{os.getpid()}-{time.time_ns()}.json"
@@ -285,12 +377,13 @@ def manager_context() -> Callable[
             registry_path.suffix + ".lock"
         )
         imagetool_manager_registry.clear_default_manager()
-        imagetool_manager.PORT = port
-        imagetool_manager.PORT_WATCH = port_watch
-        imagetool_manager_server.PORT = port
-        imagetool_manager_server.PORT_WATCH = port_watch
+        imagetool_manager.PORT = 0
+        imagetool_manager.PORT_WATCH = 0
+        imagetool_manager_server.PORT = 0
+        imagetool_manager_server.PORT_WATCH = 0
         imagetool_manager._always_use_socket = use_socket
 
+        _drain_qt_events()
         imagetool_manager.main(execute=False)
 
         try:
@@ -299,32 +392,60 @@ def manager_context() -> Callable[
             manager = imagetool_manager._manager_instance
             if manager is not None:
                 manager._workspace_state.loading_depth += 1
+                server = manager.server
+                watcher_server = manager.watcher_server
                 try:
-                    QtWidgets.QApplication.sendPostedEvents(None, 0)
-                    QtWidgets.QApplication.processEvents()
-                    manager.server.stop(timeout_ms=1000)
-                    manager.watcher_server.stop(timeout_ms=1000)
+
+                    def _thread_is_running(thread: object) -> bool:
+                        with contextlib.suppress(RuntimeError):
+                            return qt_is_valid(thread) and thread.isRunning()
+                        return False
+
+                    def _stop_thread(thread: object) -> None:
+                        if qt_is_valid(thread):
+                            thread.stop(timeout_ms=1000)
+
+                    qapp = QtWidgets.QApplication.instance()
+                    if (
+                        isinstance(qapp, QtWidgets.QApplication)
+                        and manager._application_quit_filter is not None
+                    ):
+                        qapp.removeEventFilter(manager._application_quit_filter)
+                        manager._application_quit_filter = None
+                    manager._registry_heartbeat_timer.stop()
+                    manager._registry_heartbeat.stop()
+                    _stop_thread(server)
+                    _stop_thread(watcher_server)
+                    _drain_qt_events()
+                    clipboard = QtWidgets.QApplication.clipboard()
+                    if clipboard is not None:
+                        clipboard.clear()
                     manager.remove_all_tools()
                     manager._mark_workspace_clean()
                     manager.close()
                     deadline = time.perf_counter() + 5.0
                     while (
-                        manager.server.isRunning() or manager.watcher_server.isRunning()
+                        _thread_is_running(server) or _thread_is_running(watcher_server)
                     ) and time.perf_counter() < deadline:
-                        QtWidgets.QApplication.sendPostedEvents(None, 0)
-                        QtWidgets.QApplication.processEvents()
+                        _drain_qt_events()
                         time.sleep(0.01)
-                    if manager.server.isRunning():
-                        manager.server.stop(timeout_ms=1000)
-                    if manager.watcher_server.isRunning():
-                        manager.watcher_server.stop(timeout_ms=1000)
-                    manager.deleteLater()
-                    for _ in range(3):
-                        QtWidgets.QApplication.sendPostedEvents(None, 0)
-                        QtWidgets.QApplication.processEvents()
+                    if _thread_is_running(server):
+                        _stop_thread(server)
+                    if _thread_is_running(watcher_server):
+                        _stop_thread(watcher_server)
                 finally:
-                    manager._workspace_state.loading_depth -= 1
-                    manager._mark_workspace_clean()
+                    if qt_is_valid(manager):
+                        manager._workspace_state.loading_depth -= 1
+                        manager._mark_workspace_clean()
+                if qt_is_valid(manager):
+                    manager.deleteLater()
+                    delete_deadline = time.perf_counter() + 1.0
+                    while (
+                        qt_is_valid(manager) and time.perf_counter() < delete_deadline
+                    ):
+                        _drain_qt_events()
+                        time.sleep(0.01)
+                _drain_qt_events(iterations=3)
             imagetool_manager._manager_instance = None
             imagetool_manager._always_use_socket = False
             imagetool_manager.PORT = original_port
@@ -601,13 +722,15 @@ def cover_qthreads(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2286288111
     from qtpy.QtCore import QThread
 
-    base_constructor = QThread.__init__
     coverage_active = _coverage_is_active(pytestconfig)
+    if not coverage_active:
+        return
+
+    base_constructor = QThread.__init__
 
     def run_with_trace(self):  # pragma: no cover
-        if coverage_active:
-            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-            sys.settrace(threading._trace_hook)
+        # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+        sys.settrace(threading._trace_hook)
         self._base_run()
 
     def init_with_trace(self, *args, **kwargs):
@@ -626,16 +749,17 @@ def cover_qthreadpool(monkeypatch, qtbot, pytestconfig):
     base_start = QThreadPool.start
     QThreadPool.globalInstance().setMaxThreadCount(1)
     coverage_active = _coverage_is_active(pytestconfig)
+    if not coverage_active:
+        return
 
     def start_with_trace(self, runnable, *args, **kwargs):
-        if coverage_active:
-            original_run = runnable.run
+        original_run = runnable.run
 
-            def wrapped_run(*a, **kw):
-                sys.settrace(threading._trace_hook)
-                return original_run(*a, **kw)
+        def wrapped_run(*a, **kw):
+            sys.settrace(threading._trace_hook)
+            return original_run(*a, **kw)
 
-            runnable.run = wrapped_run
+        runnable.run = wrapped_run
         return base_start(self, runnable, *args, **kwargs)
 
     monkeypatch.setattr(QThreadPool, "start", start_with_trace)
@@ -670,7 +794,7 @@ def serialize_hdf5_loads():
 
 @pytest.fixture(scope="session", autouse=True)
 def patch_pyqtgraph_boundingrect():
-    """Guard pyqtgraph InfiniteLine boundingRect from None viewboxes during teardown."""
+    """Guard pyqtgraph InfiniteLine boundingRect during Qt teardown."""
     mp = pytest.MonkeyPatch()
     import pyqtgraph as pg
     from qtpy import QtCore
@@ -678,10 +802,22 @@ def patch_pyqtgraph_boundingrect():
     original_br = pg.InfiniteLine.boundingRect
 
     def safe_br(self):
-        vb = self.getViewBox()
+        if not qt_is_valid(self):
+            return QtCore.QRectF()
+        try:
+            vb = self.getViewBox()
+        except RuntimeError as exc:
+            if _is_deleted_qt_wrapper_error(exc):
+                return QtCore.QRectF()
+            raise
         if vb is None:
             return QtCore.QRectF()
-        return original_br(self)
+        try:
+            return original_br(self)
+        except RuntimeError as exc:
+            if _is_deleted_qt_wrapper_error(exc):
+                return QtCore.QRectF()
+            raise
 
     mp.setattr(pg.InfiniteLine, "boundingRect", safe_br, raising=False)
     try:

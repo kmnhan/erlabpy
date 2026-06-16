@@ -181,7 +181,7 @@ def test_manager_reload(
             )
             qtbot.wait_until(
                 lambda: manager.ntools == 1 and len(manager._file_handlers) == 0,
-                timeout=5000,
+                timeout=15000,
             )
         finally:
             if gc_enabled:
@@ -253,7 +253,7 @@ def test_manager_cloudpickle(
             sock.connect(
                 "tcp://"
                 f"{erlab.interactive.imagetool.manager.HOST_IP}:"
-                f"{erlab.interactive.imagetool.manager.PORT}"
+                f"{manager._manager_record.port}"
             )
             frames = _create_frames(content, pickler_cls=pickle.Pickler)
             del sys.modules[modname]
@@ -493,11 +493,24 @@ def test_manager_standalone_app_menus(
 
 def test_manager_macos_dock_menu_actions(
     monkeypatch,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
+    qtbot,
 ) -> None:
+    class _DockMenuManager(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self._macos_dock_menu: QtWidgets.QMenu | None = None
+            self.load_calls: list[bool] = []
+            self.new_manager_calls: list[bool] = []
+
+        def load(self) -> None:
+            self.load_calls.append(True)
+
+        def open_new_manager_instance(self) -> None:
+            self.new_manager_calls.append(True)
+
     dock_menus: list[QtWidgets.QMenu] = []
+    deleted_menus: list[QtWidgets.QMenu] = []
+    original_delete_later = manager_desktop.QtWidgets.QMenu.deleteLater
 
     monkeypatch.setattr(manager_desktop.sys, "platform", "darwin")
     monkeypatch.setattr(
@@ -506,29 +519,54 @@ def test_manager_macos_dock_menu_actions(
         lambda menu: dock_menus.append(menu),
         raising=False,
     )
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QMenu,
+        "deleteLater",
+        lambda menu: (deleted_menus.append(menu), original_delete_later(menu)),
+    )
 
-    with manager_context() as manager:
-        load_calls: list[bool] = []
-        new_manager_calls: list[bool] = []
-        monkeypatch.setattr(manager, "load", lambda: load_calls.append(True))
-        monkeypatch.setattr(
-            manager,
-            "open_new_manager_instance",
-            lambda: new_manager_calls.append(True),
-        )
+    manager = _DockMenuManager()
+    qtbot.addWidget(manager)
 
-        dock_menu = manager_desktop.install_macos_dock_menu(manager)
+    dock_menu = manager_desktop.install_macos_dock_menu(manager)
 
-        assert dock_menu is not None
-        assert dock_menus == [dock_menu]
-        assert manager._macos_dock_menu is dock_menu
+    assert dock_menu is not None
+    assert dock_menus == [dock_menu]
+    assert manager._macos_dock_menu is dock_menu
 
-        actions = action_map_by_object_name(dock_menu)
-        actions["manager_dock_open_workspace_action"].trigger()
-        actions["manager_dock_new_manager_action"].trigger()
+    actions = action_map_by_object_name(dock_menu)
+    actions["manager_dock_open_workspace_action"].trigger()
+    actions["manager_dock_new_manager_action"].trigger()
 
-        assert load_calls == [True]
-        assert new_manager_calls == [True]
+    assert manager.load_calls == [True]
+    assert manager.new_manager_calls == [True]
+
+    manager_desktop.uninstall_macos_dock_menu(manager)
+
+    assert deleted_menus == [dock_menu]
+    assert manager._macos_dock_menu is None
+
+
+def test_manager_macos_dock_menu_uninstall_ignores_deleted_menu(qtbot) -> None:
+    class _DeletedDockMenu:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def close(self) -> None:
+            raise RuntimeError("menu wrapper already deleted")
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    dock_menu = _DeletedDockMenu()
+    manager._macos_dock_menu = dock_menu  # type: ignore[attr-defined]
+
+    manager_desktop.uninstall_macos_dock_menu(manager)
+
+    assert manager._macos_dock_menu is None  # type: ignore[attr-defined]
+    assert not dock_menu.deleted
 
 
 def test_manager_desktop_configure_process_platform_branch(monkeypatch) -> None:

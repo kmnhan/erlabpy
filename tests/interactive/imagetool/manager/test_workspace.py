@@ -696,48 +696,19 @@ def test_manager_workspace_load_warns_for_unavailable_colormap(
     missing = "__erlab_missing_colormap__"
     dialogs: list[typing.Any] = []
 
-    class _DummySignal:
-        def connect(self, *args, **kwargs) -> None:
-            pass
-
-    class _DummyButtonBox:
-        def addButton(self, *args, **kwargs) -> None:
-            pass
-
-    class _RecordingMessageDialog:
+    class _RecordingMessageDialog(QtWidgets.QDialog):
         def __init__(self, parent=None, **kwargs) -> None:
+            super().__init__(parent)
             self.parent = parent
             self.kwargs = kwargs
-            self._button_box = _DummyButtonBox()
-            self.finished = _DummySignal()
+            self._button_box = QtWidgets.QDialogButtonBox(self)
             dialogs.append(self)
 
         def exec(self):
             return QtWidgets.QDialog.DialogCode.Accepted
 
-        def setModal(self, value: bool) -> None:
-            pass
-
-        def windowFlags(self):
-            return QtCore.Qt.WindowType.Widget
-
-        def setWindowFlags(self, flags) -> None:
-            pass
-
         def text(self) -> str:
             return str(self.kwargs.get("text", ""))
-
-        def close(self) -> None:
-            pass
-
-        def show(self) -> None:
-            pass
-
-        def raise_(self) -> None:
-            pass
-
-        def activateWindow(self) -> None:
-            pass
 
     monkeypatch.setattr(
         erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
@@ -5418,7 +5389,7 @@ def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> No
     )
 
 
-def test_application_quit_filter_routes_quit_events(qtbot) -> None:
+def test_application_quit_filter_routes_quit_events(qtbot, monkeypatch) -> None:
     manager = QtWidgets.QWidget()
     qtbot.addWidget(manager)
     calls: list[str] = []
@@ -5447,6 +5418,31 @@ def test_application_quit_filter_routes_quit_events(qtbot) -> None:
 
     assert event_filter.eventFilter(None, key_event)
     assert key_event.isAccepted()
+    assert calls == ["close", "close"]
+
+    invalid_obj = QtCore.QObject()
+    invalid_event = QtCore.QEvent(QtCore.QEvent.Type.Quit)
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+    def fake_qt_is_valid(*objects: object) -> bool:
+        if any(obj is invalid_obj or obj is invalid_event for obj in objects):
+            return False
+        return original_qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
+    assert not event_filter.eventFilter(
+        invalid_obj,
+        QtCore.QEvent(QtCore.QEvent.Type.Quit),
+    )
+    assert not event_filter.eventFilter(None, invalid_event)
+    assert calls == ["close", "close"]
+
+    class DeletedEvent:
+        def type(self) -> QtCore.QEvent.Type:
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *objects: True)
+    assert not event_filter.eventFilter(None, DeletedEvent())
     assert calls == ["close", "close"]
 
 
@@ -6620,7 +6616,6 @@ def test_manager_save_and_wait_dialog_error_paths(
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
     with manager_context() as manager:
         wait_dialog = manager._open_workspace_save_wait_dialog(manager)
-        qtbot.addWidget(wait_dialog)
         assert wait_dialog.windowTitle() == "Saving Workspace"
         assert typing.cast("QtWidgets.QProgressDialog", wait_dialog).labelText() == (
             "Saving workspace..."
@@ -8034,11 +8029,13 @@ def test_manager_workspace_restore_event_drain_avoids_event_loop(
         calls: list[str] = []
         emitter = _Emitter(manager)
         receiver = _Receiver(manager)
+        deferred_widget = QtWidgets.QWidget(manager)
         emitter.sigRecord.connect(
             receiver.record,
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
         emitter.sigRecord.emit()
+        deferred_widget.deleteLater()
 
         with monkeypatch.context() as restore_drain_patch:
             restore_drain_patch.setattr(
@@ -8051,6 +8048,29 @@ def test_manager_workspace_restore_event_drain_avoids_event_loop(
             manager._drain_workspace_restore_events()
 
     assert calls == ["record"]
+    assert not erlab.interactive.utils.qt_is_valid(deferred_widget)
+
+
+def test_manager_workspace_save_drain_does_not_force_deferred_delete(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager, monkeypatch.context() as save_drain_patch:
+        event_types: list[int] = []
+        save_drain_patch.setattr(
+            QtWidgets.QApplication,
+            "sendPostedEvents",
+            lambda _receiver, event_type: event_types.append(event_type),
+        )
+        save_drain_patch.setattr(
+            QtWidgets.QApplication, "processEvents", lambda *_args, **_kwargs: None
+        )
+
+        manager._drain_workspace_deferred_events()
+
+        assert event_types == [int(QtCore.QEvent.Type.MetaCall.value)] * 3
 
 
 def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(

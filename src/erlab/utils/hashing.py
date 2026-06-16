@@ -61,7 +61,7 @@ def _hash_numeric_array(arr: npt.NDArray, *, sample_max: int, blocks: int) -> in
     if sample.dtype.kind in ("M", "m"):
         # datetime, timedelta
         return _digest_bytes(memoryview(sample.tobytes()).cast("B"))
-    return _digest_bytes(memoryview(sample).cast("B"))
+    return _digest_bytes(sample.tobytes())
 
 
 def _hash_object_array(arr: npt.NDArray, *, sample_max: int) -> int:

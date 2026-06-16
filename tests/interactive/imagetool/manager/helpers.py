@@ -32,6 +32,96 @@ logger = logging.getLogger(__name__)
 CONSOLE_HELPER_OFFSET = 2.5
 
 
+class InMemoryClipboard(QtCore.QObject):
+    Mode = QtGui.QClipboard.Mode
+
+    dataChanged = QtCore.Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._mime_data = QtCore.QMimeData()
+        self._pixmap = QtGui.QPixmap()
+
+    def clear(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> None:
+        if mode != self.Mode.Clipboard:
+            return
+        self._mime_data = QtCore.QMimeData()
+        self._pixmap = QtGui.QPixmap()
+        self.dataChanged.emit()
+
+    def setMimeData(
+        self,
+        mime_data: QtCore.QMimeData,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> None:
+        if mode != self.Mode.Clipboard:
+            return
+        self._mime_data = mime_data
+        self._pixmap = QtGui.QPixmap()
+        self.dataChanged.emit()
+
+    def mimeData(
+        self,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> QtCore.QMimeData:
+        if mode != self.Mode.Clipboard:
+            return QtCore.QMimeData()
+        return self._mime_data
+
+    def setText(self, text: str, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> None:
+        if mode != self.Mode.Clipboard:
+            return
+        mime_data = QtCore.QMimeData()
+        mime_data.setText(text)
+        self.setMimeData(mime_data)
+
+    def text(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> str:
+        if mode != self.Mode.Clipboard:
+            return ""
+        return self._mime_data.text()
+
+    def setPixmap(
+        self,
+        pixmap: QtGui.QPixmap,
+        mode: QtGui.QClipboard.Mode = Mode.Clipboard,
+    ) -> None:
+        if mode != self.Mode.Clipboard:
+            return
+        self._mime_data = QtCore.QMimeData()
+        self._pixmap = QtGui.QPixmap(pixmap)
+        self.dataChanged.emit()
+
+    def pixmap(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> QtGui.QPixmap:
+        if mode != self.Mode.Clipboard:
+            return QtGui.QPixmap()
+        return QtGui.QPixmap(self._pixmap)
+
+
+def install_in_memory_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> InMemoryClipboard:
+    clipboard = InMemoryClipboard()
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "clipboard",
+        staticmethod(lambda: clipboard),
+    )
+    return clipboard
+
+
+def activate_widget_shortcut(widget: QtWidgets.QWidget, sequence: str) -> None:
+    for shortcut in widget.findChildren(QtWidgets.QShortcut):
+        if shortcut.parent() is not widget:
+            continue
+        shortcut_sequence = shortcut.key().toString(
+            QtGui.QKeySequence.SequenceFormat.PortableText
+        )
+        if shortcut_sequence == sequence:
+            shortcut.activated.emit()
+            return
+    raise AssertionError(f"{sequence!r} shortcut is not registered on {widget!r}")
+
+
 def console_helper_dependency(value):
     return value + CONSOLE_HELPER_OFFSET
 

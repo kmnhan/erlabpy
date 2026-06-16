@@ -1817,6 +1817,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
         self._namespace = namespace
         self._kernel_banner_default: str = ""
         self._kernel_initializing = False
+        self._kernel_shutdown_requested = False
         self._erlab_loader_name: str | None = None
         self._erlab_data_dir: str | None = None
         self._erlab_io_hooks_registered = False
@@ -1844,6 +1845,8 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
         self._persist_erlab_io_state()
 
     def initialize_kernel(self) -> None:
+        if self._kernel_shutdown_requested:
+            return
         if self.kernel_manager.kernel or self._kernel_initializing:
             return
         self._kernel_initializing = True
@@ -1876,6 +1879,8 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     def execute(
         self, source: str | None = None, hidden: bool = False, interactive: bool = False
     ) -> None:
+        if self._kernel_shutdown_requested:
+            return
         if not self.kernel_manager.kernel and not self._kernel_initializing:
             self.initialize_kernel()
         super().execute(source, hidden=hidden, interactive=interactive)
@@ -1892,6 +1897,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
 
     @QtCore.Slot()
     def shutdown_kernel(self) -> None:
+        self._kernel_shutdown_requested = True
         if self.kernel_manager.kernel:
             if self._tools_namespace is not None:
                 self._tools_namespace.unbind_shell()
@@ -2016,17 +2022,34 @@ class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
         # Start kernel when console is shown
         self._console_widget.installEventFilter(self)
 
+    def _initialize_visible_console(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self, self._console_widget):
+            return
+        if self._console_widget._kernel_shutdown_requested:
+            return
+        self._console_widget.initialize_kernel()
+        self._console_widget._update_colors()
+
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
-        if (
-            hasattr(self, "_console_widget")
-            and obj == self._console_widget
-            and event is not None
-            and event.type() == QtCore.QEvent.Type.Show
-        ):
-            self._console_widget.initialize_kernel()
-            self._console_widget._update_colors()
+        if not hasattr(self, "_console_widget") or event is None:
+            return False
+        if obj is not self._console_widget:
+            return super().eventFilter(obj, event)
+        if not erlab.interactive.utils.qt_is_valid(self, self._console_widget, event):
+            return False
+        try:
+            event_type = event.type()
+        except RuntimeError:
+            return False
+        if event_type == QtCore.QEvent.Type.Show:
+            erlab.interactive.utils.single_shot(
+                self._console_widget,
+                0,
+                self._initialize_visible_console,
+                self,
+            )
         return super().eventFilter(obj, event)
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:

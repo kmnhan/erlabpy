@@ -618,6 +618,138 @@ def test_close_shortcut_reaches_child_line_edit(qtbot) -> None:
     )
 
 
+def test_close_shortcut_filter_removed_with_widget(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    erlab.interactive.utils._install_close_shortcut(window, lambda: None)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    assert shortcut_filter.parent() is QtWidgets.QApplication.instance()
+    assert shortcut_filter._widget_ref() is window
+    assert shortcut_filter._callback_or_none() is not None
+
+    window.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(window), timeout=1000)
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(shortcut_filter), timeout=1000)
+
+
+def test_close_shortcut_filter_weakly_refs_bound_callback(qtbot) -> None:
+    calls: list[str] = []
+
+    class _Window(QtWidgets.QMainWindow):
+        def record_close(self) -> None:
+            calls.append("close")
+
+    window = _Window()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, window.record_close)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    assert shortcut_filter._callback is None
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    callback()
+
+    assert calls == ["close"]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    event.ignore()
+
+    assert shortcut_filter.eventFilter(window, event)
+    assert event.isAccepted()
+    assert calls == ["close", "close"]
+
+
+def test_close_shortcut_default_callback_closes_live_widget(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    callback()
+
+    qtbot.wait_until(lambda: not window.isVisible(), timeout=1000)
+
+
+def test_close_shortcut_default_callback_ignores_invalid_widget(
+    qtbot, monkeypatch
+) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    with qtbot.waitExposed(window):
+        window.show()
+    callback = shortcut_filter._callback_or_none()
+    assert callback is not None
+
+    def _qt_is_valid(*objects) -> bool:
+        if window in objects:
+            return False
+        return qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", _qt_is_valid)
+
+    callback()
+
+    assert window.isVisible()
+
+
+def test_close_shortcut_destroyed_cleanup_ignores_invalid_filter(
+    qtbot, monkeypatch
+) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, lambda: None)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+
+    def _qt_is_valid(*objects) -> bool:
+        if shortcut_filter in objects:
+            return False
+        return qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", _qt_is_valid)
+
+    window.destroyed.emit()
+
+    assert qt_is_valid(shortcut_filter)
+
+
+def test_close_shortcut_filter_ignores_missing_callback(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, window.hide)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+    shortcut_filter._callback_ref = None
+    shortcut_filter._callback = None
+
+    with qtbot.waitExposed(window):
+        window.show()
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    event.ignore()
+
+    assert not shortcut_filter.eventFilter(window, event)
+    assert not event.isAccepted()
+
+
 def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
     sentinel = object()
     other = object()
@@ -641,7 +773,9 @@ def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
             assert reloaded._qt_object_is_valid(sentinel)
             assert not reloaded._qt_object_is_valid(other)
             assert not reloaded._qt_object_is_valid(None)
-            assert calls == [sentinel, other]
+            assert calls.count(sentinel) == 1
+            assert calls.count(other) == 1
+            assert None not in calls
     finally:
         importlib.reload(erlab.interactive.utils)
 

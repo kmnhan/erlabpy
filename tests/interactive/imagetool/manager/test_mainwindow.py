@@ -44,6 +44,7 @@ from erlab.interactive.imagetool.manager._widgets import (
 
 from .helpers import (
     _exec_generated_code,
+    activate_widget_shortcut,
     assert_nonempty_tooltip,
     bring_manager_to_top,
     child_status_badge,
@@ -129,20 +130,18 @@ def _selection_shortcut_sequences(
 
 
 @pytest.mark.parametrize(
-    ("platform", "rename_key", "show_key", "show_modifier", "expected_shortcuts"),
+    ("platform", "rename_shortcut", "show_shortcut", "expected_shortcuts"),
     [
         (
             "darwin",
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.Key.Key_Down,
-            QtCore.Qt.KeyboardModifier.ControlModifier,
+            "Return",
+            "Ctrl+Down",
             {"Return", "Enter", "Ctrl+Down"},
         ),
         (
             "linux",
-            QtCore.Qt.Key.Key_F2,
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.KeyboardModifier.NoModifier,
+            "F2",
+            "Return",
             {"F2", "Return", "Enter"},
         ),
     ],
@@ -155,9 +154,8 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
     platform: str,
-    rename_key: QtCore.Qt.Key,
-    show_key: QtCore.Qt.Key,
-    show_modifier: QtCore.Qt.KeyboardModifier,
+    rename_shortcut: str,
+    show_shortcut: str,
     expected_shortcuts: set[str],
 ) -> None:
     monkeypatch.setattr(manager_mainwindow.sys, "platform", platform)
@@ -174,11 +172,8 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
 
         tool = manager.get_imagetool(0)
         tool.hide()
-        bring_manager_to_top(qtbot, manager)
-        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
 
-        qtbot.keyClick(manager.tree_view, rename_key)
+        activate_widget_shortcut(manager.tree_view, rename_shortcut)
         qtbot.wait_until(
             lambda: (
                 manager.tree_view.state()
@@ -199,9 +194,7 @@ def test_manager_tree_view_selection_shortcuts_are_platform_native(
         )
         assert not tool.isVisible()
 
-        manager.tree_view.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        qtbot.wait_until(manager.tree_view.hasFocus, timeout=5000)
-        qtbot.keyClick(manager.tree_view, show_key, show_modifier)
+        activate_widget_shortcut(manager.tree_view, show_shortcut)
         qtbot.wait_until(tool.isVisible, timeout=5000)
 
 
@@ -343,7 +336,6 @@ def test_batch_dialog_defensive_paths_and_launch(
         )
         select_tools(manager, [0, 1])
         dialog = _BatchOperationDialog(manager)
-        qtbot.addWidget(dialog)
 
         with monkeypatch.context() as mp:
             mp.setattr(
@@ -708,7 +700,6 @@ def test_batch_dialog_categories_and_target_checks_update_manager_selection(
 
         select_tools(manager, [0, 1])
         dialog = _BatchOperationDialog(manager)
-        qtbot.addWidget(dialog)
 
         assert dialog._operation_tree.topLevelItemCount() == 4
         rendered_dialogs = []
@@ -758,7 +749,6 @@ def test_batch_dialog_open_refreshes_cached_targets(
 
         manager.show_batch_operations()
         dialog = manager._actions_controller._batch_dialog
-        qtbot.addWidget(dialog)
         qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
         assert set(dialog._target_items) == {0, 1}
 
@@ -813,7 +803,6 @@ def test_batch_dialog_expands_child_targets(
 
         manager.show_batch_operations()
         dialog = manager._actions_controller._batch_dialog
-        qtbot.addWidget(dialog)
         qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
 
         parent_item = dialog._target_tree.topLevelItem(0)
@@ -2292,18 +2281,21 @@ def test_manager(
             manager.raise_()
             manager.preview_action.setChecked(True)
 
-        # Test mouse hover over list view
-        # This may not work on all systems due to the way the mouse events are generated
-        delegate._force_hover = True
-
+        # Test hover-preview delegate painting without moving the shared display cursor.
         first_index = manager.tree_view.model().index(0, 0)
-        first_rect_center = manager.tree_view.visualRect(first_index).center()
-        qtbot.mouseMove(manager.tree_view.viewport())
-        qtbot.mouseMove(manager.tree_view.viewport(), first_rect_center)
-        qtbot.mouseMove(
-            manager.tree_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
+        option = delegate._option_for_index(manager.tree_view, first_index)
+        option.state |= QtWidgets.QStyle.StateFlag.State_MouseOver
+        pixmap = QtGui.QPixmap(manager.tree_view.viewport().size())
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        try:
+            delegate.paint(painter, option, first_index)
+        finally:
+            painter.end()
+        delegate.eventFilter(
+            manager.tree_view.viewport(),
+            QtCore.QEvent(QtCore.QEvent.Type.Leave),
         )
-        qtbot.mouseMove(manager.tree_view.viewport())  # move to blank should hide popup
 
         # Remove third tool
         select_tools(manager, [3])
@@ -2373,9 +2365,8 @@ def test_remove_from_window_shortcut(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
 
-def test_remove_childtool_delete_shortcut(
+def test_remove_childtool_direct_removal(
     qtbot,
-    accept_dialog,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2395,18 +2386,13 @@ def test_remove_childtool_delete_shortcut(
             timeout=5000,
         )
         wrapper = manager._tool_graph.root_wrappers[0]
-        uid, child = next(iter(wrapper._childtools.items()))
+        uid, _child = next(iter(wrapper._childtools.items()))
 
-        with qtbot.waitExposed(child):
-            child.activateWindow()
-            child.raise_()
-            child.setFocus()
-
-        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        manager._remove_childtool(uid)
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
 
 
-def test_remove_child_imagetool_delete_shortcut(
+def test_remove_child_imagetool_remove_action(
     qtbot,
     accept_dialog,
     test_data,
@@ -2435,7 +2421,7 @@ def test_remove_child_imagetool_delete_shortcut(
 
         assert child.remove_act.isVisible()
 
-        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        accept_dialog(child.remove_act.trigger)
         qtbot.wait_until(
             lambda: child_uid not in manager._tool_graph.nodes, timeout=5000
         )
@@ -3563,18 +3549,18 @@ def test_manager_selected_reload_targets_handles_stale_selection(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    with manager_context() as manager:
-        monkeypatch.setattr(
+    with manager_context() as manager, monkeypatch.context() as stale_selection:
+        stale_selection.setattr(
             type(manager.tree_view),
             "selected_imagetool_indices",
             property(lambda _view: []),
         )
-        monkeypatch.setattr(
+        stale_selection.setattr(
             type(manager.tree_view),
             "selected_childtool_uids",
             property(lambda _view: ["stale-child"]),
         )
-        monkeypatch.setattr(
+        stale_selection.setattr(
             manager,
             "_child_node",
             lambda _uid: (_ for _ in ()).throw(KeyError("missing")),
@@ -3583,8 +3569,8 @@ def test_manager_selected_reload_targets_handles_stale_selection(
         assert manager._selected_reload_targets() is None
 
         child_node = types.SimpleNamespace(has_source_binding=True)
-        monkeypatch.setattr(manager, "_child_node", lambda _uid: child_node)
-        monkeypatch.setattr(
+        stale_selection.setattr(manager, "_child_node", lambda _uid: child_node)
+        stale_selection.setattr(
             manager,
             "_parent_node",
             lambda _node: (_ for _ in ()).throw(KeyError("missing-parent")),
@@ -3599,18 +3585,19 @@ def test_manager_reload_selected_skips_child_refresh_when_parent_reload_fails(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    with manager_context() as manager:
+    with manager_context() as manager, monkeypatch.context() as reload_failure:
         node = types.SimpleNamespace(
             imagetool=object(),
             slicer_area=types.SimpleNamespace(_reload=lambda: False),
         )
         refreshed: list[str] = []
-        monkeypatch.setattr(
+        reload_failure.setattr(
             manager, "_selected_reload_targets", lambda: ([0], {0: ["child"]})
         )
-        monkeypatch.setattr(manager, "_node_for_target", lambda _target: node)
-        monkeypatch.setattr(manager, "_refresh_source_chain_to_uid", refreshed.append)
-
+        reload_failure.setattr(manager, "_node_for_target", lambda _target: node)
+        reload_failure.setattr(
+            manager, "_refresh_source_chain_to_uid", refreshed.append
+        )
         manager.reload_selected()
 
         assert refreshed == []

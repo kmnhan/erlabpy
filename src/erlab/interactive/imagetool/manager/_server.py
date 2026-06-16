@@ -26,6 +26,7 @@ __all__ = [
 ]
 
 
+import contextlib
 import errno
 import html
 import io
@@ -34,6 +35,7 @@ import os
 import pathlib
 import pickle
 import threading
+import time
 import typing
 import warnings
 
@@ -444,6 +446,17 @@ def _load_paths_and_loader(
 _UNSET = object()
 
 
+def _wait_for_qthread_to_stop(thread: QtCore.QThread, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000
+    while thread.isRunning():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if thread.wait(min(10, max(1, int(remaining * 1000)))):
+            return True
+    return True
+
+
 class _WatcherServer(QtCore.QThread):
     def __init__(self, port: int | None = None) -> None:
         super().__init__()
@@ -455,8 +468,7 @@ class _WatcherServer(QtCore.QThread):
         self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
-        self._mutex = QtCore.QMutex()
-        self._cv = QtCore.QWaitCondition()
+        self._condition = threading.Condition()
 
     def wait_until_bound(self, timeout_ms: int = 5000) -> int:
         if not self._bound_event.wait(timeout_ms / 1000):
@@ -474,14 +486,14 @@ class _WatcherServer(QtCore.QThread):
         uid: str,
         event: typing.Literal["updated", "removed", "shutdown"],
     ) -> None:
-        with QtCore.QMutexLocker(self._mutex):
+        with self._condition:
             self._ret_val = (varname, uid, event)
-            self._cv.wakeAll()
+            self._condition.notify_all()
 
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
         self.send_parameters("", "", "shutdown")
-        if self.isRunning() and not self.wait(timeout_ms):
+        if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Watcher server did not stop within timeout")
 
     def run(self) -> None:
@@ -508,11 +520,9 @@ class _WatcherServer(QtCore.QThread):
             logger.debug("Watcher server is listening on port %s...", self.port)
 
             while not self.stopped.is_set():
-                with QtCore.QMutexLocker(self._mutex):
-                    while self._ret_val is _UNSET:
-                        self._cv.wait(self._mutex, 100)
-                        if self.stopped.is_set():
-                            break
+                with self._condition:
+                    while self._ret_val is _UNSET and not self.stopped.is_set():
+                        self._condition.wait(0.1)
                     if self._ret_val is _UNSET:
                         continue
                     varname, uid, event = self._ret_val
@@ -560,8 +570,7 @@ class _ManagerServer(QtCore.QThread):
         self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
-        self._mutex = QtCore.QMutex()
-        self._cv = QtCore.QWaitCondition()
+        self._condition = threading.Condition()
 
     def wait_until_bound(self, timeout_ms: int = 5000) -> int:
         if not self._bound_event.wait(timeout_ms / 1000):
@@ -574,23 +583,41 @@ class _ManagerServer(QtCore.QThread):
 
     @QtCore.Slot(object)
     def set_return_value(self, value: typing.Any) -> None:
-        with QtCore.QMutexLocker(self._mutex):
+        with self._condition:
             self._ret_val = value
-            self._cv.wakeAll()
+            self._condition.notify_all()
 
     def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped.set()
-        with QtCore.QMutexLocker(self._mutex):
-            self._cv.wakeAll()
-        if self.isRunning() and not self.wait(timeout_ms):
+        self.requestInterruption()
+        with self._condition:
+            self._condition.notify_all()
+        self._wake_receiver()
+        if self.isRunning() and not _wait_for_qthread_to_stop(self, timeout_ms):
             logger.warning("Manager server did not stop within timeout")
 
+    def _wake_receiver(self) -> None:
+        if self._bound_port is None:
+            return
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.SNDTIMEO, 100)
+        sock.setsockopt(zmq.RCVTIMEO, 100)
+        try:
+            sock.connect(f"tcp://127.0.0.1:{self._bound_port}")
+            _send_multipart(sock, {"packet_type": "command", "command": "ping"})
+            with contextlib.suppress(zmq.Again, zmq.ZMQError):
+                sock.recv_multipart()
+        except Exception:
+            logger.debug("Failed to wake manager server receive loop", exc_info=True)
+        finally:
+            sock.close()
+
     def _wait_for_return_value(self) -> typing.Any:
-        with QtCore.QMutexLocker(self._mutex):
-            while self._ret_val is _UNSET:
-                if self.stopped.is_set():
-                    break
-                self._cv.wait(self._mutex, 100)
+        with self._condition:
+            while self._ret_val is _UNSET and not self.stopped.is_set():
+                self._condition.wait(0.1)
             value = self._ret_val
             self._ret_val = _UNSET
             return value
@@ -605,6 +632,8 @@ class _ManagerServer(QtCore.QThread):
         sock.setsockopt(zmq.SNDHWM, 0)
         sock.setsockopt(zmq.RCVHWM, 0)
         sock.setsockopt(zmq.RCVTIMEO, 100)
+        poller = zmq.Poller()
+        poller.register(sock, zmq.POLLIN)
 
         try:
             try:
@@ -621,9 +650,14 @@ class _ManagerServer(QtCore.QThread):
             self._bound_event.set()
             logger.debug("Server is listening on port %s...", self.port)
 
-            while not self.stopped.is_set():
+            while not self.stopped.is_set() and not self.isInterruptionRequested():
+                events = dict(poller.poll(100))
+                if sock not in events:
+                    continue
                 try:
-                    payload = Packet.validate_python(_recv_multipart(sock))
+                    payload = Packet.validate_python(
+                        _recv_multipart(sock, flags=zmq.NOBLOCK)
+                    )
                 except zmq.Again:
                     continue
                 except Exception:
@@ -731,6 +765,8 @@ class _ManagerServer(QtCore.QThread):
                 self._bound_event.set()
             logger.exception("Server encountered an error")
         finally:
+            with contextlib.suppress(zmq.ZMQError):
+                poller.unregister(sock)
             sock.close()
             logger.debug("Socket closed")
 

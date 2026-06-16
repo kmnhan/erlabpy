@@ -52,25 +52,25 @@ jobs:
             use-xdist: true
           - group: "cov-io"
             timeout-minutes: 25
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-imagetool"
             timeout-minutes: 30
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-manager-mainwindow"
             timeout-minutes: 25
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-manager-workspace"
             timeout-minutes: 25
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-manager-provenance-console"
             timeout-minutes: 30
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-tools"
             timeout-minutes: 25
-            use-xdist: false
+            use-xdist: true
           - group: "cov-qt-ux"
             timeout-minutes: 25
-            use-xdist: false
+            use-xdist: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -107,7 +107,7 @@ jobs:
             -o junit_family=legacy
           )
           if [[ "${{ matrix.use-xdist }}" == "true" ]]; then
-            pytest_args+=(-n auto --dist=worksteal)
+            pytest_args+=(-n auto --dist=loadgroup)
           fi
           uv run pytest "${pytest_args[@]}" "${targets[@]}"
 
@@ -193,6 +193,8 @@ jobs:
           PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
             uv run pytest \
             -m compat \
+            -n auto \
+            --dist=loadgroup \
             -o faulthandler_timeout=300 \
             --junitxml "junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy \

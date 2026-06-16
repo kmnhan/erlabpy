@@ -1078,7 +1078,6 @@ class _ProvenanceEditController:
         )
         if tool is None:
             raise RuntimeError("Could not create a temporary ImageTool")
-        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         tool.hide()
         try:
             dialog = dialog_cls(tool.slicer_area)
@@ -1101,8 +1100,10 @@ class _ProvenanceEditController:
                 return None
             return transform_dialog.source_operations()
         finally:
-            tool.close()
-            tool.deleteLater()
+            if erlab.interactive.utils.qt_is_valid(tool):
+                tool.close()
+            if erlab.interactive.utils.qt_is_valid(tool):
+                tool.deleteLater()
 
     def _edit_active_filter(
         self,

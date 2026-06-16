@@ -34,12 +34,14 @@ from erlab.interactive.imagetool.manager._modelview import (
 from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
 
 from .helpers import (
+    InMemoryClipboard,
     _assert_modelfit_code_replays_source,
     _exec_generated_code,
     child_status_badge,
     click_child_status_badge,
     configure_goldtool_child,
     copy_full_code_for_uid,
+    install_in_memory_clipboard,
     make_fit1d_child,
     make_fit2d_child,
     manager_preview_pixmap,
@@ -52,6 +54,11 @@ from .helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_qt_clipboard(monkeypatch: pytest.MonkeyPatch) -> InMemoryClipboard:
+    return install_in_memory_clipboard(monkeypatch)
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
@@ -2113,6 +2120,49 @@ def test_manager_provenance_edit_controller_dialog_execution_branches(
         )
 
 
+def test_manager_provenance_edit_controller_skips_deleted_temp_tool_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller()
+    data = xr.DataArray(np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y"))
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    original_itool = erlab.interactive.itool
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    created_tools: list[QtWidgets.QWidget] = []
+
+    def recording_itool(*args, **kwargs):
+        tool = original_itool(*args, **kwargs)
+        created_tools.append(tool)
+        return tool
+
+    def fake_qt_is_valid(*objects: object) -> bool:
+        if created_tools and any(obj is created_tools[-1] for obj in objects):
+            return False
+        return original_qt_is_valid(*objects)
+
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "exec",
+        lambda self: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive, "itool", recording_itool)
+        context.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
+        assert (
+            controller._edited_operations_from_dialog(
+                manager_provenance_edit.dialogs.NormalizeDialog,
+                operation,
+                data,
+            )
+            is None
+        )
+
+    for tool in created_tools:
+        if original_qt_is_valid(tool):
+            tool.close()
+            tool.deleteLater()
+
+
 def test_manager_provenance_validation_reports_active_filter_replay_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3796,40 +3846,47 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             "_prompt_existing_output_imagetool",
             lambda: (_ for _ in ()).throw(AssertionError("prompt should not open")),
         )
-        child.timeout_spin.setValue(30.0)
-        child.nfev_spin.setValue(0)
-        child.y_index_spin.setValue(child.y_min_spin.value())
-        child._run_fit_2d("up")
-        qtbot.wait_until(
-            lambda: all(ds is not None for ds in child._result_ds_full),
-            timeout=10000,
-        )
 
-        child.param_plot_combo.setCurrentIndex(0)
-        first_param_name = child.param_plot_combo.currentText()
-        assert first_param_name
+        param_names = [
+            child.param_plot_combo.itemText(index)
+            for index in range(child.param_plot_combo.count())
+        ]
+        first_param_name, second_param_name = param_names[:2]
+        first_param_index = child.param_plot_combo.findText(first_param_name)
+        second_param_index = child.param_plot_combo.findText(second_param_name)
+        assert first_param_index >= 0
+        assert second_param_index >= 0
+        params_full = []
+        for index in range(len(child._params_full)):
+            params = child._params.copy()
+            params[first_param_name].set(value=1.0 + index)
+            params[first_param_name].stderr = 0.01 + index
+            params[second_param_name].set(value=10.0 + index)
+            params[second_param_name].stderr = 0.1 + index
+            params_full.append(params)
+        child._params_full = params_full
+        child._result_ds_full = [xr.Dataset() for _ in params_full]
+
+        child.param_plot_combo.setCurrentIndex(first_param_index)
+        assert child.param_plot_combo.currentText() == first_param_name
         first_values = child._param_plot_dataarray(first_param_name, stderr=False)
-        second_param_name = ""
-        second_values = None
-        for index in range(1, child.param_plot_combo.count()):
-            candidate = child.param_plot_combo.itemText(index)
-            candidate_values = child._param_plot_dataarray(candidate, stderr=False)
-            if not candidate_values.identical(first_values):
-                second_param_name = candidate
-                second_values = candidate_values
-                break
-        assert second_param_name
-        assert second_values is not None
+        child.param_plot_combo.setCurrentIndex(second_param_index)
+        assert child.param_plot_combo.currentText() == second_param_name
+        second_values = child._param_plot_dataarray(second_param_name, stderr=False)
+        assert not second_values.identical(first_values)
 
+        child.param_plot_combo.setCurrentIndex(first_param_index)
         child.param_plot._show_parameter_values()
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
 
-        child.param_plot_combo.setCurrentText(second_param_name)
+        child.param_plot_combo.setCurrentIndex(second_param_index)
+        assert child.param_plot_combo.currentText() == second_param_name
         child.param_plot._show_parameter_values()
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2, timeout=5000)
 
-        child.param_plot_combo.setCurrentText(first_param_name)
+        child.param_plot_combo.setCurrentIndex(first_param_index)
+        assert child.param_plot_combo.currentText() == first_param_name
         child.param_plot._show_parameter_stderr()
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 3, timeout=5000)
 
@@ -3862,7 +3919,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             fetch(stderr_uid),
             child._param_plot_dataarray(first_param_name, stderr=True),
         )
-        child.param_plot_combo.setCurrentText(second_param_name)
+        child.param_plot_combo.setCurrentIndex(second_param_index)
         assert first_values_node._update_from_parent_source()
         xr.testing.assert_identical(fetch(first_values_uid), first_values)
         assert not fetch(first_values_uid).identical(second_values)
@@ -4444,6 +4501,10 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         assert promoted.provenance_spec is not None
         assert promoted._childtool_indices == [nested_uid]
         assert manager._child_node(nested_uid).parent_uid == child_uid
+        qtbot.wait_until(
+            lambda: manager.tree_view.selected_imagetool_indices == [promoted_index],
+            timeout=5000,
+        )
         assert manager.tree_view.selected_imagetool_indices == [promoted_index]
         assert manager.tree_view.selected_childtool_uids == []
         assert manager._root_wrapper_for_uid(nested_uid).index == promoted_index

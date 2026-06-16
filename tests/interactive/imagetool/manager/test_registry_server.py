@@ -20,12 +20,30 @@ import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool.manager._heartbeat as manager_heartbeat
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._magic import _normalize_manager_target_args
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch
 from erlab.interactive.imagetool.manager._server import Response, _WatcherServer
 
 from .helpers import _use_isolated_manager_registry
+
+
+class _ReadyPoller:
+    def __init__(self) -> None:
+        self.socket: object | None = None
+
+    def register(self, socket: object, _event: int) -> None:
+        self.socket = socket
+
+    def poll(self, _timeout: int) -> dict[object, int]:
+        if self.socket is None:
+            return {}
+        return {self.socket: zmq.POLLIN}
+
+    def unregister(self, socket: object) -> None:
+        if self.socket is socket:
+            self.socket = None
 
 
 def test_manager_selection_info_single_manager(
@@ -61,6 +79,18 @@ def test_manager_selection_info_single_manager(
         assert info["reason"] == "default"
         assert info["default_index"] == manager.manager_index
         assert info["managers"][0]["is_default"] is True
+
+
+def test_manager_server_threads_are_explicitly_managed(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        assert manager.server.parent() is None
+        assert manager.watcher_server.parent() is None
+        assert manager.server.isRunning()
+        assert manager.watcher_server.isRunning()
 
 
 def test_manager_registry_object_repr_and_mapping(monkeypatch, tmp_path) -> None:
@@ -538,7 +568,20 @@ time.sleep(1.0)
         for _ in range(3)
     ]
 
-    outputs = [process.communicate(timeout=15) for process in processes]
+    try:
+        outputs = [process.communicate(timeout=30) for process in processes]
+    except subprocess.TimeoutExpired as exc:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        outputs = [process.communicate() for process in processes]
+        details = "\n".join(
+            f"pid={process.pid} returncode={process.returncode} "
+            f"stdout={stdout!r} stderr={stderr!r}"
+            for process, (stdout, stderr) in zip(processes, outputs, strict=True)
+        )
+        pytest.fail(f"Timed out waiting for registry lock workers: {exc}\n{details}")
+
     indexes = sorted(int(stdout.strip()) for stdout, _stderr in outputs)
 
     assert indexes == [0, 1, 2]
@@ -711,6 +754,40 @@ def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
     assert controller._worker is None
 
 
+def test_manager_registry_heartbeat_disconnect_skips_invalid_worker(
+    monkeypatch,
+) -> None:
+    class _DeletedWorker:
+        @property
+        def refresh(self):
+            raise AssertionError("invalid worker should not be dereferenced")
+
+        @property
+        def finished(self):
+            raise AssertionError("invalid worker should not be dereferenced")
+
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    real_worker = controller._worker
+    deleted_worker = _DeletedWorker()
+    controller._worker = typing.cast(
+        "manager_heartbeat._RegistryHeartbeatWorker",
+        deleted_worker,
+    )
+
+    def qt_is_valid(*objects: object) -> bool:
+        if deleted_worker in objects:
+            return False
+        return original_qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+    try:
+        controller._disconnect_worker_signals()
+    finally:
+        controller._worker = real_worker
+        controller.stop()
+
+
 def test_manager_registry_heartbeat_controller_edge_paths(
     qtbot,
     caplog,
@@ -846,6 +923,45 @@ def test_manager_registry_heartbeat_logs_thread_stop_timeout(
     )
 
 
+def test_manager_registry_heartbeat_stop_orphans_when_refresh_does_not_idle(
+    monkeypatch,
+    caplog,
+) -> None:
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    thread = controller._thread
+    worker = controller._worker
+    assert thread is not None
+    assert worker is not None
+    retained: list[
+        tuple[
+            QtCore.QThread,
+            manager_heartbeat._RegistryHeartbeatWorker,
+        ]
+    ] = []
+    monkeypatch.setattr(controller, "_wait_until_idle", lambda _timeout_ms: False)
+    monkeypatch.setattr(
+        manager_heartbeat._RegistryHeartbeatController,
+        "_retain_orphaned_thread",
+        staticmethod(lambda thread, worker: retained.append((thread, worker))),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=manager_heartbeat.logger.name):
+        controller.stop()
+
+    assert controller._thread is None
+    assert controller._worker is None
+    assert retained == [(thread, worker)]
+    assert any(
+        record.message
+        == "ImageTool manager registry heartbeat thread did not stop promptly"
+        and record.suppress_ui_alert is True
+        for record in caplog.records
+    )
+
+    thread.quit()
+    assert thread.wait(1000)
+
+
 def test_itool_magic_manager_target_normalization() -> None:
     assert _normalize_manager_target_args("-m data") == "-m data"
     assert _normalize_manager_target_args("-m 1 data") == "-m --manager-index 1 data"
@@ -937,7 +1053,6 @@ def test_multi_manager_integer_targets(
     manager_mod = erlab.interactive.imagetool.manager
     with manager_context() as manager0:
         manager1 = ImageToolManager()
-        qtbot.addWidget(manager1, before_close_func=lambda w: w.remove_all_tools())
         try:
             qtbot.wait_until(
                 lambda: (
@@ -1008,17 +1123,23 @@ def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -
         def socket(self, *_args) -> _DummySocket:
             return self._socket
 
-    class _DummyWaitCondition:
+    class _DummyCondition:
         def __init__(self, server: _WatcherServer) -> None:
             self.server = server
             self.calls = 0
 
-        def wait(self, *_args) -> bool:
+        def __enter__(self) -> typing.Self:
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def wait(self, _timeout: float) -> bool:
             self.calls += 1
             self.server.stopped.set()
             return True
 
-        def wakeAll(self) -> None:
+        def notify_all(self) -> None:
             return None
 
     socket = _DummySocket()
@@ -1027,12 +1148,12 @@ def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -
     )
 
     server = _WatcherServer()
-    wait_condition = _DummyWaitCondition(server)
-    server._cv = wait_condition
+    condition = _DummyCondition(server)
+    server._condition = condition
 
     server.run()
 
-    assert wait_condition.calls == 1
+    assert condition.calls == 1
     assert socket.bound == [f"tcp://*:{erlab.interactive.imagetool.manager.PORT_WATCH}"]
     assert socket.sent == []
     assert socket.closed
@@ -1058,6 +1179,441 @@ def test_manager_server_wait_until_bound_errors() -> None:
     with pytest.raises(RuntimeError, match="Manager server failed") as exc_info:
         manager.wait_until_bound(timeout_ms=1)
     assert exc_info.value.__cause__ is manager_error
+
+
+def test_server_thread_stop_wait_is_cooperative(monkeypatch) -> None:
+    class _FinishingThread:
+        def __init__(self) -> None:
+            self.running = True
+            self.waits: list[int] = []
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.waits.append(timeout_ms)
+            self.running = False
+            return True
+
+    finishing_thread = _FinishingThread()
+    assert manager_server._wait_for_qthread_to_stop(finishing_thread, 100)
+    assert finishing_thread.waits
+    assert 0 < finishing_thread.waits[0] <= 10
+
+    class _StoppedThread:
+        def isRunning(self) -> bool:
+            return False
+
+        def wait(self, timeout_ms: int) -> bool:
+            raise AssertionError("wait should not be called for a stopped thread")
+
+    assert manager_server._wait_for_qthread_to_stop(_StoppedThread(), 100)
+
+    class _SlowStoppingThread:
+        def __init__(self) -> None:
+            self.running_checks = 0
+            self.waits: list[int] = []
+
+        def isRunning(self) -> bool:
+            self.running_checks += 1
+            return self.running_checks < 3
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.waits.append(timeout_ms)
+            return False
+
+    slow_stopping_thread = _SlowStoppingThread()
+    assert manager_server._wait_for_qthread_to_stop(slow_stopping_thread, 100)
+    assert slow_stopping_thread.waits
+
+    class _RunningThread:
+        def isRunning(self) -> bool:
+            return True
+
+        def wait(self, timeout_ms: int) -> bool:
+            raise AssertionError("wait should not be called after the timeout")
+
+    monotonic_values = iter([0.0, 0.002])
+    monkeypatch.setattr(
+        manager_server.time, "monotonic", lambda: next(monotonic_values)
+    )
+
+    assert not manager_server._wait_for_qthread_to_stop(_RunningThread(), 1)
+
+
+def test_server_stop_logs_when_cooperative_wait_times_out(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=manager_server.__name__)
+    monkeypatch.setattr(
+        manager_server, "_wait_for_qthread_to_stop", lambda *_args: False
+    )
+    monkeypatch.setattr(_WatcherServer, "isRunning", lambda _self: True)
+    monkeypatch.setattr(manager_server._ManagerServer, "isRunning", lambda _self: True)
+
+    watcher_server = _WatcherServer()
+    watcher_server.stop(timeout_ms=1)
+
+    manager = manager_server._ManagerServer()
+    manager.stop(timeout_ms=1)
+
+    assert "Watcher server did not stop within timeout" in caplog.text
+    assert "Manager server did not stop within timeout" in caplog.text
+
+
+def test_manager_server_stop_wakes_receive_loop(qtbot) -> None:
+    server = manager_server._ManagerServer(port=0)
+    server.start()
+    try:
+        assert server.wait_until_bound(timeout_ms=5000) > 0
+        server.stop(timeout_ms=1000)
+        assert not server.isRunning()
+    finally:
+        if server.isRunning():
+            server.stop(timeout_ms=1000)
+        server.wait(1000)
+        server.deleteLater()
+
+
+def test_manager_server_wake_receiver_uses_loopback(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.options: list[tuple[int, int]] = []
+            self.connections: list[str] = []
+            self.sent = False
+            self.closed = False
+
+        def setsockopt(self, option: int, value: int) -> None:
+            self.options.append((option, value))
+
+        def connect(self, endpoint: str) -> None:
+            self.connections.append(endpoint)
+
+        def send_multipart(self, *_args, **_kwargs) -> None:
+            self.sent = True
+
+        def recv_multipart(self) -> None:
+            raise zmq.Again
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self) -> None:
+            self.sockets: list[_DummySocket] = []
+
+        def socket(self, *_args) -> _DummySocket:
+            socket = _DummySocket()
+            self.sockets.append(socket)
+            return socket
+
+    context = _DummyContext()
+    monkeypatch.setattr(zmq.Context, "instance", staticmethod(lambda: context))
+
+    unbound_server = manager_server._ManagerServer()
+    unbound_server._wake_receiver()
+
+    server = manager_server._ManagerServer()
+    server._bound_port = 45555
+    server._wake_receiver()
+
+    assert len(context.sockets) == 1
+    socket = context.sockets[0]
+    assert socket.connections == ["tcp://127.0.0.1:45555"]
+    assert socket.sent
+    assert socket.closed
+
+    class _FailingSocket(_DummySocket):
+        def connect(self, endpoint: str) -> None:
+            self.connections.append(endpoint)
+            raise RuntimeError("connect failed")
+
+    class _FailingContext:
+        def __init__(self) -> None:
+            self.sockets: list[_FailingSocket] = []
+
+        def socket(self, *_args) -> _FailingSocket:
+            socket = _FailingSocket()
+            self.sockets.append(socket)
+            return socket
+
+    failing_context = _FailingContext()
+    monkeypatch.setattr(zmq.Context, "instance", staticmethod(lambda: failing_context))
+
+    server._wake_receiver()
+
+    failing_socket = failing_context.sockets[0]
+    assert failing_socket.connections == ["tcp://127.0.0.1:45555"]
+    assert failing_socket.closed
+
+
+def test_manager_server_run_exits_after_empty_poll(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.options: list[tuple[int, int]] = []
+            self.bound: list[str] = []
+            self.closed = False
+
+        def setsockopt(self, option: int, value: int) -> None:
+            self.options.append((option, value))
+
+        def bind(self, endpoint: str) -> None:
+            self.bound.append(endpoint)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, socket_type: int) -> _DummySocket:
+            assert socket_type == zmq.REP
+            return self._socket
+
+    class _DummyPoller:
+        def __init__(self) -> None:
+            self.registered: list[tuple[_DummySocket, int]] = []
+            self.unregistered: list[_DummySocket] = []
+            self.poll_timeouts: list[int] = []
+
+        def register(self, socket: _DummySocket, event: int) -> None:
+            self.registered.append((socket, event))
+
+        def poll(self, timeout: int) -> dict[_DummySocket, int]:
+            self.poll_timeouts.append(timeout)
+            server.stopped.set()
+            return {}
+
+        def unregister(self, socket: _DummySocket) -> None:
+            self.unregistered.append(socket)
+
+    socket = _DummySocket()
+    poller = _DummyPoller()
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+    monkeypatch.setattr(zmq, "Poller", lambda: poller)
+
+    server = manager_server._ManagerServer(port=45555)
+    server.run()
+
+    assert socket.bound == ["tcp://*:45555"]
+    assert poller.registered == [(socket, zmq.POLLIN)]
+    assert poller.poll_timeouts == [100]
+    assert poller.unregistered == [socket]
+    assert socket.closed
+
+
+def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
+    class _ServerDouble(QtCore.QObject):
+        sigReceived = QtCore.Signal(list, dict)
+        sigLoadRequested = QtCore.Signal(list, str, dict)
+        sigReplaceRequested = QtCore.Signal(list, list)
+        sigWatchedVarChanged = QtCore.Signal(str, str, object, object)
+        sigDataRequested = QtCore.Signal(object)
+        sigWatchInfoRequested = QtCore.Signal()
+        sigRemoveIndex = QtCore.Signal(int)
+        sigShowIndex = QtCore.Signal(int)
+        sigRemoveUID = QtCore.Signal(str)
+        sigShowUID = QtCore.Signal(str)
+        sigUnwatchUID = QtCore.Signal(str)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.running = True
+            self.deleted = False
+            self.return_values: list[object] = []
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+        def set_return_value(self, value: object) -> None:
+            self.return_values.append(value)
+
+    class _WatcherDouble(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.running = True
+            self.deleted = False
+            self.parameters: list[tuple[str, str, str]] = []
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+        def send_parameters(self, varname: str, uid: str, event: str) -> None:
+            self.parameters.append((varname, uid, event))
+
+    class _ManagerDouble(QtCore.QObject):
+        _sigReplyData = QtCore.Signal(object)
+        _sigWatchedDataEdited = QtCore.Signal(str, str, str)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.server = _ServerDouble()
+            self.watcher_server = _WatcherDouble()
+            self.calls: list[tuple[str, object]] = []
+
+        def _record(self, name: str, *args) -> None:
+            self.calls.append((name, args))
+
+        def _data_recv(self, *args) -> None:
+            self._record("data_recv", *args)
+
+        def _data_load(self, *args) -> None:
+            self._record("data_load", *args)
+
+        def _data_replace(self, *args) -> None:
+            self._record("data_replace", *args)
+
+        def _send_imagetool_data(self, *args) -> None:
+            self._record("send_imagetool_data", *args)
+
+        def _send_watch_info(self) -> None:
+            self._record("send_watch_info")
+
+        def remove_imagetool(self, *args) -> None:
+            self._record("remove_imagetool", *args)
+
+        def show_imagetool(self, *args) -> None:
+            self._record("show_imagetool", *args)
+
+        def _remove_watched(self, *args) -> None:
+            self._record("remove_watched", *args)
+
+        def _show_watched(self, *args) -> None:
+            self._record("show_watched", *args)
+
+        def _data_unwatch(self, *args) -> None:
+            self._record("data_unwatch", *args)
+
+        def _data_watched_update(self, *args) -> None:
+            self._record("data_watched_update", *args)
+
+    manager = _ManagerDouble()
+    server = manager.server
+    watcher_server = manager.watcher_server
+
+    for signal, slot in (
+        (server.sigReceived, manager._data_recv),
+        (server.sigLoadRequested, manager._data_load),
+        (server.sigReplaceRequested, manager._data_replace),
+        (server.sigDataRequested, manager._send_imagetool_data),
+        (server.sigWatchInfoRequested, manager._send_watch_info),
+        (manager._sigReplyData, server.set_return_value),
+        (server.sigRemoveIndex, manager.remove_imagetool),
+        (server.sigShowIndex, manager.show_imagetool),
+        (server.sigRemoveUID, manager._remove_watched),
+        (server.sigShowUID, manager._show_watched),
+        (server.sigUnwatchUID, manager._data_unwatch),
+        (server.sigWatchedVarChanged, manager._data_watched_update),
+        (manager._sigWatchedDataEdited, watcher_server.send_parameters),
+    ):
+        signal.connect(slot)
+
+    manager_widgets._WidgetsController(manager)._stop_servers()
+
+    assert not server.running
+    assert server.deleted
+    assert not watcher_server.running
+    assert watcher_server.deleted
+
+    server.sigRemoveIndex.emit(0)
+    manager._sigReplyData.emit("value")
+    manager._sigWatchedDataEdited.emit("data", "uid", "updated")
+
+    assert manager.calls == []
+    assert server.return_values == []
+    assert watcher_server.parameters == []
+
+
+def test_widgets_controller_stop_servers_ignores_invalid_wrappers(monkeypatch) -> None:
+    class _ThreadDouble:
+        def __init__(self) -> None:
+            self.running = True
+            self.stopped = False
+            self.deleted = False
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.stopped = True
+            self.running = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    class _ManagerDouble:
+        def __init__(self) -> None:
+            self.server = _ThreadDouble()
+            self.watcher_server = _ThreadDouble()
+
+    manager = _ManagerDouble()
+    invalid_threads = {manager.server, manager.watcher_server}
+
+    def _qt_is_valid(*objects) -> bool:
+        return all(obj not in invalid_threads for obj in objects)
+
+    monkeypatch.setattr(
+        manager_widgets.erlab.interactive.utils, "qt_is_valid", _qt_is_valid
+    )
+
+    manager_widgets._WidgetsController(
+        typing.cast("typing.Any", manager)
+    )._stop_servers()
+
+    assert manager.server.running
+    assert not manager.server.stopped
+    assert not manager.server.deleted
+    assert manager.watcher_server.running
+    assert not manager.watcher_server.stopped
+    assert not manager.watcher_server.deleted
+
+
+def test_widgets_controller_stop_servers_keeps_running_wrappers(monkeypatch) -> None:
+    class _ThreadDouble:
+        def __init__(self) -> None:
+            self.stopped = False
+            self.deleted = False
+
+        def isRunning(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    class _ManagerDouble:
+        def __init__(self) -> None:
+            self.server = _ThreadDouble()
+            self.watcher_server = _ThreadDouble()
+
+    manager = _ManagerDouble()
+    monkeypatch.setattr(
+        manager_widgets.erlab.interactive.utils, "qt_is_valid", lambda *_objects: True
+    )
+
+    manager_widgets._WidgetsController(
+        typing.cast("typing.Any", manager)
+    )._stop_servers()
+
+    assert manager.server.stopped
+    assert not manager.server.deleted
+    assert manager.watcher_server.stopped
+    assert not manager.watcher_server.deleted
 
 
 def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
@@ -1099,6 +1655,7 @@ def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
         "instance",
         staticmethod(lambda: _DummyContext(manager_socket)),
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     manager = manager_server._ManagerServer(port=45555)
     manager.run()
     assert manager._bound_event.is_set()
@@ -1144,10 +1701,14 @@ def test_manager_server_run_returns_watch_info(monkeypatch) -> None:
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+        lambda _socket, **_kwargs: {
+            "packet_type": "command",
+            "command": "watch-info",
+        },
     )
     monkeypatch.setattr(
         manager_server,
@@ -1194,10 +1755,11 @@ def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {
+        lambda _socket, **_kwargs: {
             "packet_type": "command",
             "command": "get-data",
             "command_arg": 0,
@@ -1245,10 +1807,14 @@ def test_manager_server_run_errors_when_watch_info_request_stops(monkeypatch) ->
     monkeypatch.setattr(
         zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
     )
+    monkeypatch.setattr(zmq, "Poller", _ReadyPoller)
     monkeypatch.setattr(
         manager_server,
         "_recv_multipart",
-        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+        lambda _socket, **_kwargs: {
+            "packet_type": "command",
+            "command": "watch-info",
+        },
     )
     monkeypatch.setattr(
         manager_server,
