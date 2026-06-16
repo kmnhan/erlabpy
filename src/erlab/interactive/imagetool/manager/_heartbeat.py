@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import time
 import typing
 
 from qtpy import QtCore
@@ -134,15 +135,16 @@ class _RegistryHeartbeatController(QtCore.QObject):
     def stop(self) -> None:
         if self._stopping:
             return
-        self._stopping = True
         self._pending_workspace_path = _NO_PENDING_WORKSPACE_PATH
+        idle = self._wait_until_idle(_HEARTBEAT_THREAD_STOP_TIMEOUT_MS)
+        self._stopping = True
         self._in_flight_generation = None
-        self._disconnect_worker_signals()
         thread = self._thread
         if thread is None:
             return
         thread.quit()
-        if thread.wait(_HEARTBEAT_THREAD_STOP_TIMEOUT_MS):
+        if idle and thread.wait(_HEARTBEAT_THREAD_STOP_TIMEOUT_MS):
+            self._disconnect_worker_signals()
             self._worker = None
             self._thread = None
             return
@@ -154,6 +156,25 @@ class _RegistryHeartbeatController(QtCore.QObject):
         )
         self._worker = None
         self._thread = None
+
+    def _wait_until_idle(self, timeout_ms: int) -> bool:
+        """Let an in-flight refresh finish before tearing down the worker thread."""
+        deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+        while self._in_flight_generation is not None:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            app = QtCore.QCoreApplication.instance()
+            if app is not None:
+                QtCore.QCoreApplication.sendPostedEvents(
+                    None, int(QtCore.QEvent.Type.MetaCall.value)
+                )
+                app.processEvents(
+                    QtCore.QEventLoop.ProcessEventsFlag.AllEvents,
+                    min(10, remaining_ms),
+                )
+            QtCore.QThread.msleep(min(10, remaining_ms))
+        return True
 
     def _start_refresh(self, workspace_path: str | None) -> None:
         thread = self._thread

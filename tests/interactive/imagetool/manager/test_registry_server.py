@@ -876,6 +876,45 @@ def test_manager_registry_heartbeat_logs_thread_stop_timeout(
     )
 
 
+def test_manager_registry_heartbeat_stop_orphans_when_refresh_does_not_idle(
+    monkeypatch,
+    caplog,
+) -> None:
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    thread = controller._thread
+    worker = controller._worker
+    assert thread is not None
+    assert worker is not None
+    retained: list[
+        tuple[
+            QtCore.QThread,
+            manager_heartbeat._RegistryHeartbeatWorker,
+        ]
+    ] = []
+    monkeypatch.setattr(controller, "_wait_until_idle", lambda _timeout_ms: False)
+    monkeypatch.setattr(
+        manager_heartbeat._RegistryHeartbeatController,
+        "_retain_orphaned_thread",
+        staticmethod(lambda thread, worker: retained.append((thread, worker))),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=manager_heartbeat.logger.name):
+        controller.stop()
+
+    assert controller._thread is None
+    assert controller._worker is None
+    assert retained == [(thread, worker)]
+    assert any(
+        record.message
+        == "ImageTool manager registry heartbeat thread did not stop promptly"
+        and record.suppress_ui_alert is True
+        for record in caplog.records
+    )
+
+    thread.quit()
+    assert thread.wait(1000)
+
+
 def test_itool_magic_manager_target_normalization() -> None:
     assert _normalize_manager_target_args("-m data") == "-m data"
     assert _normalize_manager_target_args("-m 1 data") == "-m --manager-index 1 data"
