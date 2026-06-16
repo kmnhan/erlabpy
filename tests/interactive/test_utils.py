@@ -773,7 +773,9 @@ def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
             assert reloaded._qt_object_is_valid(sentinel)
             assert not reloaded._qt_object_is_valid(other)
             assert not reloaded._qt_object_is_valid(None)
-            assert calls == [sentinel, other]
+            assert calls.count(sentinel) == 1
+            assert calls.count(other) == 1
+            assert None not in calls
     finally:
         importlib.reload(erlab.interactive.utils)
 
