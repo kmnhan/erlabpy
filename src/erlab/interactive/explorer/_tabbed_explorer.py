@@ -249,8 +249,10 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         explorer = self.get_explorer(index)
         self.tab_widget.removeTab(index)
         if explorer is not None:
-            explorer._stop_preview_workers()
-            explorer.deleteLater()
+            if explorer._stop_preview_workers():
+                explorer.deleteLater()
+            else:
+                explorer._delete_when_preview_workers_done()
         if tab is not None:
             tab.deleteLater()
 

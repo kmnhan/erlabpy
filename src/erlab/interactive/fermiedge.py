@@ -99,17 +99,23 @@ class EdgeFitTask(QtCore.QRunnable):
         self.parallel_obj: joblib.Parallel | None = None
         self.signals = EdgeFitSignals()
         self._mutex = QtCore.QMutex()
+        self._aborted = threading.Event()
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
-        if self.parallel_obj is None:
-            return
+        self._aborted.set()
         self._mutex.lock()
-        self.parallel_obj._aborting = True
-        self.parallel_obj._exception = True
-        self._mutex.unlock()
+        try:
+            if self.parallel_obj is None:
+                return
+            self.parallel_obj._aborting = True
+            self.parallel_obj._exception = True
+        finally:
+            self._mutex.unlock()
 
     def run(self) -> None:
+        if self._aborted.is_set():
+            return
         try:
             # https://github.com/joblib/joblib/issues/1002
             backend = (
@@ -117,14 +123,28 @@ class EdgeFitTask(QtCore.QRunnable):
                 if erlab.utils.misc._IS_PACKAGED
                 else joblib.parallel.DEFAULT_BACKEND
             )
-            self.parallel_obj = joblib.Parallel(
+            parallel_obj = joblib.Parallel(
                 n_jobs=self.params["# CPU"],
                 max_nbytes=None,
                 return_as="generator",
                 pre_dispatch="n_jobs",
                 backend=backend,
             )
+            self._mutex.lock()
+            try:
+                self.parallel_obj = parallel_obj
+                if self._aborted.is_set():
+                    self.parallel_obj._aborting = True
+                    self.parallel_obj._exception = True
+                    return
+            finally:
+                self._mutex.unlock()
+            # Race-only guard: abort can arrive just after the mutex is released.
+            if self._aborted.is_set():  # pragma: no cover
+                return
             self.signals.sigIterated.emit(0)
+            if self._aborted.is_set():
+                return
             with erlab.utils.parallel.joblib_progress_qt(self.signals.sigIterated) as _:
                 edge_center, edge_stderr = typing.cast(
                     "tuple[xr.DataArray, xr.DataArray]",
@@ -146,8 +166,12 @@ class EdgeFitTask(QtCore.QRunnable):
                         drop_nans=True,
                     ),
                 )
+            if self._aborted.is_set():
+                return
             self.signals.sigFinished.emit(edge_center, edge_stderr)
         except Exception:  # pragma: no cover - defensive for worker thread
+            if self._aborted.is_set():
+                return
             self.signals.sigFailed.emit(traceback.format_exc())
 
 

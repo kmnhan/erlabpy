@@ -379,6 +379,174 @@ def test_goldtool_abort_fit_task_disconnects_late_worker_signals(qtbot, gold) ->
     assert late_calls == []
 
 
+def test_edge_fit_task_aborted_before_run_skips_fit(gold, monkeypatch) -> None:
+    task = EdgeFitTask(
+        gold,
+        "alpha",
+        float(gold.alpha.min()),
+        float(gold.eV.min()),
+        float(gold.alpha.max()),
+        float(gold.eV.max()),
+        {
+            "# CPU": 1,
+            "Bin x": 1,
+            "Bin y": 1,
+            "T (K)": 30.0,
+            "Fix T": False,
+            "Linear": True,
+            "Resolution": 0.01,
+            "Fast": True,
+            "Method": "leastsq",
+            "Scale cov": True,
+        },
+    )
+    events: list[str] = []
+    task.signals.sigIterated.connect(lambda _n: events.append("iterated"))
+    task.signals.sigFinished.connect(lambda _center, _stderr: events.append("finished"))
+    task.signals.sigFailed.connect(lambda _message: events.append("failed"))
+
+    def fail_edge(*_args, **_kwargs):
+        raise AssertionError("aborted task should not start fitting")
+
+    monkeypatch.setattr(erlab.analysis.gold, "edge", fail_edge)
+
+    task.abort_fit()
+    task.run()
+
+    assert events == []
+
+
+def test_edge_fit_task_aborted_after_progress_skips_fit(gold, monkeypatch) -> None:
+    task = EdgeFitTask(
+        gold,
+        "alpha",
+        float(gold.alpha.min()),
+        float(gold.eV.min()),
+        float(gold.alpha.max()),
+        float(gold.eV.max()),
+        {
+            "# CPU": 1,
+            "Bin x": 1,
+            "Bin y": 1,
+            "T (K)": 30.0,
+            "Fix T": False,
+            "Linear": True,
+            "Resolution": 0.01,
+            "Fast": True,
+            "Method": "leastsq",
+            "Scale cov": True,
+        },
+    )
+    events: list[str] = []
+
+    def abort_after_progress(_n: int) -> None:
+        events.append("iterated")
+        task.abort_fit()
+
+    task.signals.sigIterated.connect(abort_after_progress)
+    task.signals.sigFinished.connect(lambda _center, _stderr: events.append("finished"))
+    task.signals.sigFailed.connect(lambda _message: events.append("failed"))
+
+    def fail_edge(*_args, **_kwargs):
+        raise AssertionError("aborted task should not start fitting")
+
+    monkeypatch.setattr(erlab.analysis.gold, "edge", fail_edge)
+
+    task.run()
+
+    assert events == ["iterated"]
+
+
+def test_edge_fit_task_aborted_during_parallel_setup_skips_fit(
+    gold, monkeypatch
+) -> None:
+    task = EdgeFitTask(
+        gold,
+        "alpha",
+        float(gold.alpha.min()),
+        float(gold.eV.min()),
+        float(gold.alpha.max()),
+        float(gold.eV.max()),
+        {
+            "# CPU": 1,
+            "Bin x": 1,
+            "Bin y": 1,
+            "T (K)": 30.0,
+            "Fix T": False,
+            "Linear": True,
+            "Resolution": 0.01,
+            "Fast": True,
+            "Method": "leastsq",
+            "Scale cov": True,
+        },
+    )
+    events: list[str] = []
+    task.signals.sigIterated.connect(lambda _n: events.append("iterated"))
+    task.signals.sigFinished.connect(lambda _center, _stderr: events.append("finished"))
+    task.signals.sigFailed.connect(lambda _message: events.append("failed"))
+
+    class _FakeParallel:
+        def __init__(self) -> None:
+            self._aborting = False
+            self._exception = False
+
+    fake_parallel = _FakeParallel()
+
+    def make_parallel(*_args, **_kwargs):
+        task.abort_fit()
+        return fake_parallel
+
+    monkeypatch.setattr("erlab.interactive.fermiedge.joblib.Parallel", make_parallel)
+
+    task.run()
+
+    assert fake_parallel._aborting
+    assert fake_parallel._exception
+    assert events == []
+
+
+def test_edge_fit_task_aborted_after_fit_skips_finished_signal(
+    gold, monkeypatch
+) -> None:
+    task = EdgeFitTask(
+        gold,
+        "alpha",
+        float(gold.alpha.min()),
+        float(gold.eV.min()),
+        float(gold.alpha.max()),
+        float(gold.eV.max()),
+        {
+            "# CPU": 1,
+            "Bin x": 1,
+            "Bin y": 1,
+            "T (K)": 30.0,
+            "Fix T": False,
+            "Linear": True,
+            "Resolution": 0.01,
+            "Fast": True,
+            "Method": "leastsq",
+            "Scale cov": True,
+        },
+    )
+    events: list[str] = []
+    task.signals.sigIterated.connect(lambda _n: events.append("iterated"))
+    task.signals.sigFinished.connect(lambda _center, _stderr: events.append("finished"))
+    task.signals.sigFailed.connect(lambda _message: events.append("failed"))
+
+    edge_center = gold.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+
+    def aborting_edge(*_args, **_kwargs):
+        task.abort_fit()
+        return edge_center, edge_stderr
+
+    monkeypatch.setattr(erlab.analysis.gold, "edge", aborting_edge)
+
+    task.run()
+
+    assert events == ["iterated"]
+
+
 def test_goldtool_late_task_results_do_not_update_while_closing(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
