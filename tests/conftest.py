@@ -169,6 +169,7 @@ def _test_data_dir_ready(path: pathlib.Path) -> bool:
     return all((path / dirname).is_dir() for dirname in ("da30", "erpes", "merlin"))
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         rel_path = pathlib.Path(item.path).resolve().relative_to(REPO_ROOT).as_posix()

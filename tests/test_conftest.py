@@ -85,6 +85,11 @@ def test_is_deleted_qt_wrapper_error_matches_deleted_wrapper_message() -> None:
     assert not _CONFTEST._is_deleted_qt_wrapper_error(RuntimeError("different error"))
 
 
+def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
+    hook_options = _CONFTEST.pytest_collection_modifyitems.pytest_impl
+    assert hook_options["tryfirst"]
+
+
 def test_pyqtgraph_boundingrect_ignores_deleted_infinite_line(qtbot) -> None:
     import pyqtgraph as pg
     from qtpy import QtCore, QtWidgets
