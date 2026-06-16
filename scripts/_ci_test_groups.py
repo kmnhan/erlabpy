@@ -107,19 +107,30 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
-SERIAL_PREFIX_GROUPS: tuple[str, ...] = ("tests/interactive/imagetool/",)
+QT_MANAGER_XDIST_GROUP = "qt-manager"
+SERIAL_PREFIX_GROUPS: tuple[tuple[str, str | None], ...] = (
+    ("tests/interactive/imagetool/manager/", QT_MANAGER_XDIST_GROUP),
+    ("tests/interactive/imagetool/", None),
+)
 SERIAL_TARGET_GROUPS: dict[str, str] = {
     "tests/io/plugins/test_erpes.py": "hdf5-cache",
     "tests/io/plugins/test_maestro.py": "hdf5-cache",
 }
 SERIAL_NODEID_GROUPS: dict[str, str] = {
-    "tests/interactive/test_explorer.py::test_explorer_general": "qt",
+    "tests/interactive/test_explorer.py::test_explorer_general": (
+        QT_MANAGER_XDIST_GROUP
+    ),
+    "tests/interactive/imagetool/test_watcher.py::test_watcher_real": (
+        QT_MANAGER_XDIST_GROUP
+    ),
     (
         "tests/interactive/test_utils.py::"
         "test_tool_window_managed_detached_output_preserves_provenance"
-    ): "qt",
+    ): QT_MANAGER_XDIST_GROUP,
 }
-SERIAL_PREFIXES: tuple[str, ...] = SERIAL_PREFIX_GROUPS
+SERIAL_PREFIXES: tuple[str, ...] = tuple(
+    prefix for prefix, _group in SERIAL_PREFIX_GROUPS
+)
 SERIAL_TARGETS: tuple[str, ...] = tuple(SERIAL_TARGET_GROUPS)
 SERIAL_NODEIDS: frozenset[str] = frozenset(SERIAL_NODEID_GROUPS)
 
@@ -238,8 +249,10 @@ def serial_xdist_group(rel_path: str, nodeid: str) -> str | None:
         return SERIAL_NODEID_GROUPS[nodeid]
     if rel_path in SERIAL_TARGET_GROUPS:
         return SERIAL_TARGET_GROUPS[rel_path]
-    for prefix in SERIAL_PREFIX_GROUPS:
+    for prefix, group_name in SERIAL_PREFIX_GROUPS:
         if rel_path.startswith(prefix):
+            if group_name is not None:
+                return group_name
             return f"qt-{rel_path.removesuffix('.py').replace('/', '-')}"
     return None
 

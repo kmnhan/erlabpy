@@ -448,9 +448,7 @@ def test_repr_fetcher_aborted_after_load_skips_formatting(
 
 
 def test_explorer_stop_preview_workers_aborts_with_bounded_wait(
-    qtbot,
-    example_loader,
-    example_data_dir: pathlib.Path,
+    tmp_path: pathlib.Path,
 ) -> None:
     class _FakeThreadPool:
         def __init__(self) -> None:
@@ -464,76 +462,62 @@ def test_explorer_stop_preview_workers_aborts_with_bounded_wait(
             self.wait_timeout_ms = timeout_ms
             return False
 
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    worker = _ReprFetcher(
-        example_data_dir / "data_002.h5",
-        erlab.io.loaders["example"].load,
-        include_values=False,
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
+            self._preview_stopping = False
+            self._preview_workers = {worker}
+            self._preview_threadpool = _FakeThreadPool()
+
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
+
+    assert not _DataExplorer._stop_preview_workers(
+        typing.cast("_DataExplorer", explorer)
     )
-    fake_threadpool = _FakeThreadPool()
-    explorer._preview_workers.add(worker)
-    explorer._preview_threadpool = typing.cast("typing.Any", fake_threadpool)
-
-    assert not explorer._stop_preview_workers()
     assert worker._aborted.is_set()
-    assert fake_threadpool.clear_called
-    assert fake_threadpool.wait_timeout_ms == _PREVIEW_WORKER_STOP_TIMEOUT_MS
+    assert explorer._preview_threadpool.clear_called
+    assert (
+        explorer._preview_threadpool.wait_timeout_ms == _PREVIEW_WORKER_STOP_TIMEOUT_MS
+    )
 
 
-def test_explorer_selection_change_ignores_stopping_preview(
-    qtbot,
-    example_loader,
-    example_data_dir: pathlib.Path,
-) -> None:
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    explorer._preview_stopping = True
-    explorer._to_manager_act.setEnabled(False)
+def test_explorer_selection_change_ignores_stopping_preview() -> None:
+    class _ExplorerDouble:
+        _preview_stopping = True
 
-    explorer._on_selection_changed()
-
-    assert not explorer._to_manager_act.isEnabled()
+    _DataExplorer._on_selection_changed(typing.cast("_DataExplorer", _ExplorerDouble()))
 
 
-def test_explorer_show_file_info_ignores_stopping_preview(
-    qtbot,
-    example_loader,
-    example_data_dir: pathlib.Path,
-) -> None:
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    explorer._preview_stopping = True
-    original_text = explorer._text_edit.toPlainText()
+def test_explorer_show_file_info_ignores_stopping_preview() -> None:
+    class _ExplorerDouble:
+        _preview_stopping = True
 
-    explorer._show_file_info(str(example_data_dir / "data_002.h5"), "<b>new</b>", None)
-
-    assert explorer._text_edit.toPlainText() == original_text
+    _DataExplorer._show_file_info(
+        typing.cast("_DataExplorer", _ExplorerDouble()),
+        "data.h5",
+        "<b>new</b>",
+        None,
+    )
 
 
 def test_explorer_preview_worker_finished_removes_worker(
-    qtbot,
-    example_loader,
-    example_data_dir: pathlib.Path,
+    tmp_path: pathlib.Path,
 ) -> None:
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    worker = _ReprFetcher(
-        example_data_dir / "data_002.h5",
-        erlab.io.loaders["example"].load,
-        include_values=False,
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
+            self._preview_workers = {worker}
+
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
+
+    _DataExplorer._preview_worker_finished(
+        typing.cast("_DataExplorer", explorer), worker
     )
-    explorer._preview_workers.add(worker)
-
-    explorer._preview_worker_finished(worker)
-
     assert explorer._preview_workers == set()
 
 
 def test_explorer_delete_when_preview_workers_done_deletes_immediately(
-    qtbot,
-    example_loader,
-    example_data_dir: pathlib.Path,
+    tmp_path: pathlib.Path,
 ) -> None:
     class _FakeThreadPool:
         def __init__(self) -> None:
@@ -548,38 +532,30 @@ def test_explorer_delete_when_preview_workers_done_deletes_immediately(
         def waitForDone(self, _timeout_ms: int) -> bool:
             return True
 
-    class _TrackingExplorer(_DataExplorer):
-        def __init__(self, *args, **kwargs) -> None:
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
             self.deleted_later = False
-            super().__init__(*args, **kwargs)
+            self._preview_workers = {worker}
+            self._preview_threadpool = _FakeThreadPool()
 
         def deleteLater(self) -> None:
             self.deleted_later = True
-            super().deleteLater()
 
-    explorer = _TrackingExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    worker = _ReprFetcher(
-        example_data_dir / "data_002.h5",
-        erlab.io.loaders["example"].load,
-        include_values=False,
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
+
+    _DataExplorer._delete_when_preview_workers_done(
+        typing.cast("_DataExplorer", explorer)
     )
-    fake_threadpool = _FakeThreadPool()
-    explorer._preview_workers.add(worker)
-    explorer._preview_threadpool = typing.cast("typing.Any", fake_threadpool)
 
-    explorer._delete_when_preview_workers_done()
-
-    assert fake_threadpool.clear_called
+    assert explorer._preview_threadpool.clear_called
     assert explorer._preview_workers == set()
     assert explorer.deleted_later
 
 
 def test_explorer_delete_when_preview_workers_done_defers_active_pool(
-    qtbot,
     monkeypatch,
-    example_loader,
-    example_data_dir: pathlib.Path,
+    tmp_path: pathlib.Path,
 ) -> None:
     class _FakeThreadPool:
         def __init__(self) -> None:
@@ -594,10 +570,18 @@ def test_explorer_delete_when_preview_workers_done_defers_active_pool(
         def waitForDone(self, _timeout_ms: int) -> bool:
             return False
 
-    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
-    qtbot.addWidget(explorer)
-    fake_threadpool = _FakeThreadPool()
-    explorer._preview_threadpool = typing.cast("typing.Any", fake_threadpool)
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
+            self._preview_workers = {worker}
+            self._preview_threadpool = _FakeThreadPool()
+
+        def _delete_when_preview_workers_done(self) -> None:
+            _DataExplorer._delete_when_preview_workers_done(
+                typing.cast("_DataExplorer", self)
+            )
+
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
     callbacks: list[tuple[object, int, object]] = []
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -607,9 +591,11 @@ def test_explorer_delete_when_preview_workers_done_defers_active_pool(
         ),
     )
 
-    explorer._delete_when_preview_workers_done()
+    _DataExplorer._delete_when_preview_workers_done(
+        typing.cast("_DataExplorer", explorer)
+    )
 
-    assert fake_threadpool.clear_called
+    assert explorer._preview_threadpool.clear_called
     assert callbacks == [(explorer, 100, explorer._delete_when_preview_workers_done)]
 
 

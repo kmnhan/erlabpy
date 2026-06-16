@@ -90,7 +90,7 @@ def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
     assert hook_options["tryfirst"]
 
 
-def test_serial_xdist_group_scopes_imagetool_by_file() -> None:
+def test_serial_xdist_group_serializes_manager_context_tests() -> None:
     slicer_group = _CONFTEST.serial_xdist_group(
         "tests/interactive/imagetool/test_slicer.py",
         "tests/interactive/imagetool/test_slicer.py::test_array_rect",
@@ -99,9 +99,19 @@ def test_serial_xdist_group_scopes_imagetool_by_file() -> None:
         "tests/interactive/imagetool/manager/test_workspace.py",
         "tests/interactive/imagetool/manager/test_workspace.py::test_roundtrip",
     )
+    explorer_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/test_explorer.py",
+        "tests/interactive/test_explorer.py::test_explorer_general",
+    )
+    watcher_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/imagetool/test_watcher.py",
+        "tests/interactive/imagetool/test_watcher.py::test_watcher_real",
+    )
 
     assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
-    assert workspace_group == ("qt-tests-interactive-imagetool-manager-test_workspace")
+    assert workspace_group == "qt-manager"
+    assert explorer_group == "qt-manager"
+    assert watcher_group == "qt-manager"
     assert slicer_group != workspace_group
 
 
