@@ -107,12 +107,18 @@ def test_serial_xdist_group_serializes_manager_context_tests() -> None:
         "tests/interactive/imagetool/test_watcher.py",
         "tests/interactive/imagetool/test_watcher.py::test_watcher_real",
     )
+    console_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/imagetool/manager/test_console.py",
+        "tests/interactive/imagetool/manager/test_console.py::test_console",
+    )
 
     assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
-    assert workspace_group == "qt-manager"
-    assert explorer_group == "qt-manager"
-    assert watcher_group == "qt-manager"
+    assert workspace_group == "qt-tests-interactive-imagetool-manager-test_workspace"
+    assert explorer_group == "qt-tests-interactive-test_explorer"
+    assert watcher_group == "qt-tests-interactive-imagetool-test_watcher"
+    assert console_group == "qt-tests-interactive-imagetool-manager-test_console"
     assert slicer_group != workspace_group
+    assert console_group != workspace_group
 
 
 def test_pyqtgraph_boundingrect_ignores_deleted_infinite_line(qtbot) -> None:

@@ -107,9 +107,8 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
-QT_MANAGER_XDIST_GROUP = "qt-manager"
 SERIAL_PREFIX_GROUPS: tuple[tuple[str, str | None], ...] = (
-    ("tests/interactive/imagetool/manager/", QT_MANAGER_XDIST_GROUP),
+    ("tests/interactive/imagetool/manager/", None),
     ("tests/interactive/imagetool/", None),
 )
 SERIAL_TARGET_GROUPS: dict[str, str] = {
@@ -118,15 +117,15 @@ SERIAL_TARGET_GROUPS: dict[str, str] = {
 }
 SERIAL_NODEID_GROUPS: dict[str, str] = {
     "tests/interactive/test_explorer.py::test_explorer_general": (
-        QT_MANAGER_XDIST_GROUP
+        "qt-tests-interactive-test_explorer"
     ),
     "tests/interactive/imagetool/test_watcher.py::test_watcher_real": (
-        QT_MANAGER_XDIST_GROUP
+        "qt-tests-interactive-imagetool-test_watcher"
     ),
     (
         "tests/interactive/test_utils.py::"
         "test_tool_window_managed_detached_output_preserves_provenance"
-    ): QT_MANAGER_XDIST_GROUP,
+    ): "qt-tests-interactive-test_utils",
 }
 SERIAL_PREFIXES: tuple[str, ...] = tuple(
     prefix for prefix, _group in SERIAL_PREFIX_GROUPS
