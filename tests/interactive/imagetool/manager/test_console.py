@@ -3092,14 +3092,15 @@ def test_manager_reload_self_replacement_uses_recorded_source(
 
     with manager_context() as manager:
         manager.show()
-        manager.toggle_console()
-        qtbot.wait_until(manager.console.isVisible, timeout=5000)
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(file_spec)
 
-        manager.console._console_widget.execute("tools[0].data = tools[0] + 1.0")
+        tools = manager_console.ToolsNamespace(manager)
+        tool = tools[0]
+        assert tool is not None
+        tool.data = tool + 1.0
         expected = data + 1.0
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
@@ -3118,9 +3119,6 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         assert rebuilt_spec.script_inputs[0].node_snapshot_token is None
         assert rebuilt_spec.script_inputs[0].parsed_provenance_spec() == file_spec
 
-        manager.console._console_widget.shutdown_kernel()
-        InteractiveShell.clear_instance()
-
 
 def test_manager_reload_raw_self_replacement_unavailable(
     qtbot,
@@ -3136,12 +3134,13 @@ def test_manager_reload_raw_self_replacement_unavailable(
 
     with manager_context() as manager:
         manager.show()
-        manager.toggle_console()
-        qtbot.wait_until(manager.console.isVisible, timeout=5000)
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        manager.console._console_widget.execute("tools[0].data = tools[0] + 1.0")
+        tools = manager_console.ToolsNamespace(manager)
+        tool = tools[0]
+        assert tool is not None
+        tool.data = tool + 1.0
         expected = data + 1.0
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
@@ -3155,9 +3154,6 @@ def test_manager_reload_raw_self_replacement_unavailable(
         manager.reload_selected()
 
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
-
-        manager.console._console_widget.shutdown_kernel()
-        InteractiveShell.clear_instance()
 
 
 def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> None:
