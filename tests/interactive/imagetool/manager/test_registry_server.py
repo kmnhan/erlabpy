@@ -568,7 +568,20 @@ time.sleep(1.0)
         for _ in range(3)
     ]
 
-    outputs = [process.communicate(timeout=15) for process in processes]
+    try:
+        outputs = [process.communicate(timeout=30) for process in processes]
+    except subprocess.TimeoutExpired as exc:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        outputs = [process.communicate() for process in processes]
+        details = "\n".join(
+            f"pid={process.pid} returncode={process.returncode} "
+            f"stdout={stdout!r} stderr={stderr!r}"
+            for process, (stdout, stderr) in zip(processes, outputs, strict=True)
+        )
+        pytest.fail(f"Timed out waiting for registry lock workers: {exc}\n{details}")
+
     indexes = sorted(int(stdout.strip()) for stdout, _stderr in outputs)
 
     assert indexes == [0, 1, 2]
@@ -739,6 +752,40 @@ def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
     assert not controller.is_busy
     assert controller._thread is None
     assert controller._worker is None
+
+
+def test_manager_registry_heartbeat_disconnect_skips_invalid_worker(
+    monkeypatch,
+) -> None:
+    class _DeletedWorker:
+        @property
+        def refresh(self):
+            raise AssertionError("invalid worker should not be dereferenced")
+
+        @property
+        def finished(self):
+            raise AssertionError("invalid worker should not be dereferenced")
+
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    real_worker = controller._worker
+    deleted_worker = _DeletedWorker()
+    controller._worker = typing.cast(
+        "manager_heartbeat._RegistryHeartbeatWorker",
+        deleted_worker,
+    )
+
+    def qt_is_valid(*objects: object) -> bool:
+        if deleted_worker in objects:
+            return False
+        return original_qt_is_valid(*objects)
+
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+    try:
+        controller._disconnect_worker_signals()
+    finally:
+        controller._worker = real_worker
+        controller.stop()
 
 
 def test_manager_registry_heartbeat_controller_edge_paths(

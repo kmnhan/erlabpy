@@ -142,9 +142,10 @@ class _RegistryHeartbeatController(QtCore.QObject):
         thread = self._thread
         if thread is None:
             return
+        if idle:
+            self._disconnect_worker_signals()
         thread.quit()
         if idle and thread.wait(_HEARTBEAT_THREAD_STOP_TIMEOUT_MS):
-            self._disconnect_worker_signals()
             self._worker = None
             self._thread = None
             return
@@ -266,9 +267,11 @@ class _RegistryHeartbeatController(QtCore.QObject):
         worker = self._worker
         if worker is None:
             return
-        with contextlib.suppress(TypeError, RuntimeError):
+        if not erlab.interactive.utils.qt_is_valid(worker):
+            return
+        with contextlib.suppress(TypeError, RuntimeError, SystemError):
             self._sigRefreshRequested.disconnect(worker.refresh)
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(TypeError, RuntimeError, SystemError):
             worker.finished.disconnect(self._refresh_finished)
 
     @staticmethod

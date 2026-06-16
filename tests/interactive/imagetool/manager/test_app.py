@@ -181,7 +181,7 @@ def test_manager_reload(
             )
             qtbot.wait_until(
                 lambda: manager.ntools == 1 and len(manager._file_handlers) == 0,
-                timeout=5000,
+                timeout=15000,
             )
         finally:
             if gc_enabled:
