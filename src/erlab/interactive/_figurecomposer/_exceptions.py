@@ -19,5 +19,8 @@ class FigureComposerSelectionError(ValueError):
 class FigureComposerPlotSlicesSelectionError(FigureComposerSelectionError):
     """Raised when an ImageTool pane cannot seed editable plot_slices selection."""
 
-    def __init__(self) -> None:
-        super().__init__(PLOT_SLICES_SELECTION_ERROR_MESSAGE)
+    def __init__(self, detail: str | None = None) -> None:
+        message = PLOT_SLICES_SELECTION_ERROR_MESSAGE
+        if detail:
+            message = f"{message}\n\nDetails: {detail}"
+        super().__init__(message)

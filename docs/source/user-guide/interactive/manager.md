@@ -239,10 +239,11 @@ and right-click context menus:
   Combine selected data with {func}`xarray.concat` and open the result in a new
   ImageTool window.
 
-- {guilabel}`Figure`
+- {guilabel}`Add to Figure…`
 
-  Create a new {ref}`Figure Composer <figure-composer>` figure from the selected rows,
-  or append a new plotting step to an existing figure.
+  Create a new {ref}`Figure Composer <figure-composer>` figure from the selected rows.
+  When figures already exist, this action can also add a new plotting step, add data
+  sources without changing the recipe, or replace a source in the selected figure.
 
 - {guilabel}`Reload Data`
 
@@ -269,9 +270,13 @@ the {guilabel}`Changed` or {guilabel}`Missing` badges described in
 
 ## Creating Matplotlib figures
 
-Use {guilabel}`Figure` from the right-click context menu of one or more ImageTool rows
-to create a new figure in {ref}`Figure Composer <figure-composer>`. New figures will
-appear in a new {guilabel}`Figures` tab in the manager.
+Use {guilabel}`Add to Figure…` from the right-click context menu of one or more
+ImageTool rows to send their data to {ref}`Figure Composer <figure-composer>`. When no
+figures exist, the manager creates a new figure immediately. When figures already exist,
+choose whether to create another figure, append a new recipe step, add the selected data
+as sources only, or replace one source in the selected figure.
+
+New figures appear in a {guilabel}`Figures` tab in the manager.
 
 See {ref}`Figure Composer <figure-composer>` for details.
 

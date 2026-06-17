@@ -76,7 +76,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
   `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or `update_data` for
   contributor questions about adding new interactive tools.
-- Search `Figure Composer`, `Append to Figure`,
+- Search `Figure Composer`, `Add to Figure`, `Append to Figure`,
   `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`, or
   `plot_bz` for plotting questions.
 

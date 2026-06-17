@@ -22,9 +22,8 @@ There are three main entry points:
     for quickly generating comparison figures with several slices of the same data.
 - From ImageTool, choose {guilabel}`Append to Figure` from the same context menu to add
   the current plot to an existing figure.
-- From the manager, select one or more ImageTool rows and click {guilabel}`Figure` in
-  the right-click context menu of the selection. You can choose to create a new figure
-  or append to an existing one.
+- From the manager, select one or more ImageTool rows and click
+  {guilabel}`Add to Figure…` in the right-click context menu of the selection.
 
 Figures are listed in the manager's {guilabel}`Figures` tab, which is hidden until a
 figure is created.
@@ -82,14 +81,6 @@ There are several step types, each with a different set of controls for the gene
 - {guilabel}`Figure Method` for a subset of Matplotlib `fig.*` methods.
 - {guilabel}`Custom Code` for arbitrary code snippets.
 
-(figure-composer-toolbar)=
-
-## Toolbar controls
-
-In addition to the recipe controls, plots can also be customized with the toolbar of the
-figure window. You can edit the subplot spacing and edit various figure elements from
-dialogs opened from the toolbar buttons.
-
 ### Editing steps
 
 Selecting a step opens its controls, which vary based on the step type. Each control is
@@ -110,6 +101,40 @@ to all selected steps. Copied or cut steps can be pasted into another Figure Com
 
 When the source and destination composers are open in the same app process, pasted steps
 also bring the data sources they use.
+
+(figure-composer-sources)=
+
+### Step sources
+
+Because data sources are selected and updated per recipe step, the step controls include
+a {guilabel}`Sources` view. It lists the data stored with the figure, indicates which
+sources are used by the selected step, and lets you update the data available to recipe
+steps without rebuilding the rest of the figure.
+
+When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the
+{guilabel}`Action` menu updates this same source set:
+
+- {guilabel}`New Figure` creates another Figure Composer window.
+- {guilabel}`Add New Step` adds the selected ImageTool data and appends a plotting step.
+- {guilabel}`Add Source Only` adds the selected ImageTool data to the figure without
+  creating or changing recipe steps.
+- {guilabel}`Replace Source` keeps the existing figure recipe intact but swaps one source
+  to use data from the selected ImageTool. This is useful when you have formatted a
+  figure and want to reuse the same recipe, axes, styles, and generated variable names
+  with updated or comparable data.
+
+The {guilabel}`Sources` view also provides refresh controls. Click the row button next
+to one source to refresh only that source from its linked open ImageTool, or click
+{guilabel}`Refresh Sources` to refresh every source in the figure that is still linked
+to an open ImageTool.
+
+(figure-composer-toolbar)=
+
+## Toolbar controls
+
+In addition to the recipe controls, plots can also be customized with the toolbar of the
+figure window. You can edit the subplot spacing and edit various figure elements from
+dialogs opened from the toolbar buttons.
 
 (figure-composer-reproducibility)=
 

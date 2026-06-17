@@ -7,7 +7,7 @@
 # * FONT                                                                    *
 # ***************************************************************************
 # The font properties used by `text.Text`.
-# See https://matplotlib.org/api/font_manager_api.html for more information
+# See https://matplotlib.org/stable/api/font_manager_api.html for more information
 # on font properties.  The 6 font properties used for font matching are
 # given below with their default values.
 #
@@ -32,7 +32,7 @@
 #
 # The font.variant property has two values: normal or small-caps.  For
 # TrueType fonts, which are scalable fonts, small-caps is equivalent
-# to using a font size of 'smaller', or about 83%% of the current font
+# to using a font size of 'small', or about 83 % of the current font
 # size.
 #
 # The font.weight property has effectively 13 values: normal, bold,
@@ -52,7 +52,7 @@
 # special text sizes tick labels, axes, labels, title, etc., see the rc
 # settings for axes and ticks.  Special text sizes can be defined
 # relative to font.size, using the following values: xx-small, x-small,
-# small, medium, large, x-large, xx-large, larger, or smaller
+# small, medium, large, x-large, xx-large
 
 font.family: serif
 font.style: normal
@@ -63,20 +63,8 @@ font.stretch: normal
 font.serif: Times New Roman, Times, serif
 font.sans-serif: DejaVu Sans, Bitstream Vera Sans, Computer Modern Sans Serif, Lucida Grande, Verdana, Geneva, Lucid, Arial, Helvetica, Avant Garde, sans-serif
 font.cursive: Apple Chancery, Textile, Zapf Chancery, Sand, Script MT, Felipa, Comic Neue, Comic Sans MS, cursive
-font.fantasy: Chicago, Charcoal, Impact, Western, Humor Sans, xkcd, fantasy
+font.fantasy: Chicago, Charcoal, Impact, Western, xkcd script, fantasy
 font.monospace: DejaVu Sans Mono, Bitstream Vera Sans Mono, Computer Modern Typewriter, Andale Mono, Nimbus Mono L, Courier New, Courier, Fixed, Terminal, monospace
-
-
-# ***************************************************************************
-# * TEXT                                                                    *
-# ***************************************************************************
-# The text properties used by `text.Text`.
-# See https://matplotlib.org/api/artist_api.html#module-matplotlib.text
-# for more information on text properties
-text.hinting: force_autohint
-text.hinting_factor: 8
-text.kerning_factor: 0
-
 
 # ***************************************************************************
 # * LaTeX                                                                   *

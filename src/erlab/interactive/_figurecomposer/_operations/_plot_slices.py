@@ -1693,8 +1693,8 @@ def _build_plot_slices_editor(
     is_line_plot = panel_kind == _PLOT_SLICES_PANEL_LINE
     is_image_plot = panel_kind == _PLOT_SLICES_PANEL_IMAGE
     is_mixed_panel_kind = panel_kind == _PLOT_SLICES_PANEL_MIXED
-    cuts_page, basic_layout = tool._new_step_form_page(
-        "figureComposerPlotSlicesCutsPage"
+    selection_page, selection_layout = tool._new_step_form_page(
+        "figureComposerPlotSlicesSelectionPage"
     )
     view_page, view_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesViewPage"
@@ -1705,8 +1705,8 @@ def _build_plot_slices_editor(
     advanced_page, advanced_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesAdvancedPage"
     )
-    tool.operation_editor = cuts_page
-    tool.operation_editor_layout = basic_layout
+    tool.operation_editor = selection_page
+    tool.operation_editor_layout = selection_layout
 
     shape_summary = QtWidgets.QLabel(
         "\n".join(
@@ -1716,14 +1716,14 @@ def _build_plot_slices_editor(
                 *(("Status: " + shape.selection_text,) if not shape.valid else ()),
             )
         ),
-        cuts_page,
+        selection_page,
     )
     shape_summary.setObjectName("figureComposerPlotSlicesShapeSummary")
     shape_summary.setWordWrap(True)
     if not shape.valid:
         shape_summary.setForegroundRole(QtGui.QPalette.ColorRole.Link)
     tool._add_form_row(
-        basic_layout,
+        selection_layout,
         "Dimensions",
         shape_summary,
         "Shows the input dimensions and the dimensions plotted by this step.",
@@ -1739,7 +1739,7 @@ def _build_plot_slices_editor(
     )
     dim_combo.setObjectName("figureComposerPlotSlicesDimensionCombo")
     tool._add_form_row(
-        basic_layout,
+        selection_layout,
         "Dimension",
         dim_combo,
         "Data dimension passed as the slice keyword to plot_slices.",
@@ -1758,7 +1758,7 @@ def _build_plot_slices_editor(
         ),
     )
     tool._add_form_row(
-        basic_layout,
+        selection_layout,
         "Values",
         values_edit,
         "Comma-separated coordinate values to select along the dimension.",
@@ -1779,10 +1779,10 @@ def _build_plot_slices_editor(
         ),
     )
     tool._add_form_row(
-        basic_layout,
+        selection_layout,
         "Integration width",
         width_edit,
-        "Optional qsel width around each cut value before plotting.",
+        "Optional qsel width around each selected value before plotting.",
     )
 
     slice_kwargs_text, slice_kwargs_mixed = tool._batch_text(
@@ -1796,7 +1796,7 @@ def _build_plot_slices_editor(
         lambda text: _update_current_slice_kwargs(tool, text),
     )
     tool._add_form_row(
-        basic_layout,
+        selection_layout,
         "Additional slice kwargs",
         slice_kwargs_edit,
         "Additional plot_slices selection kwargs passed to qsel.\n"
@@ -1816,8 +1816,8 @@ def _build_plot_slices_editor(
         view_layout,
         "Panel order",
         order_combo,
-        "C places sources by row and cuts by column. F places cuts by row "
-        "and sources by column.",
+        "C places sources by row and selected values by column. F places selected "
+        "values by row and sources by column.",
     )
 
     transpose_mixed = tool._batch_is_mixed(operation, lambda target: target.transpose)
@@ -2634,7 +2634,7 @@ def _build_plot_slices_editor(
         "Dict literal or keyword arguments merged into the plot_slices call.",
     )
     return [
-        ("cuts", "Selection", cuts_page),
+        ("selection", "Selection", selection_page),
         ("view", "View", view_page),
         ("colors", "Colors", colors_page),
         ("advanced", "Other", advanced_page),
@@ -3432,7 +3432,7 @@ def _plot_slices_transformed_code_kwargs(
 
 
 _SECTION_TOOLTIPS = {
-    "cuts": "Choose dimension, values, and extraction options.",
+    "selection": "Choose dimension, values, and extraction options.",
     "view": "Set orientation, axis limits, labels, and annotation behavior.",
     "colors": "Set image color scaling or 1D line styling for this plot_slices step.",
     "advanced": "Pass advanced keyword arguments to plot_slices.",
@@ -3458,10 +3458,10 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
     shape = _plot_slices_shape(tool, operation)
     plot_kind = "Line slices" if shape.plot_ndim == 1 else "Image slices"
     if operation.slice_dim and operation.slice_values:
-        cut_text = f"{operation.slice_dim} = {len(operation.slice_values)} cuts"
+        selection_text = f"{operation.slice_dim} = {len(operation.slice_values)} values"
     else:
-        cut_text = "current selection"
-    return f"{prefix}{plot_kind}: {source_text}, {cut_text}"
+        selection_text = "current selection"
+    return f"{prefix}{plot_kind}: {source_text}, {selection_text}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
@@ -3797,7 +3797,7 @@ def _section_summary(
             return ", ".join(tool._source_display_names(operation.sources)) or "none"
         case "axes":
             return tool._axes_target_text(operation.axes)
-        case "cuts":
+        case "selection":
             if operation.slice_dim and operation.slice_values:
                 return f"{operation.slice_dim}, {len(operation.slice_values)}"
             if operation.slice_kwargs:

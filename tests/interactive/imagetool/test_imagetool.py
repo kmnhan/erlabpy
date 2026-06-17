@@ -24,7 +24,10 @@ import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive._figurecomposer import FigureOperationKind
+from erlab.interactive._figurecomposer import FigureOperationKind, FigureOperationState
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool, provenance
@@ -1555,9 +1558,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     win.close()
 
 
-def test_plot_with_matplotlib_rejects_non_identifier_selection_dim(
-    qtbot, monkeypatch
-) -> None:
+def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(125).reshape((5, 5, 5)),
         dims=("alpha", "eV", "Track Shift"),
@@ -1607,10 +1608,48 @@ def test_plot_with_matplotlib_rejects_non_identifier_selection_dim(
 
     main_image.plot_with_matplotlib()
 
-    assert created == []
-    assert len(warnings_shown) == 1
-    assert warnings_shown[0][0] is win.slicer_area
-    assert "editable plot_slices" in warnings_shown[0][2]
+    assert len(created) == 1
+    assert warnings_shown == []
+    operation = created[0]["operation"]
+    assert isinstance(operation, FigureOperationState)
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.slice_dim == "Track Shift"
+    assert operation.slice_values == (2.0,)
+    assert operation.map_selections == ()
+
+    win.close()
+
+
+def test_figure_composer_operation_reports_uneditable_plot_slices_details(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"], execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    cases = (
+        (
+            ({("bad", "key"): 0.0}, None, None, set()),
+            "Unsupported qsel selection keys: ('bad', 'key')",
+        ),
+        (
+            ({"beta": 0.0}, ["data.qsel(beta=0.0)"], None, {"beta"}),
+            "Selection requires per-cursor expressions",
+        ),
+        (
+            (None, None, None, set()),
+            "Selection did not produce qsel coordinates",
+        ),
+    )
+    for plan, detail in cases:
+        monkeypatch.setattr(
+            main_image,
+            "_multicursor_selection_plan",
+            lambda _plan=plan, **_kwargs: _plan,
+        )
+        with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
+            main_image.figure_composer_operation(source_name="data")
+        assert detail in str(exc_info.value)
 
     win.close()
 
@@ -3290,6 +3329,55 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
     assert display_code is not None
     namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(namespace["derived"], expected)
+
+    child.close()
+    win.close()
+
+
+def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="map",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[2]
+    win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+    expected = image.current_data
+    source_spec = image.make_tool_source_spec()
+    xarray.testing.assert_identical(
+        source_spec.apply(data).rename(None),
+        expected.rename(None),
+    )
+
+    image.open_in_new_window()
+    qtbot.wait_until(
+        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
+        timeout=5000,
+    )
+    child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
+
+    xarray.testing.assert_identical(
+        child.slicer_area.data.rename(None),
+        expected.rename(None),
+    )
+    assert child.provenance_spec is not None
+    display_code = child.provenance_spec.display_code()
+    assert display_code is not None
+    assert "qsel({" in display_code
+    assert "Track Shift" in display_code
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    xarray.testing.assert_identical(
+        namespace["derived"].rename(None),
+        expected.rename(None),
+    )
 
     child.close()
     win.close()

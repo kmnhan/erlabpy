@@ -244,6 +244,8 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
   On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`,
   {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool
   <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
+  Image and line plot context menus can also send the current plot to
+  {ref}`Figure Composer <figure-composer>`.
 
   Tools opened from ImageTool remember the slice or selection that opened them. If that
   ImageTool is updated with compatible data, the tool shows a {guilabel}`Stale` badge

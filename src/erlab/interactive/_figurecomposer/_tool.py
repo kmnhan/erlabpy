@@ -137,6 +137,9 @@ _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
+_SOURCE_LIST_SOURCE_COLUMN = 0
+_SOURCE_LIST_SHAPE_COLUMN = 1
+_SOURCE_LIST_ACTION_COLUMN = 2
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
@@ -336,6 +339,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             str, weakref.ReferenceType[QtWidgets.QWidget]
         ] = {}
         self._source_data: dict[str, xr.DataArray] = {}
+        self._source_refresh_available_callback: Callable[[str], bool] | None = None
+        self._source_refresh_callback: Callable[[str], bool] | None = None
+        self._source_refresh_many_callback: Callable[[Sequence[str]], int] | None = None
+        self._source_refresh_label_callback: Callable[[str], str | None] | None = None
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
@@ -1095,10 +1102,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_status_label.setObjectName("figureComposerSourceStatus")
         self.source_status_label.setWordWrap(True)
         sources_layout.addWidget(self.source_status_label)
+        self.source_actions = QtWidgets.QWidget(self.step_sources_page)
+        self.source_actions.setObjectName("figureComposerSourceActions")
+        source_actions_layout = QtWidgets.QHBoxLayout(self.source_actions)
+        source_actions_layout.setContentsMargins(0, 0, 0, 0)
+        source_actions_layout.setSpacing(4)
+        source_actions_layout.addStretch(1)
+        self.refresh_sources_button = QtWidgets.QToolButton(self.source_actions)
+        self.refresh_sources_button.setObjectName("figureComposerRefreshSourcesButton")
+        self.refresh_sources_button.setText("Refresh Sources")
+        self.refresh_sources_button.setAccessibleName("Refresh Sources")
+        self.refresh_sources_button.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
+        self.refresh_sources_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.refresh_sources_button.setAutoRaise(True)
+        self.refresh_sources_button.clicked.connect(self._refresh_sources_from_button)
+        source_actions_layout.addWidget(self.refresh_sources_button)
+        sources_layout.addWidget(self.source_actions)
         self.source_list = QtWidgets.QTreeWidget(self.step_sources_page)
         self.source_list.setObjectName("figureComposerSourceList")
-        self.source_list.setColumnCount(2)
-        self.source_list.setHeaderLabels(("Source", "Shape"))
+        self.source_list.setColumnCount(3)
+        self.source_list.setHeaderLabels(("Source", "Shape", ""))
         self.source_list.setRootIsDecorated(False)
         self.source_list.setIndentation(0)
         self.source_list.setUniformRowHeights(True)
@@ -1117,10 +1142,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if source_header is not None:
             source_header.setStretchLastSection(False)
             source_header.setSectionResizeMode(
-                0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+                _SOURCE_LIST_SOURCE_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
-                1, QtWidgets.QHeaderView.ResizeMode.Stretch
+                _SOURCE_LIST_SHAPE_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Stretch,
+            )
+            source_header.setSectionResizeMode(
+                _SOURCE_LIST_ACTION_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
         sources_layout.addWidget(self.source_list, 1)
 
@@ -1582,6 +1613,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index = combo.findText(value)
         combo.setCurrentIndex(max(index, 0))
 
+    def _set_source_refresh_callbacks(
+        self,
+        *,
+        can_refresh_source: Callable[[str], bool] | None = None,
+        refresh_source: Callable[[str], bool] | None = None,
+        refresh_sources: Callable[[Sequence[str]], int] | None = None,
+        source_label: Callable[[str], str | None] | None = None,
+    ) -> None:
+        self._source_refresh_available_callback = can_refresh_source
+        self._source_refresh_callback = refresh_source
+        self._source_refresh_many_callback = refresh_sources
+        self._source_refresh_label_callback = source_label
+        self._refresh_source_controls()
+
     def _sync_size_mm_controls(self, figsize: tuple[float, float]) -> None:
         self.width_mm_spin.setValue(figsize[0] * _MM_PER_INCH)
         self.height_mm_spin.setValue(figsize[1] * _MM_PER_INCH)
@@ -1615,9 +1660,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return values
 
     def _refresh_source_list(self) -> None:
-        self.source_list.clear()
+        self._clear_source_list_widgets()
         source_by_name = {source.name: source for source in self._recipe.sources}
         duplicate_labels = _source_duplicate_labels(self._recipe.sources)
+        current = self._current_operation()
+        used_sources = (
+            set(self._selected_sources_for_operation(current[1]))
+            if current is not None
+            else set()
+        )
         for name, data in self._source_data.items():
             source = source_by_name.get(name)
             display = _source_display_label(
@@ -1634,6 +1685,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _source_display_tooltip(source, name),
                 data=data,
                 missing=source is None,
+                used=name in used_sources,
             )
 
         missing = [
@@ -1652,8 +1704,26 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 source.name,
                 _source_display_tooltip(source, source.name),
                 missing=True,
+                used=source.name in used_sources,
             )
-        self.source_list.resizeColumnToContents(0)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_SOURCE_COLUMN)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
+        self._refresh_source_controls()
+
+    def _clear_source_list_widgets(self) -> None:
+        for row in range(self.source_list.topLevelItemCount()):
+            item = self.source_list.topLevelItem(row)
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
+                continue
+            for column in range(self.source_list.columnCount()):
+                widget = self.source_list.itemWidget(item, column)
+                if widget is None:
+                    continue
+                self.source_list.removeItemWidget(item, column)
+                widget.setParent(None)
+                widget.deleteLater()
+        self.source_list.clear()
 
     def _add_source_list_row(
         self,
@@ -1663,16 +1733,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         data: xr.DataArray | None = None,
         missing: bool = False,
+        used: bool = False,
     ) -> None:
-        item = QtWidgets.QTreeWidgetItem([display, "missing" if data is None else ""])
-        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, name)
+        item = QtWidgets.QTreeWidgetItem(
+            [display, "missing" if data is None else "", ""]
+        )
+        item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
+        item.setData(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2, tooltip
+        )
         item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
-        for column in range(self.source_list.columnCount()):
-            item.setToolTip(column, tooltip)
         if missing:
-            item.setForeground(0, QtGui.QBrush(QtGui.QColor("darkRed")))
-            item.setForeground(1, QtGui.QBrush(QtGui.QColor("darkRed")))
+            item.setForeground(
+                _SOURCE_LIST_SOURCE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
+            )
+            item.setForeground(
+                _SOURCE_LIST_SHAPE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
+            )
         self.source_list.addTopLevelItem(item)
+        self._set_source_list_row_used(item, used)
+        action_widget = self._source_action_widget(name, display)
+        item.setSizeHint(_SOURCE_LIST_ACTION_COLUMN, action_widget.sizeHint())
+        self.source_list.setItemWidget(item, _SOURCE_LIST_ACTION_COLUMN, action_widget)
         if data is None:
             return
 
@@ -1690,15 +1772,254 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.Qt.TextInteractionFlag.NoTextInteraction
         )
         shape_label.setContentsMargins(4, 0, 4, 0)
-        shape_label.setToolTip(tooltip)
+        shape_label.setToolTip(item.toolTip(_SOURCE_LIST_SOURCE_COLUMN))
         if missing:
             palette = shape_label.palette()
             palette.setColor(
                 QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("darkRed")
             )
             shape_label.setPalette(palette)
-        item.setSizeHint(1, shape_label.sizeHint())
-        self.source_list.setItemWidget(item, 1, shape_label)
+        item.setSizeHint(_SOURCE_LIST_SHAPE_COLUMN, shape_label.sizeHint())
+        self.source_list.setItemWidget(item, _SOURCE_LIST_SHAPE_COLUMN, shape_label)
+
+    def _source_refresh_button(self, name: str) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton(self.source_list)
+        button.setObjectName("figureComposerRefreshSourceButton")
+        button.setProperty("figure_source_name", name)
+        button.setAccessibleName("Refresh Source")
+        button.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setAutoRaise(True)
+        button.clicked.connect(
+            functools.partial(self._refresh_source_from_button, name)
+        )
+        return button
+
+    def _source_remove_button(self, name: str) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton(self.source_list)
+        button.setObjectName("figureComposerRemoveSourceButton")
+        button.setProperty("figure_source_name", name)
+        button.setAccessibleName("Remove Source")
+        button.setIcon(QtGui.QIcon.fromTheme("edit-delete"))
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setAutoRaise(True)
+        button.clicked.connect(functools.partial(self._remove_source_from_button, name))
+        return button
+
+    def _source_action_widget(self, name: str, display: str) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget(self.source_list)
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        refresh_button = self._source_refresh_button(name)
+        remove_button = self._source_remove_button(name)
+        layout.addWidget(refresh_button)
+        layout.addWidget(remove_button)
+        self._set_source_refresh_button_state(refresh_button, name, display)
+        self._set_source_remove_button_state(remove_button, name, display)
+        return widget
+
+    def _source_list_row_button(
+        self, item: QtWidgets.QTreeWidgetItem, object_name: str
+    ) -> QtWidgets.QToolButton | None:
+        widget = self.source_list.itemWidget(item, _SOURCE_LIST_ACTION_COLUMN)
+        if isinstance(widget, QtWidgets.QToolButton):
+            return widget if widget.objectName() == object_name else None
+        if isinstance(widget, QtWidgets.QWidget):
+            return widget.findChild(QtWidgets.QToolButton, object_name)
+        return None
+
+    def _source_refresh_available(self, name: str) -> bool:
+        if (
+            self._source_refresh_available_callback is None
+            or self._source_refresh_callback is None
+        ):
+            return False
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            return bool(self._source_refresh_available_callback(name))
+        return False
+
+    def _source_refresh_label(self, name: str) -> str | None:
+        if self._source_refresh_label_callback is None:
+            return None
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            label = self._source_refresh_label_callback(name)
+            return label or None
+        return None
+
+    def _set_source_refresh_button_state(
+        self, button: QtWidgets.QToolButton, name: str, display: str
+    ) -> bool:
+        enabled = self._source_refresh_available(name)
+        button.setEnabled(enabled)
+        if enabled:
+            source_label = self._source_refresh_label(name)
+            tooltip = (
+                f"Refresh “{display}” from {source_label}"
+                if source_label
+                else f"Refresh “{display}”"
+            )
+        else:
+            tooltip = "This source is not linked to an open ImageTool"
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+        return enabled
+
+    def _refreshable_source_names(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in self._source_names()
+            if self._source_refresh_available(name)
+        )
+
+    def _refresh_source_controls(self) -> None:
+        has_refreshable_source = False
+        for row in range(self.source_list.topLevelItemCount()):
+            item = self.source_list.topLevelItem(row)
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
+                continue
+            source_name = item.data(
+                _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
+            )
+            if not isinstance(source_name, str):
+                continue
+            display = item.text(_SOURCE_LIST_SOURCE_COLUMN)
+            refresh_button = self._source_list_row_button(
+                item, "figureComposerRefreshSourceButton"
+            )
+            if refresh_button is not None:
+                has_refreshable_source |= self._set_source_refresh_button_state(
+                    refresh_button, source_name, display
+                )
+            remove_button = self._source_list_row_button(
+                item, "figureComposerRemoveSourceButton"
+            )
+            if remove_button is not None:
+                self._set_source_remove_button_state(
+                    remove_button, source_name, display
+                )
+
+        enabled = (
+            has_refreshable_source and self._source_refresh_many_callback is not None
+        )
+        self.refresh_sources_button.setEnabled(enabled)
+        tooltip = (
+            "Refresh all sources linked to open ImageTools"
+            if enabled
+            else "No sources are linked to open ImageTools"
+        )
+        self.refresh_sources_button.setToolTip(tooltip)
+        self.refresh_sources_button.setStatusTip(tooltip)
+
+    def refresh_source_controls(self) -> None:
+        self._refresh_source_controls()
+
+    def _set_source_status_text(self, text: str | None) -> None:
+        self.source_status_label.setText("" if text is None else text)
+        self.source_status_label.setVisible(bool(text))
+
+    def _refresh_source_from_button(self, name: str, _checked: bool = False) -> None:
+        callback = self._source_refresh_callback
+        if callback is None or not self._source_refresh_available(name):
+            self._refresh_source_controls()
+            return
+        callback(name)
+        self._refresh_source_controls()
+
+    def _refresh_sources_from_button(self, _checked: bool = False) -> None:
+        callback = self._source_refresh_many_callback
+        source_names = self._refreshable_source_names()
+        if callback is None or not source_names:
+            self._refresh_source_controls()
+            return
+        callback(source_names)
+        self._refresh_source_controls()
+
+    def _source_used_by_operation(self, name: str) -> bool:
+        return any(
+            name in self._operation_source_names(operation)
+            for operation in self._recipe.operations
+        )
+
+    def _source_removable(self, name: str) -> bool:
+        return (
+            name in self._source_by_name()
+            and len(self._recipe.sources) > 1
+            and not self._source_used_by_operation(name)
+        )
+
+    def _set_source_remove_button_state(
+        self, button: QtWidgets.QToolButton, name: str, display: str
+    ) -> bool:
+        enabled = self._source_removable(name)
+        button.setEnabled(enabled)
+        if enabled:
+            tooltip = f"Remove “{display}” from this figure"
+        elif self._source_used_by_operation(name):
+            tooltip = "This source is used by one or more steps"
+        else:
+            tooltip = "This source cannot be removed"
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+        return enabled
+
+    def _remove_source_from_button(self, name: str, _checked: bool = False) -> None:
+        if not self.remove_source(name):
+            self._refresh_source_controls()
+
+    def _set_source_list_row_used(
+        self, item: QtWidgets.QTreeWidgetItem, used: bool
+    ) -> None:
+        item.setData(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 1, used
+        )
+        base_tooltip = item.data(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2
+        )
+        tooltip = (
+            base_tooltip
+            if isinstance(base_tooltip, str)
+            else item.toolTip(_SOURCE_LIST_SOURCE_COLUMN)
+        )
+        if used:
+            tooltip = f"Used by selected step.\n{tooltip}"
+        font = item.font(_SOURCE_LIST_SOURCE_COLUMN)
+        font.setBold(used)
+        item.setFont(_SOURCE_LIST_SOURCE_COLUMN, font)
+        source_name = item.data(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
+        )
+        if isinstance(source_name, str):
+            remove_button = self._source_list_row_button(
+                item, "figureComposerRemoveSourceButton"
+            )
+            if remove_button is not None:
+                self._set_source_remove_button_state(
+                    remove_button, source_name, item.text(_SOURCE_LIST_SOURCE_COLUMN)
+                )
+        for column in (_SOURCE_LIST_SOURCE_COLUMN, _SOURCE_LIST_SHAPE_COLUMN):
+            item.setToolTip(column, tooltip)
+            widget = self.source_list.itemWidget(item, column)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+    def _sync_source_list_used_state(self) -> None:
+        current = self._current_operation()
+        used_sources = (
+            set(self._selected_sources_for_operation(current[1]))
+            if current is not None
+            else set()
+        )
+        for row in range(self.source_list.topLevelItemCount()):
+            item = self.source_list.topLevelItem(row)
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
+                continue
+            source_name = item.data(
+                _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
+            )
+            self._set_source_list_row_used(item, source_name in used_sources)
 
     def _rebuild_axes_grid(self) -> None:
         self.axes_selector.set_grid(
@@ -3809,7 +4130,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources: Sequence[FigureSourceState],
         source_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Add or refresh recipe sources used by appended operations."""
+        """Add or update source data without changing existing recipe steps.
+
+        This supports appending operations and the manager's source-only workflow. The
+        source list, backing data, preview, persistent state, and data-dirty signals are
+        updated together so workspace saves include the new source data.
+        """
         existing = {source.name: source for source in self._recipe.sources}
         for source in sources:
             existing[source.name] = source
@@ -3819,8 +4145,66 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         _render_preview(self)
+        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
+
+    def replace_source(
+        self,
+        alias: str,
+        source: FigureSourceState,
+        data: xr.DataArray,
+    ) -> bool:
+        """Replace source data while preserving the recipe-facing source name.
+
+        The incoming source metadata and data replace the stored source slot, but
+        recipe steps and generated code keep referring to the stored source name.
+        Returns ``False`` when no matching stored source or backing data slot exists.
+        """
+        source_list = list(self._recipe.sources)
+        for index, existing_source in enumerate(source_list):
+            if existing_source.name == alias:
+                source_list[index] = source.model_copy(update={"name": alias})
+                break
+        else:
+            if alias not in self._source_data:
+                return False
+            source_list.append(source.model_copy(update={"name": alias}))
+
+        self._source_data[alias] = data
+        self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        self._refresh_source_list()
+        self._update_source_section()
+        _render_preview(self)
+        self.sigDataChanged.emit()
+        self.sigInfoChanged.emit()
+        self._write_state()
+        return True
+
+    def remove_source(self, name: str) -> bool:
+        """Remove an unused source from this figure."""
+        if not self._source_removable(name):
+            return False
+
+        source_list = tuple(
+            source for source in self._recipe.sources if source.name != name
+        )
+        updates: dict[str, typing.Any] = {"sources": source_list}
+        if self._recipe.primary_source == name:
+            updates["primary_source"] = source_list[0].name
+        self._recipe = self._recipe.model_copy(update=updates)
+        self._source_data.pop(name, None)
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        self._refresh_source_list()
+        self._update_source_section()
+        _render_preview(self)
+        self.sigDataChanged.emit()
+        self.sigInfoChanged.emit()
+        self._write_state()
+        return True
 
     @staticmethod
     def _remove_posted_events_recursive(widget: QtWidgets.QWidget) -> None:
@@ -4084,34 +4468,32 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
-            self.source_status_label.setText("Select a step to choose data sources.")
+            self._set_source_status_text("Select a step to choose data sources.")
             return
         if (input_error := self._operation_input_error_text(operation)) is not None:
-            self.source_status_label.setText(f"Invalid input: {input_error}")
+            self._set_source_status_text(f"Invalid input: {input_error}")
             return
         if (
             render_error := self._operation_render_errors.get(operation.operation_id)
         ) is not None:
-            self.source_status_label.setText(f"Render error: {render_error}")
+            self._set_source_status_text(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [
             source for source in selected_sources if source not in self._source_data
         ]
         if missing:
-            self.source_status_label.setText(
+            self._set_source_status_text(
                 "Missing sources: " + ", ".join(self._source_display_names(missing))
             )
         elif selected_sources:
-            self.source_status_label.setText(
-                "Selected sources: "
-                + ", ".join(self._source_display_names(selected_sources))
-            )
+            self._set_source_status_text(None)
         else:
-            self.source_status_label.setText("This step does not read a data source.")
+            self._set_source_status_text("This step does not read a data source.")
 
     def _update_source_section(self) -> None:
         self._clear_step_source_controls()
+        self._sync_source_list_used_state()
         current = self._current_operation()
         if current is None:
             self._update_source_status(None)
@@ -4669,7 +5051,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
             if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
                 raise ValueError(
-                    "Figure source aliases cannot use the reserved saved-tool data name"
+                    "Figure source names cannot use the reserved saved-tool data name"
                 )
             items[source_name] = data
         return items

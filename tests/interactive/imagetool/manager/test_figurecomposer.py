@@ -4,7 +4,7 @@ import gc
 import json
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import matplotlib as mpl
@@ -309,6 +309,30 @@ def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckB
     }
 
 
+def _source_refresh_buttons(
+    tool: FigureComposerTool,
+) -> dict[str, QtWidgets.QToolButton]:
+    return {
+        str(source_name): button
+        for button in tool.source_list.findChildren(
+            QtWidgets.QToolButton, "figureComposerRefreshSourceButton"
+        )
+        if (source_name := button.property("figure_source_name")) is not None
+    }
+
+
+def _source_remove_buttons(
+    tool: FigureComposerTool,
+) -> dict[str, QtWidgets.QToolButton]:
+    return {
+        str(source_name): button
+        for button in tool.source_list.findChildren(
+            QtWidgets.QToolButton, "figureComposerRemoveSourceButton"
+        )
+        if (source_name := button.property("figure_source_name")) is not None
+    }
+
+
 def _plot_source_move_buttons(
     tool: FigureComposerTool,
 ) -> dict[tuple[str, str], QtWidgets.QToolButton]:
@@ -551,6 +575,8 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert set(checks) == {"first_source", "second_source"}
     assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
     assert checks["second_source"].checkState() == QtCore.Qt.CheckState.Unchecked
+    assert tool.source_status_label.text() == ""
+    assert tool.source_status_label.isHidden()
 
     checks["second_source"].setCheckState(QtCore.Qt.CheckState.Checked)
 
@@ -616,6 +642,11 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
+    assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
+    assert first_item.font(0).bold()
+    second_item = tool.source_list.topLevelItem(1)
+    assert second_item is not None
+    assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -653,6 +684,310 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
+def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
+    qtbot,
+) -> None:
+    image = _figure_composer_image_source("image")
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(
+                    name="data_0",
+                    label="ImageTool 0: image",
+                    node_uid="node-0",
+                ),
+                FigureSourceState(name="profile", label="Detached"),
+            ),
+            operations=(),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": image, "profile": profile},
+    )
+    qtbot.addWidget(tool)
+
+    buttons = _source_refresh_buttons(tool)
+    assert set(buttons) == {"data_0", "profile"}
+    assert buttons["data_0"].property("figure_source_name") == "data_0"
+    assert buttons["data_0"].accessibleName() == "Refresh Source"
+    assert not buttons["data_0"].isEnabled()
+    assert (
+        buttons["data_0"].toolTip() == "This source is not linked to an open ImageTool"
+    )
+    assert tool.refresh_sources_button.accessibleName() == "Refresh Sources"
+    assert not tool.refresh_sources_button.isEnabled()
+    assert tool.refresh_sources_button.toolTip() == (
+        "No sources are linked to open ImageTools"
+    )
+    assert tool._source_refresh_label("data_0") is None
+    tool._refresh_source_from_button("data_0")
+    tool._refresh_sources_from_button()
+
+    refreshed: list[tuple[str, str | tuple[str, ...]]] = []
+
+    def can_refresh_source(name: str) -> bool:
+        return name == "data_0"
+
+    def refresh_source(name: str) -> bool:
+        refreshed.append(("one", name))
+        return True
+
+    def refresh_sources(names: Sequence[str]) -> int:
+        refreshed.append(("many", tuple(names)))
+        return len(names)
+
+    def source_label(name: str) -> str | None:
+        return "ImageTool 0: image" if name == "data_0" else None
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=can_refresh_source,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_sources,
+        source_label=source_label,
+    )
+
+    buttons = _source_refresh_buttons(tool)
+    assert buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == (
+        "Refresh “ImageTool 0: image” from ImageTool 0: image"
+    )
+    assert not buttons["profile"].isEnabled()
+    assert buttons["profile"].toolTip() == (
+        "This source is not linked to an open ImageTool"
+    )
+    assert tool.refresh_sources_button.isEnabled()
+    assert tool.refresh_sources_button.toolTip() == (
+        "Refresh all sources linked to open ImageTools"
+    )
+
+    status_before_refresh = (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    )
+    buttons["data_0"].click()
+    assert refreshed[-1] == ("one", "data_0")
+    assert (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    ) == status_before_refresh
+
+    tool.refresh_sources_button.click()
+    assert refreshed[-1] == ("many", ("data_0",))
+    assert (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    ) == status_before_refresh
+
+    def refresh_no_sources(names: Sequence[str]) -> int:
+        refreshed.append(("none", tuple(names)))
+        return 0
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=can_refresh_source,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_no_sources,
+        source_label=source_label,
+    )
+    tool._set_source_status_text("diagnostic")
+    tool.refresh_sources_button.click()
+    assert refreshed[-1] == ("none", ("data_0",))
+    assert tool.source_status_label.text() == "diagnostic"
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=lambda _name: False,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_sources,
+        source_label=source_label,
+    )
+    refreshed.clear()
+    tool._refresh_source_from_button("data_0")
+    tool._refresh_sources_from_button()
+    assert refreshed == []
+
+    def raise_lookup(name: str) -> bool:
+        raise LookupError(name)
+
+    def raise_lookup_label(name: str) -> str | None:
+        raise LookupError(name)
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=raise_lookup,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_sources,
+        source_label=raise_lookup_label,
+    )
+    assert not tool._source_refresh_available("data_0")
+    assert tool._source_refresh_label("data_0") is None
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=can_refresh_source,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_sources,
+        source_label=lambda _name: "",
+    )
+    assert tool._source_refresh_label("data_0") is None
+
+    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", ""])
+    tool.source_list.addTopLevelItem(direct_item)
+    direct_button = QtWidgets.QToolButton(tool.source_list)
+    direct_button.setObjectName("figureComposerRefreshSourceButton")
+    tool.source_list.setItemWidget(direct_item, 2, direct_button)
+    assert (
+        tool._source_list_row_button(direct_item, "figureComposerRefreshSourceButton")
+        is direct_button
+    )
+    assert (
+        tool._source_list_row_button(direct_item, "figureComposerRemoveSourceButton")
+        is None
+    )
+    tool._refresh_source_controls()
+
+
+def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> None:
+    image = _figure_composer_image_source("image")
+    profile = _figure_composer_profile_source("profile")
+    unused = xr.DataArray(
+        np.array([10.0, 11.0]),
+        dims=("q",),
+        coords={"q": [0.0, 1.0]},
+        name="unused",
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: image"),
+                FigureSourceState(name="profile", label="Profile"),
+                FigureSourceState(name="unused", label="Unused"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.line(
+                    label="profile",
+                    source="profile",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": image, "profile": profile, "unused": unused},
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    buttons = _source_remove_buttons(tool)
+    assert set(buttons) == {"data_0", "profile", "unused"}
+    assert buttons["unused"].property("figure_source_name") == "unused"
+    assert buttons["unused"].accessibleName() == "Remove Source"
+    assert not buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == "This source is used by one or more steps"
+    assert not buttons["profile"].isEnabled()
+    assert buttons["profile"].toolTip() == "This source is used by one or more steps"
+    assert buttons["unused"].isEnabled()
+    assert buttons["unused"].toolTip() == "Remove “Unused” from this figure"
+
+    before_status = tool.tool_status
+    before_source_data = tool.source_data()
+    buttons["profile"].click()
+    assert tool.tool_status == before_status
+    assert set(tool.source_data()) == set(before_source_data)
+    tool._remove_source_from_button("profile")
+    assert tool.tool_status == before_status
+    assert set(tool.source_data()) == set(before_source_data)
+    assert not tool.remove_source("profile")
+    assert not tool.remove_source("missing")
+
+    buttons["unused"].click()
+    assert "unused" not in tool.source_data()
+    assert tool.source_status_label.text() == ""
+    assert tool.source_status_label.isHidden()
+
+
+def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> None:
+    image = _figure_composer_image_source("image")
+    extra = xr.DataArray(
+        np.array([1.0, 2.0]),
+        dims=("q",),
+        coords={"q": [0.0, 1.0]},
+        name="extra",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data_0",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: image"),
+                FigureSourceState(name="extra", label="Extra"),
+            ),
+            operations=(operation,),
+            primary_source="extra",
+        ),
+        source_data={"data_0": image, "extra": extra},
+    )
+    qtbot.addWidget(tool)
+    data_changed: list[None] = []
+    info_changed: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changed.append(None))
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+
+    assert not tool.remove_source("data_0")
+    assert tool.remove_source("extra")
+
+    assert data_changed == [None]
+    assert info_changed == [None]
+    assert tuple(source.name for source in tool.source_states()) == ("data_0",)
+    assert set(tool.source_data()) == {"data_0"}
+    assert tool.tool_status.operations == (operation,)
+    assert tool.tool_status.primary_source == "data_0"
+    assert tool.source_status_label.text() == ""
+    buttons = _source_remove_buttons(tool)
+    assert set(buttons) == {"data_0"}
+    assert not buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == "This source is used by one or more steps"
+
+    _render_figure_composer_rgba(tool)
+    assert tool._operation_render_errors == {}
+    namespace = _exec_generated_code(tool.generated_code(), {"data_0": image})
+    assert isinstance(namespace["fig"], Figure)
+    restored = FigureComposerTool(
+        image,
+        recipe=tool.tool_status,
+        source_data=tool.source_data(),
+    )
+    qtbot.addWidget(restored)
+    assert tuple(source.name for source in restored.source_states()) == ("data_0",)
+    assert set(restored.source_data()) == {"data_0"}
+
+    assert tool.undoable
+    tool.undo()
+    assert tuple(source.name for source in tool.source_states()) == ("data_0", "extra")
+    assert tool.tool_status.primary_source == "extra"
+    xr.testing.assert_identical(tool.source_data()["extra"], extra)
+    assert tool.redoable
+    tool.redo()
+    assert tuple(source.name for source in tool.source_states()) == ("data_0",)
+    assert set(tool.source_data()) == {"data_0"}
+    assert tool.tool_status.primary_source == "data_0"
+    tool._refresh_source_list()
+    assert set(_source_remove_buttons(tool)) == {"data_0"}
+
+
 def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
     source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
     assert (
@@ -679,6 +1014,140 @@ def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
         )
         == "ImageTool (data_0)"
     )
+
+
+def test_figure_composer_plot_slices_selection_error_details() -> None:
+    plain = str(FigureComposerPlotSlicesSelectionError())
+    assert "Details:" not in plain
+
+    detailed = str(FigureComposerPlotSlicesSelectionError("bad key"))
+    assert plain in detailed
+    assert "Details: bad key" in detailed
+
+
+def test_figure_composer_replace_source_preserves_alias_and_generated_code(
+    qtbot, monkeypatch
+) -> None:
+    original = _figure_composer_image_source("original")
+    replacement = original.copy(
+        data=np.asarray(original.data) + 10.0,
+        deep=True,
+    )
+    replacement.name = "replacement"
+    old_snapshot_id = "old-snapshot"
+    new_snapshot_id = "new-snapshot"
+    tool = FigureComposerTool(
+        original,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(
+                    name="data_0",
+                    label="ImageTool 0: original",
+                    node_uid="old-node",
+                    node_snapshot_token=old_snapshot_id,
+                    provenance_spec={"source": "old"},
+                ),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.line(
+                    label="profile",
+                    source="data_0",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "line_selection": {
+                            "eV": 0.0,
+                            "beta": float(original.coords["beta"].values[0]),
+                        },
+                        "line_x": "alpha",
+                    }
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": original},
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    assert "ImageTool 0: original" in tool.operation_list.item(0).text()
+    assert "ImageTool 0: original" in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == (
+        "Sources: ImageTool 0: original"
+    )
+
+    replaced = tool.replace_source(
+        "data_0",
+        FigureSourceState(
+            name="data_1",
+            label="ImageTool 1: replacement",
+            node_uid="new-node",
+            node_snapshot_token=new_snapshot_id,
+            provenance_spec={"source": "new"},
+        ),
+        replacement,
+    )
+
+    assert replaced is True
+    [source] = tool.source_states()
+    assert source.name == "data_0"
+    assert source.label == "ImageTool 1: replacement"
+    assert source.node_uid == "new-node"
+    assert source.node_snapshot_token == new_snapshot_id
+    assert source.provenance_spec == {"source": "new"}
+    xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
+    assert tool.tool_status.operations[0].sources == ("data_0",)
+    assert tool.tool_status.operations[1].line_source == "data_0"
+    assert "ImageTool 1: replacement" in tool.operation_list.item(0).text()
+    assert "ImageTool 0: original" not in tool.operation_list.item(0).text()
+    assert "ImageTool 1: replacement" in tool.operation_list.item(1).text()
+    assert "ImageTool 0: original" not in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == (
+        "Sources: ImageTool 1: replacement"
+    )
+
+    _render_figure_composer_rgba(tool)
+    assert tool._operation_render_errors == {}
+
+    captured_maps: list[tuple[xr.DataArray, ...]] = []
+
+    def capture_plot_slices(maps, **_kwargs):
+        captured_maps.append(tuple(maps))
+
+    monkeypatch.setattr(eplt, "plot_slices", capture_plot_slices)
+    exec(tool.generated_code(), {"data_0": replacement})  # noqa: S102
+
+    assert captured_maps
+    captured = captured_maps[0][0]
+    xr.testing.assert_identical(
+        captured,
+        replacement.sel(eV=float(captured.coords["eV"])),
+    )
+
+    assert not tool.replace_source(
+        "missing",
+        FigureSourceState(name="data_2", label="Missing"),
+        replacement,
+    )
+    tool._source_data["orphan"] = original
+    assert tool.replace_source(
+        "orphan",
+        FigureSourceState(name="data_2", label="Orphan"),
+        original,
+    )
+    assert tuple(source.name for source in tool.source_states()) == (
+        "data_0",
+        "orphan",
+    )
+    assert tool.source_states()[-1].label == "Orphan"
 
 
 def test_figure_composer_text_helpers_parse_user_inputs() -> None:
@@ -929,6 +1398,33 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     assert "sample_temp_idx" not in operation.model_dump_json()
 
 
+def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="map",
+    )
+    tool = erlab.interactive.itool(data, manager=False, execute=False)
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+    operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
+
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.map_selections == ()
+    assert operation.slice_dim == "Track Shift"
+    assert operation.slice_values == (1.0,)
+    assert operation.slice_kwargs == {}
+
+
 def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
     tool = erlab.interactive.itool(
         _unsupported_plot_slices_data(), manager=False, execute=False
@@ -938,8 +1434,46 @@ def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
 
     _set_unsupported_plot_slices_cursor_state(tool)
 
-    with pytest.raises(FigureComposerPlotSlicesSelectionError):
+    with pytest.raises(
+        FigureComposerPlotSlicesSelectionError,
+        match="Cannot plot when more than one dimension",
+    ):
         tool.slicer_area.images[0].figure_composer_operation(source_name="data")
+
+
+def test_imagetool_plot_slices_selection_warning_shows_error_detail(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = erlab.interactive.itool(
+        _unsupported_plot_slices_data(), manager=False, execute=False
+    )
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    _set_unsupported_plot_slices_cursor_state(tool)
+
+    with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
+        tool.slicer_area.images[0].figure_composer_operation(source_name="data")
+
+    messages: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+
+    def warning(
+        parent: QtWidgets.QWidget | None, title: str, text: str
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        messages.append((parent, title, text))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warning)
+
+    tool.slicer_area.images[0]._show_plot_slices_selection_error(
+        tool.slicer_area, exc_info.value
+    )
+
+    assert len(messages) == 1
+    assert messages[0][0] is tool.slicer_area
+    assert messages[0][1] == "Cannot Create Plot Slices Figure"
+    assert "Details:" in messages[0][2]
+    assert "Cannot plot when more than one dimension" in messages[0][2]
 
 
 def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
@@ -1897,7 +2431,7 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     )
     qtbot.addWidget(tool)
     operation = FigureOperationState.plot_slices(
-        label="cuts",
+        label="selection",
         sources=("data",),
         slice_dim="eV",
         slice_values=(0.0, 1.0),
@@ -2595,7 +3129,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     assert invalid_shape.plot_ndim == 0
     assert not invalid_shape.valid
     assert (
-        figurecomposer_plot_slices._section_summary(tool, "cuts", first_operation)
+        figurecomposer_plot_slices._section_summary(tool, "selection", first_operation)
         == "additional"
     )
     assert (
@@ -3615,7 +4149,7 @@ def test_figure_composer_subplots_plot_roundtrip_restores_exact_render(
         sharey=False,
     )
     plot_operation = FigureOperationState.plot_slices(
-        label="constant energy cuts",
+        label="constant energy selection",
         sources=("image_source",),
         axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
         slice_dim="eV",
@@ -3746,7 +4280,7 @@ def test_figure_composer_gridspec_plot_roundtrip_restores_exact_render(
         slice_values=(0.0,),
     ).model_copy(update={"annotate": False, "cmap": "magma"})
     line_slices_operation = FigureOperationState.plot_slices(
-        label="line cuts",
+        label="line selection",
         sources=("line_source",),
         axes=FigureAxesSelectionState(axes_ids=("line-top", "line-bottom")),
         slice_dim="eV",
@@ -8367,7 +8901,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.step_section_keys == [
         "sources",
         "axes",
-        "cuts",
+        "selection",
         "view",
         "colors",
         "advanced",
@@ -8378,7 +8912,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     ] == [
         "figureComposerStepSourcesPage",
         "figureComposerTargetAxesPage",
-        "figureComposerPlotSlicesCutsPage",
+        "figureComposerPlotSlicesSelectionPage",
         "figureComposerPlotSlicesViewPage",
         "figureComposerPlotSlicesColorsPage",
         "figureComposerPlotSlicesAdvancedPage",
@@ -8387,7 +8921,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     colors_page = tool.findChild(
         QtWidgets.QWidget, "figureComposerPlotSlicesColorsPage"
     )
-    cuts_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesCutsPage")
+    selection_page = tool.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesSelectionPage"
+    )
     view_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesViewPage")
     crop_check = tool.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesCropCheck"
@@ -8407,7 +8943,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QLineEdit, "figureComposerColorbarKwEdit"
     )
     assert colors_page is not None
-    assert cuts_page is not None
+    assert selection_page is not None
     assert view_page is not None
     assert crop_check is not None
     assert order_combo is not None
@@ -8419,7 +8955,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert view_page.isAncestorOf(crop_check)
     assert view_page.isAncestorOf(order_combo)
     assert view_page.isAncestorOf(transpose_check)
-    assert not cuts_page.isAncestorOf(crop_check)
+    assert not selection_page.isAncestorOf(crop_check)
     assert same_limits_combo.parent() is colors_page
     assert axis_combo.parent() is view_page
     assert annotate_kwargs_edit.parent() is view_page
@@ -8790,6 +9326,136 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert "colorbar_kw" in code
     assert "tools[" not in code
     assert "_manager" not in code
+
+
+def test_figure_composer_line_profile_operation_uses_semantic_sections(
+    qtbot,
+) -> None:
+    data = _figure_composer_line_slice_source("profile_data")
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="profile_data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_iter_dim": "eV",
+            "line_selection": {"eV": slice(-0.5, 0.5)},
+            "line_reduce": "both",
+            "line_labels": ("left", "right"),
+            "line_colors": ("C0", "C1"),
+            "line_kw": {"linestyle": "--", "marker": "o"},
+            "line_normalize": "max",
+            "line_scales": (2.0,),
+            "line_offsets": (0.0, 1.0),
+            "xlim": (-0.5, 0.5),
+            "ylim": (0.0, None),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile_data", label="profile_data"),),
+            operations=(operation,),
+            primary_source="profile_data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.step_section_keys == [
+        "sources",
+        "axes",
+        "selection",
+        "view",
+        "style",
+        "other",
+    ]
+    assert [
+        tool.step_editor_stack.widget(index).objectName()
+        for index in range(tool.step_editor_stack.count())
+    ] == [
+        "figureComposerStepSourcesPage",
+        "figureComposerTargetAxesPage",
+        "figureComposerLineSelectionPage",
+        "figureComposerLineViewPage",
+        "figureComposerLineStylePage",
+        "figureComposerLineOtherPage",
+    ]
+
+    selection_page = tool.findChild(
+        QtWidgets.QWidget, "figureComposerLineSelectionPage"
+    )
+    view_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineViewPage")
+    style_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineStylePage")
+    other_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineOtherPage")
+    assert selection_page is not None
+    assert view_page is not None
+    assert style_page is not None
+    assert other_page is not None
+
+    section_controls = (
+        (
+            selection_page,
+            (
+                "figureComposerProfileCoordinateCombo",
+                "figureComposerProfileValuesCombo",
+                "figureComposerLineSelectionEdit",
+                "figureComposerProfileIterDimCombo",
+                "figureComposerProfileReduceCombo",
+            ),
+        ),
+        (
+            view_page,
+            (
+                "figureComposerProfilePlacementCombo",
+                "figureComposerDataValuesAxisCombo",
+                "figureComposerLineXLimEdit",
+                "figureComposerLineYLimEdit",
+            ),
+        ),
+        (
+            style_page,
+            (
+                "figureComposerLineLabelsEdit",
+                "figureComposerLineColorsEdit",
+                "figureComposerLineStyleCombo",
+                "figureComposerLineWidthSpin",
+                "figureComposerLineMarkerCombo",
+                "figureComposerLineMarkerSizeSpin",
+                "figureComposerLineMarkerFaceColorEdit",
+                "figureComposerLineMarkerEdgeColorEdit",
+            ),
+        ),
+        (
+            other_page,
+            (
+                "figureComposerLineNormalizeCombo",
+                "figureComposerLineScalesEdit",
+                "figureComposerLineOffsetSourceCombo",
+                "figureComposerLineOffsetsEdit",
+            ),
+        ),
+    )
+    pages = (selection_page, view_page, style_page, other_page)
+    for expected_page, control_names in section_controls:
+        for name in control_names:
+            widget = tool.findChild(QtWidgets.QWidget, name)
+            assert widget is not None
+            for page in pages:
+                if page is expected_page:
+                    assert page.isAncestorOf(widget)
+                else:
+                    assert not page.isAncestorOf(widget)
+
+    for key, page in (
+        ("selection", selection_page),
+        ("view", view_page),
+        ("style", style_page),
+        ("other", other_page),
+    ):
+        tool._select_step_section(key)
+        assert tool.step_editor_stack.currentWidget() is page
+        assert tool.tool_status.operations[0] == operation
 
 
 def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
@@ -10843,20 +11509,16 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_coordinate_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
-    profile_values_combo = line_page.findChild(
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
-    )
-    data_values_axis_combo = line_page.findChild(
-        QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
     )
     assert profile_coordinate_combo is not None
     assert profile_values_combo is not None
-    assert data_values_axis_combo is not None
     assert profile_coordinate_combo.itemData(0) is None
     assert profile_values_combo.itemData(0) is None
     assert profile_coordinate_combo.findData("kx") >= 0
@@ -10869,30 +11531,42 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert tool.tool_status.operations[2].line_x is None
     _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_values_combo = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
     _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_coordinate_combo = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
-    profile_values_combo = line_page.findChild(
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_coordinate_combo is not None
     assert profile_values_combo is not None
     assert profile_coordinate_combo.toolTip()
     assert profile_values_combo.toolTip()
-    assert data_values_axis_combo.toolTip()
     assert all(
-        widget.toolTip() for widget in line_page.findChildren(QtWidgets.QLineEdit)
+        widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QLineEdit)
     )
     assert all(
-        widget.toolTip() for widget in line_page.findChildren(QtWidgets.QCheckBox)
+        widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QCheckBox)
+    )
+    tool._select_step_section("view")
+    view_page = tool.step_editor_stack.currentWidget()
+    data_values_axis_combo = view_page.findChild(
+        QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
+    )
+    assert data_values_axis_combo is not None
+    assert data_values_axis_combo.toolTip()
+    assert all(
+        widget.toolTip() for widget in view_page.findChildren(QtWidgets.QLineEdit)
+    )
+    assert all(
+        widget.toolTip() for widget in view_page.findChildren(QtWidgets.QCheckBox)
     )
 
     _select_operation_rows(tool, (3,))
@@ -12445,6 +13119,355 @@ def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> 
     assert limits_edit.text() == f"{expected_ylim[0]:g}, {expected_ylim[1]:g}"
 
 
+def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": ("Momentum",),
+                        "method_kwargs": {
+                            "loc": "right",
+                            "labelpad": 3.0,
+                            "fontsize": 12,
+                        },
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+
+    method_page = tool.step_editor_stack.currentWidget()
+    method_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
+    )
+    assert method_combo is not None
+    initial_operation = tool.tool_status.operations[0]
+    method_combo.activated.emit(method_combo.currentIndex())
+    assert tool.tool_status.operations[0] == initial_operation
+
+    ylabel_index = method_combo.findData("set_ylabel")
+    assert ylabel_index >= 0
+    _activate_combo_index(method_combo, ylabel_index)
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "set_ylabel"
+    assert operation.method_args == ("Momentum",)
+    assert operation.method_kwargs == {
+        "loc": "top",
+        "labelpad": 3.0,
+        "fontsize": 12,
+    }
+    assert operation.axes == FigureAxesSelectionState(axes=((0, 0),))
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert not tool._operation_render_errors
+    assert tool.figure.axes[0].get_ylabel() == "Momentum"
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["axs"][0, 0].get_ylabel() == "Momentum"
+
+    figurecomposer_method._update_current_method_name(tool, "set_xlim")
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "set_xlim"
+    assert operation.method_args != ("Momentum",)
+    assert operation.method_kwargs == {}
+
+
+def test_figure_composer_method_transfer_edge_contracts(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlim",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    initial_operation = tool.tool_status.operations[0]
+    figurecomposer_method._update_current_method_family(tool, FigureMethodFamily.AXES)
+    assert tool.tool_status.operations[0] == initial_operation
+
+    tool._updating_controls = True
+    try:
+        figurecomposer_method._update_current_method_name(tool, "set_ylim")
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status.operations[0] == initial_operation
+
+    combo_no_none = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.ARG_COMBO,
+        label="Choice",
+        tooltip="choice",
+        object_name="choice",
+        arg_index=0,
+        options=("keep",),
+    )
+    combo_with_none = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.ARG_COMBO,
+        label="Choice",
+        tooltip="choice",
+        object_name="choice",
+        arg_index=0,
+        options=("keep",),
+        none_label="None",
+    )
+    bool_combo = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.BOOL_KWARG_COMBO,
+        label="Flag",
+        tooltip="flag",
+        object_name="flag",
+        key="flag",
+    )
+    assert not figurecomposer_method._control_accepts_value(combo_no_none, None)
+    assert figurecomposer_method._control_accepts_value(combo_with_none, None)
+    assert figurecomposer_method._control_accepts_value(bool_combo, True)
+    assert not figurecomposer_method._control_accepts_value(bool_combo, "True")
+
+    assert (
+        figurecomposer_method._transfer_axis_label_loc(
+            figurecomposer_method.AXES_METHODS["set_ylabel"],
+            figurecomposer_method.AXES_METHODS["set_xlabel"],
+            "top",
+        )
+        == "right"
+    )
+    assert (
+        figurecomposer_method._transfer_axis_label_loc(
+            figurecomposer_method.AXES_METHODS["set_title"],
+            figurecomposer_method.AXES_METHODS["set_xlabel"],
+            "unchanged",
+        )
+        == "unchanged"
+    )
+
+    float_pair_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="set_xlim",
+            args=(1.0, 2.0),
+            axes=FigureAxesSelectionState(axes=((0, 0),)),
+        ),
+        figurecomposer_method.AXES_METHODS["set_ylim"],
+    )
+    assert float_pair_updates["method_args"] == (1.0, 2.0)
+
+    default_arg_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="set_xlabel",
+            args=("x",),
+            axes=FigureAxesSelectionState(axes=((0, 0),)),
+        ),
+        figurecomposer_method.AXES_METHODS["set_ylabel"],
+    )
+    assert default_arg_updates["method_args"] == ("y",)
+
+    plot_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+        args=((0.0, 1.0), (1.0, 2.0)),
+        kwargs={"custom": "value"},
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "method_transform": "custom",
+            "method_transform_x": "figure",
+            "method_transform_y": "data",
+            "method_transform_expression": "ax.transData",
+        }
+    )
+    plot_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        plot_operation,
+        figurecomposer_method.AXES_METHODS["plot"],
+    )
+    assert plot_updates["method_args"] == plot_operation.method_args
+    assert plot_updates["method_kwargs"] == {"custom": "value"}
+    assert plot_updates["method_transform"] == "custom"
+    assert plot_updates["method_transform_x"] == "figure"
+    assert plot_updates["method_transform_y"] == "data"
+    assert plot_updates["method_transform_expression"] == "ax.transData"
+
+    text_arg = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.TEXT_ARG,
+        label="Text",
+        tooltip="text",
+        object_name="text",
+        arg_index=0,
+    )
+    accepted_combo = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.ARG_COMBO,
+        label="Accepted",
+        tooltip="accepted",
+        object_name="accepted",
+        arg_index=2,
+        options=("keep",),
+    )
+    source_rejected_combo = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.ARG_COMBO,
+        label="Rejected",
+        tooltip="rejected",
+        object_name="rejected",
+        arg_index=3,
+        options=("bad",),
+    )
+    target_rejected_combo = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.ARG_COMBO,
+        label="Rejected",
+        tooltip="rejected",
+        object_name="rejected",
+        arg_index=3,
+        options=("ok",),
+    )
+    same_kwarg = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.FLOAT_KWARG,
+        label="Same",
+        tooltip="same",
+        object_name="same",
+        key="same",
+    )
+    source_mismatch_kwarg = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.TEXT_KWARG,
+        label="Mismatch",
+        tooltip="mismatch",
+        object_name="mismatch",
+        key="mismatch",
+    )
+    target_mismatch_kwarg = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.FLOAT_KWARG,
+        label="Mismatch",
+        tooltip="mismatch",
+        object_name="mismatch",
+        key="mismatch",
+    )
+    transform_control = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.TRANSFORM,
+        label="Transform",
+        tooltip="transform",
+        object_name="transform",
+    )
+    source_spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="transfer_source",
+        label="transfer_source",
+        tooltip="test",
+        target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+        call_policy=figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+        allowed_call_policies=(
+            figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+            figurecomposer_method.MethodCallPolicy.AX_KEYWORD,
+        ),
+        default_args=("default",),
+        controls=(
+            text_arg,
+            accepted_combo,
+            source_rejected_combo,
+            same_kwarg,
+            source_mismatch_kwarg,
+            transform_control,
+        ),
+        text_values_policy=figurecomposer_method.MethodTextValuesPolicy.POSITIONAL,
+    )
+    target_spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="transfer_target",
+        label="transfer_target",
+        tooltip="test",
+        target_domain=figurecomposer_method.MethodTargetDomain.AXES,
+        call_policy=figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+        allowed_call_policies=(
+            figurecomposer_method.MethodCallPolicy.BOUND_EACH_AXIS,
+            figurecomposer_method.MethodCallPolicy.AX_KEYWORD,
+        ),
+        controls=(
+            text_arg,
+            accepted_combo,
+            target_rejected_combo,
+            same_kwarg,
+            target_mismatch_kwarg,
+            transform_control,
+        ),
+        text_values_policy=figurecomposer_method.MethodTextValuesPolicy.POSITIONAL,
+    )
+    monkeypatch.setitem(
+        figurecomposer_method.AXES_METHODS, "transfer_source", source_spec
+    )
+    monkeypatch.setitem(
+        figurecomposer_method.AXES_METHODS, "transfer_target", target_spec
+    )
+    transfer_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="transfer_source",
+        args=("default", "ignored", "keep", "bad"),
+        kwargs={"same": 2.0, "mismatch": "skip"},
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "method_call_policy": (
+                figurecomposer_method.MethodCallPolicy.AX_KEYWORD.value
+            ),
+            "text_values": ("A", "B"),
+            "method_transform": "custom",
+            "method_transform_x": "figure",
+            "method_transform_y": "data",
+            "method_transform_expression": "ax.transData",
+        }
+    )
+
+    transfer_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        transfer_operation,
+        target_spec,
+    )
+    assert transfer_updates["method_args"] == (None, None, "keep")
+    assert transfer_updates["method_kwargs"] == {"same": 2.0}
+    assert (
+        transfer_updates["method_call_policy"]
+        == figurecomposer_method.MethodCallPolicy.AX_KEYWORD.value
+    )
+    assert transfer_updates["text_values"] == ("A", "B")
+    assert transfer_updates["method_transform"] == "custom"
+    assert transfer_updates["method_transform_x"] == "figure"
+    assert transfer_updates["method_transform_y"] == "data"
+    assert transfer_updates["method_transform_expression"] == "ax.transData"
+
+
 def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -13538,6 +14561,12 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    figurecomposer_line_profile._line_limit_update_callback(tool, "xlim")("0, 1")
+    assert tool.tool_status.operations[0].xlim == (0.0, 1.0)
+    figurecomposer_line_profile._line_limit_update_callback(tool, "ylim")("")
+    assert tool.tool_status.operations[0].ylim is None
 
     assert (
         figurecomposer_line_profile._line_placement_text("one_per_axis")
@@ -13697,19 +14726,15 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     qtbot.addWidget(tool)
     profiles = figurecomposer_line_profile._line_data_items(tool, operation)
 
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    offset_source_combo = line_page.findChild(
-        QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
-    )
-    reduce_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    reduce_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
     )
-    assert offset_source_combo is not None
     assert reduce_combo is not None
     assert reduce_combo.currentText() == "Disabled"
     assert (
-        line_page.findChild(
+        selection_page.findChild(
             QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
         )
         is None
@@ -13724,11 +14749,11 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
-    coarsen_spin = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    coarsen_spin = selection_page.findChild(
         QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
     )
-    thin_spin = line_page.findChild(
+    thin_spin = selection_page.findChild(
         QtWidgets.QSpinBox, "figureComposerProfileReduceThinSpin"
     )
     assert tool.tool_status.operations[0].line_reduce == "both"
@@ -13738,47 +14763,49 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     thin_spin.setValue(3)
     assert tool.tool_status.operations[0].line_reduce_thin == 3
     tool._replace_operation(0, operation)
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    offset_source_combo = line_page.findChild(
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    offset_source_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
     assert offset_source_combo is not None
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is not None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is not None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is None
     )
-    line_style_combo = line_page.findChild(
+    tool._select_step_section("style")
+    style_page = tool.step_editor_stack.currentWidget()
+    line_style_combo = style_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineStyleCombo"
     )
-    line_width_spin = line_page.findChild(
+    line_width_spin = style_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerLineWidthSpin"
     )
-    marker_combo = line_page.findChild(
+    marker_combo = style_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineMarkerCombo"
     )
-    marker_size_spin = line_page.findChild(
+    marker_size_spin = style_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerLineMarkerSizeSpin"
     )
-    marker_face_edit = line_page.findChild(
+    marker_face_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerFaceColorEdit"
     )
-    marker_edge_edit = line_page.findChild(
+    marker_edge_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
     )
-    marker_face_button = line_page.findChild(
+    marker_face_button = style_page.findChild(
         figurecomposer_widgets._ColorPickerButton,
         "figureComposerLineMarkerFaceColorButton",
     )
@@ -13796,10 +14823,10 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert marker_edge_edit is not None
     assert marker_edge_edit.text() == "black"
 
-    color_text_edit = line_page.findChild(
+    color_text_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
     )
-    first_color_edit = line_page.findChild(
+    first_color_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorItemEdit_0"
     )
     assert color_text_edit is not None
@@ -13821,6 +14848,12 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
 
     operation = tool.tool_status.operations[0]
 
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    offset_source_combo = other_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
+    )
+    assert offset_source_combo is not None
     _activate_combo_text(offset_source_combo, "manual")
     qtbot.waitUntil(
         lambda: (
@@ -13831,27 +14864,27 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
+    other_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "manual"
     assert tool.tool_status.operations[0].line_offset_scale == 1.0
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is not None
     )
 
-    offset_source_combo = line_page.findChild(
+    offset_source_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
     assert offset_source_combo is not None
@@ -13865,22 +14898,22 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
+    other_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "index"
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is not None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is None
     )
     tool._replace_operation(0, operation)
@@ -14016,7 +15049,7 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
                     slice_dim="cut",
@@ -14248,7 +15281,7 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
                     slice_dim="cut",
@@ -14276,16 +15309,18 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     assert operation.line_selection == {"cut": [0.0, 1.0, 2.0], "cut_width": 0.25}
     assert operation.axes.axes == ((0, 0), (0, 1), (0, 2))
 
-    tool._select_step_section("line")
+    tool._select_step_section("view")
     placement_combo = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerProfilePlacementCombo"
     )
+    assert placement_combo is not None
+    assert placement_combo.currentText() == "One profile per axis"
+
+    tool._select_step_section("other")
     normalize_combo = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
-    assert placement_combo is not None
     assert normalize_combo is not None
-    assert placement_combo.currentText() == "One profile per axis"
     assert normalize_combo.currentText() == "Each profile by maximum"
     assert "each extracted 1D profile independently" in normalize_combo.toolTip()
 
@@ -14406,7 +15441,7 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     qtbot.addWidget(tool)
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("line")
+    tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
     )
@@ -14461,9 +15496,9 @@ def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    normalize_combo = line_page.findChild(
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    normalize_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
     assert normalize_combo is not None
@@ -14505,9 +15540,9 @@ def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    color_edit = line_page.findChild(
+    tool._select_step_section("style")
+    style_page = tool.step_editor_stack.currentWidget()
+    color_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
     )
     assert color_edit is not None
@@ -14562,9 +15597,9 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    coordinate_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
     assert coordinate_combo is not None
@@ -14611,7 +15646,7 @@ def test_figure_composer_batch_line_labels_add_one_legend_per_axes_group(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
-    tool._select_step_section("line")
+    tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
     )
@@ -14647,7 +15682,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     slice_dim="eV",
                     slice_values=(0.0,),
@@ -14658,7 +15693,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     values_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
@@ -14734,7 +15769,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     assert tool._operation_editor_update_pending is False
 
 
-def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
+def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> None:
     data = _figure_composer_image_source("data")
     operation = FigureOperationState.plot_slices(
         label="image",
@@ -14760,18 +15795,18 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
-    cuts_page = tool.step_editor_stack.currentWidget()
-    dimension_combo = cuts_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    dimension_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
-    values_edit = cuts_page.findChild(
+    values_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
-    width_edit = cuts_page.findChild(
+    width_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesWidthEdit"
     )
-    slice_kwargs_edit = cuts_page.findChild(
+    slice_kwargs_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
     assert dimension_combo is not None
@@ -14795,7 +15830,7 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
     assert "beta=slice(-0.5, 0.5)" in code
 
 
-def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_cuts(
+def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
     qtbot,
 ) -> None:
     data = _figure_composer_image_source("data")
@@ -14838,7 +15873,7 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_cuts(
         lambda: not tool._operation_editor_update_pending,
         timeout=1000,
     )
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     slice_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
@@ -14861,7 +15896,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     slice_dim="eV",
                     slice_values=(0.0,),
@@ -14872,7 +15907,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     old_page = tool.step_editor_stack.currentWidget()
     active_popup: list[QtWidgets.QWidget | None] = [None]
     monkeypatch.setattr(
@@ -15686,9 +16721,9 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
         is None
     )
 
-    tool._select_step_section("cuts")
-    cuts_page = tool.step_editor_stack.currentWidget()
-    assert cuts_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    assert selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
 
@@ -16028,13 +17063,15 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert gradient_kwargs_edit.text() == 'color="C0", alpha=0.25'
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
     assert (
-        line_page.findChild(QtWidgets.QComboBox, "figureComposerProfileReduceCombo")
+        selection_page.findChild(
+            QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
+        )
         is None
     )
-    line_selection_edit = line_page.findChild(
+    line_selection_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineSelectionEdit"
     )
     assert line_selection_edit is not None
@@ -16150,8 +17187,9 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
 
     assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV")
     assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV_width")
-    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
+    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
     assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx")
+    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx_width")
     assert not ItoolPlotItem._plot_slices_qsel_key_is_editable(("bad", "key"))
 
     selected_maps_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
@@ -16300,6 +17338,46 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
         {"('bad', 'key')": 0.0},
         {"('bad', 'key')": 1.0},
     )
+
+
+def test_figure_composer_plot_slices_spaced_qsel_dimension_codegen_executes(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="spaced",
+        sources=("data",),
+        slice_dim="Track Shift",
+        slice_values=(1.0,),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    _render_figure_composer_rgba(tool)
+    code = tool.generated_code()
+    assert "Track Shift" in code
+    assert "**{" in code
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert len(namespace["axs"][0, 0].images) == 1
 
 
 def test_figure_composer_powernorm_codegen_uses_plot_kwargs(qtbot) -> None:
@@ -17247,12 +18325,19 @@ def test_manager_figure_action_new_target_creates_second_figure(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (first_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_NEW
 
             def is_new_figure(self) -> bool:
                 return True
@@ -17303,12 +18388,19 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False
@@ -17383,12 +18475,19 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False
@@ -17859,7 +18958,7 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 1),))
 
 
-def test_manager_figure_target_dialog_defaults_to_new_figure(
+def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figure(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -17886,12 +18985,77 @@ def test_manager_figure_target_dialog_defaults_to_new_figure(
         )
         qtbot.addWidget(dialog)
 
-        assert dialog.is_new_figure()
-        assert dialog.selector_stack.isHidden()
-        assert dialog.selected_target() is None
+        assert dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_ADD_STEP
+        assert not dialog.is_new_figure()
+        assert not dialog.selector_stack.isHidden()
+        assert dialog.selected_target() == (
+            figure_uid,
+            FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        )
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         assert button is not None
         assert button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_NEW)
+        )
+
+        assert dialog.is_new_figure()
+        assert dialog.selector_stack.isHidden()
+        assert dialog.selected_target() is None
+        assert button.isEnabled()
+
+
+def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="Line Source"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (figure_uid,),
+            None,
+            allow_new_figure=True,
+            source_count=1,
+            selected_figure_uid=figure_uid,
+        )
+        qtbot.addWidget(dialog)
+
+        assert (
+            dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+        )
+        assert dialog.is_replace_source()
+        assert dialog.selected_source_alias() == "line"
+        assert "line" in dialog.source_combo.currentText()
+        assert dialog.selector_stack.isHidden()
+        assert not dialog.source_combo.isHidden()
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert button is not None
+        assert button.isEnabled()
+        assert dialog._figure_source_count(None) == 0
+        assert dialog._figure_source_count("missing") == 0
+
+        class EmptyFigureNode:
+            tool_window = None
+
+        with monkeypatch.context() as context:
+            context.setattr(manager, "_child_node", lambda _uid: EmptyFigureNode())
+            assert dialog._figure_source_count(figure_uid) == 0
 
 
 def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
@@ -17933,8 +19097,9 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         )
         qtbot.addWidget(dialog)
 
-        assert dialog.is_new_figure()
-        assert dialog.selector_stack.isHidden()
+        assert dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_ADD_STEP
+        assert not dialog.is_new_figure()
+        assert not dialog.selector_stack.isHidden()
         ok_button = dialog.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
         )
@@ -17961,6 +19126,34 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
             FigureAxesSelectionState(axes=((0, 0), (0, 1))),
         )
 
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_ADD_SOURCE)
+        )
+        assert dialog.is_add_source_only()
+        assert dialog.selected_target() is None
+        assert dialog.selector_stack.isHidden()
+        assert ok_button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(
+                manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+            )
+        )
+        assert dialog.is_replace_source()
+        assert dialog.selected_source_alias() == "line"
+        assert dialog.selector_stack.isHidden()
+        assert not dialog.source_combo.isHidden()
+        assert ok_button.isEnabled()
+        dialog.source_combo.setCurrentIndex(-1)
+        dialog._selection_changed()
+        assert not ok_button.isEnabled()
+        dialog.source_combo.setCurrentIndex(0)
+        dialog._selection_changed()
+        assert ok_button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_ADD_STEP)
+        )
         dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(second_uid))
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
 
@@ -17973,6 +19166,46 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
 
         dialog.figure_combo.setItemData(dialog.figure_combo.currentIndex(), None)
         assert dialog.figure_uid() == first_uid
+
+
+def test_manager_figure_target_dialog_disables_replace_for_multiple_sources(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (figure_uid,),
+            None,
+            allow_new_figure=True,
+            source_count=2,
+            selected_figure_uid=figure_uid,
+        )
+        qtbot.addWidget(dialog)
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(
+                manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+            )
+        )
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert button is not None
+        assert not button.isEnabled()
+        assert "one ImageTool source" in dialog.status_label.text()
 
 
 def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
@@ -18250,6 +19483,545 @@ def test_manager_append_operation_uses_axes_dialog_selection(
         assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 1),)
 
 
+def test_manager_figure_action_replace_source_keeps_recipe_steps(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        operation_count = len(figure_tool.tool_status.operations)
+
+        select_tools(manager, [1])
+
+        class FakeReplaceDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+
+            def figure_uid(self) -> str:
+                return figure_uid
+
+            def selected_source_alias(self) -> str:
+                return "data_0"
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeReplaceDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(figure_tool.tool_status.operations) == operation_count
+        xr.testing.assert_identical(figure_tool.source_data()["data_0"], second)
+        [source] = figure_tool.source_states()
+        assert source.name == "data_0"
+        assert source.node_uid == manager._node_for_target(1).uid
+        assert "data_1" not in figure_tool.source_data()
+
+
+def test_manager_figure_source_row_refresh_updates_only_selected_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        original_second = figure_tool.source_data()["data_1"]
+        operations = figure_tool.tool_status.operations
+        manager._mark_workspace_clean()
+
+        updated_first = first.copy(data=np.asarray(first.data) + 100.0, deep=True)
+        updated_first.name = "first updated"
+        updated_second = second.copy(data=np.asarray(second.data) + 200.0, deep=True)
+        updated_second.name = "second updated"
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_first, manager=True, replace=0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_second, manager=True, replace=1)
+
+        buttons = _source_refresh_buttons(figure_tool)
+        assert buttons["data_0"].isEnabled()
+        assert buttons["data_1"].isEnabled()
+        with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
+            buttons["data_0"].click()
+
+        source_data = figure_tool.source_data()
+        xr.testing.assert_identical(source_data["data_0"], updated_first)
+        xr.testing.assert_identical(source_data["data_1"], original_second)
+        [source_0, source_1] = figure_tool.source_states()
+        assert source_0.name == "data_0"
+        assert source_0.node_uid == manager._node_for_target(0).uid
+        assert source_1.name == "data_1"
+        assert figure_tool.tool_status.operations == operations
+        assert "data_0" in figure_tool.generated_code()
+
+        _render_figure_composer_rgba(figure_tool)
+        namespace = _exec_generated_code(
+            figure_tool.generated_code(),
+            {"data_0": updated_first, "data_1": original_second},
+        )
+        assert isinstance(namespace["fig"], Figure)
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        manager.remove_imagetool(0)
+        buttons = _source_refresh_buttons(figure_tool)
+        assert not buttons["data_0"].isEnabled()
+        assert (
+            buttons["data_0"].toolTip()
+            == "This source is not linked to an open ImageTool"
+        )
+
+
+def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        detached = xr.DataArray(
+            np.array([1.0, 2.0]),
+            dims=("x",),
+            coords={"x": [0.0, 1.0]},
+            name="detached",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        figure_tool.add_sources(
+            (FigureSourceState(name="detached", label="Detached"),),
+            {"detached": detached},
+        )
+        operations = figure_tool.tool_status.operations
+        manager._mark_workspace_clean()
+
+        updated_first = first.copy(data=np.asarray(first.data) + 100.0, deep=True)
+        updated_first.name = "first updated"
+        updated_second = second.copy(data=np.asarray(second.data) + 200.0, deep=True)
+        updated_second.name = "second updated"
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_first, manager=True, replace=0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_second, manager=True, replace=1)
+
+        buttons = _source_refresh_buttons(figure_tool)
+        assert buttons["data_0"].isEnabled()
+        assert buttons["data_1"].isEnabled()
+        assert not buttons["detached"].isEnabled()
+        assert figure_tool.refresh_sources_button.isEnabled()
+        figure_tool.refresh_sources_button.click()
+
+        source_data = figure_tool.source_data()
+        xr.testing.assert_identical(source_data["data_0"], updated_first)
+        xr.testing.assert_identical(source_data["data_1"], updated_second)
+        xr.testing.assert_identical(source_data["detached"], detached)
+        assert figure_tool.tool_status.operations == operations
+        assert figure_tool.source_status_label.text() == ""
+        assert figure_tool.source_status_label.isHidden()
+        assert figure_tool._operation_render_errors == {}
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+
+def test_manager_figure_source_helper_edge_contracts(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="data",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        image_uid = manager._node_for_target(0).uid
+        child = itool(data.sum("y"), manager=False, execute=False)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(child, 0, show=False)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        select_child_tool(manager, figure_uid)
+        assert manager._selected_figure_uid_for_figure_dialog() == figure_uid
+
+        source_states = figure_tool.source_states()
+        source_data = figure_tool.source_data()
+        replacement_source = FigureSourceState(
+            name="replacement",
+            label="replacement",
+            node_uid=image_uid,
+        )
+        assert not manager._add_sources_to_figure(
+            "missing",
+            source_states,
+            source_data,
+            show=False,
+        )
+        assert manager._figure_source_state(figure_tool, "missing") is None
+        assert manager._figure_source_live_node("missing", "data_0") is None
+        assert not manager._refresh_figure_source(figure_uid, "missing")
+        assert not manager._replace_figure_source(
+            figure_uid,
+            "data_0",
+            (),
+            {},
+            show=False,
+        )
+        assert not manager._replace_figure_source(
+            figure_uid,
+            "data_0",
+            (replacement_source,),
+            {},
+            show=False,
+        )
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                manager,
+                "_is_figure_uid",
+                lambda uid: uid in {figure_uid, child_uid},
+            )
+            assert not manager._add_sources_to_figure(
+                child_uid,
+                source_states,
+                source_data,
+                show=False,
+            )
+            assert not manager._replace_figure_source(
+                child_uid,
+                "data_0",
+                (replacement_source,),
+                {"replacement": data},
+                show=False,
+            )
+            assert manager._figure_source_live_node(child_uid, "data_0") is None
+            assert not manager._refresh_figure_source(child_uid, "data_0")
+
+        with monkeypatch.context() as context:
+            context.setattr(figure_tool, "replace_source", lambda *_args: False)
+            assert not manager._replace_figure_source(
+                figure_uid,
+                "data_0",
+                (replacement_source,),
+                {"replacement": data},
+                show=False,
+            )
+            assert not manager._refresh_figure_source(figure_uid, "data_0")
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                manager,
+                "_figure_source_live_node",
+                lambda *_args: manager._node_for_target(0),
+            )
+            context.setattr(manager, "_is_figure_uid", lambda uid: uid == child_uid)
+            assert not manager._refresh_figure_source(child_uid, "data_0")
+
+        with monkeypatch.context() as context:
+            context.setattr(manager, "_figure_uids", lambda: ("missing",))
+            manager._refresh_figure_source_controls()
+
+        with monkeypatch.context() as context:
+            context.setattr(manager, "_selected_figure_source_targets", lambda: (0,))
+            context.setattr(
+                manager,
+                "_figure_sources_from_targets",
+                lambda _targets: ((), (), {}),
+            )
+            manager.create_figure_from_selection()
+
+        dialog_events: list[str] = []
+
+        class AliasNoneDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                _figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
+            ) -> None:
+                assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid == figure_uid
+                dialog_events.append("init")
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+
+            def selected_source_alias(self) -> str | None:
+                dialog_events.append("alias")
+                return None
+
+        with monkeypatch.context() as context:
+            context.setattr(manager, "_selected_figure_source_targets", lambda: (0,))
+            context.setattr(manager, "_figure_uids", lambda: (figure_uid,))
+            context.setattr(
+                manager,
+                "_figure_sources_from_targets",
+                lambda _targets: ((0,), source_states, source_data),
+            )
+            context.setattr(
+                manager,
+                "_selected_figure_uid_for_figure_dialog",
+                lambda: figure_uid,
+            )
+            context.setattr(
+                manager_mainwindow,
+                "_AppendFigureTargetDialog",
+                AliasNoneDialog,
+            )
+            manager.create_figure_from_selection()
+        assert dialog_events == ["init", "alias"]
+
+
+def test_manager_figure_action_add_source_only_keeps_recipe_steps(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        operation_count = len(figure_tool.tool_status.operations)
+        workspace_path = tmp_path / "add-source-only-delta.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+
+        select_tools(manager, [1])
+
+        class FakeSourceOnlyDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_SOURCE
+
+            def figure_uid(self) -> str:
+                return figure_uid
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeSourceOnlyDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(figure_tool.tool_status.operations) == operation_count
+        xr.testing.assert_identical(figure_tool.source_data()["data_1"], second)
+        assert {source.name for source in figure_tool.source_states()} == {
+            "data_0",
+            "data_1",
+        }
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        manager._save_workspace_document(workspace_path)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        xr.testing.assert_identical(loaded_tool.source_data()["data_1"], second)
+
+
+def test_manager_figure_remove_unused_source_persists_workspace(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        _resolved_targets, sources, source_data = manager._figure_sources_from_targets(
+            (1,)
+        )
+        [source] = sources
+        manager._add_sources_to_figure(figure_uid, sources, source_data, show=False)
+        assert source.name in figure_tool.source_data()
+        manager._mark_workspace_clean()
+
+        buttons = _source_remove_buttons(figure_tool)
+        assert buttons[source.name].isEnabled()
+        with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
+            buttons[source.name].click()
+
+        assert source.name not in figure_tool.source_data()
+        assert source.name not in {
+            source.name for source in figure_tool.source_states()
+        }
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        workspace_path = tmp_path / "remove-unused-figure-source.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        assert source.name not in loaded_tool.source_data()
+        assert source.name not in {
+            source.name for source in loaded_tool.source_states()
+        }
+
+
 def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
     qtbot,
     monkeypatch,
@@ -18297,12 +20069,19 @@ def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 2
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False
