@@ -1452,6 +1452,9 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
+        tool_name = "dtool"
+
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -1462,6 +1465,8 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
     data1.name = "right"
     child_data = data0 + 10.0
     child_data.name = "child"
+    second_child_data = data0 + 20.0
+    second_child_data.name = "second"
 
     with manager_context() as manager:
         manager.show()
@@ -1471,31 +1476,68 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        intermediate_uid = manager.add_childtool(
-            erlab.interactive.utils.ToolWindow(), 0, show=False
-        )
+        intermediate_tool = _ConsoleTreeTool()
+        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        intermediate_node = manager._child_node(intermediate_uid)
+        intermediate_node.name = "Derivative"
         child_tool = itool(child_data, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
         child_uid = manager.add_imagetool_child(
             child_tool, intermediate_uid, show=False
         )
         child_node = manager._child_node(child_uid)
+        second_child_tool = itool(second_child_data, manager=False, execute=False)
+        assert isinstance(second_child_tool, erlab.interactive.imagetool.ImageTool)
+        second_child_uid = manager.add_imagetool_child(
+            second_child_tool, intermediate_uid, show=False
+        )
 
         shell = manager.console._console_widget.kernel_manager.kernel.shell
 
         manager.console._console_widget.execute("child_handles = tools[0].children")
         child_handles = shell.user_ns["child_handles"]
         assert len(child_handles) == 1
-        assert "[0]" in repr(child_handles)
-        assert child_node.name in repr(child_handles)
+        assert (
+            repr(child_handles) == "Children for ImageTool 0:\n"
+            "└─ [0] dtool: Derivative\n"
+            "   ├─ [0] ImageTool 0.0.0: child\n"
+            "   └─ [1] ImageTool 0.0.1: second"
+        )
+        intermediate_handle = child_handles[0]
+        assert not intermediate_handle.is_imagetool
+        assert intermediate_handle.uid == intermediate_uid
+        assert intermediate_handle.kind == "dtool"
+        assert intermediate_handle.name == "Derivative"
+        assert intermediate_handle.window is intermediate_tool
+        assert len(intermediate_handle.children) == 2
+        assert len(intermediate_handle.imagetool_children) == 2
+
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            _ = intermediate_handle.data
+
+        tools_namespace = manager_console.ToolsNamespace(manager)
+        top_left = tools_namespace[0]
+        top_right = tools_namespace[1]
+        assert top_left is not None
+        assert top_right is not None
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            top_left.children[0] - top_right
 
         manager.console._console_widget.execute(
-            "isinstance(tools[0].children[0].data, xr.DataArray)"
+            "isinstance(tools[0].children[0].children[0].data, xr.DataArray)"
         )
         assert shell.user_ns["_"] is True
-        xr.testing.assert_identical(child_handles[0].data, child_data)
+        first_nested_child = intermediate_handle.children[0]
+        assert first_nested_child.is_imagetool
+        xr.testing.assert_identical(first_nested_child.data, child_data)
+        xr.testing.assert_identical(
+            top_left.imagetool_children[1].data,
+            second_child_data,
+        )
 
-        manager.console._console_widget.execute("tools[0].children[0] - tools[1]")
+        manager.console._console_widget.execute(
+            "tools[0].children[0].children[0] - tools[1]"
+        )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data,
@@ -1504,7 +1546,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
-            "data_0_0",
+            "data_0_0_0",
             "data_1",
         ]
         assert [source.node_uid for source in provenance.script_inputs] == [
@@ -1546,6 +1588,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
             lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
             timeout=5000,
         )
+        assert intermediate_node._childtool_indices == [second_child_uid]
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()

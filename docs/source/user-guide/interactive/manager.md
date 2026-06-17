@@ -446,12 +446,21 @@ The console exposes a `tools` list containing a provenance-aware handle for ever
 ImageTool. These handles are not {class}`xarray.DataArray` objects, but they support
 many of the same operations and keep track of the manager history. For example:
 
+```{versionchanged} 3.24.0
+`tools[i].children` follows the manager tree exactly, including analysis-tool
+rows. Use `tools[i].imagetool_children` when you want only ImageTool rows that
+can be used directly in DataArray calculations.
+```
+
   ```python
   # Access the underlying DataArray of the first window
   tools[0].data
 
-  # Inspect and access ImageTool children under the first window
+  # Inspect the child rows under the first window
   tools[0].children
+
+  # Access ImageTool children under the first window, skipping analysis-tool rows
+  tools[0].imagetool_children
 
   # Create an ImageTool containing the difference of the first two windows
   tools[0] - tools[1]
@@ -461,7 +470,7 @@ many of the same operations and keep track of the manager history. For example:
   era.transform.rotate(tools[0], 2.0, axes=("alpha", "eV"), reshape=False)
 
   # Use a child ImageTool in a similar calculation
-  tools[0].children[0] - tools[1]
+  tools[0].imagetool_children[0] - tools[1]
 
   # xarray module calls also keep manager inputs when they receive tool handles
   xr.concat([tools[0], tools[1]], dim="scan")
