@@ -1690,7 +1690,7 @@ class ItoolPlotItem(pg.PlotItem):
         if not isinstance(key, str):
             return False
         dim_name = key.removesuffix("_width") if key.endswith("_width") else key
-        return dim_name.isidentifier() and not dim_name.endswith("_idx")
+        return bool(dim_name) and not dim_name.endswith("_idx")
 
     @staticmethod
     def _show_plot_slices_selection_error(
@@ -1818,7 +1818,7 @@ class ItoolPlotItem(pg.PlotItem):
                     FigureComposerPlotSlicesSelectionError,
                 )
 
-                raise FigureComposerPlotSlicesSelectionError from exc
+                raise FigureComposerPlotSlicesSelectionError(str(exc)) from exc
             result = None
             selection_exprs = [""]
             variable_dim = None
@@ -1827,16 +1827,33 @@ class ItoolPlotItem(pg.PlotItem):
             }
             selection_count = self.slicer_area.n_cursors
 
+        invalid_qsel_keys = (
+            tuple(
+                key for key in result if not self._plot_slices_qsel_key_is_editable(key)
+            )
+            if result is not None
+            else ()
+        )
         if self.is_image and (
-            selection_exprs is not None
-            or result is None
-            or any(not self._plot_slices_qsel_key_is_editable(key) for key in result)
+            selection_exprs is not None or result is None or invalid_qsel_keys
         ):
             from erlab.interactive._figurecomposer._exceptions import (
                 FigureComposerPlotSlicesSelectionError,
             )
 
-            raise FigureComposerPlotSlicesSelectionError
+            detail = None
+            if invalid_qsel_keys:
+                detail = "Unsupported qsel selection keys: " + ", ".join(
+                    repr(key) for key in invalid_qsel_keys
+                )
+            elif selection_exprs is not None:
+                detail = (
+                    "Selection requires per-cursor expressions that cannot be "
+                    "edited by plot_slices."
+                )
+            elif result is None:
+                detail = "Selection did not produce qsel coordinates for plot_slices."
+            raise FigureComposerPlotSlicesSelectionError(detail)
 
         map_selections = (
             self._figure_composer_map_selections(
@@ -2400,11 +2417,6 @@ class ItoolPlotItem(pg.PlotItem):
                     "gamma": color_props["gamma"],
                     "high_contrast": color_props["high_contrast"],
                     "zero_centered": color_props["zero_centered"],
-                    "transpose": (
-                        self.is_image
-                        and len(data.dims) >= 2
-                        and data.dims[0] != self.axis_dims[0]
-                    ),
                     "file_path": self.slicer_area._file_path,
                 }
             )

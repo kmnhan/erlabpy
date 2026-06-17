@@ -929,6 +929,33 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     assert "sample_temp_idx" not in operation.model_dump_json()
 
 
+def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="map",
+    )
+    tool = erlab.interactive.itool(data, manager=False, execute=False)
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+    operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
+
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.map_selections == ()
+    assert operation.slice_dim == "Track Shift"
+    assert operation.slice_values == (1.0,)
+    assert operation.slice_kwargs == {}
+
+
 def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
     tool = erlab.interactive.itool(
         _unsupported_plot_slices_data(), manager=False, execute=False
@@ -938,8 +965,46 @@ def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
 
     _set_unsupported_plot_slices_cursor_state(tool)
 
-    with pytest.raises(FigureComposerPlotSlicesSelectionError):
+    with pytest.raises(
+        FigureComposerPlotSlicesSelectionError,
+        match="Cannot plot when more than one dimension",
+    ):
         tool.slicer_area.images[0].figure_composer_operation(source_name="data")
+
+
+def test_imagetool_plot_slices_selection_warning_shows_error_detail(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = erlab.interactive.itool(
+        _unsupported_plot_slices_data(), manager=False, execute=False
+    )
+    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(tool)
+
+    _set_unsupported_plot_slices_cursor_state(tool)
+
+    with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
+        tool.slicer_area.images[0].figure_composer_operation(source_name="data")
+
+    messages: list[tuple[QtWidgets.QWidget | None, str, str]] = []
+
+    def warning(
+        parent: QtWidgets.QWidget | None, title: str, text: str
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        messages.append((parent, title, text))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warning)
+
+    tool.slicer_area.images[0]._show_plot_slices_selection_error(
+        tool.slicer_area, exc_info.value
+    )
+
+    assert len(messages) == 1
+    assert messages[0][0] is tool.slicer_area
+    assert messages[0][1] == "Cannot Create Plot Slices Figure"
+    assert "Details:" in messages[0][2]
+    assert "Cannot plot when more than one dimension" in messages[0][2]
 
 
 def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
@@ -16150,8 +16215,9 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
 
     assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV")
     assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV_width")
-    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
+    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
     assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx")
+    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx_width")
     assert not ItoolPlotItem._plot_slices_qsel_key_is_editable(("bad", "key"))
 
     selected_maps_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
@@ -16300,6 +16366,46 @@ def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> No
         {"('bad', 'key')": 0.0},
         {"('bad', 'key')": 1.0},
     )
+
+
+def test_figure_composer_plot_slices_spaced_qsel_dimension_codegen_executes(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="spaced",
+        sources=("data",),
+        slice_dim="Track Shift",
+        slice_values=(1.0,),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    _render_figure_composer_rgba(tool)
+    code = tool.generated_code()
+    assert "Track Shift" in code
+    assert "**{" in code
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert len(namespace["axs"][0, 0].images) == 1
 
 
 def test_figure_composer_powernorm_codegen_uses_plot_kwargs(qtbot) -> None:
