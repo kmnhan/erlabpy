@@ -446,12 +446,6 @@ The console exposes a `tools` list containing a provenance-aware handle for ever
 ImageTool. These handles are not {class}`xarray.DataArray` objects, but they support
 many of the same operations and keep track of the manager history. For example:
 
-```{versionchanged} 3.24.0
-`tools[i].children` follows the manager tree exactly, including analysis-tool
-rows. Use `tools[i].imagetool_children` when you want only ImageTool rows that
-can be used directly in DataArray calculations.
-```
-
   ```python
   # Access the underlying DataArray of the first window
   tools[0].data
