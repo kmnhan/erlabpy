@@ -2007,7 +2007,9 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
         )
 
         def _remove_originals(dialog: _ConcatDialog) -> None:
-            dialog._remove_original_check.setChecked(True)
+            dialog._sources_combo.setCurrentIndex(
+                dialog._sources_combo.findData(_ConcatDialog._SOURCES_REMOVE)
+            )
 
         accept_dialog(manager.concat_action.trigger, pre_call=_remove_originals)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
@@ -2019,6 +2021,190 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
         xr.testing.assert_identical(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
+        )
+
+
+def test_manager_concat_can_replace_source_tool_and_preserve_children(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 10.0
+    expected = xr.concat(
+        [data0, data1],
+        dim="concat_dim",
+        coords="minimal",
+        compat="override",
+        join="outer",
+        combine_attrs="override",
+    ).assign_coords(concat_dim=np.arange(2))
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        old_root_provenance = provenance.full_data()
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(
+            old_root_provenance
+        )
+
+        compatible_child = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(data0.copy(deep=True), manager=False, execute=False),
+        )
+        incompatible_child = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(data0.transpose("y", "x"), manager=False, execute=False),
+        )
+        compatible_uid = manager.add_imagetool_child(
+            compatible_child,
+            0,
+            source_spec=provenance.full_data(),
+            source_auto_update=True,
+            show=False,
+        )
+        incompatible_uid = manager.add_imagetool_child(
+            incompatible_child,
+            0,
+            source_spec=provenance.full_data(
+                provenance.TransposeOperation(dims=("y", "x"))
+            ),
+            source_auto_update=True,
+            show=False,
+        )
+
+        select_tools(manager, [0, 1])
+
+        def _replace_first_source(dialog: _ConcatDialog) -> None:
+            assert dialog.result_mode() == _ConcatDialog._RESULT_NEW
+            assert dialog.sources_mode() == _ConcatDialog._SOURCES_KEEP
+            assert not dialog._replace_target_combo.isEnabled()
+
+            dialog._result_combo.setCurrentIndex(
+                dialog._result_combo.findData(_ConcatDialog._RESULT_REPLACE)
+            )
+            assert dialog._replace_target_combo.isEnabled()
+            dialog._replace_target_combo.setCurrentIndex(
+                dialog._replace_target_combo.findData(0)
+            )
+
+        accept_dialog(manager.concat_action.trigger, pre_call=_replace_first_source)
+        qtbot.wait_until(
+            lambda: manager.get_imagetool(compatible_uid).slicer_area.data.identical(
+                expected
+            ),
+            timeout=5000,
+        )
+
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+        xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, data1)
+        assert compatible_uid in manager._tool_graph.root_wrappers[0]._childtool_indices
+        assert (
+            incompatible_uid in manager._tool_graph.root_wrappers[0]._childtool_indices
+        )
+
+        compatible_node = manager._child_node(compatible_uid)
+        incompatible_node = manager._child_node(incompatible_uid)
+        assert compatible_node.source_state == "fresh"
+        assert incompatible_node.source_state == "unavailable"
+        xr.testing.assert_identical(
+            manager.get_imagetool(incompatible_uid).slicer_area.data,
+            data0.transpose("y", "x"),
+        )
+
+        replacement_wrapper = manager._tool_graph.root_wrappers[0]
+        replacement_provenance = replacement_wrapper.provenance_spec
+        assert replacement_provenance is not None
+        assert manager.dependency_status_for_uid(replacement_wrapper.uid) == "current"
+        assert [source.node_uid for source in replacement_provenance.script_inputs] == [
+            None,
+            manager._tool_graph.root_wrappers[1].uid,
+        ]
+        assert [
+            source.node_snapshot_token
+            for source in replacement_provenance.script_inputs
+        ] == [
+            None,
+            manager._tool_graph.root_wrappers[1].snapshot_token,
+        ]
+        assert (
+            replacement_provenance.script_inputs[0].parsed_provenance_spec()
+            == old_root_provenance
+        )
+
+
+def test_manager_concat_replace_can_remove_unpreserved_sources(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 10.0
+    expected = xr.concat(
+        [data0, data1],
+        dim="concat_dim",
+        coords="minimal",
+        compat="override",
+        join="outer",
+        combine_attrs="override",
+    ).assign_coords(concat_dim=np.arange(2))
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        child = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(data0.copy(deep=True), manager=False, execute=False),
+        )
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            source_spec=provenance.full_data(),
+            source_auto_update=True,
+            show=False,
+        )
+
+        select_tools(manager, [0, 1])
+
+        def _replace_first_source_and_remove_others(dialog: _ConcatDialog) -> None:
+            dialog._result_combo.setCurrentIndex(
+                dialog._result_combo.findData(_ConcatDialog._RESULT_REPLACE)
+            )
+            dialog._replace_target_combo.setCurrentIndex(
+                dialog._replace_target_combo.findData(0)
+            )
+            dialog._sources_combo.setCurrentIndex(
+                dialog._sources_combo.findData(_ConcatDialog._SOURCES_REMOVE)
+            )
+
+        accept_dialog(
+            manager.concat_action.trigger,
+            pre_call=_replace_first_source_and_remove_others,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        assert list(manager._tool_graph.root_wrappers) == [0]
+        assert child_uid in manager._tool_graph.nodes
+        assert child_uid in manager._tool_graph.root_wrappers[0]._childtool_indices
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+        xr.testing.assert_identical(
+            manager.get_imagetool(child_uid).slicer_area.data,
+            expected,
         )
 
 

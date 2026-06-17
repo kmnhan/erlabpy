@@ -222,7 +222,10 @@ class _LineageController:
         return f"data_{suffix}"
 
     def _script_input_for_node(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        detached_input_uid: str | None = None,
     ) -> provenance.ScriptInput:
         displayed_provenance = node.displayed_provenance_spec
         provenance_spec = (
@@ -236,6 +239,12 @@ class _LineageController:
             label = node.display_text
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
+        if node.uid == detached_input_uid:
+            return provenance.ScriptInput(
+                name=self._manager._script_input_name_for_node(node),
+                label=label,
+                provenance_spec=provenance_spec,
+            )
         return provenance.ScriptInput(
             name=self._manager._script_input_name_for_node(node),
             label=label,
@@ -252,6 +261,7 @@ class _LineageController:
         operation_code: str,
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
+        detached_input_uid: str | None = None,
     ) -> provenance.ToolProvenanceSpec:
         return provenance.script(
             provenance.ScriptCodeOperation(
@@ -262,7 +272,8 @@ class _LineageController:
             active_name=active_name,
             script_inputs=tuple(
                 self._manager._script_input_for_node(
-                    self._manager._node_for_target(target)
+                    self._manager._node_for_target(target),
+                    detached_input_uid=detached_input_uid,
                 )
                 for target in input_targets
             ),
