@@ -2234,7 +2234,8 @@ class ImageToolManager(_ImageToolManagerBase):
             return None
         window = node.window
         if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return None
+            # Invalid Qt wrappers are binding- and lifetime-dependent.
+            return None  # pragma: no cover
         return node
 
     def _can_refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:

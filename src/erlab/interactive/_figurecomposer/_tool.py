@@ -1713,7 +1713,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _clear_source_list_widgets(self) -> None:
         for row in range(self.source_list.topLevelItemCount()):
             item = self.source_list.topLevelItem(row)
-            if item is None:
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
                 continue
             for column in range(self.source_list.columnCount()):
                 widget = self.source_list.itemWidget(item, column)
@@ -1875,7 +1876,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         has_refreshable_source = False
         for row in range(self.source_list.topLevelItemCount()):
             item = self.source_list.topLevelItem(row)
-            if item is None:
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
                 continue
             source_name = item.data(
                 _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
@@ -2011,7 +2013,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         for row in range(self.source_list.topLevelItemCount()):
             item = self.source_list.topLevelItem(row)
-            if item is None:
+            if item is None:  # pragma: no cover
+                # Qt can report stale rows during teardown.
                 continue
             source_name = item.data(
                 _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole

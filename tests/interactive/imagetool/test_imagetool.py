@@ -25,6 +25,9 @@ import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive._figurecomposer import FigureOperationKind, FigureOperationState
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool, provenance
@@ -1613,6 +1616,40 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     assert operation.slice_dim == "Track Shift"
     assert operation.slice_values == (2.0,)
     assert operation.map_selections == ()
+
+    win.close()
+
+
+def test_figure_composer_operation_reports_uneditable_plot_slices_details(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"], execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    cases = (
+        (
+            ({("bad", "key"): 0.0}, None, None, set()),
+            "Unsupported qsel selection keys: ('bad', 'key')",
+        ),
+        (
+            ({"beta": 0.0}, ["data.qsel(beta=0.0)"], None, {"beta"}),
+            "Selection requires per-cursor expressions",
+        ),
+        (
+            (None, None, None, set()),
+            "Selection did not produce qsel coordinates",
+        ),
+    )
+    for plan, detail in cases:
+        monkeypatch.setattr(
+            main_image,
+            "_multicursor_selection_plan",
+            lambda _plan=plan, **_kwargs: _plan,
+        )
+        with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
+            main_image.figure_composer_operation(source_name="data")
+        assert detail in str(exc_info.value)
 
     win.close()
 
