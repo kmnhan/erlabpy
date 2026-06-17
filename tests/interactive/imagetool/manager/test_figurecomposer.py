@@ -321,6 +321,18 @@ def _source_refresh_buttons(
     }
 
 
+def _source_remove_buttons(
+    tool: FigureComposerTool,
+) -> dict[str, QtWidgets.QToolButton]:
+    return {
+        str(source_name): button
+        for button in tool.source_list.findChildren(
+            QtWidgets.QToolButton, "figureComposerRemoveSourceButton"
+        )
+        if (source_name := button.property("figure_source_name")) is not None
+    }
+
+
 def _plot_source_move_buttons(
     tool: FigureComposerTool,
 ) -> dict[tuple[str, str], QtWidgets.QToolButton]:
@@ -752,6 +764,138 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
 
     tool.refresh_sources_button.click()
     assert refreshed[-1] == ("many", ("data_0",))
+
+
+def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> None:
+    image = _figure_composer_image_source("image")
+    profile = _figure_composer_profile_source("profile")
+    unused = xr.DataArray(
+        np.array([10.0, 11.0]),
+        dims=("q",),
+        coords={"q": [0.0, 1.0]},
+        name="unused",
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: image"),
+                FigureSourceState(name="profile", label="Profile"),
+                FigureSourceState(name="unused", label="Unused"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.line(
+                    label="profile",
+                    source="profile",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": image, "profile": profile, "unused": unused},
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    buttons = _source_remove_buttons(tool)
+    assert set(buttons) == {"data_0", "profile", "unused"}
+    assert buttons["unused"].property("figure_source_name") == "unused"
+    assert buttons["unused"].accessibleName() == "Remove Source"
+    assert not buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == "This source is used by one or more steps"
+    assert not buttons["profile"].isEnabled()
+    assert buttons["profile"].toolTip() == "This source is used by one or more steps"
+    assert buttons["unused"].isEnabled()
+    assert buttons["unused"].toolTip() == "Remove “Unused” from this figure"
+
+    before_status = tool.tool_status
+    before_source_data = tool.source_data()
+    buttons["profile"].click()
+    assert tool.tool_status == before_status
+    assert set(tool.source_data()) == set(before_source_data)
+    assert not tool.remove_source("profile")
+    assert not tool.remove_source("missing")
+
+
+def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> None:
+    image = _figure_composer_image_source("image")
+    extra = xr.DataArray(
+        np.array([1.0, 2.0]),
+        dims=("q",),
+        coords={"q": [0.0, 1.0]},
+        name="extra",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data_0",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: image"),
+                FigureSourceState(name="extra", label="Extra"),
+            ),
+            operations=(operation,),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": image, "extra": extra},
+    )
+    qtbot.addWidget(tool)
+    data_changed: list[None] = []
+    info_changed: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changed.append(None))
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+
+    assert not tool.remove_source("data_0")
+    assert tool.remove_source("extra")
+
+    assert data_changed == [None]
+    assert info_changed == [None]
+    assert tuple(source.name for source in tool.source_states()) == ("data_0",)
+    assert set(tool.source_data()) == {"data_0"}
+    assert tool.tool_status.operations == (operation,)
+    assert tool.source_status_label.text() == ""
+    buttons = _source_remove_buttons(tool)
+    assert set(buttons) == {"data_0"}
+    assert not buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == "This source is used by one or more steps"
+
+    _render_figure_composer_rgba(tool)
+    assert tool._operation_render_errors == {}
+    namespace = _exec_generated_code(tool.generated_code(), {"data_0": image})
+    assert isinstance(namespace["fig"], Figure)
+    restored = FigureComposerTool(
+        image,
+        recipe=tool.tool_status,
+        source_data=tool.source_data(),
+    )
+    qtbot.addWidget(restored)
+    assert tuple(source.name for source in restored.source_states()) == ("data_0",)
+    assert set(restored.source_data()) == {"data_0"}
+
+    assert tool.undoable
+    tool.undo()
+    assert tuple(source.name for source in tool.source_states()) == ("data_0", "extra")
+    xr.testing.assert_identical(tool.source_data()["extra"], extra)
+    assert tool.redoable
+    tool.redo()
+    assert tuple(source.name for source in tool.source_states()) == ("data_0",)
+    assert set(tool.source_data()) == {"data_0"}
+    tool._refresh_source_list()
+    assert set(_source_remove_buttons(tool)) == {"data_0"}
 
 
 def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
@@ -19156,6 +19300,74 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
         loaded_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(loaded_tool, FigureComposerTool)
         xr.testing.assert_identical(loaded_tool.source_data()["data_1"], second)
+
+
+def test_manager_figure_remove_unused_source_persists_workspace(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        _resolved_targets, sources, source_data = manager._figure_sources_from_targets(
+            (1,)
+        )
+        [source] = sources
+        manager._add_sources_to_figure(figure_uid, sources, source_data, show=False)
+        assert source.name in figure_tool.source_data()
+        manager._mark_workspace_clean()
+
+        buttons = _source_remove_buttons(figure_tool)
+        assert buttons[source.name].isEnabled()
+        with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
+            buttons[source.name].click()
+
+        assert source.name not in figure_tool.source_data()
+        assert source.name not in {
+            source.name for source in figure_tool.source_states()
+        }
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        workspace_path = tmp_path / "remove-unused-figure-source.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        assert source.name not in loaded_tool.source_data()
+        assert source.name not in {
+            source.name for source in loaded_tool.source_states()
+        }
 
 
 def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
