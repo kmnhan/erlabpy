@@ -4,7 +4,7 @@ import gc
 import json
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import matplotlib as mpl
@@ -306,6 +306,18 @@ def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckB
         str(source_name): check
         for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
         if (source_name := check.property("figure_source_name")) is not None
+    }
+
+
+def _source_refresh_buttons(
+    tool: FigureComposerTool,
+) -> dict[str, QtWidgets.QToolButton]:
+    return {
+        str(source_name): button
+        for button in tool.source_list.findChildren(
+            QtWidgets.QToolButton, "figureComposerRefreshSourceButton"
+        )
+        if (source_name := button.property("figure_source_name")) is not None
     }
 
 
@@ -616,6 +628,11 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
+    assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
+    assert first_item.font(0).bold()
+    second_item = tool.source_list.topLevelItem(1)
+    assert second_item is not None
+    assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -653,6 +670,88 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
+def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
+    qtbot,
+) -> None:
+    image = _figure_composer_image_source("image")
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(
+                    name="data_0",
+                    label="ImageTool 0: image",
+                    node_uid="node-0",
+                ),
+                FigureSourceState(name="profile", label="Detached"),
+            ),
+            operations=(),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": image, "profile": profile},
+    )
+    qtbot.addWidget(tool)
+
+    buttons = _source_refresh_buttons(tool)
+    assert set(buttons) == {"data_0", "profile"}
+    assert buttons["data_0"].property("figure_source_name") == "data_0"
+    assert buttons["data_0"].accessibleName() == "Refresh Source"
+    assert not buttons["data_0"].isEnabled()
+    assert (
+        buttons["data_0"].toolTip() == "This source is not linked to an open ImageTool"
+    )
+    assert tool.refresh_sources_button.accessibleName() == "Refresh Sources"
+    assert not tool.refresh_sources_button.isEnabled()
+    assert tool.refresh_sources_button.toolTip() == (
+        "No sources are linked to open ImageTools"
+    )
+
+    refreshed: list[tuple[str, str | tuple[str, ...]]] = []
+
+    def can_refresh_source(name: str) -> bool:
+        return name == "data_0"
+
+    def refresh_source(name: str) -> bool:
+        refreshed.append(("one", name))
+        return True
+
+    def refresh_sources(names: Sequence[str]) -> int:
+        refreshed.append(("many", tuple(names)))
+        return len(names)
+
+    def source_label(name: str) -> str | None:
+        return "ImageTool 0: image" if name == "data_0" else None
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=can_refresh_source,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_sources,
+        source_label=source_label,
+    )
+
+    buttons = _source_refresh_buttons(tool)
+    assert buttons["data_0"].isEnabled()
+    assert buttons["data_0"].toolTip() == (
+        "Refresh “ImageTool 0: image” from ImageTool 0: image"
+    )
+    assert not buttons["profile"].isEnabled()
+    assert buttons["profile"].toolTip() == (
+        "This source is not linked to an open ImageTool"
+    )
+    assert tool.refresh_sources_button.isEnabled()
+    assert tool.refresh_sources_button.toolTip() == (
+        "Refresh all sources linked to open ImageTools"
+    )
+
+    buttons["data_0"].click()
+    assert refreshed[-1] == ("one", "data_0")
+
+    tool.refresh_sources_button.click()
+    assert refreshed[-1] == ("many", ("data_0",))
+
+
 def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
     source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
     assert (
@@ -678,6 +777,100 @@ def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
             disambiguate=True,
         )
         == "ImageTool (data_0)"
+    )
+
+
+def test_figure_composer_replace_source_preserves_alias_and_generated_code(
+    qtbot, monkeypatch
+) -> None:
+    original = _figure_composer_image_source("original")
+    replacement = original.copy(
+        data=np.asarray(original.data) + 10.0,
+        deep=True,
+    )
+    replacement.name = "replacement"
+    old_snapshot_id = "old-snapshot"
+    new_snapshot_id = "new-snapshot"
+    tool = FigureComposerTool(
+        original,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(
+                    name="data_0",
+                    label="ImageTool 0: original",
+                    node_uid="old-node",
+                    node_snapshot_token=old_snapshot_id,
+                    provenance_spec={"source": "old"},
+                ),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.line(
+                    label="profile",
+                    source="data_0",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "line_selection": {
+                            "eV": 0.0,
+                            "beta": float(original.coords["beta"].values[0]),
+                        },
+                        "line_x": "alpha",
+                    }
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": original},
+    )
+    qtbot.addWidget(tool)
+
+    replaced = tool.replace_source(
+        "data_0",
+        FigureSourceState(
+            name="data_1",
+            label="ImageTool 1: replacement",
+            node_uid="new-node",
+            node_snapshot_token=new_snapshot_id,
+            provenance_spec={"source": "new"},
+        ),
+        replacement,
+    )
+
+    assert replaced is True
+    [source] = tool.source_states()
+    assert source.name == "data_0"
+    assert source.label == "ImageTool 1: replacement"
+    assert source.node_uid == "new-node"
+    assert source.node_snapshot_token == new_snapshot_id
+    assert source.provenance_spec == {"source": "new"}
+    xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
+    assert tool.tool_status.operations[0].sources == ("data_0",)
+    assert tool.tool_status.operations[1].line_source == "data_0"
+
+    _render_figure_composer_rgba(tool)
+    assert tool._operation_render_errors == {}
+
+    captured_maps: list[tuple[xr.DataArray, ...]] = []
+
+    def capture_plot_slices(maps, **_kwargs):
+        captured_maps.append(tuple(maps))
+
+    monkeypatch.setattr(eplt, "plot_slices", capture_plot_slices)
+    exec(tool.generated_code(), {"data_0": replacement})  # noqa: S102
+
+    assert captured_maps
+    captured = captured_maps[0][0]
+    xr.testing.assert_identical(
+        captured,
+        replacement.sel(eV=float(captured.coords["eV"])),
     )
 
 
@@ -17353,12 +17546,19 @@ def test_manager_figure_action_new_target_creates_second_figure(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (first_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_NEW
 
             def is_new_figure(self) -> bool:
                 return True
@@ -17409,12 +17609,19 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False
@@ -17489,12 +17696,19 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False
@@ -17965,7 +18179,7 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 1),))
 
 
-def test_manager_figure_target_dialog_defaults_to_new_figure(
+def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figure(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -17992,9 +18206,64 @@ def test_manager_figure_target_dialog_defaults_to_new_figure(
         )
         qtbot.addWidget(dialog)
 
+        assert dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_ADD_STEP
+        assert not dialog.is_new_figure()
+        assert not dialog.selector_stack.isHidden()
+        assert dialog.selected_target() == (
+            figure_uid,
+            FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        )
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert button is not None
+        assert button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_NEW)
+        )
+
         assert dialog.is_new_figure()
         assert dialog.selector_stack.isHidden()
         assert dialog.selected_target() is None
+        assert button.isEnabled()
+
+
+def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="Line Source"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (figure_uid,),
+            None,
+            allow_new_figure=True,
+            source_count=1,
+            selected_figure_uid=figure_uid,
+        )
+        qtbot.addWidget(dialog)
+
+        assert (
+            dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+        )
+        assert dialog.is_replace_source()
+        assert dialog.selected_source_alias() == "line"
+        assert "line" in dialog.source_combo.currentText()
+        assert dialog.selector_stack.isHidden()
+        assert not dialog.source_combo.isHidden()
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         assert button is not None
         assert button.isEnabled()
@@ -18039,8 +18308,9 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         )
         qtbot.addWidget(dialog)
 
-        assert dialog.is_new_figure()
-        assert dialog.selector_stack.isHidden()
+        assert dialog.selected_action() == manager_mainwindow._FIGURE_DIALOG_ADD_STEP
+        assert not dialog.is_new_figure()
+        assert not dialog.selector_stack.isHidden()
         ok_button = dialog.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
         )
@@ -18067,6 +18337,28 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
             FigureAxesSelectionState(axes=((0, 0), (0, 1))),
         )
 
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_ADD_SOURCE)
+        )
+        assert dialog.is_add_source_only()
+        assert dialog.selected_target() is None
+        assert dialog.selector_stack.isHidden()
+        assert ok_button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(
+                manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+            )
+        )
+        assert dialog.is_replace_source()
+        assert dialog.selected_source_alias() == "line"
+        assert dialog.selector_stack.isHidden()
+        assert not dialog.source_combo.isHidden()
+        assert ok_button.isEnabled()
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(manager_mainwindow._FIGURE_DIALOG_ADD_STEP)
+        )
         dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(second_uid))
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
 
@@ -18079,6 +18371,46 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
 
         dialog.figure_combo.setItemData(dialog.figure_combo.currentIndex(), None)
         assert dialog.figure_uid() == first_uid
+
+
+def test_manager_figure_target_dialog_disables_replace_for_multiple_sources(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (figure_uid,),
+            None,
+            allow_new_figure=True,
+            source_count=2,
+            selected_figure_uid=figure_uid,
+        )
+        qtbot.addWidget(dialog)
+
+        dialog.action_combo.setCurrentIndex(
+            dialog.action_combo.findData(
+                manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+            )
+        )
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert button is not None
+        assert not button.isEnabled()
+        assert "one ImageTool source" in dialog.status_label.text()
 
 
 def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
@@ -18356,6 +18688,294 @@ def test_manager_append_operation_uses_axes_dialog_selection(
         assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 1),)
 
 
+def test_manager_figure_action_replace_source_keeps_recipe_steps(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        operation_count = len(figure_tool.tool_status.operations)
+
+        select_tools(manager, [1])
+
+        class FakeReplaceDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_REPLACE_SOURCE
+
+            def figure_uid(self) -> str:
+                return figure_uid
+
+            def selected_source_alias(self) -> str:
+                return "data_0"
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeReplaceDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(figure_tool.tool_status.operations) == operation_count
+        xr.testing.assert_identical(figure_tool.source_data()["data_0"], second)
+        [source] = figure_tool.source_states()
+        assert source.name == "data_0"
+        assert source.node_uid == manager._node_for_target(1).uid
+        assert "data_1" not in figure_tool.source_data()
+
+
+def test_manager_figure_source_row_refresh_updates_only_selected_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        original_second = figure_tool.source_data()["data_1"]
+        operations = figure_tool.tool_status.operations
+        manager._mark_workspace_clean()
+
+        updated_first = first.copy(data=np.asarray(first.data) + 100.0, deep=True)
+        updated_first.name = "first updated"
+        updated_second = second.copy(data=np.asarray(second.data) + 200.0, deep=True)
+        updated_second.name = "second updated"
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_first, manager=True, replace=0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_second, manager=True, replace=1)
+
+        buttons = _source_refresh_buttons(figure_tool)
+        assert buttons["data_0"].isEnabled()
+        assert buttons["data_1"].isEnabled()
+        with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
+            buttons["data_0"].click()
+
+        source_data = figure_tool.source_data()
+        xr.testing.assert_identical(source_data["data_0"], updated_first)
+        xr.testing.assert_identical(source_data["data_1"], original_second)
+        [source_0, source_1] = figure_tool.source_states()
+        assert source_0.name == "data_0"
+        assert source_0.node_uid == manager._node_for_target(0).uid
+        assert source_1.name == "data_1"
+        assert figure_tool.tool_status.operations == operations
+        assert "data_0" in figure_tool.generated_code()
+
+        _render_figure_composer_rgba(figure_tool)
+        namespace = _exec_generated_code(
+            figure_tool.generated_code(),
+            {"data_0": updated_first, "data_1": original_second},
+        )
+        assert isinstance(namespace["fig"], Figure)
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        manager.remove_imagetool(0)
+        buttons = _source_refresh_buttons(figure_tool)
+        assert not buttons["data_0"].isEnabled()
+        assert (
+            buttons["data_0"].toolTip()
+            == "This source is not linked to an open ImageTool"
+        )
+
+
+def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        detached = xr.DataArray(
+            np.array([1.0, 2.0]),
+            dims=("x",),
+            coords={"x": [0.0, 1.0]},
+            name="detached",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        figure_tool.add_sources(
+            (FigureSourceState(name="detached", label="Detached"),),
+            {"detached": detached},
+        )
+        operations = figure_tool.tool_status.operations
+        manager._mark_workspace_clean()
+
+        updated_first = first.copy(data=np.asarray(first.data) + 100.0, deep=True)
+        updated_first.name = "first updated"
+        updated_second = second.copy(data=np.asarray(second.data) + 200.0, deep=True)
+        updated_second.name = "second updated"
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_first, manager=True, replace=0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            itool(updated_second, manager=True, replace=1)
+
+        buttons = _source_refresh_buttons(figure_tool)
+        assert buttons["data_0"].isEnabled()
+        assert buttons["data_1"].isEnabled()
+        assert not buttons["detached"].isEnabled()
+        assert figure_tool.refresh_sources_button.isEnabled()
+        figure_tool.refresh_sources_button.click()
+
+        source_data = figure_tool.source_data()
+        xr.testing.assert_identical(source_data["data_0"], updated_first)
+        xr.testing.assert_identical(source_data["data_1"], updated_second)
+        xr.testing.assert_identical(source_data["detached"], detached)
+        assert figure_tool.tool_status.operations == operations
+        assert figure_tool.source_status_label.text() == "Refreshed 2 sources."
+        assert figure_tool._operation_render_errors == {}
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+
+def test_manager_figure_action_add_source_only_keeps_recipe_steps(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        operation_count = len(figure_tool.tool_status.operations)
+
+        select_tools(manager, [1])
+
+        class FakeSourceOnlyDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+                assert source_count == 1
+                assert selected_figure_uid is None
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_SOURCE
+
+            def figure_uid(self) -> str:
+                return figure_uid
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeSourceOnlyDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(figure_tool.tool_status.operations) == operation_count
+        xr.testing.assert_identical(figure_tool.source_data()["data_1"], second)
+        assert {source.name for source in figure_tool.source_states()} == {
+            "data_0",
+            "data_1",
+        }
+
+
 def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
     qtbot,
     monkeypatch,
@@ -18403,12 +19023,19 @@ def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                source_count: int = 1,
+                selected_figure_uid: str | None = None,
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
+                assert source_count == 2
+                assert selected_figure_uid is None
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_action(self) -> str:
+                return manager_mainwindow._FIGURE_DIALOG_ADD_STEP
 
             def is_new_figure(self) -> bool:
                 return False

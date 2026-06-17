@@ -86,6 +86,10 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NEW_FIGURE_TARGET = "__new_figure__"
+_FIGURE_DIALOG_NEW = "new_figure"
+_FIGURE_DIALOG_ADD_STEP = "add_step"
+_FIGURE_DIALOG_ADD_SOURCE = "add_source"
+_FIGURE_DIALOG_REPLACE_SOURCE = "replace_source"
 _FIGURE_VIEW_MODE_SETTINGS_KEY = "figures/view_mode"
 _FIGURE_GALLERY_SIZE_SETTINGS_KEY = "figures/gallery_thumbnail_size"
 _FIGURE_VIEW_MODE_LIST = "list"
@@ -100,7 +104,7 @@ _FIGURE_GALLERY_THUMBNAIL_SIZES = {
 
 
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
-    """Prompt for a Figure Composer target figure and axes selection."""
+    """Prompt for a Figure Composer target figure and source workflow."""
 
     def __init__(
         self,
@@ -109,6 +113,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         operation: typing.Any | None,
         *,
         allow_new_figure: bool = False,
+        source_count: int = 1,
+        selected_figure_uid: str | None = None,
     ) -> None:
         from erlab.interactive._figurecomposer._widgets import (
             _AxesSelectorWidget,
@@ -119,8 +125,10 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self._manager = manager
         self._figure_uids = figure_uids
         self._operation = operation
+        self._allow_new_figure = allow_new_figure
+        self._source_count = source_count
         self.setObjectName("managerAppendFigureTargetDialog")
-        self.setWindowTitle("Figure" if allow_new_figure else "Append to Figure")
+        self.setWindowTitle("Add to Figure" if allow_new_figure else "Append to Figure")
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -132,22 +140,45 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         )
         layout.addLayout(form)
 
+        self.action_combo = QtWidgets.QComboBox(self)
+        self.action_combo.setObjectName("managerFigureActionCombo")
+        if allow_new_figure:
+            self.action_combo.addItem("New Figure", _FIGURE_DIALOG_NEW)
+            self.action_combo.addItem("Add New Step", _FIGURE_DIALOG_ADD_STEP)
+            self.action_combo.addItem("Add Source Only", _FIGURE_DIALOG_ADD_SOURCE)
+            self.action_combo.addItem("Replace Source", _FIGURE_DIALOG_REPLACE_SOURCE)
+            form.addRow("Action", self.action_combo)
+        else:
+            self.action_combo.addItem("Add New Step", _FIGURE_DIALOG_ADD_STEP)
+            self.action_combo.setVisible(False)
+
         self.figure_combo = QtWidgets.QComboBox(self)
         self.figure_combo.setObjectName("managerAppendFigureCombo")
-        if allow_new_figure:
-            self.figure_combo.addItem("New Figure", _NEW_FIGURE_TARGET)
         for uid in figure_uids:
             self.figure_combo.addItem(manager._child_node(uid).display_text, uid)
         self.figure_combo.setVisible(self.figure_combo.count() > 1)
         if self.figure_combo.count() > 1:
             form.addRow("Figure", self.figure_combo)
+            self.figure_field_widget: QtWidgets.QWidget = self.figure_combo
         else:
+            figure_label = QtWidgets.QLabel(
+                manager._child_node(figure_uids[0]).display_text, self
+            )
             form.addRow(
                 "Figure",
-                QtWidgets.QLabel(
-                    manager._child_node(figure_uids[0]).display_text, self
-                ),
+                figure_label,
             )
+            self.figure_field_widget = figure_label
+        self.figure_label = form.labelForField(self.figure_field_widget)
+        if selected_figure_uid in figure_uids:
+            figure_index = self.figure_combo.findData(selected_figure_uid)
+            if figure_index >= 0:
+                self.figure_combo.setCurrentIndex(figure_index)
+
+        self.source_combo = QtWidgets.QComboBox(self)
+        self.source_combo.setObjectName("managerReplaceFigureSourceCombo")
+        form.addRow("Source", self.source_combo)
+        self.source_label = form.labelForField(self.source_combo)
 
         self.selector_stack = QtWidgets.QStackedWidget(self)
         self.selector_stack.setObjectName("managerAppendAxesSelectorStack")
@@ -158,6 +189,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self.selector_stack.addWidget(self.axes_selector)
         self.selector_stack.addWidget(self.gridspec_axes_selector)
         form.addRow("Axes", self.selector_stack)
+        self.axes_label = form.labelForField(self.selector_stack)
 
         self.status_label = QtWidgets.QLabel(self)
         self.status_label.setObjectName("managerAppendAxesStatusLabel")
@@ -185,7 +217,9 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self.button_box.setObjectName("managerAppendFigureButtonBox")
         layout.addWidget(self.button_box)
 
+        self.action_combo.currentIndexChanged.connect(self._action_changed)
         self.figure_combo.currentIndexChanged.connect(self._figure_changed)
+        self.source_combo.currentIndexChanged.connect(self._selection_changed)
         self.axes_selector.sigSelectionChanged.connect(self._selection_changed)
         self.axes_selector.sigAddRowRequested.connect(self._add_subplot_row)
         self.axes_selector.sigAddColumnRequested.connect(self._add_subplot_column)
@@ -194,21 +228,36 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self.clear_axes_button.clicked.connect(self._clear_axes)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
+        self._set_default_action(selected_figure_uid)
         self._figure_changed()
 
     def figure_uid(self) -> str:
         uid = self.figure_combo.currentData()
-        if isinstance(uid, str):
+        if isinstance(uid, str) and uid != _NEW_FIGURE_TARGET:
             return uid
         return self._figure_uids[0]
 
+    def selected_action(self) -> str:
+        action = self.action_combo.currentData()
+        return action if isinstance(action, str) else _FIGURE_DIALOG_ADD_STEP
+
     def is_new_figure(self) -> bool:
-        return self.figure_combo.currentData() == _NEW_FIGURE_TARGET
+        return self.selected_action() == _FIGURE_DIALOG_NEW
+
+    def is_add_source_only(self) -> bool:
+        return self.selected_action() == _FIGURE_DIALOG_ADD_SOURCE
+
+    def is_replace_source(self) -> bool:
+        return self.selected_action() == _FIGURE_DIALOG_REPLACE_SOURCE
+
+    def selected_source_alias(self) -> str | None:
+        alias = self.source_combo.currentData()
+        return alias if isinstance(alias, str) else None
 
     def axes_selection(self) -> typing.Any | None:
         from erlab.interactive._figurecomposer import FigureAxesSelectionState
 
-        if self.is_new_figure():
+        if self.selected_action() != _FIGURE_DIALOG_ADD_STEP:
             return None
         tool = self._figure_tool()
         if tool is None:
@@ -225,29 +274,85 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         return FigureAxesSelectionState(axes=axes)
 
     def selected_target(self) -> tuple[str, typing.Any] | None:
-        if self.is_new_figure():
+        if self.selected_action() != _FIGURE_DIALOG_ADD_STEP:
             return None
         selection = self.axes_selection()
         if selection is None:
             return None
         return self.figure_uid(), selection
 
+    def _set_default_action(self, selected_figure_uid: str | None) -> None:
+        if not self._allow_new_figure:
+            return
+        default_action = _FIGURE_DIALOG_ADD_STEP
+        if (
+            selected_figure_uid in self._figure_uids
+            and self._source_count == 1
+            and self._figure_source_count(selected_figure_uid) == 1
+        ):
+            default_action = _FIGURE_DIALOG_REPLACE_SOURCE
+        action_index = self.action_combo.findData(default_action)
+        if action_index >= 0:
+            self.action_combo.setCurrentIndex(action_index)
+
+    def _figure_source_count(self, figure_uid: str | None) -> int:
+        if figure_uid is None:
+            return 0
+        current_index = self.figure_combo.currentIndex()
+        figure_index = self.figure_combo.findData(figure_uid)
+        if figure_index < 0:
+            return 0
+        try:
+            self.figure_combo.setCurrentIndex(figure_index)
+            tool = self._figure_tool()
+            if tool is None:
+                return 0
+            return len(tool._source_names())
+        finally:
+            self.figure_combo.setCurrentIndex(current_index)
+
+    def _action_requires_figure(self) -> bool:
+        return self.selected_action() in {
+            _FIGURE_DIALOG_ADD_STEP,
+            _FIGURE_DIALOG_ADD_SOURCE,
+            _FIGURE_DIALOG_REPLACE_SOURCE,
+        }
+
+    def _action_uses_axes(self) -> bool:
+        return self.selected_action() == _FIGURE_DIALOG_ADD_STEP
+
+    def _refresh_source_combo(self) -> None:
+        self.source_combo.blockSignals(True)
+        try:
+            self.source_combo.clear()
+            tool = self._figure_tool()
+            if tool is None:
+                return
+            for name in tool._source_names():
+                display = tool._source_display_name(name)
+                item_text = display if name in display else f"{display} ({name})"
+                self.source_combo.addItem(item_text, name)
+                index = self.source_combo.count() - 1
+                self.source_combo.setItemData(
+                    index,
+                    tool._source_tooltip(name),
+                    QtCore.Qt.ItemDataRole.ToolTipRole,
+                )
+        finally:
+            self.source_combo.blockSignals(False)
+
     @QtCore.Slot()
     def _figure_changed(self) -> None:
-        if self.is_new_figure():
-            self.selector_stack.setVisible(False)
-            self.all_axes_button.setVisible(False)
-            self.clear_axes_button.setVisible(False)
-            self._ok_button().setEnabled(True)
-            self.status_label.setText("A new figure will be created.")
+        self._refresh_source_combo()
+        if not self._action_requires_figure():
+            self._selection_changed()
             return
         self.selector_stack.setVisible(True)
         self.all_axes_button.setVisible(True)
         self.clear_axes_button.setVisible(True)
         tool = self._figure_tool()
         if tool is None:
-            self._ok_button().setEnabled(False)
-            self.status_label.setText("The selected figure is unavailable.")
+            self._selection_changed()
             return
         setup = tool.tool_status.setup
         if setup.layout_mode == "gridspec":
@@ -286,7 +391,63 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self._selection_changed()
 
     @QtCore.Slot()
+    def _action_changed(self) -> None:
+        self._figure_changed()
+
+    @QtCore.Slot()
     def _selection_changed(self, *_args: typing.Any) -> None:
+        action = self.selected_action()
+        new_figure = action == _FIGURE_DIALOG_NEW
+        uses_figure = self._action_requires_figure()
+        uses_axes = self._action_uses_axes()
+        replace_source = action == _FIGURE_DIALOG_REPLACE_SOURCE
+        figure_tool = self._figure_tool() if uses_figure else None
+        has_figure = figure_tool is not None
+
+        figure_visible = uses_figure
+        if self.figure_label is not None:
+            self.figure_label.setVisible(figure_visible)
+        self.figure_field_widget.setVisible(
+            figure_visible and self.figure_combo.count() <= 1
+        )
+        self.figure_combo.setVisible(figure_visible and self.figure_combo.count() > 1)
+
+        if self.axes_label is not None:
+            self.axes_label.setVisible(uses_axes and has_figure)
+        self.selector_stack.setVisible(uses_axes and has_figure)
+        self.all_axes_button.setVisible(uses_axes and has_figure)
+        self.clear_axes_button.setVisible(uses_axes and has_figure)
+
+        if self.source_label is not None:
+            self.source_label.setVisible(replace_source and has_figure)
+        self.source_combo.setVisible(replace_source and has_figure)
+
+        if new_figure:
+            self._ok_button().setEnabled(True)
+            self.status_label.setText("A new figure will be created.")
+            return
+        if not has_figure:
+            self._ok_button().setEnabled(False)
+            self.status_label.setText("The selected figure is unavailable.")
+            return
+        if action == _FIGURE_DIALOG_ADD_SOURCE:
+            self._ok_button().setEnabled(True)
+            self.status_label.setText("Source data will be added without a new step.")
+            return
+        if replace_source:
+            selected_alias = self.selected_source_alias()
+            enabled = self._source_count == 1 and selected_alias is not None
+            self._ok_button().setEnabled(enabled)
+            if self._source_count != 1:
+                self.status_label.setText(
+                    "Select one ImageTool source to replace one figure source."
+                )
+            elif selected_alias is None:
+                self.status_label.setText("Select the figure source to replace.")
+            else:
+                self.status_label.setText("The selected source will be replaced.")
+            return
+
         selection = self.axes_selection()
         self._ok_button().setEnabled(selection is not None)
         if selection is None:
@@ -697,11 +858,11 @@ class ImageToolManager(_ImageToolManagerBase):
         self.batch_action.triggered.connect(self.show_batch_operations)
         self.batch_action.setToolTip("Apply an operation to multiple ImageTools")
 
-        self.create_figure_action = QtWidgets.QAction("Figure", self)
+        self.create_figure_action = QtWidgets.QAction("Add to Figure…", self)
         self.create_figure_action.setObjectName("manager_figure_action")
         self.create_figure_action.triggered.connect(self.create_figure_from_selection)
         self.create_figure_action.setToolTip(
-            "Create or append an editable Matplotlib figure from the selected data"
+            "Create, extend, or replace source data in an editable Matplotlib figure"
         )
         self.create_figure_action.setIcon(QtGui.QIcon.fromTheme("insert-image"))
 
@@ -1192,6 +1353,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         self._dependency_tracker.clear_uid(uid)
         self._refresh_dependency_dependents(uid)
+        self._refresh_figure_source_controls()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1949,6 +2111,182 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
 
+    def _figure_sources_from_targets(
+        self, targets: Iterable[int | str]
+    ) -> tuple[tuple[int | str, ...], tuple[typing.Any, ...], dict[str, xr.DataArray]]:
+        from erlab.interactive._figurecomposer import FigureSourceState
+
+        resolved_targets = tuple(dict.fromkeys(targets))
+        source_data: dict[str, xr.DataArray] = {}
+        sources = []
+        for target in resolved_targets:
+            node = self._node_for_target(target)
+            data = node.current_source_data()
+            source = FigureSourceState.from_script_input(
+                self._script_input_for_node(node)
+            )
+            source_data[source.name] = data
+            sources.append(source)
+        return resolved_targets, tuple(sources), source_data
+
+    def _selected_figure_uid_for_figure_dialog(self) -> str | None:
+        selected_uids = self._selected_figure_uids()
+        if len(selected_uids) == 1:
+            return selected_uids[0]
+        return None
+
+    def _add_sources_to_figure(
+        self,
+        figure_uid: str,
+        sources: tuple[typing.Any, ...],
+        source_data: Mapping[str, xr.DataArray],
+        *,
+        show: bool = True,
+    ) -> bool:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        if not self._is_figure_uid(figure_uid):
+            return False
+        node = self._child_node(figure_uid)
+        tool = node.tool_window
+        if not isinstance(tool, FigureComposerTool):
+            return False
+        tool.add_sources(sources, source_data)
+        self._mark_workspace_dirty(uid=figure_uid, state=True)
+        self._select_figure_uid(figure_uid)
+        if show:
+            node.show()
+        return True
+
+    def _replace_figure_source(
+        self,
+        figure_uid: str,
+        alias: str,
+        sources: tuple[typing.Any, ...],
+        source_data: Mapping[str, xr.DataArray],
+        *,
+        show: bool = True,
+    ) -> bool:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        if len(sources) != 1 or not self._is_figure_uid(figure_uid):
+            return False
+        replacement = sources[0]
+        data = source_data.get(replacement.name)
+        if data is None:
+            return False
+        node = self._child_node(figure_uid)
+        tool = node.tool_window
+        if not isinstance(tool, FigureComposerTool):
+            return False
+        if not tool.replace_source(alias, replacement, data):
+            return False
+        self._mark_workspace_dirty(uid=figure_uid, state=True)
+        self._select_figure_uid(figure_uid)
+        if show:
+            node.show()
+        return True
+
+    def _install_figure_source_refresh_callbacks(
+        self, figure_uid: str, tool: typing.Any
+    ) -> None:
+        tool._set_source_refresh_callbacks(
+            can_refresh_source=lambda source_name: self._can_refresh_figure_source(
+                figure_uid, source_name
+            ),
+            refresh_source=lambda source_name: self._refresh_figure_source(
+                figure_uid, source_name
+            ),
+            refresh_sources=lambda source_names: self._refresh_figure_sources(
+                figure_uid, source_names
+            ),
+            source_label=lambda source_name: self._figure_source_refresh_label(
+                figure_uid, source_name
+            ),
+        )
+
+    @staticmethod
+    def _figure_source_state(tool: typing.Any, source_name: str) -> typing.Any | None:
+        for source in tool.source_states():
+            if source.name == source_name:
+                return source
+        return None
+
+    def _figure_source_live_node(
+        self, figure_uid: str, source_name: str
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        if not self._is_figure_uid(figure_uid):
+            return None
+        figure_node = self._child_node(figure_uid)
+        tool = figure_node.tool_window
+        if not isinstance(tool, FigureComposerTool):
+            return None
+        source = self._figure_source_state(tool, source_name)
+        if source is None or source.node_uid is None:
+            return None
+        node = self._tool_graph.nodes.get(source.node_uid)
+        if node is None:
+            return None
+        window = node.window
+        if window is None or not erlab.interactive.utils.qt_is_valid(window):
+            return None
+        return node
+
+    def _can_refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
+        return self._figure_source_live_node(figure_uid, source_name) is not None
+
+    def _figure_source_refresh_label(
+        self, figure_uid: str, source_name: str
+    ) -> str | None:
+        node = self._figure_source_live_node(figure_uid, source_name)
+        return None if node is None else node.display_text
+
+    def _refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
+        from erlab.interactive._figurecomposer import (
+            FigureComposerTool,
+            FigureSourceState,
+        )
+
+        source_node = self._figure_source_live_node(figure_uid, source_name)
+        if source_node is None or not self._is_figure_uid(figure_uid):
+            return False
+        figure_node = self._child_node(figure_uid)
+        tool = figure_node.tool_window
+        if not isinstance(tool, FigureComposerTool):
+            return False
+
+        data = source_node.current_source_data()
+        source = FigureSourceState.from_script_input(
+            self._script_input_for_node(source_node)
+        )
+        if not tool.replace_source(source_name, source, data):
+            return False
+        self._mark_workspace_dirty(uid=figure_uid, data=True, state=True)
+        self._update_figure_gallery_icon(figure_uid)
+        return True
+
+    def _refresh_figure_sources(
+        self, figure_uid: str, source_names: Iterable[str]
+    ) -> int:
+        refreshed = 0
+        for source_name in tuple(source_names):
+            if self._refresh_figure_source(figure_uid, source_name):
+                refreshed += 1
+        return refreshed
+
+    def _refresh_figure_source_controls(self) -> None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        for figure_uid in self._figure_uids():
+            node = self._tool_graph.nodes.get(figure_uid)
+            if not isinstance(node, _ManagedWindowNode):
+                continue
+            tool = node.tool_window
+            if isinstance(tool, FigureComposerTool):
+                tool.refresh_source_controls()
+
     def create_figure_from_targets(
         self,
         targets: Iterable[int | str],
@@ -2068,9 +2406,14 @@ class ImageToolManager(_ImageToolManagerBase):
         targets = self._selected_figure_source_targets()
         if not targets:
             return
+        resolved_targets, sources, source_data = self._figure_sources_from_targets(
+            targets
+        )
+        if not resolved_targets:
+            return
         figure_uids = tuple(self._figure_uids())
         if not figure_uids:
-            self.create_figure_from_targets(targets)
+            self.create_figure_from_targets(resolved_targets)
             return
 
         dialog = _AppendFigureTargetDialog(
@@ -2078,18 +2421,35 @@ class ImageToolManager(_ImageToolManagerBase):
             figure_uids,
             None,
             allow_new_figure=True,
+            source_count=len(sources),
+            selected_figure_uid=self._selected_figure_uid_for_figure_dialog(),
         )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        if dialog.is_new_figure():
-            self.create_figure_from_targets(targets)
+        action = dialog.selected_action()
+        if action == _FIGURE_DIALOG_NEW:
+            self.create_figure_from_targets(resolved_targets)
+            return
+        if action == _FIGURE_DIALOG_ADD_SOURCE:
+            self._add_sources_to_figure(dialog.figure_uid(), sources, source_data)
+            return
+        if action == _FIGURE_DIALOG_REPLACE_SOURCE:
+            alias = dialog.selected_source_alias()
+            if alias is None:
+                return
+            self._replace_figure_source(
+                dialog.figure_uid(),
+                alias,
+                sources,
+                source_data,
+            )
             return
         target = dialog.selected_target()
         if target is None:
             return
         figure_uid, axes_selection = target
         self.append_figure_from_targets(
-            targets,
+            resolved_targets,
             figure_uid=figure_uid,
             axes_selection=axes_selection,
         )
@@ -2281,6 +2641,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._tool_graph.unregister_root(index)
         self._refresh_dependency_dependents(wrapper.uid)
+        self._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -3624,6 +3985,8 @@ class ImageToolManager(_ImageToolManagerBase):
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
     ) -> str:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),
@@ -3635,6 +3998,8 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool._tool_display_name:
             tool._tool_display_name = self._next_figure_display_name()
         self._register_figure_node(node)
+        if isinstance(tool, FigureComposerTool):
+            self._install_figure_source_refresh_callbacks(node.uid, tool)
         self._mark_node_added(node.uid)
         self._sync_figures_ui(select_uid=node.uid if show else None)
         if show:
