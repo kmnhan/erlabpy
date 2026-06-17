@@ -706,7 +706,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self.create_figure_action.setIcon(QtGui.QIcon.fromTheme("insert-image"))
 
         self.reload_action = QtWidgets.QAction("Reload Data", self)
+        self.reload_action.setObjectName("manager_reload_data_action")
         self.reload_action.triggered.connect(self.reload_selected)
+        self.reload_action.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self.reload_action.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
         self.reload_action.setToolTip(
             "Reload selected data from its saved files, parent, or inputs"
         )
@@ -777,6 +782,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.remove_action)
         self.file_menu.addAction(self.offload_action)
+        self.file_menu.addAction(self.reload_action)
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.settings_action)
 
