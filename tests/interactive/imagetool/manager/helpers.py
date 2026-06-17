@@ -441,12 +441,23 @@ def select_metadata_rows(
 ) -> None:
     if clear:
         manager.metadata_derivation_list.clearSelection()
+    current_item = None
     for row in rows:
         item = manager.metadata_derivation_list.item(row)
         if item is None:
             continue
         item.setSelected(True)
-        manager.metadata_derivation_list.setCurrentItem(item)
+        current_item = item
+    if current_item is None:
+        return
+    if isinstance(manager.metadata_derivation_list, QtWidgets.QTreeWidget):
+        manager.metadata_derivation_list.setCurrentItem(
+            current_item,
+            0,
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+    else:
+        manager.metadata_derivation_list.setCurrentItem(current_item)
 
 
 def set_transform_launch_mode(

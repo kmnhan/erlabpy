@@ -526,6 +526,7 @@ def _fake_edit_controller(
     parent: typing.Any | None = None,
     nodes: dict[str, typing.Any] | None = None,
     metadata_uid: str | None = None,
+    script_input_can_reload: Callable[..., bool] | None = None,
 ) -> manager_provenance_edit._ProvenanceEditController:
     graph_nodes = (
         nodes if nodes is not None else ({} if node is None else {"node": node})
@@ -542,7 +543,11 @@ def _fake_edit_controller(
         _metadata_node_uid=metadata_uid,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
         _parent_node=_parent_node,
-        _script_input_can_reload=lambda *_args, **_kwargs: True,
+        _script_input_can_reload=(
+            script_input_can_reload
+            if script_input_can_reload is not None
+            else lambda *_args, **_kwargs: True
+        ),
         _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,
@@ -1104,16 +1109,43 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     script_with_structured_step = provenance.script(
         provenance.ScriptCodeOperation(
             label="Create derived data",
-            code="derived = xr.DataArray([1.0, 2.0], dims=('x',))",
+            code="derived = data_0 + 1.0",
         ),
         provenance.AverageOperation(dims=("x",)),
         start_label="Run script",
         active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
     controller = _fake_edit_controller(_fake_edit_node(script_with_structured_step))
-    script_code_row, structured_row = script_with_structured_step.display_rows()[1:]
+    script_code_row, structured_row = script_with_structured_step.display_rows()[2:]
     assert not controller.can_edit_row(script_code_row)[0]
     assert controller.can_edit_row(structured_row) == (True, "")
+
+    controller = _fake_edit_controller(
+        _fake_edit_node(script_with_structured_step),
+        script_input_can_reload=lambda *_args, **_kwargs: False,
+    )
+    editable, reason = controller.can_edit_row(structured_row)
+    assert not editable
+    assert reason
+
+    active_filter = provenance.AverageOperation(dims=("x",))
+    active_filter_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Create derived data",
+            code="derived = data_0 + 1.0",
+        ),
+        active_filter,
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    active_row = active_filter_spec.display_rows()[3]
+    controller = _fake_edit_controller(
+        _fake_edit_node(active_filter_spec, active_filter=active_filter),
+        script_input_can_reload=lambda *_args, **_kwargs: False,
+    )
+    assert controller.can_edit_row(active_row) == (True, "")
 
     source_row = provenance._ProvenanceDisplayRow(
         provenance.DerivationEntry("source", None),
@@ -1166,6 +1198,68 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         )
     )
     assert controller.can_revert_row(earlier_source_row)[0]
+
+
+def test_manager_provenance_edit_nested_script_input_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_spec = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        start_label="Load parent",
+        seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
+        active_name="data_0",
+    )
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use parent",
+            code="derived = data_0",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Parent",
+                node_uid="parent",
+                node_snapshot_token=str(object()),
+                provenance_spec=parent_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    nested_row = root_spec.display_rows()[1].children[1]
+
+    assert controller._display_spec_for_row(node, nested_row) == parent_spec
+    assert controller.can_edit_row(nested_row) == (True, "")
+
+    replacement = provenance.AverageOperation(dims=("y",))
+    replaced: list[provenance.ToolProvenanceSpec] = []
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate",
+        lambda *_args, **_kwargs: xr.DataArray([1.0], dims=("x",)),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edited_operations_from_dialog",
+        lambda *_args, **_kwargs: [replacement],
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: replaced.append(candidate),
+    )
+
+    controller._edit_operation_row(node, nested_row)
+
+    assert len(replaced) == 1
+    edited_input = replaced[0].script_inputs[0]
+    assert edited_input.node_uid is None
+    assert edited_input.node_snapshot_token is None
+    edited_parent = edited_input.parsed_provenance_spec()
+    assert edited_parent is not None
+    assert edited_parent.operations == (replacement,)
 
 
 def test_manager_provenance_revert_rejects_current_prefixes(
@@ -5064,7 +5158,7 @@ def test_manager_provenance_row_activation_uses_edit_default_action(
         activated_rows.clear()
         item = manager.metadata_derivation_list.item(0)
         assert item is not None
-        manager.metadata_derivation_list.itemActivated.emit(item)
+        manager.metadata_derivation_list.itemActivated.emit(item, 0)
         assert activated_rows == [manager._selected_derivation_row()]
 
         activated_rows.clear()
@@ -5080,7 +5174,7 @@ def test_manager_provenance_row_activation_uses_edit_default_action(
             manager.metadata_derivation_list.model().index(0, 0),
             QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        manager.metadata_derivation_list.itemActivated.emit(item)
+        manager.metadata_derivation_list.itemActivated.emit(item, 0)
         assert activated_rows == []
 
 
@@ -5133,7 +5227,7 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
                 break
         assert item is not None
         select_metadata_rows(manager, [manager.metadata_derivation_list.row(item)])
-        manager.metadata_derivation_list.itemActivated.emit(item)
+        manager.metadata_derivation_list.itemActivated.emit(item, 0)
 
 
 def test_manager_provenance_context_menu_preserves_extended_selection(
@@ -6442,6 +6536,58 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
 
     selected_items = [item(script_row_a), item(script_row_b)]
     assert controller._selected_derivation_step_payload() is None
+
+
+def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
+    child_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Offset parent", "data_0 = data_0 + 1", True),
+        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+        script_input_path=(0,),
+    )
+    parent_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Use data_0 from Parent", None, False),
+        replay_ref=provenance._ProvenanceStepRef(
+            "script_input",
+            script_input_index=0,
+        ),
+        children=(child_row,),
+    )
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda row: (row is child_row, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        displayed_provenance_spec=provenance.full_data(),
+        metadata_fields=[],
+        derivation_display_rows=[parent_row],
+    )
+
+    controller._set_metadata_node(node)
+
+    parent_item = derivation_list.topLevelItem(0)
+    assert parent_item is not None
+    assert parent_item.text() == "Use data_0 from Parent"
+    assert parent_item.childCount() == 1
+    child_item = parent_item.child(0)
+    assert child_item is not None
+    assert child_item.text() == "Offset parent"
+    assert (
+        child_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+        is child_row
+    )
+    assert derivation_list.count() == 1
+    assert derivation_list.display_order(child_item) == 1
 
 
 def test_manager_copy_selected_derivation_code_fallbacks(

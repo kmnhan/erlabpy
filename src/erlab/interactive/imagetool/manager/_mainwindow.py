@@ -1147,7 +1147,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._show_metadata_derivation_menu
         )
         self.metadata_derivation_list.itemActivated.connect(
-            self._activate_selected_derivation_step
+            lambda _item, _column: self._activate_selected_derivation_step()
         )
         self.metadata_derivation_list.setVisible(False)
         metadata_layout.addWidget(self.metadata_derivation_list)
@@ -2788,7 +2788,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _update_metadata_pane(self) -> None:
         self._details_panel._update_metadata_pane()
 
-    def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
+    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
         return self._details_panel._selected_derivation_items()
 
     def _selected_derivation_code(self) -> str | None:
@@ -2818,7 +2818,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._edit_selected_derivation_step()
 
     def _activate_selected_derivation_step(
-        self, _item: QtWidgets.QListWidgetItem | None = None
+        self, _item: QtWidgets.QTreeWidgetItem | None = None
     ) -> None:
         self._details_panel._activate_selected_derivation_step()
 

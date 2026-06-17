@@ -221,6 +221,8 @@ class _ProvenanceDisplayRow:
     edit_ref: _ProvenanceStepRef | None = None
     replay_ref: _ProvenanceStepRef | None = None
     scope: typing.Literal["display", "source"] = "display"
+    children: tuple[_ProvenanceDisplayRow, ...] = ()
+    script_input_path: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2468,12 +2470,36 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         recorded replay steps available through :meth:`derivation_entries`.
         """
 
+        def with_scope(
+            row: _ProvenanceDisplayRow,
+        ) -> _ProvenanceDisplayRow:
+            if scope == "display":
+                return row
+            return replace(
+                row,
+                scope=scope,
+                children=tuple(with_scope(child) for child in row.children),
+            )
+
         def scoped_rows(
             rows: list[_ProvenanceDisplayRow],
         ) -> list[_ProvenanceDisplayRow]:
             if scope == "display":
                 return rows
-            return [replace(row, scope=scope) for row in rows]
+            return [with_scope(row) for row in rows]
+
+        def input_history_rows(
+            rows: list[_ProvenanceDisplayRow],
+            path: tuple[int, ...],
+        ) -> tuple[_ProvenanceDisplayRow, ...]:
+            return tuple(
+                replace(
+                    row,
+                    script_input_path=path + row.script_input_path,
+                    children=input_history_rows(row.children, path),
+                )
+                for row in rows
+            )
 
         start_ref = _ProvenanceStepRef("file_load" if self.kind == "file" else "start")
         rows = [
@@ -2485,19 +2511,28 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         ]
 
         if self.kind == "script":
-            rows.extend(
-                _ProvenanceDisplayRow(
-                    DerivationEntry(
-                        f"Use {script_input.name} from {script_input.label}",
-                        None,
-                        False,
-                    ),
-                    replay_ref=_ProvenanceStepRef(
-                        "script_input", script_input_index=index
-                    ),
+            for index, script_input in enumerate(self.script_inputs):
+                rows.append(
+                    _ProvenanceDisplayRow(
+                        DerivationEntry(
+                            f"Use {script_input.name} from {script_input.label}",
+                            None,
+                            False,
+                        ),
+                        replay_ref=_ProvenanceStepRef(
+                            "script_input", script_input_index=index
+                        ),
+                        children=(
+                            ()
+                            if (input_spec := script_input.parsed_provenance_spec())
+                            is None
+                            else input_history_rows(
+                                input_spec.display_rows(),
+                                (index,),
+                            )
+                        ),
+                    )
                 )
-                for index, script_input in enumerate(self.script_inputs)
-            )
             rows.extend(
                 _ProvenanceDisplayRow(
                     operation.derivation_entry(),

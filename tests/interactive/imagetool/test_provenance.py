@@ -2730,6 +2730,10 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
 
 def test_script_provenance_supports_named_console_inputs() -> None:
     left = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset left input",
+            code="data_0 = data_0 + 1.0",
+        ),
         start_label="Load left",
         seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
         active_name="data_0",
@@ -2771,11 +2775,28 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         "Use data_1 from ImageTool 1",
         "Subtract console inputs",
     ]
+    rows = spec.display_rows()
+    assert rows[1].children[0].entry.label == "Load left"
+    assert rows[1].children[0].replay_ref == provenance._ProvenanceStepRef("start")
+    assert rows[1].children[0].script_input_path == (0,)
+    assert rows[1].children[1].entry.label == "Offset left input"
+    assert rows[1].children[1].edit_ref is None
+    assert rows[1].children[1].replay_ref == provenance._ProvenanceStepRef(
+        "operation", operation_index=0
+    )
+    assert rows[1].children[1].script_input_path == (0,)
+    assert rows[2].children[0].entry.label == "Load right"
+    assert rows[2].children[0].script_input_path == (1,)
+    assert rows[3].edit_ref is None
+    assert rows[3].replay_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     code = typing.cast("str", spec.derivation_code())
     namespace = _exec_generated_code(code, {})
     xr.testing.assert_identical(
         namespace["derived"],
-        xr.DataArray([0.5, 0.5], dims=["x"]),
+        xr.DataArray([1.5, 1.5], dims=["x"]),
     )
 
 

@@ -111,7 +111,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
     main_splitter: QtWidgets.QSplitter
-    metadata_derivation_list: QtWidgets.QListWidget
+    metadata_derivation_list: QtWidgets.QTreeWidget
     metadata_details_layout: QtWidgets.QGridLayout
     metadata_details_widget: _HeightForWidthFrame
     metadata_group: _HeightForWidthFrame
