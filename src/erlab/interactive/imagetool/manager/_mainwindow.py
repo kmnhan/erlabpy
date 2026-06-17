@@ -3211,10 +3211,12 @@ class ImageToolManager(_ImageToolManagerBase):
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         detached_input_uid: str | None = None,
+        use_displayed_provenance: bool = True,
     ) -> provenance.ScriptInput:
         return self._lineage_controller._script_input_for_node(
             node,
             detached_input_uid=detached_input_uid,
+            use_displayed_provenance=use_displayed_provenance,
         )
 
     def _multi_input_script_provenance(
@@ -3226,6 +3228,7 @@ class ImageToolManager(_ImageToolManagerBase):
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
+        use_displayed_provenance: bool = True,
     ) -> provenance.ToolProvenanceSpec:
         return self._lineage_controller._multi_input_script_provenance(
             input_targets,
@@ -3234,6 +3237,7 @@ class ImageToolManager(_ImageToolManagerBase):
             active_name=active_name,
             start_label=start_label,
             detached_input_uid=detached_input_uid,
+            use_displayed_provenance=use_displayed_provenance,
         )
 
     def _show_multi_input_script_result(
@@ -3243,12 +3247,14 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         operation_label: str,
         operation_code: str,
+        use_displayed_provenance: bool = True,
     ) -> int | None:
         return self._lineage_controller._show_multi_input_script_result(
             data,
             input_targets,
             operation_label=operation_label,
             operation_code=operation_code,
+            use_displayed_provenance=use_displayed_provenance,
         )
 
     def _script_provenance_inputs_current(

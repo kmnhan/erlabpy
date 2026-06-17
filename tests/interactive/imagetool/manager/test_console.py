@@ -2037,6 +2037,10 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
     data1 = data0 + 10.0
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
     expected = xr.concat(
         [data0, data1],
         dim="concat_dim",
@@ -2053,6 +2057,10 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
         old_root_provenance = provenance.full_data()
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
             old_root_provenance
+        )
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            operation,
+            emit_edited=True,
         )
 
         compatible_child = typing.cast(
@@ -2104,6 +2112,7 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
         )
 
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+        assert not manager.get_imagetool(0).slicer_area.has_active_filter
         xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, data1)
         assert compatible_uid in manager._tool_graph.root_wrappers[0]._childtool_indices
         assert (
@@ -2138,6 +2147,20 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             replacement_provenance.script_inputs[0].parsed_provenance_spec()
             == old_root_provenance
         )
+
+        dialog = manager._actions_controller._concat_dialog
+        dialog._result_combo.setCurrentIndex(
+            dialog._result_combo.findData(_ConcatDialog._RESULT_REPLACE)
+        )
+        dialog._sources_combo.setCurrentIndex(
+            dialog._sources_combo.findData(_ConcatDialog._SOURCES_REMOVE)
+        )
+        select_tools(manager, [0, 1])
+        dialog.open()
+        assert dialog.result_mode() == _ConcatDialog._RESULT_NEW
+        assert dialog.sources_mode() == _ConcatDialog._SOURCES_KEEP
+        assert not dialog._replace_target_combo.isEnabled()
+        dialog.reject()
 
 
 def test_manager_concat_replace_can_remove_unpreserved_sources(
@@ -2208,7 +2231,7 @@ def test_manager_concat_replace_can_remove_unpreserved_sources(
         )
 
 
-def test_manager_concat_uses_filtered_display_data(
+def test_manager_concat_uses_unfiltered_source_data(
     qtbot,
     accept_dialog,
     manager_context: Callable[
@@ -2225,7 +2248,6 @@ def test_manager_concat_uses_filtered_display_data(
         dims=("x",),
         mode="min",
     )
-    filtered0 = operation.apply(data0, parent_data=data0)
 
     with manager_context() as manager:
         manager.show()
@@ -2237,7 +2259,7 @@ def test_manager_concat_uses_filtered_display_data(
             emit_edited=True,
         )
         expected = xr.concat(
-            [filtered0, data1],
+            [data0, data1],
             dim="concat_dim",
             coords="minimal",
             compat="override",
@@ -2252,15 +2274,7 @@ def test_manager_concat_uses_filtered_display_data(
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
         provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
-        first_input_spec = provenance.script_inputs[0].parsed_provenance_spec()
-        assert first_input_spec is not None
-        first_input_code = first_input_spec.display_code()
-        assert first_input_code is not None
-        namespace = _exec_generated_code(
-            first_input_code,
-            {"data": data0.copy(deep=True)},
-        )
-        xr.testing.assert_identical(namespace["derived"], filtered0)
+        assert provenance.script_inputs[0].parsed_provenance_spec() is None
 
 
 def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(

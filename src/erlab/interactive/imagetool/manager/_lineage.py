@@ -226,11 +226,16 @@ class _LineageController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         detached_input_uid: str | None = None,
+        use_displayed_provenance: bool = True,
     ) -> provenance.ScriptInput:
-        displayed_provenance = node.displayed_provenance_spec
+        input_provenance = (
+            node.displayed_provenance_spec
+            if use_displayed_provenance
+            else node.provenance_spec
+        )
         provenance_spec = (
-            displayed_provenance.model_dump(mode="json")
-            if displayed_provenance is not None
+            input_provenance.model_dump(mode="json")
+            if input_provenance is not None
             else None
         )
         if isinstance(node, _ImageToolWrapper):
@@ -262,6 +267,7 @@ class _LineageController:
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
+        use_displayed_provenance: bool = True,
     ) -> provenance.ToolProvenanceSpec:
         return provenance.script(
             provenance.ScriptCodeOperation(
@@ -274,6 +280,7 @@ class _LineageController:
                 self._manager._script_input_for_node(
                     self._manager._node_for_target(target),
                     detached_input_uid=detached_input_uid,
+                    use_displayed_provenance=use_displayed_provenance,
                 )
                 for target in input_targets
             ),
@@ -286,6 +293,7 @@ class _LineageController:
         *,
         operation_label: str,
         operation_code: str,
+        use_displayed_provenance: bool = True,
     ) -> int | None:
         input_targets = tuple(input_targets)
         tool = erlab.interactive.itool(data, manager=False, execute=False)
@@ -299,6 +307,7 @@ class _LineageController:
                 input_targets,
                 operation_label=operation_label,
                 operation_code=operation_code,
+                use_displayed_provenance=use_displayed_provenance,
             ),
         )
 

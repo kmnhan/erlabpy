@@ -400,6 +400,12 @@ class _ConcatDialog(QtWidgets.QDialog):
         layout.addWidget(button_box)
 
     def open(self) -> None:
+        self._result_combo.setCurrentIndex(
+            self._result_combo.findData(self._RESULT_NEW)
+        )
+        self._sources_combo.setCurrentIndex(
+            self._sources_combo.findData(self._SOURCES_KEEP)
+        )
         self._refresh_selected_targets()
         super().open()
 
@@ -502,7 +508,9 @@ class _ConcatDialog(QtWidgets.QDialog):
             try:
                 selected = list(self._selected_targets)
                 to_concat = [
-                    manager.get_imagetool(idx).slicer_area.displayed_data
+                    manager.get_imagetool(idx)
+                    .slicer_area.persistence_data_and_state()[0]
+                    .copy(deep=False)
                     for idx in selected
                 ]
                 concat_kwargs = self.concat_kwargs()
@@ -515,6 +523,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                         selected,
                         operation_label="Concatenate selected ImageTools",
                         operation_code=operation_code,
+                        use_displayed_provenance=False,
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
@@ -525,9 +534,10 @@ class _ConcatDialog(QtWidgets.QDialog):
                             operation_label="Concatenate selected ImageTools",
                             operation_code=operation_code,
                             detached_input_uid=replacement_node.uid,
+                            use_displayed_provenance=False,
                         ),
                         propagate_descendants=True,
-                        preserve_filter=True,
+                        preserve_filter=False,
                     )
                     manager.tree_view.refresh(replacement_node.uid)
                     if manager._metadata_node_uid == replacement_node.uid:
