@@ -643,8 +643,6 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             return False, "This row does not have replayable provenance."
-        if spec.kind == "script":
-            return False, "Script provenance rows are not editable in this version."
         if row.edit_ref.kind == "file_load":
             if spec.kind != "file" or spec.file_load_source is None:
                 return False, "This row is not a file load step."
@@ -656,6 +654,13 @@ class _ProvenanceEditController:
             return False, "This operation is not available."
         if isinstance(operation, provenance.ScriptCodeOperation):
             return False, "Free-form script steps are not editable."
+        if spec.kind == "script":
+            try:
+                input_spec = spec._prefix_before_ref(row.edit_ref)
+            except ValueError:
+                return False, "This script row is not a replayable step."
+            if not provenance.script_provenance_replayable(input_spec):
+                return False, "This script step cannot be replayed automatically."
         if (
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"

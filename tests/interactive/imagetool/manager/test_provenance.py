@@ -1101,6 +1101,20 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert not controller.can_edit_row(script_row)[0]
 
+    script_with_structured_step = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Create derived data",
+            code="derived = xr.DataArray([1.0, 2.0], dims=('x',))",
+        ),
+        provenance.AverageOperation(dims=("x",)),
+        start_label="Run script",
+        active_name="derived",
+    )
+    controller = _fake_edit_controller(_fake_edit_node(script_with_structured_step))
+    script_code_row, structured_row = script_with_structured_step.display_rows()[1:]
+    assert not controller.can_edit_row(script_code_row)[0]
+    assert controller.can_edit_row(structured_row) == (True, "")
+
     source_row = provenance._ProvenanceDisplayRow(
         provenance.DerivationEntry("source", None),
         edit_ref=edit_ref,
@@ -5432,6 +5446,86 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
         xr.testing.assert_identical(
             tool.slicer_area._data.rename(None),
             data.qsel.sum("x").rename(None),
+        )
+
+
+def test_manager_provenance_script_derived_structured_step_is_editable(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(24, dtype=float).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": np.arange(4), "z": [0.0, 1.0]},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        input_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(data, manager=False, execute=False),
+        )
+        manager.add_imagetool(input_tool, show=False)
+        input_node = manager._tool_graph.root_wrappers[0]
+        derived_data = (data + 1.0).qsel.mean("y")
+        spec = provenance.script(
+            provenance.ScriptCodeOperation(
+                label="Evaluate console expression",
+                code="derived = data_0 + 1.0",
+            ),
+            provenance.QSelAggregationOperation(dims=("y",), func="mean"),
+            start_label="Run ImageTool manager console code",
+            active_name="derived",
+            script_inputs=(
+                provenance.ScriptInput(
+                    name="data_0",
+                    label="ImageTool 0: scan",
+                    node_uid=input_node.uid,
+                    node_snapshot_token=input_node.snapshot_token,
+                ),
+            ),
+        )
+        derived_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(derived_data, manager=False, execute=False),
+        )
+        manager.add_imagetool(derived_tool, show=False, provenance_spec=spec)
+        derived_node = manager._tool_graph.root_wrappers[1]
+
+        select_tools(manager, [1])
+        manager._update_info()
+        script_code_row, structured_row = spec.display_rows()[2:]
+        assert not manager._provenance_edit_controller.can_edit_row(script_code_row)[0]
+        assert manager._provenance_edit_controller.can_edit_row(structured_row) == (
+            True,
+            "",
+        )
+        select_metadata_rows(manager, [3])
+
+        def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
+            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
+                check.setChecked(False)
+            dialog.dim_checks["x"].setChecked(True)  # type: ignore[attr-defined]
+            reducer_index = dialog.reducer_combo.findData("sum")  # type: ignore[attr-defined]
+            dialog.reducer_combo.setCurrentIndex(reducer_index)  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
+
+        assert derived_node.provenance_spec is not None
+        assert derived_node.provenance_spec.operations == (
+            provenance.ScriptCodeOperation(
+                label="Evaluate console expression",
+                code="derived = data_0 + 1.0",
+            ),
+            provenance.QSelAggregationOperation(dims=("x",), func="sum"),
+        )
+        xr.testing.assert_identical(
+            derived_tool.slicer_area._data.rename(None),
+            (data + 1.0).qsel.sum("x").rename(None),
         )
 
 
