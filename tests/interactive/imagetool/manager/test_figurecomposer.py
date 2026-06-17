@@ -833,6 +833,13 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         source_data={"data_0": original},
     )
     qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    assert "ImageTool 0: original" in tool.operation_list.item(0).text()
+    assert "ImageTool 0: original" in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == (
+        "Sources: ImageTool 0: original"
+    )
 
     replaced = tool.replace_source(
         "data_0",
@@ -856,6 +863,13 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
     assert tool.tool_status.operations[0].sources == ("data_0",)
     assert tool.tool_status.operations[1].line_source == "data_0"
+    assert "ImageTool 1: replacement" in tool.operation_list.item(0).text()
+    assert "ImageTool 0: original" not in tool.operation_list.item(0).text()
+    assert "ImageTool 1: replacement" in tool.operation_list.item(1).text()
+    assert "ImageTool 0: original" not in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == (
+        "Sources: ImageTool 1: replacement"
+    )
 
     _render_figure_composer_rgba(tool)
     assert tool._operation_render_errors == {}

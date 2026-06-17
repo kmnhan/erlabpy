@@ -4081,6 +4081,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         self._source_data[alias] = data
         self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
         self._refresh_source_list()
         self._update_source_section()
         _render_preview(self)
