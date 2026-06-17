@@ -193,8 +193,6 @@ jobs:
           PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
             uv run pytest \
             -m compat \
-            -n auto \
-            --dist=loadgroup \
             -o faulthandler_timeout=300 \
             --junitxml "junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy \

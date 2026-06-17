@@ -256,14 +256,19 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         if tab is not None:
             tab.deleteLater()
 
-    def _stop_preview_workers(self) -> None:
+    def _stop_preview_workers(self) -> bool:
+        stopped = True
         for index in range(self.tab_widget.count()):
             explorer = self.get_explorer(index)
             if explorer is not None:
-                explorer._stop_preview_workers()
+                stopped = explorer._stop_preview_workers() and stopped
+        return stopped
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._stop_preview_workers()
+        if not self._stop_preview_workers():
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
     @QtCore.Slot()
