@@ -1125,11 +1125,12 @@ class ToolNamespace(_ConsoleDataHandleBase):
     """Provenance-aware console handle for one managed ImageTool.
 
     In the manager console, ``tools[idx]`` accesses a top-level ImageTool, and
-    ``tools[idx].children[j]`` accesses a child ImageTool in manager tree order. The
-    handle delegates DataArray attributes, methods, operators, and supported ERLab
-    calls to the underlying array while preserving provenance for derived results.
-    ``.data`` remains exact current :class:`xarray.DataArray` access for compatibility
-    and is not provenance-aware.
+    ``tools[idx].children[j]`` accesses a child manager row in tree order. Child rows
+    that are ImageTools are also ``ToolNamespace`` handles; child rows that are
+    analysis tools are navigable manager-row handles. The handle delegates DataArray
+    attributes, methods, operators, and supported ERLab calls to the underlying array
+    while preserving provenance for derived results. ``.data`` remains exact current
+    :class:`xarray.DataArray` access for compatibility and is not provenance-aware.
 
     Examples
     --------
@@ -1168,6 +1169,31 @@ class ToolNamespace(_ConsoleDataHandleBase):
         return typing.cast("ImageTool", self._wrapper.imagetool)
 
     @property
+    def window(self) -> ImageTool:
+        """The underlying ImageTool window."""
+        return self.tool
+
+    @property
+    def uid(self) -> str:
+        """Manager node UID for this ImageTool row."""
+        return self._wrapper.uid
+
+    @property
+    def name(self) -> str:
+        """Current manager row display name."""
+        return self._wrapper.name
+
+    @property
+    def kind(self) -> str:
+        """Manager row kind."""
+        return "ImageTool"
+
+    @property
+    def is_imagetool(self) -> bool:
+        """Whether this console row handle wraps an ImageTool."""
+        return True
+
+    @property
     def data(self) -> xr.DataArray:
         """Current :class:`xarray.DataArray` displayed by the ImageTool."""
         return self.tool.slicer_area.displayed_data
@@ -1189,7 +1215,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     @property
     def children(self) -> _ToolChildren:
-        """Child ImageTools displayed under this ImageTool in manager tree order."""
+        """Child manager rows displayed under this ImageTool in manager tree order."""
         return _ToolChildren(self)
 
     def _get_data_item(self, key):
@@ -1345,30 +1371,207 @@ class ToolNamespace(_ConsoleDataHandleBase):
         return out
 
 
+class _ManagedToolNamespace:
+    """Console handle for a non-ImageTool manager row."""
+
+    def __init__(
+        self,
+        wrapper: _ManagedWindowNode,
+        tools: ToolsNamespace | None = None,
+    ) -> None:
+        self._wrapper_ref = weakref.ref(wrapper)
+        self._tools_ref = weakref.ref(tools) if tools is not None else None
+
+    @property
+    def _wrapper(self) -> _ManagedWindowNode:
+        wrapper = self._wrapper_ref()
+        if wrapper:
+            return wrapper
+        raise LookupError("Parent was destroyed")
+
+    @property
+    def _console_tools(self) -> ToolsNamespace | None:
+        if self._tools_ref is None:
+            return None
+        return self._tools_ref()
+
+    @property
+    def window(self) -> QtWidgets.QWidget | None:
+        """The underlying managed tool window."""
+        return self._wrapper.window
+
+    @property
+    def uid(self) -> str:
+        """Manager node UID for this tool row."""
+        return self._wrapper.uid
+
+    @property
+    def name(self) -> str:
+        """Current manager row display name."""
+        return self._wrapper.name
+
+    @property
+    def kind(self) -> str:
+        """Manager row kind."""
+        return self._wrapper.type_badge_text or "tool"
+
+    @property
+    def is_imagetool(self) -> bool:
+        """Whether this console row handle wraps an ImageTool."""
+        return False
+
+    @property
+    def children(self) -> _ToolChildren:
+        """Child manager rows displayed under this tool row in manager tree order."""
+        return _ToolChildren(self)
+
+    @property
+    def data(self) -> xr.DataArray:
+        self._raise_not_imagetool()
+
+    def _raise_not_imagetool(self) -> typing.NoReturn:
+        tools = self._console_tools
+        label = (
+            tools._node_label(self._wrapper, include_name=True)
+            if tools is not None
+            else self.name
+        )
+        raise TypeError(
+            f"{label} is a managed {self.kind} row, not an ImageTool. "
+            "Use one of this row's ImageTool children instead."
+        )
+
+    def show(self) -> None:
+        """Show the managed tool window."""
+        self._wrapper.show()
+
+    def hide(self) -> None:
+        """Hide the managed tool window."""
+        self._wrapper.hide()
+
+    def dispose(self) -> None:
+        """Dispose of the managed tool window."""
+        self._wrapper.dispose()
+
+    def __getattr__(self, attr: str) -> typing.Any:
+        if hasattr(self._wrapper, attr):
+            value = getattr(self._wrapper, attr)
+            if callable(value):
+                return value
+        raise AttributeError(attr)
+
+    def __getitem__(self, _key: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __add__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __radd__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __sub__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rsub__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __mul__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rmul__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __matmul__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rmatmul__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __truediv__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rtruediv__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __floordiv__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rfloordiv__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __mod__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rmod__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __pow__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __rpow__(self, _other: typing.Any) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __neg__(self) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __pos__(self) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __abs__(self) -> typing.NoReturn:
+        self._raise_not_imagetool()
+
+    def __repr__(self) -> str:
+        tools = self._console_tools
+        label = (
+            tools._node_label(self._wrapper, include_name=True)
+            if tools is not None
+            else f"{self.kind}: {self.name}"
+        )
+        out = f"{label}\n"
+        out += f"  UID: {self.uid}\n"
+        out += f"  Added: {self._wrapper.added_time_display}\n"
+        out += f"  Children: {len(self.children)}\n"
+        return out
+
+
 class _ToolChildren:
-    def __init__(self, parent: ToolNamespace) -> None:
+    def __init__(self, parent: ToolNamespace | _ManagedToolNamespace) -> None:
         self._parent = parent
 
     def _nodes(self) -> list[_ManagedWindowNode]:
         tools = self._parent._console_tools
         if tools is None:
             return []
-        return tools._child_imagetool_nodes(self._parent._wrapper)
+        return tools._child_nodes(self._parent._wrapper)
 
-    def __getitem__(self, index: int | slice) -> ToolNamespace | list[ToolNamespace]:
+    def _wrap_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> ToolNamespace | _ManagedToolNamespace:
+        tools = self._parent._console_tools
+        if tools is None:
+            raise LookupError("Parent was destroyed")
+        return tools._node_handle(node)
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> (
+        ToolNamespace
+        | _ManagedToolNamespace
+        | list[ToolNamespace | _ManagedToolNamespace]
+    ):
         tools = self._parent._console_tools
         if tools is None:
             raise LookupError("Parent was destroyed")
         nodes = self._nodes()
         if isinstance(index, slice):
-            return [ToolNamespace(node, tools) for node in nodes[index]]
-        return ToolNamespace(nodes[index], tools)
+            return [self._wrap_node(node) for node in nodes[index]]
+        return self._wrap_node(nodes[index])
 
     def __iter__(self):
         tools = self._parent._console_tools
         if tools is None:
             return iter(())
-        return (ToolNamespace(node, tools) for node in self._nodes())
+        return (self._wrap_node(node) for node in self._nodes())
 
     def __len__(self) -> int:
         return len(self._nodes())
@@ -1376,14 +1579,31 @@ class _ToolChildren:
     def __repr__(self) -> str:
         tools = self._parent._console_tools
         if tools is None:
-            return "No child ImageTools"
+            return "No children"
         nodes = self._nodes()
+        parent_label = tools._node_label(self._parent._wrapper, include_name=False)
         if not nodes:
-            return f"No child ImageTools for {self._parent._console_label}"
-        lines = [f"Child ImageTools for {self._parent._console_label}:"]
-        for index, node in enumerate(nodes):
-            lines.append(f"[{index}] {tools._node_label(node, include_name=True)}")
+            return f"No children for {parent_label}"
+        lines = [f"Children for {parent_label}:"]
+        self._append_tree_lines(lines, self._parent._wrapper, "")
         return "\n".join(lines)
+
+    def _append_tree_lines(
+        self,
+        lines: list[str],
+        parent: _ImageToolWrapper | _ManagedWindowNode,
+        prefix: str,
+    ) -> None:
+        tools = self._parent._console_tools
+        if tools is None:
+            return
+        nodes = tools._child_nodes(parent)
+        for index, node in enumerate(nodes):
+            is_last = index == len(nodes) - 1
+            connector = "└─ " if is_last else "├─ "
+            lines.append(f"{prefix}{connector}[{index}] {tools._tree_node_label(node)}")
+            child_prefix = prefix + ("   " if is_last else "│  ")
+            self._append_tree_lines(lines, node, child_prefix)
 
 
 class _DerivedDataNamespace(_ConsoleDataHandleBase):
@@ -1547,44 +1767,42 @@ class ToolsNamespace:
 
         return ToolNamespace(self._manager._tool_graph.root_wrappers[index], self)
 
+    def _node_handle(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> ToolNamespace | _ManagedToolNamespace:
+        if node.is_imagetool:
+            return ToolNamespace(node, self)
+        return _ManagedToolNamespace(node, self)
+
     def _node_path(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> list[int] | None:
         path: list[int] = []
         current = node
         while current.parent_uid is not None:
-            image_parent = self._image_parent_node(current)
-            if image_parent is None:
+            parent = self._manager._tool_graph.nodes.get(current.parent_uid)
+            if parent is None:
                 return None
-            child_nodes = self._child_imagetool_nodes(image_parent)
-            child_uids = [child.uid for child in child_nodes]
-            if current.uid not in child_uids:
+            if current.uid not in parent._childtool_indices:
                 return None
-            child_index = child_uids.index(current.uid)
+            child_index = parent._childtool_indices.index(current.uid)
             path.append(child_index)
-            current = image_parent
+            current = parent
         for root_index, wrapper in self._manager._tool_graph.root_wrappers.items():
             if wrapper.uid == current.uid:
                 return [root_index, *reversed(path)]
         return None
 
-    def _child_imagetool_nodes(
+    def _child_nodes(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> list[_ManagedWindowNode]:
-        output: list[_ManagedWindowNode] = []
-
-        def collect(parent: _ImageToolWrapper | _ManagedWindowNode) -> None:
-            for child_uid in parent._childtool_indices:
-                child = self._manager._tool_graph.nodes.get(child_uid)
-                if child is None:
-                    continue
-                if child.is_imagetool:
-                    output.append(child)
-                    continue
-                collect(child)
-
-        collect(node)
-        return output
+        nodes: list[_ManagedWindowNode] = []
+        for child_uid in node._childtool_indices:
+            child = self._manager._tool_graph.nodes.get(child_uid)
+            if child is None or child.parent_uid != node.uid:
+                continue
+            nodes.append(child)
+        return nodes
 
     def _image_parent_node(
         self, node: _ManagedWindowNode
@@ -1611,8 +1829,24 @@ class ToolsNamespace:
     ) -> str:
         path = self._node_path(node)
         display_index = ".".join(str(index) for index in path) if path else node.uid[:8]
-        label = f"ImageTool {display_index}"
+        if node.is_imagetool:
+            label = f"ImageTool {display_index}"
+        else:
+            label = f"{self._node_kind(node)} {display_index}"
         if include_name and node.name:
+            label += f": {node.name}"
+        return label
+
+    def _node_kind(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
+        if node.is_imagetool:
+            return "ImageTool"
+        return node.type_badge_text or "tool"
+
+    def _tree_node_label(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
+        if node.is_imagetool:
+            return self._node_label(node, include_name=True)
+        label = self._node_kind(node)
+        if node.name:
             label += f": {node.name}"
         return label
 
@@ -1933,7 +2167,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                 "Access raw data",
                 [
                     "tools[<index>].data",
-                    "tools[<index>].children[0].data",
+                    "tools[<index>].children[0].children[0].data",
                     "tools.selected_data",
                 ],
             )
@@ -1942,7 +2176,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                 "Track provenance",
                 [
                     "tools[0] - tools[1]",
-                    "tools[0].children[0] - tools[1]",
+                    "tools[0].children[0].children[0] - tools[1]",
                     "tools.selected[0]",
                 ],
             )

@@ -450,7 +450,7 @@ many of the same operations and keep track of the manager history. For example:
   # Access the underlying DataArray of the first window
   tools[0].data
 
-  # Inspect and access ImageTool children under the first window
+  # Inspect the child rows under the first window
   tools[0].children
 
   # Create an ImageTool containing the difference of the first two windows

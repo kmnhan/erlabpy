@@ -1204,6 +1204,164 @@ def test_manager_console_tools_namespace_helper_branches(
     assert not fake_manager.added
 
 
+def test_manager_console_tree_namespace_helper_branches() -> None:
+    class FakeNode:
+        def __init__(
+            self,
+            uid: str,
+            *,
+            parent_uid: str | None = None,
+            is_imagetool: bool = False,
+            name: str = "",
+            kind: str | None = "tool",
+        ) -> None:
+            self.uid = uid
+            self.parent_uid = parent_uid
+            self.is_imagetool = is_imagetool
+            self.name = name
+            self.type_badge_text = kind
+            self._childtool_indices: list[str] = []
+            self.added_time_display = "2026-06-17 12:00:00 UTC (+0000)"
+            self.imagetool = object()
+            self.window = object()
+            self.calls: list[str] = []
+            self.non_callable = "value"
+
+        def show(self) -> None:
+            self.calls.append("show")
+
+        def hide(self) -> None:
+            self.calls.append("hide")
+
+        def dispose(self) -> None:
+            self.calls.append("dispose")
+
+        def callable_method(self) -> str:
+            return "called"
+
+    class FakeManager:
+        def __init__(self) -> None:
+            self._tool_graph = types.SimpleNamespace(root_wrappers={}, nodes={})
+
+    manager = FakeManager()
+    root = FakeNode("root", is_imagetool=True, name="root-data")
+    tool = FakeNode("tool", parent_uid="root", name="Tool Row", kind="customtool")
+    child = FakeNode("child", parent_uid="tool", is_imagetool=True, name="child-data")
+    unnamed_tool = FakeNode("unnamed", parent_uid="tool", name="", kind=None)
+    wrong_parent = FakeNode("wrong", parent_uid="other", is_imagetool=True)
+    skip_parent = FakeNode("skip", is_imagetool=True)
+    skip_child = FakeNode("skip-child", parent_uid="skip", is_imagetool=True)
+    detached = FakeNode("detached", is_imagetool=True, name="detached")
+    orphan = FakeNode("orphan", parent_uid="missing", is_imagetool=True)
+    omitted = FakeNode("omitted", parent_uid="root", is_imagetool=True)
+    root._childtool_indices = ["tool"]
+    tool._childtool_indices = ["child", "unnamed"]
+    skip_parent._childtool_indices = ["missing-node", "wrong", "skip-child"]
+    manager._tool_graph.root_wrappers[0] = root
+    manager._tool_graph.nodes.update(
+        {
+            "root": root,
+            "tool": tool,
+            "child": child,
+            "unnamed": unnamed_tool,
+            "wrong": wrong_parent,
+            "skip": skip_parent,
+            "skip-child": skip_child,
+            "detached": detached,
+            "orphan": orphan,
+            "omitted": omitted,
+        }
+    )
+    tools = manager_console.ToolsNamespace(manager)
+
+    root_handle = manager_console.ToolNamespace(root, tools)
+    assert root_handle.window is root.imagetool
+    assert root_handle.uid == "root"
+    assert root_handle.name == "root-data"
+    assert root_handle.kind == "ImageTool"
+    assert root_handle.is_imagetool
+
+    tool_handle = typing.cast(
+        "manager_console._ManagedToolNamespace",
+        root_handle.children[0],
+    )
+    assert tool_handle.window is tool.window
+    assert tool_handle.uid == "tool"
+    assert tool_handle.name == "Tool Row"
+    assert tool_handle.kind == "customtool"
+    assert not tool_handle.is_imagetool
+    assert tool_handle.callable_method() == "called"
+    with pytest.raises(AttributeError):
+        _ = tool_handle.non_callable
+    with pytest.raises(AttributeError):
+        _ = tool_handle.missing_attribute
+
+    tool_handle.show()
+    tool_handle.hide()
+    tool_handle.dispose()
+    assert tool.calls == ["show", "hide", "dispose"]
+
+    rejected_operations = (
+        lambda: tool_handle.data,
+        lambda: tool_handle[0],
+        lambda: tool_handle + 1,
+        lambda: 1 + tool_handle,
+        lambda: tool_handle - 1,
+        lambda: 1 - tool_handle,
+        lambda: tool_handle * 1,
+        lambda: 1 * tool_handle,
+        lambda: tool_handle @ 1,
+        lambda: 1 @ tool_handle,
+        lambda: tool_handle / 1,
+        lambda: 1 / tool_handle,
+        lambda: tool_handle // 1,
+        lambda: 1 // tool_handle,
+        lambda: tool_handle % 1,
+        lambda: 1 % tool_handle,
+        lambda: tool_handle**1,
+        lambda: 1**tool_handle,
+        lambda: -tool_handle,
+        lambda: +tool_handle,
+        lambda: abs(tool_handle),
+    )
+    for operation in rejected_operations:
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            operation()
+
+    child_handles = tool_handle.children
+    assert len(child_handles) == 2
+    assert [handle.uid for handle in child_handles[:]] == ["child", "unnamed"]
+    assert [handle.uid for handle in child_handles] == ["child", "unnamed"]
+    assert (
+        repr(child_handles) == "Children for customtool 0.0:\n"
+        "├─ [0] ImageTool 0.0.0: child-data\n"
+        "└─ [1] tool"
+    )
+    assert repr(typing.cast("typing.Any", child_handles[0]).children) == (
+        "No children for ImageTool 0.0.0"
+    )
+
+    no_tools_handle = manager_console._ManagedToolNamespace(tool)
+    assert no_tools_handle._console_tools is None
+    assert "customtool: Tool Row" in repr(no_tools_handle)
+    assert repr(no_tools_handle.children) == "No children"
+    with pytest.raises(LookupError):
+        no_tools_handle.children[0]
+    no_tools_handle.children._append_tree_lines([], tool, "")
+
+    assert tools._node_path(orphan) is None
+    assert tools._node_path(omitted) is None
+    assert tools._node_path(detached) is None
+    assert tools._node_data_name(detached).startswith("data_detached")
+    assert tools._child_nodes(root) == [tool]
+    assert tools._child_nodes(skip_parent) == [skip_child]
+    assert isinstance(tools._node_handle(child), manager_console.ToolNamespace)
+    assert isinstance(tools._node_handle(tool), manager_console._ManagedToolNamespace)
+    assert tools._node_kind(root) == "ImageTool"
+    assert tools._node_kind(unnamed_tool) == "tool"
+    assert tools._tree_node_label(unnamed_tool) == "tool"
+
+
 def test_manager_console_callable_operand_captures_replayable_functions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1452,6 +1610,9 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
+        tool_name = "dtool"
+
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -1462,6 +1623,8 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
     data1.name = "right"
     child_data = data0 + 10.0
     child_data.name = "child"
+    second_child_data = data0 + 20.0
+    second_child_data.name = "second"
 
     with manager_context() as manager:
         manager.show()
@@ -1471,31 +1634,67 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        intermediate_uid = manager.add_childtool(
-            erlab.interactive.utils.ToolWindow(), 0, show=False
-        )
+        intermediate_tool = _ConsoleTreeTool()
+        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        intermediate_node = manager._child_node(intermediate_uid)
+        intermediate_node.name = "Derivative"
         child_tool = itool(child_data, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
         child_uid = manager.add_imagetool_child(
             child_tool, intermediate_uid, show=False
         )
         child_node = manager._child_node(child_uid)
+        second_child_tool = itool(second_child_data, manager=False, execute=False)
+        assert isinstance(second_child_tool, erlab.interactive.imagetool.ImageTool)
+        second_child_uid = manager.add_imagetool_child(
+            second_child_tool, intermediate_uid, show=False
+        )
 
         shell = manager.console._console_widget.kernel_manager.kernel.shell
 
         manager.console._console_widget.execute("child_handles = tools[0].children")
         child_handles = shell.user_ns["child_handles"]
         assert len(child_handles) == 1
-        assert "[0]" in repr(child_handles)
-        assert child_node.name in repr(child_handles)
+        assert (
+            repr(child_handles) == "Children for ImageTool 0:\n"
+            "└─ [0] dtool: Derivative\n"
+            "   ├─ [0] ImageTool 0.0.0: child\n"
+            "   └─ [1] ImageTool 0.0.1: second"
+        )
+        intermediate_handle = child_handles[0]
+        assert not intermediate_handle.is_imagetool
+        assert intermediate_handle.uid == intermediate_uid
+        assert intermediate_handle.kind == "dtool"
+        assert intermediate_handle.name == "Derivative"
+        assert intermediate_handle.window is intermediate_tool
+        assert len(intermediate_handle.children) == 2
+
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            _ = intermediate_handle.data
+
+        tools_namespace = manager_console.ToolsNamespace(manager)
+        top_left = tools_namespace[0]
+        top_right = tools_namespace[1]
+        assert top_left is not None
+        assert top_right is not None
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            top_left.children[0] - top_right
 
         manager.console._console_widget.execute(
-            "isinstance(tools[0].children[0].data, xr.DataArray)"
+            "isinstance(tools[0].children[0].children[0].data, xr.DataArray)"
         )
         assert shell.user_ns["_"] is True
-        xr.testing.assert_identical(child_handles[0].data, child_data)
+        first_nested_child = intermediate_handle.children[0]
+        assert first_nested_child.is_imagetool
+        xr.testing.assert_identical(first_nested_child.data, child_data)
+        xr.testing.assert_identical(
+            top_left.children[0].children[1].data,
+            second_child_data,
+        )
 
-        manager.console._console_widget.execute("tools[0].children[0] - tools[1]")
+        manager.console._console_widget.execute(
+            "tools[0].children[0].children[0] - tools[1]"
+        )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data,
@@ -1504,7 +1703,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
-            "data_0_0",
+            "data_0_0_0",
             "data_1",
         ]
         assert [source.node_uid for source in provenance.script_inputs] == [
@@ -1546,6 +1745,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
             lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
             timeout=5000,
         )
+        assert intermediate_node._childtool_indices == [second_child_uid]
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
