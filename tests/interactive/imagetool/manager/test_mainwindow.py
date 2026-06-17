@@ -3034,6 +3034,34 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
         xr.testing.assert_identical(fetch(child_uid), updated)
 
 
+def test_imagetool_source_chain_reload_target_falls_back_without_managed_source(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    standalone_tool = itool(test_data, manager=False, execute=False)
+    assert isinstance(standalone_tool, erlab.interactive.imagetool.ImageTool)
+    assert standalone_tool.slicer_area._managed_source_chain_reload_target() is None
+    assert not standalone_tool.slicer_area._reload()
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root_tool = manager.get_imagetool(0)
+        assert root_tool.slicer_area._managed_source_chain_reload_target() is None
+
+        child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool_child(child_tool, 0, show=False)
+        assert child_tool.slicer_area._managed_source_chain_reload_target() is None
+
+
 def test_manager_workspace_reload_preserves_manual_root_name(
     qtbot,
     tmp_path: pathlib.Path,
