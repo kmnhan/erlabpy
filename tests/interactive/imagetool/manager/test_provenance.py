@@ -4101,7 +4101,7 @@ def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_window
         xr.testing.assert_identical(fetch(2), updated)
 
 
-def test_manager_open_in_new_window_nests_imagetool_children(
+def test_manager_open_in_new_window_nests_image_tool_children(
     qtbot,
     monkeypatch,
     accept_dialog,

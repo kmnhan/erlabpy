@@ -1510,7 +1510,6 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         assert intermediate_handle.name == "Derivative"
         assert intermediate_handle.window is intermediate_tool
         assert len(intermediate_handle.children) == 2
-        assert len(intermediate_handle.imagetool_children) == 2
 
         with pytest.raises(TypeError, match="not an ImageTool"):
             _ = intermediate_handle.data
@@ -1531,7 +1530,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         assert first_nested_child.is_imagetool
         xr.testing.assert_identical(first_nested_child.data, child_data)
         xr.testing.assert_identical(
-            top_left.imagetool_children[1].data,
+            top_left.children[0].children[1].data,
             second_child_data,
         )
 

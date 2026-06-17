@@ -1218,11 +1218,6 @@ class ToolNamespace(_ConsoleDataHandleBase):
         """Child manager rows displayed under this ImageTool in manager tree order."""
         return _ToolChildren(self)
 
-    @property
-    def imagetool_children(self) -> _ToolChildren:
-        """Descendant ImageTool rows under this ImageTool, skipping tool rows."""
-        return _ToolChildren(self, imagetools_only=True)
-
     def _get_data_item(self, key):
         """Return a subset of the tool data."""
         return self.tool.slicer_area.displayed_data[key]
@@ -1431,11 +1426,6 @@ class _ManagedToolNamespace:
         return _ToolChildren(self)
 
     @property
-    def imagetool_children(self) -> _ToolChildren:
-        """Descendant ImageTool rows under this tool row, skipping tool rows."""
-        return _ToolChildren(self, imagetools_only=True)
-
-    @property
     def data(self) -> xr.DataArray:
         self._raise_not_imagetool()
 
@@ -1545,21 +1535,13 @@ class _ManagedToolNamespace:
 
 
 class _ToolChildren:
-    def __init__(
-        self,
-        parent: ToolNamespace | _ManagedToolNamespace,
-        *,
-        imagetools_only: bool = False,
-    ) -> None:
+    def __init__(self, parent: ToolNamespace | _ManagedToolNamespace) -> None:
         self._parent = parent
-        self._imagetools_only = imagetools_only
 
     def _nodes(self) -> list[_ManagedWindowNode]:
         tools = self._parent._console_tools
         if tools is None:
             return []
-        if self._imagetools_only:
-            return tools._child_imagetool_nodes(self._parent._wrapper)
         return tools._child_nodes(self._parent._wrapper)
 
     def _wrap_node(
@@ -1597,16 +1579,9 @@ class _ToolChildren:
     def __repr__(self) -> str:
         tools = self._parent._console_tools
         if tools is None:
-            return "No child ImageTools" if self._imagetools_only else "No children"
+            return "No children"
         nodes = self._nodes()
         parent_label = tools._node_label(self._parent._wrapper, include_name=False)
-        if self._imagetools_only:
-            if not nodes:
-                return f"No child ImageTools for {parent_label}"
-            lines = [f"Child ImageTools for {parent_label}:"]
-            for index, node in enumerate(nodes):
-                lines.append(f"[{index}] {tools._node_label(node, include_name=True)}")
-            return "\n".join(lines)
         if not nodes:
             return f"No children for {parent_label}"
         lines = [f"Children for {parent_label}:"]
@@ -1828,21 +1803,6 @@ class ToolsNamespace:
                 continue
             nodes.append(child)
         return nodes
-
-    def _child_imagetool_nodes(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> list[_ManagedWindowNode]:
-        output: list[_ManagedWindowNode] = []
-
-        def collect(parent: _ImageToolWrapper | _ManagedWindowNode) -> None:
-            for child in self._child_nodes(parent):
-                if child.is_imagetool:
-                    output.append(child)
-                    continue
-                collect(child)
-
-        collect(node)
-        return output
 
     def _image_parent_node(
         self, node: _ManagedWindowNode
@@ -2207,7 +2167,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                 "Access raw data",
                 [
                     "tools[<index>].data",
-                    "tools[<index>].imagetool_children[0].data",
+                    "tools[<index>].children[0].children[0].data",
                     "tools.selected_data",
                 ],
             )
@@ -2216,7 +2176,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                 "Track provenance",
                 [
                     "tools[0] - tools[1]",
-                    "tools[0].imagetool_children[0] - tools[1]",
+                    "tools[0].children[0].children[0] - tools[1]",
                     "tools.selected[0]",
                 ],
             )
