@@ -182,6 +182,10 @@ def test_tabbed_explorer_close_ignores_busy_preview_workers(qtbot) -> None:
     assert win.current_explorer is explorer
     assert explorer.stopped_preview_workers == 1
 
+    win.closeEvent(None)
+
+    assert explorer.stopped_preview_workers == 2
+
 
 def test_explorer_close_stops_preview_workers(
     qtbot, example_loader, example_data_dir: pathlib.Path
@@ -227,6 +231,11 @@ def test_explorer_close_ignores_busy_preview_workers(
 
     assert explorer.stopped_preview_workers
     assert not event.isAccepted()
+
+    explorer.stopped_preview_workers = False
+    explorer.closeEvent(None)
+
+    assert explorer.stopped_preview_workers
 
 
 def test_tabbed_explorer_show_path_adds_selected_file_tab(
@@ -539,6 +548,44 @@ def test_explorer_stop_preview_workers_aborts_with_bounded_wait(
     assert (
         explorer._preview_threadpool.wait_timeout_ms == _PREVIEW_WORKER_STOP_TIMEOUT_MS
     )
+
+
+def test_explorer_stop_preview_workers_disconnects_finished_workers(
+    tmp_path: pathlib.Path,
+) -> None:
+    class _FakeThreadPool:
+        def __init__(self) -> None:
+            self.clear_called = False
+            self.wait_timeout_ms: int | None = None
+
+        def clear(self) -> None:
+            self.clear_called = True
+
+        def waitForDone(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
+            self._preview_stopping = False
+            self._preview_workers = {worker}
+            self._preview_threadpool = _FakeThreadPool()
+            self.disconnected_workers: list[_ReprFetcher] = []
+
+        def _disconnect_preview_worker(self, worker: _ReprFetcher) -> None:
+            self.disconnected_workers.append(worker)
+
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
+
+    assert _DataExplorer._stop_preview_workers(typing.cast("_DataExplorer", explorer))
+    assert worker._aborted.is_set()
+    assert explorer._preview_threadpool.clear_called
+    assert (
+        explorer._preview_threadpool.wait_timeout_ms == _PREVIEW_WORKER_STOP_TIMEOUT_MS
+    )
+    assert explorer.disconnected_workers == [worker]
+    assert explorer._preview_workers == set()
 
 
 def test_explorer_selection_change_ignores_stopping_preview() -> None:
