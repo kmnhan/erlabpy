@@ -1687,6 +1687,12 @@ class ItoolPlotItem(pg.PlotItem):
 
     @staticmethod
     def _plot_slices_qsel_key_is_editable(key: Hashable) -> bool:
+        """Return whether ``key`` can be edited by Figure Composer plot_slices.
+
+        String qsel dimensions do not need to be valid Python identifiers. Internal
+        non-uniform ``*_idx`` dimensions and their width companions remain rejected
+        because they do not map to editable qsel controls.
+        """
         if not isinstance(key, str):
             return False
         dim_name = key.removesuffix("_width") if key.endswith("_width") else key
@@ -1795,7 +1801,13 @@ class ItoolPlotItem(pg.PlotItem):
                 self.slicer_area.manual_limits.pop(dim, None)
 
     def figure_composer_operation(self, *, source_name: str):
-        """Build a Figure Composer operation from the current ImageTool plot state."""
+        """Build a Figure Composer operation from the current ImageTool plot state.
+
+        Image plots seed editable ``plot_slices`` operations when their non-display
+        selections can be represented as qsel keyword arguments, including string
+        dimensions that are not Python identifiers. Unsupported image selections raise
+        a Figure Composer selection error with details for the warning dialog.
+        """
         self._sync_figure_composer_view_limits()
         non_display_axes = tuple(
             sorted(set(range(self.slicer_area.data.ndim)) - set(self.display_axis))

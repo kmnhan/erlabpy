@@ -2143,6 +2143,7 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         show: bool = True,
     ) -> bool:
+        """Add or update figure sources without appending recipe operations."""
         from erlab.interactive._figurecomposer import FigureComposerTool
 
         if not self._is_figure_uid(figure_uid):
@@ -2167,6 +2168,7 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         show: bool = True,
     ) -> bool:
+        """Replace one stored figure source with one selected ImageTool source."""
         from erlab.interactive._figurecomposer import FigureComposerTool
 
         if len(sources) != 1 or not self._is_figure_uid(figure_uid):
@@ -2190,6 +2192,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _install_figure_source_refresh_callbacks(
         self, figure_uid: str, tool: typing.Any
     ) -> None:
+        """Connect Figure Composer source refresh controls to live manager nodes."""
         tool._set_source_refresh_callbacks(
             can_refresh_source=lambda source_name: self._can_refresh_figure_source(
                 figure_uid, source_name
@@ -2244,6 +2247,7 @@ class ImageToolManager(_ImageToolManagerBase):
         return None if node is None else node.display_text
 
     def _refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
+        """Refresh one figure source from its linked open ImageTool window."""
         from erlab.interactive._figurecomposer import (
             FigureComposerTool,
             FigureSourceState,
@@ -2270,6 +2274,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _refresh_figure_sources(
         self, figure_uid: str, source_names: Iterable[str]
     ) -> int:
+        """Refresh all linked figure sources named in ``source_names``."""
         refreshed = 0
         for source_name in tuple(source_names):
             if self._refresh_figure_source(figure_uid, source_name):

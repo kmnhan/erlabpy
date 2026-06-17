@@ -563,6 +563,8 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert set(checks) == {"first_source", "second_source"}
     assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
     assert checks["second_source"].checkState() == QtCore.Qt.CheckState.Unchecked
+    assert tool.source_status_label.text() == ""
+    assert tool.source_status_label.isHidden()
 
     checks["second_source"].setCheckState(QtCore.Qt.CheckState.Checked)
 
@@ -18908,6 +18910,7 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
 def test_manager_figure_action_add_source_only_keeps_recipe_steps(
     qtbot,
     monkeypatch,
+    tmp_path: Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -18934,6 +18937,8 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
         operation_count = len(figure_tool.tool_status.operations)
+        workspace_path = tmp_path / "add-source-only-delta.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
 
         select_tools(manager, [1])
 
@@ -18974,6 +18979,21 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
             "data_0",
             "data_1",
         }
+        snapshot = manager._workspace_state_snapshot()
+        assert figure_uid in snapshot["dirty_data"]
+        assert figure_uid in snapshot["dirty_state"]
+
+        manager._save_workspace_document(workspace_path)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        xr.testing.assert_identical(loaded_tool.source_data()["data_1"], second)
 
 
 def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(

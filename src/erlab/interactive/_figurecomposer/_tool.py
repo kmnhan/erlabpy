@@ -1859,6 +1859,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def refresh_source_controls(self) -> None:
         self._refresh_source_controls()
 
+    def _set_source_status_text(self, text: str | None) -> None:
+        self.source_status_label.setText("" if text is None else text)
+        self.source_status_label.setVisible(bool(text))
+
     def _refresh_source_from_button(self, name: str, _checked: bool = False) -> None:
         callback = self._source_refresh_callback
         if callback is None or not self._source_refresh_available(name):
@@ -1868,7 +1872,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         refreshed = callback(name)
         self._refresh_source_controls()
         if refreshed:
-            self.source_status_label.setText(f"Refreshed {display}.")
+            self._set_source_status_text(f"Refreshed {display}.")
 
     def _refresh_sources_from_button(self, _checked: bool = False) -> None:
         callback = self._source_refresh_many_callback
@@ -1880,9 +1884,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_controls()
         if refreshed_count:
             noun = "source" if refreshed_count == 1 else "sources"
-            self.source_status_label.setText(f"Refreshed {refreshed_count} {noun}.")
+            self._set_source_status_text(f"Refreshed {refreshed_count} {noun}.")
         else:
-            self.source_status_label.setText("No sources were refreshed.")
+            self._set_source_status_text("No sources were refreshed.")
 
     def _set_source_list_row_used(
         self, item: QtWidgets.QTreeWidgetItem, used: bool
@@ -4034,7 +4038,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources: Sequence[FigureSourceState],
         source_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Add or refresh recipe sources used by appended operations."""
+        """Add or update source data without changing existing recipe steps.
+
+        This supports appending operations and the manager's source-only workflow. The
+        source list, backing data, preview, persistent state, and data-dirty signals are
+        updated together so workspace saves include the new source data.
+        """
         existing = {source.name: source for source in self._recipe.sources}
         for source in sources:
             existing[source.name] = source
@@ -4044,6 +4053,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         _render_preview(self)
+        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4053,7 +4063,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source: FigureSourceState,
         data: xr.DataArray,
     ) -> bool:
-        """Replace a figure source's backing data while preserving its alias."""
+        """Replace source data while preserving the recipe-facing source name.
+
+        The incoming source metadata and data replace the stored source slot, but
+        recipe steps and generated code keep referring to the stored source name.
+        Returns ``False`` when no matching stored source or backing data slot exists.
+        """
         source_list = list(self._recipe.sources)
         for index, existing_source in enumerate(source_list):
             if existing_source.name == alias:
@@ -4336,31 +4351,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
-            self.source_status_label.setText("Select a step to choose data sources.")
+            self._set_source_status_text("Select a step to choose data sources.")
             return
         if (input_error := self._operation_input_error_text(operation)) is not None:
-            self.source_status_label.setText(f"Invalid input: {input_error}")
+            self._set_source_status_text(f"Invalid input: {input_error}")
             return
         if (
             render_error := self._operation_render_errors.get(operation.operation_id)
         ) is not None:
-            self.source_status_label.setText(f"Render error: {render_error}")
+            self._set_source_status_text(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [
             source for source in selected_sources if source not in self._source_data
         ]
         if missing:
-            self.source_status_label.setText(
+            self._set_source_status_text(
                 "Missing sources: " + ", ".join(self._source_display_names(missing))
             )
         elif selected_sources:
-            self.source_status_label.setText(
-                "Selected sources: "
-                + ", ".join(self._source_display_names(selected_sources))
-            )
+            self._set_source_status_text(None)
         else:
-            self.source_status_label.setText("This step does not read a data source.")
+            self._set_source_status_text("This step does not read a data source.")
 
     def _update_source_section(self) -> None:
         self._clear_step_source_controls()
@@ -4922,7 +4934,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
             if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
                 raise ValueError(
-                    "Figure source aliases cannot use the reserved saved-tool data name"
+                    "Figure source names cannot use the reserved saved-tool data name"
                 )
             items[source_name] = data
         return items
