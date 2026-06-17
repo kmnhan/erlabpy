@@ -2489,7 +2489,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return [with_scope(row) for row in rows]
 
         def input_history_rows(
-            rows: list[_ProvenanceDisplayRow],
+            rows: Sequence[_ProvenanceDisplayRow],
             path: tuple[int, ...],
         ) -> tuple[_ProvenanceDisplayRow, ...]:
             return tuple(

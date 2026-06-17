@@ -125,7 +125,7 @@ class _DetailsPanelController:
     def _metadata_derivation_item(
         self,
         row: provenance._ProvenanceDisplayRow,
-    ) -> QtWidgets.QTreeWidgetItem:
+    ) -> _MetadataDerivationTreeItem:
         entry = row.entry
         item = _MetadataDerivationTreeItem(entry.label)
         can_activate, activation_reason = (
@@ -414,8 +414,11 @@ class _DetailsPanelController:
         self._manager.metadata_group.sync_height_for_width()
         self._manager.metadata_group.updateGeometry()
 
-    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
-        items = list(self._manager.metadata_derivation_list.selectedItems())
+    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
+        items = typing.cast(
+            "list[_MetadataDerivationTreeItem]",
+            list(self._manager.metadata_derivation_list.selectedItems()),
+        )
         display_order = getattr(
             self._manager.metadata_derivation_list,
             "display_order",

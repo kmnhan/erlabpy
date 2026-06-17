@@ -1262,6 +1262,124 @@ def test_manager_provenance_edit_nested_script_input_operation(
     assert edited_parent.operations == (replacement,)
 
 
+def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_spec = _manager_provenance_file_spec(pathlib.Path("scan.h5"))
+    parent_spec = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        provenance.IselOperation(kwargs={"y": 0}),
+        start_label="Use file parent",
+        active_name="data_0",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="file_parent",
+                label="File parent",
+                provenance_spec=file_spec,
+            ),
+        ),
+    )
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use parent",
+            code="derived = data_0",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Parent",
+                node_uid="parent",
+                node_snapshot_token=str(object()),
+                provenance_spec=parent_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    nested_rows = root_spec.display_rows()[1].children
+    nested_revert_row = nested_rows[2]
+    nested_delete_row = nested_rows[3]
+
+    assert controller._display_spec_for_row(node, nested_revert_row) == parent_spec
+    assert controller._script_input_path_spec(root_spec, (99,)) is None
+    assert controller._script_input_path_spec(root_spec, (0, 99)) is None
+    no_history = root_spec.model_copy(
+        update={
+            "script_inputs": (
+                root_spec.script_inputs[0].model_copy(update={"provenance_spec": None}),
+            )
+        }
+    )
+    assert controller._script_input_path_spec(no_history, (0,)) is None
+    assert (
+        controller._root_candidate_for_row(
+            node,
+            root_spec.display_rows()[2],
+            parent_spec,
+        )
+        is parent_spec
+    )
+
+    rootless_controller = _fake_edit_controller(_fake_edit_node(None))
+    with pytest.raises(RuntimeError, match="No root provenance"):
+        rootless_controller._root_candidate_for_row(
+            typing.cast("typing.Any", rootless_controller._metadata_node()),
+            nested_revert_row,
+            parent_spec,
+        )
+    with pytest.raises(IndexError, match="Script input provenance path"):
+        controller._replace_script_input_path_spec(root_spec, (99,), parent_spec)
+    with pytest.raises(RuntimeError, match="does not have replayable provenance"):
+        controller._replace_script_input_path_spec(no_history, (0,), parent_spec)
+
+    replaced: list[provenance.ToolProvenanceSpec] = []
+    monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: replaced.append(candidate),
+    )
+
+    controller.revert_row(nested_revert_row)
+    assert len(replaced) == 1
+    reverted_parent = replaced[-1].script_inputs[0].parsed_provenance_spec()
+    assert reverted_parent is not None
+    assert [operation.op for operation in reverted_parent.operations] == ["average"]
+    assert replaced[-1].script_inputs[0].node_uid is None
+
+    replaced.clear()
+    monkeypatch.setattr(controller, "can_delete_row", lambda _row: (True, ""))
+    controller.delete_row(nested_delete_row)
+    assert len(replaced) == 1
+    deleted_parent = replaced[-1].script_inputs[0].parsed_provenance_spec()
+    assert deleted_parent is not None
+    assert [operation.op for operation in deleted_parent.operations] == ["average"]
+
+    file_load_row = nested_rows[1].children[0]
+    file_load_calls: list[
+        tuple[
+            object,
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+            provenance._ProvenanceDisplayRow | None,
+            tuple[object, ...],
+        ]
+    ] = []
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda edit_node, scope, spec, *, row=None, batch_peers=(), **_kwargs: (
+            file_load_calls.append((edit_node, scope, spec, row, tuple(batch_peers)))
+        ),
+    )
+
+    controller._edit_file_load_row(node, file_load_row)
+    assert file_load_calls == [(node, "display", file_spec, file_load_row, ())]
+
+
 def test_manager_provenance_revert_rejects_current_prefixes(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -6578,6 +6696,37 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     parent_item = derivation_list.topLevelItem(0)
     assert parent_item is not None
     assert parent_item.text() == "Use data_0 from Parent"
+    parent_tree_item = typing.cast(
+        "manager_widgets._MetadataDerivationTreeItem",
+        parent_item,
+    )
+    parent_tree_item.setText("Use data_0 from Renamed Parent")
+    assert parent_tree_item.text() == "Use data_0 from Renamed Parent"
+    parent_tree_item.setText(0, "Use data_0 from Parent")
+    assert parent_tree_item.text(0) == "Use data_0 from Parent"
+    parent_tree_item.setData(QtCore.Qt.ItemDataRole.UserRole + 20, "one-arg")
+    assert parent_tree_item.data(QtCore.Qt.ItemDataRole.UserRole + 20) == "one-arg"
+    parent_tree_item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 21, "two-arg")
+    assert parent_tree_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 21) == "two-arg"
+    parent_tree_item.setToolTip("one-arg tooltip")
+    assert parent_tree_item.toolTip() == "one-arg tooltip"
+    parent_tree_item.setToolTip(0, "two-arg tooltip")
+    assert parent_tree_item.toolTip(0) == "two-arg tooltip"
+    parent_tree_item.setForeground(QtGui.QColor("red"))
+    assert parent_tree_item.foreground().color() == QtGui.QColor("red")
+    parent_tree_item.setForeground(0, QtGui.QColor("blue"))
+    assert parent_tree_item.foreground(0).color() == QtGui.QColor("blue")
+    with pytest.raises(TypeError):
+        parent_tree_item.setText()
+    with pytest.raises(TypeError):
+        parent_tree_item.data()
+    with pytest.raises(TypeError):
+        parent_tree_item.setData(QtCore.Qt.ItemDataRole.UserRole)
+    with pytest.raises(TypeError):
+        parent_tree_item.setToolTip()
+    with pytest.raises(TypeError):
+        parent_tree_item.setForeground()
+
     assert parent_item.childCount() == 1
     child_item = parent_item.child(0)
     assert child_item is not None
@@ -6587,7 +6736,19 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         is child_row
     )
     assert derivation_list.count() == 1
+    assert derivation_list.item(0) is parent_item
+    assert derivation_list.item(1) is None
+    assert derivation_list.row(parent_item) == 0
+    assert derivation_list.row(child_item) == 1
     assert derivation_list.display_order(child_item) == 1
+    assert (
+        derivation_list.display_order(
+            manager_widgets._MetadataDerivationTreeItem("orphan")
+        )
+        == -1
+    )
+    derivation_list.setUniformItemSizes(True)
+    assert derivation_list.uniformRowHeights()
 
 
 def test_manager_copy_selected_derivation_code_fallbacks(

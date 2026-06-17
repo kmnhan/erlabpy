@@ -40,6 +40,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _HeightForWidthFrame,
     _manager_settings,
     _MetadataDerivationListWidget,
+    _MetadataDerivationTreeItem,
     _SingleImagePreview,
     _StandaloneAppSpec,
     _WarningEmitter,
@@ -2788,7 +2789,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _update_metadata_pane(self) -> None:
         self._details_panel._update_metadata_pane()
 
-    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
+    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
         return self._details_panel._selected_derivation_items()
 
     def _selected_derivation_code(self) -> str | None:
