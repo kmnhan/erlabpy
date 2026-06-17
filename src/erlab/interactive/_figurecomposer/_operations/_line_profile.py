@@ -28,6 +28,7 @@ from erlab.interactive._figurecomposer._line_style import (
 )
 from erlab.interactive._figurecomposer._line_transform import (
     add_line_transform_controls,
+    line_transform_active,
     profile_stack_transform_code,
     profile_transform_code_lines,
     transform_profiles,
@@ -57,7 +58,9 @@ from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
     _format_dict,
+    _format_plot_limit,
     _format_string_tuple,
+    _plot_limit_from_text,
     _string_tuple_from_text,
 )
 from erlab.interactive._figurecomposer._widgets import (
@@ -90,6 +93,13 @@ _LINE_REDUCE_TEXT = {
     "coarsen": "Coarsen",
     "thin": "Thin",
     "both": "Both",
+}
+
+_SECTION_TOOLTIPS = {
+    "selection": "Choose profile coordinates, qsel selection, and profile extraction.",
+    "view": "Choose profile placement, axis direction, and plot limits.",
+    "style": "Set labels, colors, line style, and marker style.",
+    "other": "Normalize, scale, and offset extracted profiles.",
 }
 
 
@@ -199,9 +209,14 @@ def _available_line_offset_coords(
 def _build_line_editor(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
-    page, layout = tool._new_step_form_page("figureComposerLinePage")
-    tool.operation_editor = page
-    tool.operation_editor_layout = layout
+    selection_page, selection_layout = tool._new_step_form_page(
+        "figureComposerLineSelectionPage"
+    )
+    view_page, view_layout = tool._new_step_form_page("figureComposerLineViewPage")
+    style_page, style_layout = tool._new_step_form_page("figureComposerLineStylePage")
+    other_page, other_layout = tool._new_step_form_page("figureComposerLineOtherPage")
+    tool.operation_editor = selection_page
+    tool.operation_editor_layout = selection_layout
     coordinate_options = _available_line_coordinate_names(tool, operation)
     coordinate_options_match = tool._batch_options_match(
         operation, lambda target: _available_line_coordinate_names(tool, target)
@@ -212,13 +227,13 @@ def _build_line_editor(
         None if coordinate_mixed else operation.line_x,
         "Automatic profile coordinate",
         lambda value: tool._update_current_operation(line_x=value),
-        parent=page,
+        parent=selection_page,
         mixed=coordinate_mixed,
         enabled=coordinate_options_match,
     )
     coordinate_combo.setObjectName("figureComposerProfileCoordinateCombo")
     tool._add_form_row(
-        tool.operation_editor_layout,
+        selection_layout,
         "Profile coordinate",
         coordinate_combo,
         "Coordinate along each profile.\n"
@@ -241,13 +256,13 @@ def _build_line_editor(
         None if value_mixed else operation.line_y,
         "Data array values",
         lambda value: tool._update_current_operation_rebuild(line_y=value),
-        parent=page,
+        parent=selection_page,
         mixed=value_mixed,
         enabled=value_options_match,
     )
     values_combo.setObjectName("figureComposerProfileValuesCombo")
     tool._add_form_row(
-        tool.operation_editor_layout,
+        selection_layout,
         "Profile values",
         values_combo,
         "Values plotted from the selected profile.\n"
@@ -260,58 +275,10 @@ def _build_line_editor(
         ),
     )
 
-    labels_text, labels_mixed = tool._batch_text(
-        operation,
-        lambda target: target.line_labels,
-        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
-    )
-    labels_edit = tool._line_edit(labels_text)
-    tool._apply_mixed_line_edit(labels_edit, labels_mixed)
-    labels_edit.setObjectName("figureComposerLineLabelsEdit")
-    tool._connect_line_edit_finished(
-        labels_edit,
-        lambda text: _update_current_line_labels(tool, text),
-    )
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Legend labels",
-        labels_edit,
-        "Optional legend labels.\n"
-        "Use one value for every profile, or one value per profile.",
-    )
-
-    colors_text, colors_mixed = tool._batch_text(
-        operation,
-        lambda target: target.line_colors,
-        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
-    )
-    colors_widget = _ColorListEditorWidget(
-        _string_tuple_from_text(colors_text), parent=page
-    )
-    colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
-    if colors_mixed:
-        colors_widget.setMixedPlaceholder("(multiple values)")
-    tool._connect_value_signal(
-        colors_widget,
-        colors_widget.colorsChanged,
-        lambda colors: tuple(colors),
-        lambda colors: tool._update_current_operation(line_colors=colors),
-        unchanged_mixed=colors_widget.batchUnchanged,
-    )
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Colors",
-        colors_widget,
-        "Optional Matplotlib colors.\n"
-        "Use one value for every profile, or one value per profile.",
-    )
-
-    _add_line_style_controls(tool, operation, page)
-
     selection_text, selection_mixed = tool._batch_text(
         operation, lambda target: target.line_selection, _format_dict
     )
-    selection_edit = tool._line_edit(selection_text)
+    selection_edit = tool._line_edit(selection_text, parent=selection_page)
     tool._apply_mixed_line_edit(selection_edit, selection_mixed)
     selection_edit.setObjectName("figureComposerLineSelectionEdit")
     tool._connect_line_edit_finished(
@@ -321,7 +288,7 @@ def _build_line_editor(
         ),
     )
     tool._add_form_row(
-        tool.operation_editor_layout,
+        selection_layout,
         "Data selection",
         selection_edit,
         "Selection kwargs passed to qsel.\n"
@@ -346,12 +313,13 @@ def _build_line_editor(
         iter_dim_options,
         None if iter_dim_mixed else operation.line_iter_dim or "",
         lambda text: _update_current_line_iter_dim(tool, text),
-        parent=page,
+        parent=selection_page,
         mixed=iter_dim_mixed,
         enabled=iter_dim_options_match,
     )
+    iter_dim_combo.setObjectName("figureComposerProfileIterDimCombo")
     tool._add_form_row(
-        tool.operation_editor_layout,
+        selection_layout,
         "One profile per",
         iter_dim_combo,
         "Optional dimension used to split selected data into one profile per axis."
@@ -362,7 +330,7 @@ def _build_line_editor(
         ),
     )
     if _line_reduce_controls_visible(tool, operation):
-        _add_line_reduce_controls(tool, operation, page)
+        _add_line_reduce_controls(tool, operation, selection_page, selection_layout)
 
     placement_mixed = tool._batch_is_mixed(
         operation, lambda target: target.line_placement
@@ -373,12 +341,12 @@ def _build_line_editor(
         lambda text: tool._update_current_operation(
             line_placement=_line_placement_from_text(text)
         ),
-        parent=page,
+        parent=view_page,
         mixed=placement_mixed,
     )
     placement_combo.setObjectName("figureComposerProfilePlacementCombo")
     tool._add_form_row(
-        tool.operation_editor_layout,
+        view_layout,
         "Profile placement",
         placement_combo,
         "Choose how extracted profiles map onto selected axes.\n"
@@ -393,28 +361,132 @@ def _build_line_editor(
         ["y", "x"],
         None if values_axis_mixed else operation.line_values_axis,
         lambda text: tool._update_current_operation(line_values_axis=text),
-        parent=page,
+        parent=view_page,
         mixed=values_axis_mixed,
     )
     values_axis_combo.setObjectName("figureComposerDataValuesAxisCombo")
     tool._add_form_row(
-        tool.operation_editor_layout,
+        view_layout,
         "Data values axis",
         values_axis_combo,
         "Axis that receives profile data values.\n"
         "y: coordinate on x, values on y.\n"
         "x: values on x, coordinate on y.",
     )
+    _add_line_limit_controls(tool, operation, view_page, view_layout)
+
+    labels_text, labels_mixed = tool._batch_text(
+        operation,
+        lambda target: target.line_labels,
+        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+    )
+    labels_edit = tool._line_edit(labels_text, parent=style_page)
+    tool._apply_mixed_line_edit(labels_edit, labels_mixed)
+    labels_edit.setObjectName("figureComposerLineLabelsEdit")
+    tool._connect_line_edit_finished(
+        labels_edit,
+        lambda text: _update_current_line_labels(tool, text),
+    )
+    tool._add_form_row(
+        style_layout,
+        "Legend labels",
+        labels_edit,
+        "Optional legend labels.\n"
+        "Use one value for every profile, or one value per profile.",
+    )
+
+    colors_text, colors_mixed = tool._batch_text(
+        operation,
+        lambda target: target.line_colors,
+        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+    )
+    colors_widget = _ColorListEditorWidget(
+        _string_tuple_from_text(colors_text), parent=style_page
+    )
+    colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
+    if colors_mixed:
+        colors_widget.setMixedPlaceholder("(multiple values)")
+    tool._connect_value_signal(
+        colors_widget,
+        colors_widget.colorsChanged,
+        lambda colors: tuple(colors),
+        lambda colors: tool._update_current_operation(line_colors=colors),
+        unchanged_mixed=colors_widget.batchUnchanged,
+    )
+    tool._add_form_row(
+        style_layout,
+        "Colors",
+        colors_widget,
+        "Optional Matplotlib colors.\n"
+        "Use one value for every profile, or one value per profile.",
+    )
+
+    _add_line_style_controls(tool, operation, style_page, style_layout)
 
     add_line_transform_controls(
         tool,
         operation,
-        page,
-        tool.operation_editor_layout,
+        other_page,
+        other_layout,
         object_prefix="figureComposerLine",
         offset_coord_options=lambda target: _available_line_offset_coords(tool, target),
     )
-    return [("line", "Line", page)]
+    return [
+        ("selection", "Selection", selection_page),
+        ("view", "View", view_page),
+        ("style", "Style", style_page),
+        ("other", "Other", other_page),
+    ]
+
+
+def _line_limit_update_callback(
+    tool: FigureComposerTool, attr: typing.Literal["xlim", "ylim"]
+) -> typing.Callable[[str], None]:
+    def update(text: str) -> None:
+        tool._update_current_operation(**{attr: _plot_limit_from_text(text)})
+
+    return update
+
+
+def _add_line_limit_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
+    for label, attr, object_name in (
+        ("x", "xlim", "figureComposerLineXLimEdit"),
+        ("y", "ylim", "figureComposerLineYLimEdit"),
+    ):
+        text, mixed = tool._batch_text(
+            operation,
+            lambda target, attr=attr: getattr(target, attr),
+            _format_plot_limit,
+        )
+        edit = tool._line_edit(text, parent=page)
+        tool._apply_mixed_line_edit(edit, mixed)
+        edit.setObjectName(object_name)
+        tool._connect_line_edit_finished(
+            edit,
+            _line_limit_update_callback(
+                tool, typing.cast("typing.Literal['xlim', 'ylim']", attr)
+            ),
+        )
+        limit_controls.append(
+            (
+                label,
+                edit,
+                f"Optional {attr}: one number for symmetric limits, "
+                "or two comma-separated numbers for lower and upper limits.",
+            )
+        )
+    tool._add_compound_form_row(
+        layout,
+        "Limits",
+        limit_controls,
+        "Optional x/y plot limits for this step.",
+    )
 
 
 def _update_current_line_iter_dim(tool: FigureComposerTool, text: str) -> None:
@@ -437,6 +509,7 @@ def _add_line_reduce_controls(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
 ) -> None:
     reduce_mixed = tool._batch_is_mixed(operation, lambda target: target.line_reduce)
     reduce_combo = tool._combo(
@@ -487,7 +560,7 @@ def _add_line_reduce_controls(
         )
     row_layout.addStretch(1)
     tool._add_form_row(
-        tool.operation_editor_layout,
+        layout,
         "Reduce",
         row,
         "Reduce the One profile per axis before profile extraction.",
@@ -530,6 +603,7 @@ def _add_line_style_controls(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
 ) -> None:
     line_style_mixed = tool._batch_is_mixed(
         operation, lambda target: line_kw_style_value(target, "linestyle", "ls")
@@ -566,7 +640,7 @@ def _add_line_style_controls(
         line_width_spin, mixed=line_width_mixed, parent=page
     )
     tool._add_compound_form_row(
-        tool.operation_editor_layout,
+        layout,
         "Line",
         (
             (
@@ -618,7 +692,7 @@ def _add_line_style_controls(
         marker_size_spin, mixed=marker_size_mixed, parent=page
     )
     tool._add_compound_form_row(
-        tool.operation_editor_layout,
+        layout,
         "Marker",
         (
             (
@@ -695,7 +769,7 @@ def _add_line_style_controls(
         ),
     )
     tool._add_compound_form_row(
-        tool.operation_editor_layout,
+        layout,
         "Marker colors",
         (
             (
@@ -1498,7 +1572,7 @@ def _editor_sections(
             key,
             title,
             page,
-            "Configure the line/profile overlay for this step.",
+            _SECTION_TOOLTIPS[key],
         )
         for key, title, page in _build_line_editor(tool, operation)
     )
@@ -1514,10 +1588,28 @@ def _section_summary(
             return tool._source_display_name(operation.line_source)
         case "axes":
             return tool._axes_target_text(operation.axes)
-        case "line":
+        case "selection":
+            if operation.line_iter_dim is not None:
+                return f"one per {operation.line_iter_dim}"
+            if operation.line_selection:
+                return "qsel"
+            return operation.line_x or "profile"
+        case "view":
             if operation.line_placement == "one_per_axis":
                 return "one per axis"
-            return operation.line_x or "profile"
+            if operation.line_values_axis == "x":
+                return "values on x"
+            return "all axes"
+        case "style":
+            if operation.line_colors:
+                return (
+                    operation.line_colors[0]
+                    if len(operation.line_colors) == 1
+                    else "colors"
+                )
+            return line_kw_text(operation, "color", "c") or "default"
+        case "other":
+            return "set" if line_transform_active(operation) else ""
     return ""
 
 

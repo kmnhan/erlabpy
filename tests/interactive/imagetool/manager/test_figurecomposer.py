@@ -2157,7 +2157,7 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     )
     qtbot.addWidget(tool)
     operation = FigureOperationState.plot_slices(
-        label="cuts",
+        label="selection",
         sources=("data",),
         slice_dim="eV",
         slice_values=(0.0, 1.0),
@@ -2855,7 +2855,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     assert invalid_shape.plot_ndim == 0
     assert not invalid_shape.valid
     assert (
-        figurecomposer_plot_slices._section_summary(tool, "cuts", first_operation)
+        figurecomposer_plot_slices._section_summary(tool, "selection", first_operation)
         == "additional"
     )
     assert (
@@ -3875,7 +3875,7 @@ def test_figure_composer_subplots_plot_roundtrip_restores_exact_render(
         sharey=False,
     )
     plot_operation = FigureOperationState.plot_slices(
-        label="constant energy cuts",
+        label="constant energy selection",
         sources=("image_source",),
         axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
         slice_dim="eV",
@@ -4006,7 +4006,7 @@ def test_figure_composer_gridspec_plot_roundtrip_restores_exact_render(
         slice_values=(0.0,),
     ).model_copy(update={"annotate": False, "cmap": "magma"})
     line_slices_operation = FigureOperationState.plot_slices(
-        label="line cuts",
+        label="line selection",
         sources=("line_source",),
         axes=FigureAxesSelectionState(axes_ids=("line-top", "line-bottom")),
         slice_dim="eV",
@@ -8627,7 +8627,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.step_section_keys == [
         "sources",
         "axes",
-        "cuts",
+        "selection",
         "view",
         "colors",
         "advanced",
@@ -8638,7 +8638,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     ] == [
         "figureComposerStepSourcesPage",
         "figureComposerTargetAxesPage",
-        "figureComposerPlotSlicesCutsPage",
+        "figureComposerPlotSlicesSelectionPage",
         "figureComposerPlotSlicesViewPage",
         "figureComposerPlotSlicesColorsPage",
         "figureComposerPlotSlicesAdvancedPage",
@@ -8647,7 +8647,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     colors_page = tool.findChild(
         QtWidgets.QWidget, "figureComposerPlotSlicesColorsPage"
     )
-    cuts_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesCutsPage")
+    selection_page = tool.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesSelectionPage"
+    )
     view_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesViewPage")
     crop_check = tool.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesCropCheck"
@@ -8667,7 +8669,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QLineEdit, "figureComposerColorbarKwEdit"
     )
     assert colors_page is not None
-    assert cuts_page is not None
+    assert selection_page is not None
     assert view_page is not None
     assert crop_check is not None
     assert order_combo is not None
@@ -8679,7 +8681,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert view_page.isAncestorOf(crop_check)
     assert view_page.isAncestorOf(order_combo)
     assert view_page.isAncestorOf(transpose_check)
-    assert not cuts_page.isAncestorOf(crop_check)
+    assert not selection_page.isAncestorOf(crop_check)
     assert same_limits_combo.parent() is colors_page
     assert axis_combo.parent() is view_page
     assert annotate_kwargs_edit.parent() is view_page
@@ -9050,6 +9052,136 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert "colorbar_kw" in code
     assert "tools[" not in code
     assert "_manager" not in code
+
+
+def test_figure_composer_line_profile_operation_uses_semantic_sections(
+    qtbot,
+) -> None:
+    data = _figure_composer_line_slice_source("profile_data")
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="profile_data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_iter_dim": "eV",
+            "line_selection": {"eV": slice(-0.5, 0.5)},
+            "line_reduce": "both",
+            "line_labels": ("left", "right"),
+            "line_colors": ("C0", "C1"),
+            "line_kw": {"linestyle": "--", "marker": "o"},
+            "line_normalize": "max",
+            "line_scales": (2.0,),
+            "line_offsets": (0.0, 1.0),
+            "xlim": (-0.5, 0.5),
+            "ylim": (0.0, None),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile_data", label="profile_data"),),
+            operations=(operation,),
+            primary_source="profile_data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.step_section_keys == [
+        "sources",
+        "axes",
+        "selection",
+        "view",
+        "style",
+        "other",
+    ]
+    assert [
+        tool.step_editor_stack.widget(index).objectName()
+        for index in range(tool.step_editor_stack.count())
+    ] == [
+        "figureComposerStepSourcesPage",
+        "figureComposerTargetAxesPage",
+        "figureComposerLineSelectionPage",
+        "figureComposerLineViewPage",
+        "figureComposerLineStylePage",
+        "figureComposerLineOtherPage",
+    ]
+
+    selection_page = tool.findChild(
+        QtWidgets.QWidget, "figureComposerLineSelectionPage"
+    )
+    view_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineViewPage")
+    style_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineStylePage")
+    other_page = tool.findChild(QtWidgets.QWidget, "figureComposerLineOtherPage")
+    assert selection_page is not None
+    assert view_page is not None
+    assert style_page is not None
+    assert other_page is not None
+
+    section_controls = (
+        (
+            selection_page,
+            (
+                "figureComposerProfileCoordinateCombo",
+                "figureComposerProfileValuesCombo",
+                "figureComposerLineSelectionEdit",
+                "figureComposerProfileIterDimCombo",
+                "figureComposerProfileReduceCombo",
+            ),
+        ),
+        (
+            view_page,
+            (
+                "figureComposerProfilePlacementCombo",
+                "figureComposerDataValuesAxisCombo",
+                "figureComposerLineXLimEdit",
+                "figureComposerLineYLimEdit",
+            ),
+        ),
+        (
+            style_page,
+            (
+                "figureComposerLineLabelsEdit",
+                "figureComposerLineColorsEdit",
+                "figureComposerLineStyleCombo",
+                "figureComposerLineWidthSpin",
+                "figureComposerLineMarkerCombo",
+                "figureComposerLineMarkerSizeSpin",
+                "figureComposerLineMarkerFaceColorEdit",
+                "figureComposerLineMarkerEdgeColorEdit",
+            ),
+        ),
+        (
+            other_page,
+            (
+                "figureComposerLineNormalizeCombo",
+                "figureComposerLineScalesEdit",
+                "figureComposerLineOffsetSourceCombo",
+                "figureComposerLineOffsetsEdit",
+            ),
+        ),
+    )
+    pages = (selection_page, view_page, style_page, other_page)
+    for expected_page, control_names in section_controls:
+        for name in control_names:
+            widget = tool.findChild(QtWidgets.QWidget, name)
+            assert widget is not None
+            for page in pages:
+                if page is expected_page:
+                    assert page.isAncestorOf(widget)
+                else:
+                    assert not page.isAncestorOf(widget)
+
+    for key, page in (
+        ("selection", selection_page),
+        ("view", view_page),
+        ("style", style_page),
+        ("other", other_page),
+    ):
+        tool._select_step_section(key)
+        assert tool.step_editor_stack.currentWidget() is page
+        assert tool.tool_status.operations[0] == operation
 
 
 def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
@@ -11103,20 +11235,16 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_coordinate_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
-    profile_values_combo = line_page.findChild(
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
-    )
-    data_values_axis_combo = line_page.findChild(
-        QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
     )
     assert profile_coordinate_combo is not None
     assert profile_values_combo is not None
-    assert data_values_axis_combo is not None
     assert profile_coordinate_combo.itemData(0) is None
     assert profile_values_combo.itemData(0) is None
     assert profile_coordinate_combo.findData("kx") >= 0
@@ -11129,30 +11257,42 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert tool.tool_status.operations[2].line_x is None
     _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_values_combo = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
     _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
-    line_page = tool.step_editor_stack.currentWidget()
-    profile_coordinate_combo = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
-    profile_values_combo = line_page.findChild(
+    profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_coordinate_combo is not None
     assert profile_values_combo is not None
     assert profile_coordinate_combo.toolTip()
     assert profile_values_combo.toolTip()
-    assert data_values_axis_combo.toolTip()
     assert all(
-        widget.toolTip() for widget in line_page.findChildren(QtWidgets.QLineEdit)
+        widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QLineEdit)
     )
     assert all(
-        widget.toolTip() for widget in line_page.findChildren(QtWidgets.QCheckBox)
+        widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QCheckBox)
+    )
+    tool._select_step_section("view")
+    view_page = tool.step_editor_stack.currentWidget()
+    data_values_axis_combo = view_page.findChild(
+        QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
+    )
+    assert data_values_axis_combo is not None
+    assert data_values_axis_combo.toolTip()
+    assert all(
+        widget.toolTip() for widget in view_page.findChildren(QtWidgets.QLineEdit)
+    )
+    assert all(
+        widget.toolTip() for widget in view_page.findChildren(QtWidgets.QCheckBox)
     )
 
     _select_operation_rows(tool, (3,))
@@ -13957,19 +14097,15 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     qtbot.addWidget(tool)
     profiles = figurecomposer_line_profile._line_data_items(tool, operation)
 
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    offset_source_combo = line_page.findChild(
-        QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
-    )
-    reduce_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    reduce_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
     )
-    assert offset_source_combo is not None
     assert reduce_combo is not None
     assert reduce_combo.currentText() == "Disabled"
     assert (
-        line_page.findChild(
+        selection_page.findChild(
             QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
         )
         is None
@@ -13984,11 +14120,11 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
-    coarsen_spin = line_page.findChild(
+    selection_page = tool.step_editor_stack.currentWidget()
+    coarsen_spin = selection_page.findChild(
         QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
     )
-    thin_spin = line_page.findChild(
+    thin_spin = selection_page.findChild(
         QtWidgets.QSpinBox, "figureComposerProfileReduceThinSpin"
     )
     assert tool.tool_status.operations[0].line_reduce == "both"
@@ -13998,47 +14134,49 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     thin_spin.setValue(3)
     assert tool.tool_status.operations[0].line_reduce_thin == 3
     tool._replace_operation(0, operation)
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    offset_source_combo = line_page.findChild(
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    offset_source_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
     assert offset_source_combo is not None
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is not None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is not None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is None
     )
-    line_style_combo = line_page.findChild(
+    tool._select_step_section("style")
+    style_page = tool.step_editor_stack.currentWidget()
+    line_style_combo = style_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineStyleCombo"
     )
-    line_width_spin = line_page.findChild(
+    line_width_spin = style_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerLineWidthSpin"
     )
-    marker_combo = line_page.findChild(
+    marker_combo = style_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineMarkerCombo"
     )
-    marker_size_spin = line_page.findChild(
+    marker_size_spin = style_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerLineMarkerSizeSpin"
     )
-    marker_face_edit = line_page.findChild(
+    marker_face_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerFaceColorEdit"
     )
-    marker_edge_edit = line_page.findChild(
+    marker_edge_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
     )
-    marker_face_button = line_page.findChild(
+    marker_face_button = style_page.findChild(
         figurecomposer_widgets._ColorPickerButton,
         "figureComposerLineMarkerFaceColorButton",
     )
@@ -14056,10 +14194,10 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert marker_edge_edit is not None
     assert marker_edge_edit.text() == "black"
 
-    color_text_edit = line_page.findChild(
+    color_text_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
     )
-    first_color_edit = line_page.findChild(
+    first_color_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorItemEdit_0"
     )
     assert color_text_edit is not None
@@ -14081,6 +14219,12 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
 
     operation = tool.tool_status.operations[0]
 
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    offset_source_combo = other_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
+    )
+    assert offset_source_combo is not None
     _activate_combo_text(offset_source_combo, "manual")
     qtbot.waitUntil(
         lambda: (
@@ -14091,27 +14235,27 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
+    other_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "manual"
     assert tool.tool_status.operations[0].line_offset_scale == 1.0
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is not None
     )
 
-    offset_source_combo = line_page.findChild(
+    offset_source_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
     assert offset_source_combo is not None
@@ -14125,22 +14269,22 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         ),
         timeout=1000,
     )
-    line_page = tool.step_editor_stack.currentWidget()
+    other_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "index"
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
         )
         is None
     )
     assert (
-        line_page.findChild(
+        other_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
         )
         is not None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
+        other_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is None
     )
     tool._replace_operation(0, operation)
@@ -14276,7 +14420,7 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
                     slice_dim="cut",
@@ -14508,7 +14652,7 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
                     slice_dim="cut",
@@ -14536,16 +14680,18 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     assert operation.line_selection == {"cut": [0.0, 1.0, 2.0], "cut_width": 0.25}
     assert operation.axes.axes == ((0, 0), (0, 1), (0, 2))
 
-    tool._select_step_section("line")
+    tool._select_step_section("view")
     placement_combo = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerProfilePlacementCombo"
     )
+    assert placement_combo is not None
+    assert placement_combo.currentText() == "One profile per axis"
+
+    tool._select_step_section("other")
     normalize_combo = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
-    assert placement_combo is not None
     assert normalize_combo is not None
-    assert placement_combo.currentText() == "One profile per axis"
     assert normalize_combo.currentText() == "Each profile by maximum"
     assert "each extracted 1D profile independently" in normalize_combo.toolTip()
 
@@ -14666,7 +14812,7 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     qtbot.addWidget(tool)
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("line")
+    tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
     )
@@ -14721,9 +14867,9 @@ def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    normalize_combo = line_page.findChild(
+    tool._select_step_section("other")
+    other_page = tool.step_editor_stack.currentWidget()
+    normalize_combo = other_page.findChild(
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
     assert normalize_combo is not None
@@ -14765,9 +14911,9 @@ def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    color_edit = line_page.findChild(
+    tool._select_step_section("style")
+    style_page = tool.step_editor_stack.currentWidget()
+    color_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
     )
     assert color_edit is not None
@@ -14822,9 +14968,9 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
-    coordinate_combo = line_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
     assert coordinate_combo is not None
@@ -14871,7 +15017,7 @@ def test_figure_composer_batch_line_labels_add_one_legend_per_axes_group(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1, 2))
-    tool._select_step_section("line")
+    tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
     )
@@ -14907,7 +15053,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     slice_dim="eV",
                     slice_values=(0.0,),
@@ -14918,7 +15064,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     values_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
@@ -14994,7 +15140,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     assert tool._operation_editor_update_pending is False
 
 
-def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
+def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> None:
     data = _figure_composer_image_source("data")
     operation = FigureOperationState.plot_slices(
         label="image",
@@ -15020,18 +15166,18 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
-    cuts_page = tool.step_editor_stack.currentWidget()
-    dimension_combo = cuts_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    dimension_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
-    values_edit = cuts_page.findChild(
+    values_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
-    width_edit = cuts_page.findChild(
+    width_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesWidthEdit"
     )
-    slice_kwargs_edit = cuts_page.findChild(
+    slice_kwargs_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
     assert dimension_combo is not None
@@ -15055,7 +15201,7 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
     assert "beta=slice(-0.5, 0.5)" in code
 
 
-def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_cuts(
+def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
     qtbot,
 ) -> None:
     data = _figure_composer_image_source("data")
@@ -15098,7 +15244,7 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_cuts(
         lambda: not tool._operation_editor_update_pending,
         timeout=1000,
     )
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     slice_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
@@ -15121,7 +15267,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.plot_slices(
-                    label="cuts",
+                    label="selection",
                     sources=("data",),
                     slice_dim="eV",
                     slice_values=(0.0,),
@@ -15132,7 +15278,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("cuts")
+    tool._select_step_section("selection")
     old_page = tool.step_editor_stack.currentWidget()
     active_popup: list[QtWidgets.QWidget | None] = [None]
     monkeypatch.setattr(
@@ -15946,9 +16092,9 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
         is None
     )
 
-    tool._select_step_section("cuts")
-    cuts_page = tool.step_editor_stack.currentWidget()
-    assert cuts_page.findChild(
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    assert selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
 
@@ -16288,13 +16434,15 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert gradient_kwargs_edit.text() == 'color="C0", alpha=0.25'
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("line")
-    line_page = tool.step_editor_stack.currentWidget()
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
     assert (
-        line_page.findChild(QtWidgets.QComboBox, "figureComposerProfileReduceCombo")
+        selection_page.findChild(
+            QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
+        )
         is None
     )
-    line_selection_edit = line_page.findChild(
+    line_selection_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineSelectionEdit"
     )
     assert line_selection_edit is not None

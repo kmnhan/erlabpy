@@ -106,9 +106,10 @@ also bring the data sources they use.
 
 ### Step sources
 
-The step controls include a {guilabel}`Sources` view. It lists the data stored with the
-figure, indicates which sources are used by the selected step, and lets you update the
-data available to recipe steps without rebuilding the rest of the figure.
+Because data sources are selected and updated per recipe step, the step controls include
+a {guilabel}`Sources` view. It lists the data stored with the figure, indicates which
+sources are used by the selected step, and lets you update the data available to recipe
+steps without rebuilding the rest of the figure.
 
 When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the
 {guilabel}`Action` menu updates this same source set:
