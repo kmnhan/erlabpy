@@ -8,6 +8,7 @@ further analysis.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import stat
@@ -544,6 +545,9 @@ class _ReprFetcher(QtCore.QRunnable):
         self, file_path: str | pathlib.Path, load_method, include_values: bool
     ) -> None:
         super().__init__()
+        # The explorer keeps Python references and sends the worker through queued
+        # signals, so Qt must not delete the QRunnable out from under the wrapper.
+        self.setAutoDelete(False)
         self.signals = _ReprFetcherSignals()
         self.file_path = pathlib.Path(file_path)
         self.load_method = load_method
@@ -1312,9 +1316,17 @@ class _DataExplorer(QtWidgets.QMainWindow):
             worker.abort()
         self._preview_threadpool.clear()
         if self._preview_threadpool.waitForDone(timeout_ms):
+            for worker in tuple(self._preview_workers):
+                self._disconnect_preview_worker(worker)
             self._preview_workers.clear()
             return True
         return False
+
+    def _disconnect_preview_worker(self, worker: _ReprFetcher) -> None:
+        with contextlib.suppress(TypeError, RuntimeError):
+            worker.signals.fetched.disconnect(self._show_file_info)
+        with contextlib.suppress(TypeError, RuntimeError):
+            worker.signals.finished.disconnect(self._preview_worker_finished)
 
     def _delete_when_preview_workers_done(self) -> None:
         self._preview_threadpool.clear()
@@ -1329,7 +1341,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self.deleteLater()
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._stop_preview_workers()
+        if not self._stop_preview_workers():
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
     @property
@@ -1459,6 +1474,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     @QtCore.Slot(object)
     def _preview_worker_finished(self, worker: object) -> None:
         if isinstance(worker, _ReprFetcher):
+            self._disconnect_preview_worker(worker)
             self._preview_workers.discard(worker)
 
     @QtCore.Slot(str, str, object)

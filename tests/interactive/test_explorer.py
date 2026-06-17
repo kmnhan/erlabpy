@@ -56,6 +56,17 @@ class _PreviewTrackingTabbedExplorer(_TabbedExplorer):
         self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
 
 
+class _DeferredPreviewTrackingTabbedExplorer(_TabbedExplorer):
+    def add_tab(self, **kwargs) -> None:
+        tab = QtWidgets.QWidget()
+        explorer = _DeferredPreviewTrackingExplorer(
+            f"tab-{self.tab_widget.count()}", parent=tab
+        )
+        tab._explorer = explorer  # type: ignore[attr-defined]
+        self.tab_widget.addTab(tab, explorer.current_directory.name)
+        self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
+
+
 def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
 
@@ -157,6 +168,25 @@ def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(
     assert explorer.stopped_preview_workers == 1
 
 
+def test_tabbed_explorer_close_ignores_busy_preview_workers(qtbot) -> None:
+    win = _DeferredPreviewTrackingTabbedExplorer()
+    qtbot.addWidget(win)
+    explorer = win.current_explorer
+    assert isinstance(explorer, _DeferredPreviewTrackingExplorer)
+    event = QtGui.QCloseEvent()
+
+    win.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert win.tab_widget.count() == 1
+    assert win.current_explorer is explorer
+    assert explorer.stopped_preview_workers == 1
+
+    win.closeEvent(None)
+
+    assert explorer.stopped_preview_workers == 2
+
+
 def test_explorer_close_stops_preview_workers(
     qtbot, example_loader, example_data_dir: pathlib.Path
 ) -> None:
@@ -165,14 +195,45 @@ def test_explorer_close_stops_preview_workers(
             self.stopped_preview_workers = False
             super().__init__(*args, **kwargs)
 
-        def _stop_preview_workers(self) -> None:
+        def _stop_preview_workers(
+            self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
+        ) -> bool:
             self.stopped_preview_workers = True
-            super()._stop_preview_workers()
+            return super()._stop_preview_workers(timeout_ms)
 
     explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
 
     explorer.closeEvent(QtGui.QCloseEvent())
+
+    assert explorer.stopped_preview_workers
+
+
+def test_explorer_close_ignores_busy_preview_workers(
+    qtbot, example_loader, example_data_dir: pathlib.Path
+) -> None:
+    class _BusyDataExplorer(_DataExplorer):
+        def __init__(self, *args, **kwargs) -> None:
+            self.stopped_preview_workers = False
+            super().__init__(*args, **kwargs)
+
+        def _stop_preview_workers(
+            self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
+        ) -> bool:
+            self.stopped_preview_workers = True
+            return False
+
+    explorer = _BusyDataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    event = QtGui.QCloseEvent()
+
+    explorer.closeEvent(event)
+
+    assert explorer.stopped_preview_workers
+    assert not event.isAccepted()
+
+    explorer.stopped_preview_workers = False
+    explorer.closeEvent(None)
 
     assert explorer.stopped_preview_workers
 
@@ -419,6 +480,14 @@ def test_repr_fetcher_aborted_before_run_skips_loader(
     assert events == ["finished"]
 
 
+def test_repr_fetcher_keeps_python_ownership_until_finished(
+    tmp_path: pathlib.Path,
+) -> None:
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+
+    assert not worker.autoDelete()
+
+
 def test_repr_fetcher_aborted_after_load_skips_formatting(
     tmp_path: pathlib.Path,
     monkeypatch,
@@ -481,6 +550,44 @@ def test_explorer_stop_preview_workers_aborts_with_bounded_wait(
     )
 
 
+def test_explorer_stop_preview_workers_disconnects_finished_workers(
+    tmp_path: pathlib.Path,
+) -> None:
+    class _FakeThreadPool:
+        def __init__(self) -> None:
+            self.clear_called = False
+            self.wait_timeout_ms: int | None = None
+
+        def clear(self) -> None:
+            self.clear_called = True
+
+        def waitForDone(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+    class _ExplorerDouble:
+        def __init__(self, worker: _ReprFetcher) -> None:
+            self._preview_stopping = False
+            self._preview_workers = {worker}
+            self._preview_threadpool = _FakeThreadPool()
+            self.disconnected_workers: list[_ReprFetcher] = []
+
+        def _disconnect_preview_worker(self, worker: _ReprFetcher) -> None:
+            self.disconnected_workers.append(worker)
+
+    worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
+    explorer = _ExplorerDouble(worker)
+
+    assert _DataExplorer._stop_preview_workers(typing.cast("_DataExplorer", explorer))
+    assert worker._aborted.is_set()
+    assert explorer._preview_threadpool.clear_called
+    assert (
+        explorer._preview_threadpool.wait_timeout_ms == _PREVIEW_WORKER_STOP_TIMEOUT_MS
+    )
+    assert explorer.disconnected_workers == [worker]
+    assert explorer._preview_workers == set()
+
+
 def test_explorer_selection_change_ignores_stopping_preview() -> None:
     class _ExplorerDouble:
         _preview_stopping = True
@@ -507,6 +614,9 @@ def test_explorer_preview_worker_finished_removes_worker(
         def __init__(self, worker: _ReprFetcher) -> None:
             self._preview_workers = {worker}
 
+        def _disconnect_preview_worker(self, worker: _ReprFetcher) -> None:
+            return None
+
     worker = _ReprFetcher(tmp_path / "data.h5", object(), include_values=False)
     explorer = _ExplorerDouble(worker)
 
@@ -514,6 +624,33 @@ def test_explorer_preview_worker_finished_removes_worker(
         typing.cast("_DataExplorer", explorer), worker
     )
     assert explorer._preview_workers == set()
+
+
+def test_explorer_preview_worker_finished_disconnects_worker_signals(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    class _TrackingDataExplorer(_DataExplorer):
+        def __init__(self, *args, **kwargs) -> None:
+            self.preview_calls: list[tuple[str, str, object]] = []
+            super().__init__(*args, **kwargs)
+
+        def _show_file_info(self, file_path: str, text: str, data: object) -> None:
+            self.preview_calls.append((file_path, text, data))
+
+    explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    worker = _ReprFetcher(example_data_dir / "data_001.h5", object(), False)
+    worker.signals.fetched.connect(explorer._show_file_info)
+    worker.signals.finished.connect(explorer._preview_worker_finished)
+    explorer._preview_workers.add(worker)
+
+    explorer._preview_worker_finished(worker)
+    worker.signals.fetched.emit(str(worker.file_path), "preview", None)
+
+    assert explorer._preview_workers == set()
+    assert explorer.preview_calls == []
 
 
 def test_explorer_delete_when_preview_workers_done_deletes_immediately(
