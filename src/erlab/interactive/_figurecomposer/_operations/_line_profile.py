@@ -70,7 +70,7 @@ from erlab.interactive._figurecomposer._widgets import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import matplotlib.axes
     import xarray as xr
@@ -441,11 +441,19 @@ def _build_line_editor(
 
 def _line_limit_update_callback(
     tool: FigureComposerTool, attr: typing.Literal["xlim", "ylim"]
-) -> typing.Callable[[str], None]:
+) -> Callable[[str], None]:
     def update(text: str) -> None:
         tool._update_current_operation(**{attr: _plot_limit_from_text(text)})
 
     return update
+
+
+def _line_limit_getter(
+    attr: typing.Literal["xlim", "ylim"],
+) -> Callable[[FigureOperationState], FigureLimit | None]:
+    if attr == "xlim":
+        return lambda target: target.xlim
+    return lambda target: target.ylim
 
 
 def _add_line_limit_controls(
@@ -455,13 +463,17 @@ def _add_line_limit_controls(
     layout: QtWidgets.QFormLayout,
 ) -> None:
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
-    for label, attr, object_name in (
+    limit_specs: tuple[
+        tuple[str, typing.Literal["xlim", "ylim"], str],
+        ...,
+    ] = (
         ("x", "xlim", "figureComposerLineXLimEdit"),
         ("y", "ylim", "figureComposerLineYLimEdit"),
-    ):
+    )
+    for label, attr, object_name in limit_specs:
         text, mixed = tool._batch_text(
             operation,
-            lambda target, attr=attr: getattr(target, attr),
+            _line_limit_getter(attr),
             _format_plot_limit,
         )
         edit = tool._line_edit(text, parent=page)
@@ -469,9 +481,7 @@ def _add_line_limit_controls(
         edit.setObjectName(object_name)
         tool._connect_line_edit_finished(
             edit,
-            _line_limit_update_callback(
-                tool, typing.cast("typing.Literal['xlim', 'ylim']", attr)
-            ),
+            _line_limit_update_callback(tool, attr),
         )
         limit_controls.append(
             (
