@@ -759,11 +759,38 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
         "Refresh all sources linked to open ImageTools"
     )
 
+    status_before_refresh = (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    )
     buttons["data_0"].click()
     assert refreshed[-1] == ("one", "data_0")
+    assert (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    ) == status_before_refresh
 
     tool.refresh_sources_button.click()
     assert refreshed[-1] == ("many", ("data_0",))
+    assert (
+        tool.source_status_label.text(),
+        tool.source_status_label.isVisible(),
+    ) == status_before_refresh
+
+    def refresh_no_sources(names: Sequence[str]) -> int:
+        refreshed.append(("none", tuple(names)))
+        return 0
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=can_refresh_source,
+        refresh_source=refresh_source,
+        refresh_sources=refresh_no_sources,
+        source_label=source_label,
+    )
+    tool._set_source_status_text("diagnostic")
+    tool.refresh_sources_button.click()
+    assert refreshed[-1] == ("none", ("data_0",))
+    assert tool.source_status_label.text() == "diagnostic"
 
 
 def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> None:
@@ -823,6 +850,11 @@ def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> N
     assert set(tool.source_data()) == set(before_source_data)
     assert not tool.remove_source("profile")
     assert not tool.remove_source("missing")
+
+    buttons["unused"].click()
+    assert "unused" not in tool.source_data()
+    assert tool.source_status_label.text() == ""
+    assert tool.source_status_label.isHidden()
 
 
 def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> None:
@@ -13003,6 +13035,78 @@ def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> 
     assert limits_edit.text() == f"{expected_ylim[0]:g}, {expected_ylim[1]:g}"
 
 
+def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": ("Momentum",),
+                        "method_kwargs": {
+                            "loc": "right",
+                            "labelpad": 3.0,
+                            "fontsize": 12,
+                        },
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+
+    method_page = tool.step_editor_stack.currentWidget()
+    method_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
+    )
+    assert method_combo is not None
+    initial_operation = tool.tool_status.operations[0]
+    method_combo.activated.emit(method_combo.currentIndex())
+    assert tool.tool_status.operations[0] == initial_operation
+
+    ylabel_index = method_combo.findData("set_ylabel")
+    assert ylabel_index >= 0
+    _activate_combo_index(method_combo, ylabel_index)
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "set_ylabel"
+    assert operation.method_args == ("Momentum",)
+    assert operation.method_kwargs == {
+        "loc": "top",
+        "labelpad": 3.0,
+        "fontsize": 12,
+    }
+    assert operation.axes == FigureAxesSelectionState(axes=((0, 0),))
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert not tool._operation_render_errors
+    assert tool.figure.axes[0].get_ylabel() == "Momentum"
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["axs"][0, 0].get_ylabel() == "Momentum"
+
+    figurecomposer_method._update_current_method_name(tool, "set_xlim")
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "set_xlim"
+    assert operation.method_args != ("Momentum",)
+    assert operation.method_kwargs == {}
+
+
 def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -19206,7 +19310,8 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
         xr.testing.assert_identical(source_data["data_1"], updated_second)
         xr.testing.assert_identical(source_data["detached"], detached)
         assert figure_tool.tool_status.operations == operations
-        assert figure_tool.source_status_label.text() == "Refreshed 2 sources."
+        assert figure_tool.source_status_label.text() == ""
+        assert figure_tool.source_status_label.isHidden()
         assert figure_tool._operation_render_errors == {}
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]

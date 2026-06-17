@@ -3825,6 +3825,9 @@ def _open_method_doc_url(url: str) -> None:
 def _update_current_method_family(
     tool: FigureComposerTool, family: FigureMethodFamily
 ) -> None:
+    current = tool._current_operation()
+    if current is not None and current[1].method_family == family:
+        return
     spec = next(iter(_method_specs(family).values()))
     axes = (
         tool._selected_axes_state()
@@ -3848,28 +3851,26 @@ def _update_current_method_family(
 
 
 def _update_current_method_name(tool: FigureComposerTool, name: str) -> None:
+    if tool._updating_controls:
+        return
     current = tool._current_operation()
     if current is None:
         return
     _index, operation = current
-    spec = _method_specs(operation.method_family)[name]
-    axes = (
-        operation.axes
-        if spec.target_domain == MethodTargetDomain.AXES
-        else FigureAxesSelectionState(axes=())
-    )
-    tool._update_current_operation_rebuild(
-        label=spec.label,
-        method_name=spec.name,
-        method_args=_default_method_args(tool, spec, axes),
-        method_kwargs={},
-        method_call_policy=None,
-        text_values=(),
-        method_transform="data",
-        method_transform_x="data",
-        method_transform_y="axes",
-        method_transform_expression="",
-        axes=axes,
+    if operation.method_name == name:
+        return
+
+    def update_method(
+        _operation_index: int, target: FigureOperationState
+    ) -> FigureOperationState:
+        target_spec = _method_specs(target.method_family)[name]
+        return target.model_copy(
+            update=_method_transfer_updates(tool, target, target_spec)
+        )
+
+    tool._update_operations(
+        update_method,
+        rebuild_editor=True,
     )
 
 
@@ -4020,6 +4021,176 @@ def _label_values(operation: FigureOperationState) -> str | list[str]:
 
 def _method_has_transform_control(spec: MethodSpec) -> bool:
     return any(control.kind == MethodControlKind.TRANSFORM for control in spec.controls)
+
+
+def _control_accepts_value(control: MethodControlSpec, value: typing.Any) -> bool:
+    if control.kind in {
+        MethodControlKind.ARG_COMBO,
+        MethodControlKind.KWARG_COMBO,
+    }:
+        if value is None:
+            return control.none_label is not None
+        return str(value) in control.options
+    if control.kind in {
+        MethodControlKind.BOOL_ARG_COMBO,
+        MethodControlKind.BOOL_KWARG_COMBO,
+    }:
+        return isinstance(value, bool)
+    return True
+
+
+def _transfer_axis_label_loc(
+    source_spec: MethodSpec, target_spec: MethodSpec, value: typing.Any
+) -> typing.Any:
+    if source_spec.name == "set_xlabel" and target_spec.name == "set_ylabel":
+        return {"left": "bottom", "center": "center", "right": "top"}.get(value, value)
+    if source_spec.name == "set_ylabel" and target_spec.name == "set_xlabel":
+        return {"bottom": "left", "center": "center", "top": "right"}.get(value, value)
+    return value
+
+
+def _method_transfer_updates(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    target_spec: MethodSpec,
+) -> dict[str, typing.Any]:
+    source_spec = _method_spec(operation)
+    axes = (
+        operation.axes
+        if target_spec.target_domain == MethodTargetDomain.AXES
+        else FigureAxesSelectionState(axes=())
+    )
+    source_args = {
+        control.arg_index: control
+        for control in source_spec.controls
+        if control.arg_index is not None
+    }
+    target_args = {
+        control.arg_index: control
+        for control in target_spec.controls
+        if control.arg_index is not None
+    }
+    args = list(_default_method_args(tool, target_spec, axes))
+    source_kinds = {control.kind for control in source_spec.controls}
+    target_kinds = {control.kind for control in target_spec.controls}
+    if (
+        operation.method_args
+        and MethodControlKind.FLOAT_PAIR_ARGS in source_kinds
+        and MethodControlKind.FLOAT_PAIR_ARGS in target_kinds
+    ) or (
+        operation.method_args
+        and MethodControlKind.PLOT_DATA_ARGS in source_kinds
+        and MethodControlKind.PLOT_DATA_ARGS in target_kinds
+    ):
+        args = list(operation.method_args)
+    elif operation.method_args:
+        for index, target_control in target_args.items():
+            source_control = source_args.get(index)
+            if (
+                source_control is None
+                or source_control.kind != target_control.kind
+                or index >= len(operation.method_args)
+            ):
+                continue
+            value = operation.method_args[index]
+            if (
+                index < len(source_spec.default_args)
+                and value == source_spec.default_args[index]
+            ):
+                continue
+            if not _control_accepts_value(target_control, value):
+                continue
+            while len(args) <= index:
+                args.append(None)
+            args[index] = value
+
+    source_kwargs = {
+        control.key: control
+        for control in source_spec.controls
+        if control.key is not None
+    }
+    target_kwargs = {
+        control.key: control
+        for control in target_spec.controls
+        if control.key is not None
+    }
+    source_signature = tuple(
+        (control.kind, control.arg_index, control.key, control.none_label is not None)
+        for control in source_spec.controls
+        if control.kind != MethodControlKind.TRANSFORM
+    )
+    target_signature = tuple(
+        (control.kind, control.arg_index, control.key, control.none_label is not None)
+        for control in target_spec.controls
+        if control.kind != MethodControlKind.TRANSFORM
+    )
+    transfer_extra_kwargs = (
+        source_spec.family == target_spec.family
+        and source_spec.target_domain == target_spec.target_domain
+        and source_spec.allow_extra_kwargs
+        and target_spec.allow_extra_kwargs
+        and source_signature == target_signature
+    )
+    kwargs: dict[str, typing.Any] = {}
+    for key, value in operation.method_kwargs.items():
+        target_control = target_kwargs.get(key)
+        if target_control is None:
+            if key not in source_kwargs and transfer_extra_kwargs:
+                kwargs[key] = value
+            continue
+        source_control = source_kwargs.get(key)
+        if source_control is None or source_control.kind != target_control.kind:
+            continue
+        if key == "loc":
+            value = _transfer_axis_label_loc(source_spec, target_spec, value)
+        if _control_accepts_value(target_control, value):
+            kwargs[key] = value
+
+    method_call_policy = None
+    if operation.method_call_policy is not None:
+        with contextlib.suppress(ValueError):
+            policy = MethodCallPolicy(operation.method_call_policy)
+            if policy in target_spec.selectable_call_policies:
+                method_call_policy = (
+                    None if policy == target_spec.call_policy else policy.value
+                )
+
+    text_values = ()
+    if (
+        source_spec.text_values_policy != MethodTextValuesPolicy.NONE
+        and source_spec.text_values_policy == target_spec.text_values_policy
+        and (
+            source_spec.text_values_policy != MethodTextValuesPolicy.KWARG
+            or source_spec.text_values_kwarg == target_spec.text_values_kwarg
+        )
+    ):
+        text_values = operation.text_values
+
+    updates: dict[str, typing.Any] = {
+        "label": target_spec.label,
+        "method_name": target_spec.name,
+        "method_args": tuple(args),
+        "method_kwargs": kwargs,
+        "method_call_policy": method_call_policy,
+        "text_values": text_values,
+        "method_transform": "data",
+        "method_transform_x": "data",
+        "method_transform_y": "axes",
+        "method_transform_expression": "",
+        "axes": axes,
+    }
+    if _method_has_transform_control(source_spec) and _method_has_transform_control(
+        target_spec
+    ):
+        updates.update(
+            {
+                "method_transform": operation.method_transform,
+                "method_transform_x": operation.method_transform_x,
+                "method_transform_y": operation.method_transform_y,
+                "method_transform_expression": operation.method_transform_expression,
+            }
+        )
+    return updates
 
 
 def _transform_component(

@@ -1922,11 +1922,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if callback is None or not self._source_refresh_available(name):
             self._refresh_source_controls()
             return
-        display = self._source_display_name(name)
-        refreshed = callback(name)
+        callback(name)
         self._refresh_source_controls()
-        if refreshed:
-            self._set_source_status_text(f"Refreshed {display}.")
 
     def _refresh_sources_from_button(self, _checked: bool = False) -> None:
         callback = self._source_refresh_many_callback
@@ -1934,13 +1931,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if callback is None or not source_names:
             self._refresh_source_controls()
             return
-        refreshed_count = callback(source_names)
+        callback(source_names)
         self._refresh_source_controls()
-        if refreshed_count:
-            noun = "source" if refreshed_count == 1 else "sources"
-            self._set_source_status_text(f"Refreshed {refreshed_count} {noun}.")
-        else:
-            self._set_source_status_text("No sources were refreshed.")
 
     def _source_used_by_operation(self, name: str) -> bool:
         return any(
@@ -1971,11 +1963,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return enabled
 
     def _remove_source_from_button(self, name: str, _checked: bool = False) -> None:
-        display = self._source_display_name(name)
         if not self.remove_source(name):
             self._refresh_source_controls()
-            return
-        self._set_source_status_text(f"Removed {display}.")
 
     def _set_source_list_row_used(
         self, item: QtWidgets.QTreeWidgetItem, used: bool
