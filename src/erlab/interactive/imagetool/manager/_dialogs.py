@@ -314,6 +314,11 @@ class _BatchOperationDialog(QtWidgets.QDialog):
 
 
 class _ConcatDialog(QtWidgets.QDialog):
+    _RESULT_NEW = "new"
+    _RESULT_REPLACE = "replace"
+    _SOURCES_KEEP = "keep"
+    _SOURCES_REMOVE = "remove"
+
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
         self.setWindowTitle("Concatenate Selected Tools")
@@ -321,6 +326,7 @@ class _ConcatDialog(QtWidgets.QDialog):
         self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self._manager = weakref.ref(manager)
+        self._selected_targets: list[int | str] = []
 
         layout = QtWidgets.QVBoxLayout(self)
         self.setLayout(layout)
@@ -367,8 +373,19 @@ class _ConcatDialog(QtWidgets.QDialog):
         docs_label.setOpenExternalLinks(True)
         option_layout.addRow(docs_label)
 
-        self._remove_original_check = QtWidgets.QCheckBox("Remove Originals")
-        self._remove_original_check.setChecked(False)
+        self._result_combo = QtWidgets.QComboBox()
+        self._result_combo.addItem("Open as New ImageTool", self._RESULT_NEW)
+        self._result_combo.addItem("Replace Source Tool", self._RESULT_REPLACE)
+        self._result_combo.currentIndexChanged.connect(self._update_result_controls)
+        option_layout.addRow("Result", self._result_combo)
+
+        self._replace_target_combo = QtWidgets.QComboBox()
+        option_layout.addRow("Replace", self._replace_target_combo)
+
+        self._sources_combo = QtWidgets.QComboBox()
+        self._sources_combo.addItem("Keep Source Tools", self._SOURCES_KEEP)
+        self._sources_combo.addItem("Remove Source Tools", self._SOURCES_REMOVE)
+        option_layout.addRow("Sources", self._sources_combo)
 
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -380,8 +397,54 @@ class _ConcatDialog(QtWidgets.QDialog):
 
         # Populate layout
         layout.addWidget(option_group)
-        layout.addWidget(self._remove_original_check)
         layout.addWidget(button_box)
+
+    def open(self) -> None:
+        self._result_combo.setCurrentIndex(
+            self._result_combo.findData(self._RESULT_NEW)
+        )
+        self._sources_combo.setCurrentIndex(
+            self._sources_combo.findData(self._SOURCES_KEEP)
+        )
+        self._refresh_selected_targets()
+        super().open()
+
+    def _refresh_selected_targets(self) -> None:
+        manager = self._manager()
+        self._selected_targets = (
+            [] if manager is None else list(manager._selected_imagetool_targets())
+        )
+        current_target = self._replace_target_combo.currentData()
+        self._replace_target_combo.clear()
+        if manager is not None:
+            for target in self._selected_targets:
+                node = manager._node_for_target(target)
+                self._replace_target_combo.addItem(node.display_text, target)
+
+        current_index = self._replace_target_combo.findData(current_target)
+        if current_index >= 0:
+            self._replace_target_combo.setCurrentIndex(current_index)
+        self._update_result_controls()
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _update_result_controls(self, *_args: object) -> None:
+        replace_selected = self.result_mode() == self._RESULT_REPLACE
+        self._replace_target_combo.setEnabled(replace_selected)
+
+    def result_mode(self) -> str:
+        value = self._result_combo.currentData()
+        return self._RESULT_NEW if value is None else str(value)
+
+    def sources_mode(self) -> str:
+        value = self._sources_combo.currentData()
+        return self._SOURCES_KEEP if value is None else str(value)
+
+    def replacement_target(self) -> int | str | None:
+        if self.result_mode() != self._RESULT_REPLACE:
+            return None
+        value = self._replace_target_combo.currentData()
+        return typing.cast("int | str | None", value)
 
     def concat_kwargs(self) -> dict[str, typing.Any]:
         return {
@@ -392,35 +455,95 @@ class _ConcatDialog(QtWidgets.QDialog):
             "combine_attrs": self._combine_attrs_combo.currentText(),
         }
 
+    def _operation_code(
+        self, manager: ImageToolManager, selected: list[int | str]
+    ) -> str:
+        concat_kwargs = self.concat_kwargs()
+        input_names = [
+            manager._script_input_name_for_node(manager._node_for_target(target))
+            for target in selected
+        ]
+        return (
+            f"derived = xr.concat([{', '.join(input_names)}], "
+            + ", ".join(f"{key}={value!r}" for key, value in concat_kwargs.items())
+            + ")"
+        )
+
+    def _remove_source_targets(
+        self,
+        manager: ImageToolManager,
+        selected: list[int | str],
+        *,
+        preserved_target: int | str | None = None,
+    ) -> None:
+        if self.sources_mode() != self._SOURCES_REMOVE:
+            return
+
+        preserved_uid = (
+            None
+            if preserved_target is None
+            else manager._node_for_target(preserved_target).uid
+        )
+        preserved_subtree_uids = (
+            set()
+            if preserved_uid is None
+            else set(manager._tool_graph.subtree_uids(preserved_uid))
+        )
+        to_remove: list[int | str] = []
+        for target in selected:
+            node = manager._node_for_target(target)
+            if node.uid in preserved_subtree_uids:
+                continue
+            if (
+                preserved_uid is not None
+                and preserved_uid in manager._tool_graph.subtree_uids(node.uid)
+            ):
+                continue
+            to_remove.append(target)
+        manager._remove_imagetools(to_remove)
+
     def accept(self) -> None:
         manager = self._manager()
         if manager is not None:  # pragma: no branch
             try:
-                selected = list(manager._selected_imagetool_targets())
+                selected = list(self._selected_targets)
                 to_concat = [
-                    manager.get_imagetool(idx).slicer_area.displayed_data
+                    manager.get_imagetool(idx)
+                    .slicer_area.persistence_data_and_state()[0]
+                    .copy(deep=False)
                     for idx in selected
                 ]
                 concat_kwargs = self.concat_kwargs()
-                input_names = [
-                    manager._script_input_name_for_node(
-                        manager._node_for_target(target)
+                operation_code = self._operation_code(manager, selected)
+                result_data = xr.concat(to_concat, **concat_kwargs)
+                replacement_target = self.replacement_target()
+                if replacement_target is None:
+                    created_index = manager._show_multi_input_script_result(
+                        result_data,
+                        selected,
+                        operation_label="Concatenate selected ImageTools",
+                        operation_code=operation_code,
+                        use_displayed_provenance=False,
                     )
-                    for target in selected
-                ]
-                operation_code = (
-                    f"derived = xr.concat([{', '.join(input_names)}], "
-                    + ", ".join(
-                        f"{key}={value!r}" for key, value in concat_kwargs.items()
+                else:
+                    replacement_node = manager._node_for_target(replacement_target)
+                    replacement_node.replace_with_detached_data(
+                        result_data,
+                        manager._multi_input_script_provenance(
+                            selected,
+                            operation_label="Concatenate selected ImageTools",
+                            operation_code=operation_code,
+                            detached_input_uid=replacement_node.uid,
+                            use_displayed_provenance=False,
+                        ),
+                        propagate_descendants=True,
+                        preserve_filter=False,
                     )
-                    + ")"
-                )
-                created_index = manager._show_multi_input_script_result(
-                    xr.concat(to_concat, **concat_kwargs),
-                    selected,
-                    operation_label="Concatenate selected ImageTools",
-                    operation_code=operation_code,
-                )
+                    manager.tree_view.refresh(replacement_node.uid)
+                    if manager._metadata_node_uid == replacement_node.uid:
+                        manager._set_metadata_node(replacement_node)
+                    manager._sigDataReplaced.emit()
+                    created_index = replacement_target
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self,
@@ -434,16 +557,12 @@ class _ConcatDialog(QtWidgets.QDialog):
                         "Error",
                         "An error occurred while concatenating data.",
                     )
-                elif self._remove_original_check.isChecked():
-                    for index in sorted(
+                else:
+                    self._remove_source_targets(
+                        manager,
                         selected,
-                        key=str,
-                        reverse=True,
-                    ):
-                        if isinstance(index, int):
-                            manager.remove_imagetool(index)
-                        else:
-                            manager._remove_childtool(index)
+                        preserved_target=replacement_target,
+                    )
         super().accept()
 
 

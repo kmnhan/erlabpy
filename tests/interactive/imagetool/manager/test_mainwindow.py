@@ -2321,7 +2321,9 @@ def test_manager(
         select_tools(manager, [1, 2])
 
         def _handle_concat(dialog: _ConcatDialog):
-            dialog._remove_original_check.setChecked(True)
+            dialog._sources_combo.setCurrentIndex(
+                dialog._sources_combo.findData(_ConcatDialog._SOURCES_REMOVE)
+            )
 
         accept_dialog(manager.concat_action.trigger, pre_call=_handle_concat)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
