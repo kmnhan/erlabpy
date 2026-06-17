@@ -1959,22 +1959,40 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def reloadable(self) -> bool:
         """Check if the displayed data can be reloaded.
 
-        Direct file-backed windows reload from their stored loader. Detached
-        file-rooted provenance reloads by replaying its self-contained code.
-        Managed script-derived ImageTools reload through the manager from their
-        recorded inputs.
+        Managed child ImageTools reload through the manager when they can refresh
+        from a reloadable ancestor. Direct file-backed windows reload from their
+        stored loader. Detached file-rooted provenance reloads by replaying its
+        self-contained code. Managed script-derived ImageTools reload through the
+        manager from their recorded inputs.
 
         Returns
         -------
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
-        if self._direct_reloadable() or self._provenance_reloadable():
+        if (
+            self._managed_source_chain_reload_target() is not None
+            or self._direct_reloadable()
+            or self._provenance_reloadable()
+        ):
             return True
         manager = self._manager_instance if self._in_manager else None
         return manager is not None and manager._script_reload_from_slicer_area(
             self, execute=False
         )
+
+    def _managed_source_chain_reload_target(
+        self,
+    ) -> tuple[erlab.interactive.imagetool.manager.ImageToolManager, str] | None:
+        manager = self._manager_instance if self._in_manager else None
+        if manager is None:
+            return None
+        target = manager.target_from_slicer_area(self)
+        if not isinstance(target, str):
+            return None
+        if manager._reload_target_for_child(target) is None:
+            return None
+        return manager, target
 
     def _direct_reloadable(self) -> bool:
         """Return whether direct file metadata can reload the current source."""
@@ -2050,6 +2068,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload(self) -> bool:
         """Reload the displayed data and return whether the reload succeeded."""
+        managed_reload = self._managed_source_chain_reload_target()
+        if managed_reload is not None:
+            manager, target = managed_reload
+            return manager._reload_source_chain_for_child(target)
         if self._direct_reloadable() or self._provenance_reloadable():
             try:
                 data, kwargs = self._fetch_reload_data()
