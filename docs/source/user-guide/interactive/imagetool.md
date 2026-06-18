@@ -26,11 +26,19 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 ## Launching ImageTool
 
 ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with
-2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new
-dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform
-coordinates gain parallel `_idx` indices so you can still slice by position. Supported
-inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire
-{class}`DataTree <xarray.DataTree>` objects.
+2–4 effective dimensions, where an effective dimension has length greater than 1.
+ImageTool adds a display axis for 1D input and ignores singleton dimensions when
+deciding whether data can be opened directly. Non-uniform coordinates gain parallel
+`_idx` indices so you can still slice by position. Supported inputs include numpy
+arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree
+<xarray.DataTree>` objects.
+
+When input has more than four effective dimensions, ImageTool opens the
+{guilabel}`Reduce Dimensions to Open` dialog before creating the window. For each
+dimension, choose whether to keep it, select one value, or aggregate it with a reducer
+such as mean, minimum, maximum, or sum. The dialog shows the resulting dimensions and
+generated Python code, and {guilabel}`Open` becomes available once the result is a
+non-empty 2D, 3D, or 4D array. Canceling the dialog leaves the original data unopened.
 
 (imagetool-entry-points)=
 

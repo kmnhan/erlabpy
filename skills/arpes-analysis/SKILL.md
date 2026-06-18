@@ -1,6 +1,6 @@
 ---
 name: arpes-analysis
-description: Use when answering questions or working on ERLabPy ARPES analysis workflows in Python, including loaders, xarray/qsel selection, momentum conversion, plotting, fitting, filtering, and interactive ImageTool or ImageTool Manager workflows. Use when teaching users how to use ERLabPy, writing example code, linking to stable documentation, or troubleshooting ERLabPy and xarray-lmfit behavior.
+description: Use when answering questions or working on ERLabPy ARPES analysis workflows in Python, including loaders, xarray/qsel selection, momentum conversion, plotting, fitting, filtering, and interactive ImageTool, ImageTool Manager, or Figure Composer workflows. Use when teaching users how to use ERLabPy, writing example code, linking to stable documentation, or troubleshooting ERLabPy and xarray-lmfit behavior.
 ---
 
 # ERLabPy ARPES Analysis
@@ -76,9 +76,12 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
   `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or `update_data` for
   contributor questions about adding new interactive tools.
-- Search `Figure Composer`, `Add to Figure`, `Append to Figure`,
-  `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`, or
-  `plot_bz` for plotting questions.
+- Search `Figure Composer`, `Add to Figure`, `Append to Figure`, `New Figure`,
+  `Recipe steps`, `Step sources`, `Sources`, `Add New Step`, `Add Source Only`,
+  `Replace Source`, `plot_array`, `plot_slices`, `qplot`, `fermiline`,
+  `nice_colorbar`, `plot_bz`, `BZ Overlay`, `Photon Energy Overlay`,
+  `plot_in_plane_bz`, `plot_out_of_plane_bz`, or `hv_to_kz` for plotting and
+  Figure Composer questions.
 
 ## Linking and Citation
 
@@ -109,7 +112,11 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   notebook synchronization is relevant.
 - Mention `%watch --restore` when a saved manager workspace contains disconnected
   watched rows that should reconnect to variables in an open notebook.
-- Mention Figure Composer when the user wants to create matplotlib figures from the GUI.
+- Mention Figure Composer when the user wants to create Matplotlib figures from the GUI.
+- Mention the Figure Composer `BZ Overlay` step when the user wants
+  Brillouin-zone slice overlays on in-plane or out-of-plane momentum plots.
+- Mention the Figure Composer `Photon Energy Overlay` step when the user wants
+  constant-photon-energy annotations on `k_parallel`-`k_z` plots.
 
 ## Troubleshooting
 
