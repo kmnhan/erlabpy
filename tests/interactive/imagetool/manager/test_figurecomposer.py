@@ -65,6 +65,9 @@ from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
 from erlab.interactive._figurecomposer._operations import (
+    _bz_overlay as figurecomposer_bz_overlay,
+)
+from erlab.interactive._figurecomposer._operations import (
     _custom_code as figurecomposer_custom_code,
 )
 from erlab.interactive._figurecomposer._operations import (
@@ -14278,6 +14281,80 @@ def test_figure_composer_bz_overlay_render_matches_plotting_helper(qtbot) -> Non
     np.testing.assert_allclose(axis.collections[0].get_offsets(), vertices)
     assert all(line.get_color() == "tab:purple" for line in axis.lines)
     assert all(line.get_linewidth() == 1.25 for line in axis.lines)
+
+
+def test_figure_composer_bz_overlay_out_of_plane_render_and_code(qtbot) -> None:
+    bounds = (-4.0, 4.0, -4.0, 4.0)
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        mode="out_of_plane",
+    ).model_copy(
+        update={
+            "bz_bounds": bounds,
+            "bz_k_parallel": 0.25,
+            "bz_midpoints": True,
+            "bz_vertex_kw": {"s": 11},
+            "bz_midpoint_kw": {"s": 13},
+            "line_kw": {"color": "tab:orange"},
+        }
+    )
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 1.0], "ky": [-1.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figure = Figure(figsize=(4, 2))
+    FigureCanvasAgg(figure)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+
+    bvec = erlab.lattice.to_reciprocal(erlab.lattice.abc2avec(1, 1, 1, 90, 90, 90))
+    segments, _vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
+        bvec,
+        k_parallel=0.25,
+        angle=0.0,
+        bounds=bounds,
+        return_midpoints=True,
+    )
+    for axis in figure.axes:
+        _assert_bz_lines_match_segments(axis.lines, segments)
+        assert all(line.get_color() == "tab:orange" for line in axis.lines)
+        assert len(axis.collections) == 1
+        np.testing.assert_allclose(axis.collections[0].get_offsets(), midpoints)
+        assert axis.collections[0].get_sizes()[0] == 13
+
+    code = tool.generated_code()
+    assert "for ax in axs.flat:" in code
+    namespace = _exec_generated_code(code, {"data": tool.source_data()["data"]})
+    assert len(namespace["fig"].axes) == 2
+    assert all(axis.lines for axis in namespace["fig"].axes)
+
+
+def test_figure_composer_bz_overlay_text_parsers() -> None:
+    assert figurecomposer_bz_overlay._mode_from_text("not a mode") == "in_plane"
+    assert figurecomposer_bz_overlay._format_bounds(None) == ""
+    assert figurecomposer_bz_overlay._bounds_from_text("") is None
+    assert figurecomposer_bz_overlay._bounds_from_text("-1, 1, -2, 2") == (
+        -1.0,
+        1.0,
+        -2.0,
+        2.0,
+    )
+
+    for text in ("'not bounds'", "1, 2, 3", "1, 2, 3, object()"):
+        with pytest.raises(ValueError, match="four comma-separated numbers"):
+            figurecomposer_bz_overlay._bounds_from_text(text)
 
 
 def test_figure_composer_bz_overlay_generated_code_static_centering(qtbot) -> None:
