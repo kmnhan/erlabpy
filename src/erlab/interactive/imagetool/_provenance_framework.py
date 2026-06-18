@@ -815,20 +815,16 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
 
             next_idx = later_loads[0]
             next_stmt = body[next_idx]
+            if not isinstance(next_stmt, ast.Assign):
+                continue
             replacement_load_names = {
                 node.id
                 for node in ast.walk(stmt.value)
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
             }
             if (
-                not isinstance(next_stmt, (ast.Assign, ast.Expr))
-                or (
-                    isinstance(next_stmt, ast.Assign)
-                    and (
-                        len(next_stmt.targets) != 1
-                        or not isinstance(next_stmt.targets[0], ast.Name)
-                    )
-                )
+                len(next_stmt.targets) != 1
+                or not isinstance(next_stmt.targets[0], ast.Name)
                 or _statement_load_count(next_stmt, target) != 1
                 or any(
                     _statement_store_count(intervening, target)
@@ -1314,6 +1310,8 @@ class ToolProvenanceOperation(pydantic.BaseModel):
 
     live_applicable: typing.ClassVar[bool] = True
     batch_available: typing.ClassVar[bool] = False
+    console_applies_to_receiver: typing.ClassVar[bool] = False
+    statement_mutates_input: typing.ClassVar[bool] = False
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = ()
 
     model_config = pydantic.ConfigDict(
@@ -1496,6 +1494,22 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        """Return Python statements applying this operation to an input name.
+
+        Most structured operations are expression-like and should implement
+        :meth:`expression_code`. Operations whose public API is mutating, such as
+        accessor setters, should implement this method instead and assign their result
+        to ``output_name``.
+        """
+        raise NotImplementedError
+
     def replay_code(
         self,
         input_name: str,
@@ -1527,7 +1541,16 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             Either an assignment statement when ``output_name`` is provided, or a bare
             expression when it is ``None``.
         """
-        expression = self.expression_code(input_name, source_name=source_name)
+        try:
+            expression = self.expression_code(input_name, source_name=source_name)
+        except NotImplementedError:
+            if output_name is None:
+                raise
+            return self.statement_code(
+                input_name,
+                output_name=output_name,
+                source_name=source_name,
+            )
         if output_name is None:
             return expression
         return f"{output_name} = {expression}"
@@ -1561,6 +1584,14 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
                 return cls(**values)
         return None
+
+
+def _default_seed_code_for_operations(
+    operations: Sequence[ToolProvenanceOperation],
+) -> str:
+    if any(operation.statement_mutates_input for operation in operations):
+        return "derived = data.copy(deep=False)"
+    return _DEFAULT_REPLAY_SEED_CODE
 
 
 def _expression_receiver_code(expression: str) -> str:
@@ -2604,7 +2635,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return ToolProvenanceSpec(
             kind="script",
             start_label=self._start_entry().label,
-            seed_code=_DEFAULT_REPLAY_SEED_CODE,
+            seed_code=_default_seed_code_for_operations(self.operations),
             active_name="derived",
             file_load_source=self.file_load_source,
             operations=self.operations,
@@ -2684,7 +2715,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if prefix is None and self.kind != "script":
             if not step_codes:
                 return None
-            prefix = _DEFAULT_REPLAY_SEED_CODE
+            prefix = _default_seed_code_for_operations(self.operations)
         if prefix is None and not step_codes:
             return None
         return "\n".join(part for part in (prefix, *step_codes) if part)
@@ -2860,7 +2891,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if prefix is None and self.kind != "script":
             if not step_codes:
                 return None
-            prefix = _DEFAULT_REPLAY_SEED_CODE
+            prefix = _default_seed_code_for_operations(self.operations)
         if prefix is None and not step_codes:
             return None
         if not step_codes and prefix == _DEFAULT_REPLAY_SEED_CODE:
@@ -3024,19 +3055,20 @@ def compose_display_provenance(
         "typing.Literal['full_data', 'public_data', 'selection']",
         source.kind,
     )
+    display_operations = tuple(
+        operation
+        for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
+            source_kind,
+            source.operations,
+            parent_data=parent_data,
+        )
+    )
     local_spec = ToolProvenanceSpec(
         kind="script",
         start_label=source._start_entry().label,
-        seed_code=_DEFAULT_REPLAY_SEED_CODE,
+        seed_code=_default_seed_code_for_operations(display_operations),
         active_name="derived",
-        operations=tuple(
-            operation
-            for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
-                source_kind,
-                source.operations,
-                parent_data=parent_data,
-            )
-        ),
+        operations=display_operations,
     )
     if parent_spec is None:
         return local_spec

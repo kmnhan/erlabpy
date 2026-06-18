@@ -75,11 +75,14 @@ The GUI is divided into two tabs.
 
 :::
 
-The first tab is for setting momentum conversion parameters. The image is updated in
-real time as you change the parameters. For angle-energy cuts, the preview keeps the
-full energy axis and displays the converted `k`/`eV` cut.
+The first tab is for setting the experimental geometry and momentum conversion
+parameters. The image is updated in real time as you change the parameters. For
+angle-energy cuts, the preview keeps the full energy axis and displays the converted
+`k`/`eV` cut.
 
-Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the clipboard.
+Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the
+clipboard, including any selected configuration change and momentum-conversion
+settings.
 
 {guilabel}`Open in ImageTool` performs a full conversion. When `ktool` was opened from
 an ImageTool in the manager, the converted data opens as a child row under `ktool`;

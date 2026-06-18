@@ -68,6 +68,26 @@ def _base_data() -> xr.DataArray:
     )
 
 
+def _kspace_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(27.0).reshape(3, 3, 3),
+        dims=("alpha", "beta", "eV"),
+        coords={
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+            "eV": [-0.2, 0.0, 0.2],
+            "xi": 0.0,
+            "hv": 21.2,
+        },
+        attrs={
+            "configuration": int(erlab.constants.AxesConfiguration.Type1),
+            "inner_potential": 10.0,
+            "sample_workfunction": 4.5,
+        },
+        name="anglemap",
+    )
+
+
 def _hashable_data() -> xr.DataArray:
     data = xr.DataArray(
         np.arange(12).reshape((3, 4)),
@@ -275,6 +295,14 @@ def _representative_structured_operations() -> tuple[
             values=[1.0, 2.0, 3.0],
         ),
         provenance.AssignAttrsOperation(attrs={"sample": "test"}),
+        provenance.KspaceConfigurationOperation(configuration=2),
+        provenance.KspaceWorkFunctionOperation(work_function=4.2),
+        provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        provenance.KspaceConvertOperation(
+            bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+            resolution={"kx": 0.02, "ky": 0.02},
+        ),
         provenance.SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 11.0]},
             step_size=0.1,
@@ -426,7 +454,12 @@ def test_registered_provenance_define_operation_code_api() -> None:
     assert [
         operation_type
         for operation_type in structured_operation_types
-        if "expression_code" not in operation_type.__dict__
+        if (
+            operation_type.expression_code
+            is provenance.ToolProvenanceOperation.expression_code
+            and operation_type.statement_code
+            is provenance.ToolProvenanceOperation.statement_code
+        )
     ] == []
 
 
@@ -589,6 +622,60 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
         parent_data=data,
     )
     xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
+
+
+def test_statement_operation_replay_code_mutates_working_copy() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceWorkFunctionOperation(work_function=4.2)
+
+    code = operation.replay_code("data", output_name="result", source_name="data")
+
+    assert "result = data.copy(deep=False)" in code
+    assert "result.kspace.work_function = 4.2" in code
+    assert "sample_workfunction" not in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["result"].kspace.work_function == pytest.approx(4.2)
+    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
+
+
+def test_statement_operation_derivation_entry_omits_same_name_noop() -> None:
+    operation = provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0)
+
+    code = operation.derivation_entry().code
+
+    assert code == "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)"
+
+
+def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
+    data = _kspace_data()
+    operations = (
+        provenance.KspaceWorkFunctionOperation(work_function=4.2),
+        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        provenance.KspaceConvertOperation(
+            bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+            resolution={"kx": 0.02, "ky": 0.02},
+        ),
+    )
+    spec = provenance.full_data(*operations).to_replay_spec()
+
+    code = typing.cast("str", spec.display_code())
+
+    assert "derived = data.copy(deep=False)" in code
+    assert code.count(".copy(deep=False)") == 1
+    assert "derived.kspace.work_function = 4.2" in code
+    assert "derived.kspace.set_normal(" in code
+    assert "derived = derived.kspace.convert(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    expected = data.copy(deep=False)
+    expected.kspace.work_function = 4.2
+    expected.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)
+    expected = expected.kspace.convert(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+        silent=True,
+    )
+    xr.testing.assert_allclose(namespace["derived"], expected)
+    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
@@ -1033,6 +1120,164 @@ def test_tool_provenance_assign_attrs_operation() -> None:
     assert any(call.endswith(".assign_attrs") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_kspace_configuration_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceConfigurationOperation(
+        configuration=erlab.constants.AxesConfiguration.Type2
+    )
+    expected = data.kspace.as_configuration(erlab.constants.AxesConfiguration.Type2)
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    assert parsed == operation
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    assert operation.derivation_entry().label == "Set kspace configuration(2 Type2)"
+    code = operation.replay_code("anglemap", output_name="converted")
+    assert code == "converted = anglemap.kspace.as_configuration(2)"
+    namespace = _exec_generated_code(code, {"anglemap": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["converted"], expected)
+
+
+@pytest.mark.parametrize(
+    ("operation", "attr_name", "expected"),
+    [
+        (
+            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            "sample_workfunction",
+            4.2,
+        ),
+        (
+            provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+            "inner_potential",
+            12.0,
+        ),
+    ],
+)
+def test_kspace_scalar_statement_operations_round_trip_and_code(
+    operation: provenance.ToolProvenanceOperation,
+    attr_name: str,
+    expected: float,
+) -> None:
+    data = _kspace_data()
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    result = parsed.apply(data, parent_data=data)
+
+    assert result.attrs[attr_name] == pytest.approx(expected)
+    assert data.attrs[attr_name] != pytest.approx(expected)
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.copy(deep=False)" in code
+    if attr_name == "sample_workfunction":
+        assert "result.kspace.work_function =" in code
+        assert "result.attrs" not in code
+    else:
+        assert "result.kspace.inner_potential =" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["result"].attrs[attr_name] == pytest.approx(expected)
+    assert namespace["data"].attrs[attr_name] != pytest.approx(expected)
+
+
+def test_kspace_set_normal_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceSetNormalOperation(
+        alpha=1.5,
+        beta=-0.5,
+        delta=2.0,
+    )
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+    result = parsed.apply(data, parent_data=data)
+
+    assert result.kspace.offsets["delta"] == pytest.approx(2.0)
+    assert result.kspace.offsets != data.kspace.offsets
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.copy(deep=False)" in code
+    assert "result.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["result"], result)
+    for key, value in data.kspace.offsets.items():
+        assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
+
+
+def test_kspace_convert_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceConvertOperation(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+    )
+    expected = data.kspace.convert(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+        silent=True,
+    )
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    assert parsed == operation
+    xr.testing.assert_allclose(parsed.apply(data, parent_data=data), expected)
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.kspace.convert(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_allclose(namespace["result"], expected)
+
+
+@pytest.mark.parametrize(
+    ("call", "operation"),
+    [
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "as_configuration"),
+                args=(2,),
+                display_code="data.kspace.as_configuration(2)",
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceConfigurationOperation(configuration=2),
+        ),
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "set_normal"),
+                args=(1.5, -0.5),
+                kwargs={"delta": 2.0},
+                display_code="data.kspace.set_normal(1.5, -0.5, delta=2.0)",
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        ),
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "convert"),
+                args=(),
+                kwargs={
+                    "bounds": {"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+                    "resolution": {"kx": 0.02, "ky": 0.02},
+                },
+                display_code=(
+                    "data.kspace.convert(bounds=bounds, resolution=resolution)"
+                ),
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceConvertOperation(
+                bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+                resolution={"kx": 0.02, "ky": 0.02},
+            ),
+        ),
+    ],
+)
+def test_kspace_operations_match_console_calls(
+    call: provenance.ConsoleCall,
+    operation: provenance.ToolProvenanceOperation,
+) -> None:
+    assert provenance.operation_from_console_call(call) == operation
 
 
 def _expected_affine_coord(

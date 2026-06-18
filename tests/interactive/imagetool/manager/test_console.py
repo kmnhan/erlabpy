@@ -400,6 +400,65 @@ def test_manager_console_handles_use_filtered_display_data(
         xr.testing.assert_identical(namespace["derived"], expected + 1.0)
 
 
+def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
+    data = xr.DataArray(
+        np.arange(27.0).reshape(3, 3, 3),
+        dims=("alpha", "beta", "eV"),
+        coords={
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+            "eV": [-0.2, 0.0, 0.2],
+            "xi": 0.0,
+            "hv": 21.2,
+        },
+        attrs={
+            "configuration": int(erlab.constants.AxesConfiguration.Type1),
+            "sample_workfunction": 4.5,
+        },
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (
+            provenance.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=provenance.script(
+                    start_label="Use input data",
+                    seed_code="data_0 = data",
+                    active_name="data_0",
+                ).model_dump(mode="json"),
+            ),
+        ),
+        copyable=True,
+    )
+
+    original_offsets = dict(data.kspace.offsets.items())
+
+    derived = handle.kspace.set_normal(1.5, -0.5, delta=2.0)
+
+    assert isinstance(derived, manager_console._DerivedDataNamespace)
+    assert derived.data.kspace.offsets["delta"] == pytest.approx(2.0)
+    for key, value in original_offsets.items():
+        assert data.kspace.offsets[key] == pytest.approx(value)
+    spec = derived._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert spec is not None
+    assert [operation.op for operation in spec.operations] == ["kspace_set_normal"]
+    code = spec.display_code()
+    assert code is not None
+    assert "derived = data.copy(deep=False)" in code
+    assert "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    assert "sample_workfunction" not in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["derived"].kspace.offsets["delta"] == pytest.approx(2.0)
+    for key, value in original_offsets.items():
+        assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
+
+
 def test_macos_matplotlib_cursor_patch_applies_once(monkeypatch) -> None:
     class _Canvas:
         def set_cursor(self, cursor):

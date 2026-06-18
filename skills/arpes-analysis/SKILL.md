@@ -51,8 +51,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `xarray.DataArray.qsel`, `qsel.mean`, `qsel.min`,
   `qsel.max`, `qsel.sum`, `qsel.around`, `xarray.DataArray.sortby`, `Sort By`,
   `Aggregate`, or `workflow-bridge` for slicing and indexing questions.
-- Search `kspace.convert`, `kspace.convert_coords`, `ktool`, `work function`,
-  `inner potential`, or `offsets` for momentum-conversion questions.
+- Search `kspace.convert`, `kspace.as_configuration`, `kspace.convert_coords`,
+  `ktool`, `work function`, `inner potential`, or `offsets` for
+  momentum-conversion questions.
 - Search `xlm.modelfit`, `MultiPeakModel`, `FermiEdgeModel`, `gold`, `ftool`,
   `restool`, or `goldtool` for fitting questions.
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,

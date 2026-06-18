@@ -560,7 +560,10 @@ def _operation_replay_code(
         ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise ReplayGraphError("Operation replay code is not valid Python") from exc
-    if not _provenance_framework._code_stores_name(code, active_name):
+    if not _provenance_framework._code_stores_name(code, active_name) and not (
+        input_name == active_name
+        and getattr(operation, "statement_mutates_input", False)
+    ):
         raise ReplayGraphError("Operation replay code does not assign its output")
     return code
 
@@ -1030,7 +1033,7 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
             ):
                 continue
             next_stmt = module.body[idx + 1]
-            if not isinstance(next_stmt, (ast.Assign, ast.Expr)):
+            if not isinstance(next_stmt, ast.Assign):
                 continue
             if _provenance_framework._statement_load_count(next_stmt, target.id) != 1:
                 continue
@@ -1104,6 +1107,8 @@ def _inline_single_use_replay_expressions(code: str) -> str:
                 continue
             use_idx = later_loads[0]
             use_stmt = module.body[use_idx]
+            if not isinstance(use_stmt, ast.Assign):
+                continue
             if _provenance_framework._statement_load_count(use_stmt, target.id) != 1:
                 continue
 
@@ -1179,6 +1184,124 @@ def _remove_noop_assignments(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
+def _inline_simple_name_aliases(code: str) -> str:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    if _code_has_scoped_definition(code):
+        return code
+
+    changed = False
+
+    class SimpleAliasInliner(ast.NodeTransformer):
+        def __init__(self, target_name: str, source_name: str) -> None:
+            self.target_name = target_name
+            self.source_name = source_name
+
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id == self.target_name and isinstance(node.ctx, ast.Load):
+                return ast.copy_location(
+                    ast.Name(self.source_name, ctx=ast.Load()),
+                    node,
+                )
+            return node
+
+    def kspace_receiver_load_count(stmt: ast.stmt, target_name: str) -> int:
+        return sum(
+            1
+            for node in ast.walk(stmt)
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "kspace"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == target_name
+                and isinstance(node.value.ctx, ast.Load)
+            )
+        )
+
+    while True:
+        for idx, stmt in enumerate(module.body[:-1]):
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            if not isinstance(target, ast.Name) or not isinstance(stmt.value, ast.Name):
+                continue
+            target_name = target.id
+            source_name = stmt.value.id
+            if target_name == source_name:
+                continue
+
+            rewrite_end: int | None = None
+            can_rewrite = True
+            for later_idx, later_stmt in enumerate(
+                module.body[idx + 1 :],
+                start=idx + 1,
+            ):
+                if _provenance_framework._statement_store_count(
+                    later_stmt,
+                    source_name,
+                ):
+                    can_rewrite = False
+                    break
+                if not _provenance_framework._statement_store_count(
+                    later_stmt,
+                    target_name,
+                ):
+                    continue
+                if (
+                    isinstance(later_stmt, ast.Assign)
+                    and len(later_stmt.targets) == 1
+                    and isinstance(later_stmt.targets[0], ast.Name)
+                    and later_stmt.targets[0].id == target_name
+                    and _provenance_framework._statement_load_count(
+                        later_stmt,
+                        target_name,
+                    )
+                ):
+                    rewrite_end = later_idx
+                else:
+                    can_rewrite = False
+                break
+            if rewrite_end is None or not can_rewrite:
+                continue
+            if any(
+                _provenance_framework._statement_store_count(
+                    intervening,
+                    target_name,
+                )
+                for intervening in module.body[idx + 1 : rewrite_end]
+            ):
+                continue
+            rewrite_statements = module.body[idx + 1 : rewrite_end + 1]
+            if any(
+                _provenance_framework._statement_load_count(item, target_name)
+                != kspace_receiver_load_count(item, target_name)
+                for item in rewrite_statements
+            ):
+                continue
+
+            inliner = SimpleAliasInliner(target_name, source_name)
+            rewritten: list[ast.stmt] = []
+            for item in rewrite_statements:
+                cloned = ast.parse(ast.unparse(item), mode="exec").body[0]
+                rewritten.append(
+                    ast.fix_missing_locations(
+                        typing.cast("ast.stmt", inliner.visit(cloned))
+                    )
+                )
+            module.body[idx + 1 : rewrite_end + 1] = rewritten
+            del module.body[idx]
+            changed = True
+            break
+        else:
+            break
+
+    if not changed:
+        return code
+    return ast.unparse(ast.fix_missing_locations(module))
+
+
 def _compact_replay_temp_names(code: str) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1236,6 +1359,8 @@ def _code_has_scoped_definition(code: str) -> bool:
 
 
 def _cleanup_emitted_replay_code(code: str) -> str:
+    code = _remove_noop_assignments(code)
+    code = _inline_simple_name_aliases(code)
     code = _inline_adjacent_replay_assignments(code)
     code = _inline_single_use_replay_expressions(code)
     code = _remove_noop_assignments(code)

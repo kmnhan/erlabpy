@@ -70,6 +70,15 @@ def _make_ktool_data(
     return data.assign_coords(**coords)
 
 
+def _make_da_ktool_data(anglemap) -> xr.DataArray:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 3)).copy(
+        deep=True
+    )
+    data.attrs["configuration"] = int(AxesConfiguration.Type1DA)
+    data.kspace.work_function = 4.5
+    return data.assign_coords(xi=0.0, chi=0.0)
+
+
 def _solve_normal_emission_angles(
     configuration: AxesConfiguration,
     coords: dict[str, float],
@@ -491,19 +500,122 @@ def test_ktool_copy_code_uses_set_normal(
     input_name = str(win._argnames["data"])
     if not erlab.interactive.utils._is_kwarg_name(input_name):
         input_name = "data"
+    assert ".copy(deep=False)" not in code
+    assert code.splitlines()[0].startswith(f"{input_name}.kspace.set_normal(")
+    assert f"{input_name}_kconv = {input_name}.kspace.convert(" in code
 
     namespace = {input_name: data.copy(deep=True)}
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
 
-    expected = win._assign_params(data.copy(deep=True)).kspace.convert(
-        bounds=win.bounds, resolution=win.resolution
+    expected_setup = win._assign_params(data.copy(deep=True))
+    expected = expected_setup.kspace.convert(
+        bounds=win.bounds,
+        resolution=win.resolution,
     )
-    for key, value in reference_offsets.items():
-        assert np.round(namespace[input_name].kspace.offsets[key], 5) == pytest.approx(
-            value
-        )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
+    for key, value in expected_setup.kspace.offsets.items():
+        assert namespace[input_name].kspace.offsets[key] == pytest.approx(
+            value,
+            abs=1e-5,
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_configuration", "expected_offsets", "expected_axes"),
+    [
+        (
+            AxesConfiguration.Type2,
+            {"delta", "xi", "beta", "wf"},
+            {"ky"},
+        ),
+        (
+            AxesConfiguration.Type2DA,
+            {"delta", "chi", "xi", "wf"},
+            {"kx", "ky"},
+        ),
+    ],
+)
+def test_ktool_configuration_combo_rebuilds_controls_and_code(
+    qtbot,
+    anglemap,
+    target_configuration: AxesConfiguration,
+    expected_offsets: set[str],
+    expected_axes: set[str],
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    qtbot.addWidget(win)
+
+    assert win.configuration_combo.count() == len(AxesConfiguration)
+    index = win.configuration_combo.findData(int(target_configuration))
+    assert index >= 0
+    win.configuration_combo.setCurrentIndex(index)
+
+    assert win.data.kspace.configuration == target_configuration
+    assert set(win._offset_spins) == expected_offsets
+    assert set(win._resolution_spins) == expected_axes
+    assert win.tool_status.configuration == int(target_configuration)
+
+    code = win.copy_code()
+    assert f".kspace.as_configuration({int(target_configuration)})" in code
+    assert code.count(".copy(deep=False)") == 0
+    assert ".kspace.set_normal(" in code
+    assert ".kspace.convert(" in code
+    assert code.splitlines()[0] == (
+        f"scan_kconv = scan.kspace.as_configuration({int(target_configuration)})"
+    )
+    namespace = {"scan": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], win._converted_output())
+    assert namespace["scan"].kspace.configuration == AxesConfiguration.Type1DA
+
+
+def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
+    qtbot, anglemap
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    qtbot.addWidget(win)
+    target_configuration = AxesConfiguration.Type2DA
+    win.configuration_combo.setCurrentIndex(
+        win.configuration_combo.findData(int(target_configuration))
+    )
+
+    converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
+    assert converted is not None
+    spec = win.output_imagetool_provenance(KspaceTool.Output.CONVERTED, converted)
+    assert spec is not None
+    assert [operation.op for operation in spec.operations] == [
+        "kspace_configuration",
+        "kspace_set_normal",
+        "kspace_convert",
+    ]
+    code = spec.display_code()
+    assert code is not None
+    assert ".kspace.as_configuration(4)" in code
+    namespace = {"scan": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], converted)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, KspaceTool)
+        assert win_restored.data.kspace.configuration == target_configuration
+        assert win_restored.tool_status.configuration == int(target_configuration)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) + 1.0
+    win.update_data(updated)
+    assert win._source_configuration == int(AxesConfiguration.Type1DA)
+    assert win.data.kspace.configuration == target_configuration
+    xr.testing.assert_allclose(
+        win.tool_data,
+        updated.kspace.as_configuration(target_configuration),
+    )
 
 
 def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
@@ -542,9 +654,10 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
 
     code = win.copy_code()
 
-    assert "input_data = my_data.astype(np.float64)" in code
-    assert "input_data.kspace.set_normal(" in code
-    assert "input_data_kconv = input_data.kspace.convert(" in code
+    assert "input_data_kconv = my_data.astype(np.float64)" in code
+    assert ".copy(deep=False)" not in code
+    assert "input_data_kconv.kspace.set_normal(" in code
+    assert "input_data_kconv = input_data_kconv.kspace.convert(" in code
     assert "astype(np.float64)_kconv" not in code
     namespace = {"my_data": data.copy(deep=True), "np": np}
     exec(code, {"__builtins__": {}, "np": np}, namespace)  # noqa: S102
@@ -714,6 +827,9 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     assert not _missing_kspace_parameter_warnings(caught)
     assert win._offset_spins["wf"].value() == pytest.approx(4.5)
     assert win._offset_spins["V0"].value() == pytest.approx(10.0)
+    code = win.copy_code()
+    assert ".kspace.work_function =" not in code
+    assert ".kspace.inner_potential =" not in code
 
     original_attrs = win.data.attrs.copy()
     updated = data.copy(deep=True)
