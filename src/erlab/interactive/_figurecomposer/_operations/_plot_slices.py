@@ -3478,7 +3478,14 @@ def _has_invalid_target(
 
 
 def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    return operation.sources
+    names: list[str] = []
+    for source_name in operation.sources:
+        if source_name not in names:
+            names.append(source_name)
+    for selection in operation.map_selections:
+        if selection.source not in names:
+            names.append(selection.source)
+    return tuple(names)
 
 
 def _plot_source_check_state(

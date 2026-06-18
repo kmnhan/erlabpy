@@ -5,9 +5,11 @@ from __future__ import annotations
 import typing
 
 from erlab.interactive._figurecomposer._operations import (
+    _bz_overlay,
     _custom_code,
     _line_profile,
     _method,
+    _photon_energy,
     _plot_slices,
 )
 
@@ -25,6 +27,8 @@ _OPERATION_SPECS = {
     for spec in (
         _plot_slices.SPEC,
         _line_profile.SPEC,
+        _bz_overlay.SPEC,
+        _photon_energy.SPEC,
         _method.SPEC,
         _custom_code.SPEC,
     )
