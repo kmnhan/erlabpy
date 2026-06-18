@@ -1,8 +1,24 @@
+import matplotlib.colors
 import matplotlib.patches
 import matplotlib.pyplot as plt
 import numpy as np
 
-from erlab.plotting.bz import plot_bz, plot_hex_bz
+import erlab
+import erlab.plotting as eplt
+from erlab.plotting.bz import (
+    plot_bz,
+    plot_hex_bz,
+    plot_in_plane_bz,
+    plot_out_of_plane_bz,
+)
+from erlab.plotting.colors import axes_textcolor
+
+
+def _assert_line_artists_match_segments(lines, segments):
+    assert len(lines) == len(segments)
+    for line, segment in zip(lines, segments, strict=True):
+        np.testing.assert_allclose(line.get_xdata(), segment[:, 0])
+        np.testing.assert_allclose(line.get_ydata(), segment[:, 1])
 
 
 def test_plot_hex_bz():
@@ -114,3 +130,82 @@ def test_plot_bz_options_and_iterable():
     plt.close(fig2)
     plt.close(fig3)
     plt.close(fig4)
+
+
+def test_plot_in_plane_bz_matches_lattice_segments():
+    bvec = erlab.lattice.to_reciprocal(np.eye(3))
+    bounds = (-3.5, 3.5, -3.5, 3.5)
+    segments, _, _ = erlab.lattice.get_in_plane_bz(
+        bvec, kz=0.0, angle=45.0, bounds=bounds, return_midpoints=True
+    )
+
+    fig, ax = plt.subplots()
+    lines, vertex_artist, midpoint_artist = plot_in_plane_bz(
+        bvec,
+        kz=0.0,
+        angle=45.0,
+        bounds=bounds,
+        ax=ax,
+        c="tab:purple",
+        lw=1.5,
+        ls="-.",
+    )
+
+    _assert_line_artists_match_segments(lines, segments)
+    assert vertex_artist is None
+    assert midpoint_artist is None
+    assert all(line.get_color() == "tab:purple" for line in lines)
+    assert all(line.get_linewidth() == 1.5 for line in lines)
+    assert all(line.get_linestyle() == "-." for line in lines)
+
+    plt.close(fig)
+
+
+def test_plot_out_of_plane_bz_infers_bounds_from_axes():
+    bvec = erlab.lattice.to_reciprocal(np.eye(3))
+    bounds = (-4.0, 4.0, -4.0, 4.0)
+    segments, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
+        bvec,
+        k_parallel=0.0,
+        angle=0.0,
+        bounds=bounds,
+        return_midpoints=True,
+    )
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(bounds[1], bounds[0])
+    ax.set_ylim(bounds[3], bounds[2])
+    lines, vertex_artist, midpoint_artist = plot_out_of_plane_bz(
+        bvec,
+        k_parallel=0.0,
+        angle=0.0,
+        ax=ax,
+        vertices=True,
+        midpoints=True,
+        vertex_kwargs={"s": 12, "c": "tab:red"},
+        midpoint_kwargs={"s": 18, "color": "tab:blue"},
+    )
+
+    _assert_line_artists_match_segments(lines, segments)
+    assert vertex_artist is not None
+    assert midpoint_artist is not None
+    np.testing.assert_allclose(vertex_artist.get_offsets(), vertices)
+    np.testing.assert_allclose(midpoint_artist.get_offsets(), midpoints)
+    assert vertex_artist.get_sizes()[0] == 12
+    assert midpoint_artist.get_sizes()[0] == 18
+    np.testing.assert_allclose(
+        vertex_artist.get_facecolors()[0], matplotlib.colors.to_rgba("tab:red")
+    )
+    np.testing.assert_allclose(
+        midpoint_artist.get_facecolors()[0], matplotlib.colors.to_rgba("tab:blue")
+    )
+    assert all(line.get_color() == axes_textcolor(ax) for line in lines)
+    assert all(line.get_linewidth() == 0.5 for line in lines)
+    assert all(line.get_linestyle() == "--" for line in lines)
+
+    plt.close(fig)
+
+
+def test_bz_slice_helpers_export_from_plotting_namespace():
+    assert eplt.plot_in_plane_bz is plot_in_plane_bz
+    assert eplt.plot_out_of_plane_bz is plot_out_of_plane_bz

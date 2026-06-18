@@ -25,6 +25,8 @@ __all__ = [
     "plot_array_2d",
     "plot_bz",
     "plot_hex_bz",
+    "plot_in_plane_bz",
+    "plot_out_of_plane_bz",
     "plot_slices",
     "property_labels",
     "proportional_colorbar",
@@ -51,7 +53,13 @@ from .annotations import (
     set_ylabels,
     sizebar,
 )
-from .bz import get_bz_edge, plot_bz, plot_hex_bz
+from .bz import (
+    get_bz_edge,
+    plot_bz,
+    plot_hex_bz,
+    plot_in_plane_bz,
+    plot_out_of_plane_bz,
+)
 from .colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,
