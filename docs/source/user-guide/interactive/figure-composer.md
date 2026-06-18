@@ -78,20 +78,13 @@ There are several step types, each with a different set of controls for the gene
 - {guilabel}`BZ Overlay` for in-plane and out-of-plane Brillouin-zone slice overlays
   drawn with {func}`erlab.plotting.plot_in_plane_bz` and
   {func}`erlab.plotting.plot_out_of_plane_bz`.
+- {guilabel}`Photon Energy Overlay` for annotating constant photon energies on
+  $k_\parallel$-$k_z$ plots using {meth}`xarray.DataArray.kspace.hv_to_kz`.
 - {guilabel}`ERLab Method` for a subset of {mod}`erlab.plotting` functions such as
   colorbar and annotation utilities.
 - {guilabel}`Axes Method` for a subset of Matplotlib `ax.*` methods.
 - {guilabel}`Figure Method` for a subset of Matplotlib `fig.*` methods.
 - {guilabel}`Custom Code` for arbitrary code snippets.
-
-The {guilabel}`BZ Overlay` step stores conventional-cell lattice parameters,
-centering, slice mode, angle, normalized `kz` in units of `pi/c`, optional bounds, and
-line or point styling. When code is copied, the recipe explicitly constructs the real
-lattice vectors, converts non-primitive cells to primitive vectors when needed, converts
-to reciprocal vectors, and calls the public plotting helper for the selected slice.
-Figures created from ktool converted outputs copy the current ktool BZ settings when the
-ktool overlay is enabled; ordinary momentum-cut ImageTool data can seed the slice mode
-and bounds from `kx`, `ky`, and `kz` coordinates.
 
 ### Editing steps
 
