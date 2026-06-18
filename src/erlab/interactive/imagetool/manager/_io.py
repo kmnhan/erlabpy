@@ -23,7 +23,6 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
@@ -199,13 +198,7 @@ class _MultiFileHandler(QtCore.QObject):
     def _deliver_and_queue(
         self,
         file_path: pathlib.Path,
-        selected_data: tuple[
-            tuple[
-                xr.DataArray,
-                provenance.FileDataSelection,
-            ],
-            ...,
-        ],
+        selected_data: tuple[typing.Any, ...],
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
@@ -213,12 +206,19 @@ class _MultiFileHandler(QtCore.QObject):
             func = func_instance.name
 
         self.manager._data_recv(
-            [data_array for data_array, _source_index in selected_data],
+            [prepared.data for prepared in selected_data],
             kwargs={
                 "file_path": file_path,
                 "load_func": (func, self._kwargs.copy()),
-                "load_indices": tuple(
-                    selection for _data_array, selection in selected_data
+                "load_indices": tuple(prepared.selection for prepared in selected_data),
+                "preparation_operations": tuple(
+                    prepared.operations for prepared in selected_data
+                ),
+                "source_input_ndims": tuple(
+                    prepared.source_ndim for prepared in selected_data
+                ),
+                "source_input_dtypes": tuple(
+                    prepared.source_dtype for prepared in selected_data
                 ),
             },
             show=(self.n_total == 1),

@@ -742,7 +742,14 @@ class _ActionsController:
         self, data_list: list[xr.DataArray], indices: list[int | str]
     ) -> None:
         """Replace data in the ImageTool windows with the given data."""
-        for darr, idx in zip(data_list, indices, strict=True):
+        prepared_data = erlab.interactive.imagetool.viewer_state._prepare_input_data(
+            data_list,
+            self._manager,
+        )
+        if prepared_data is None:
+            return
+        for prepared, idx in zip(prepared_data, indices, strict=True):
+            darr = prepared.data
             if isinstance(idx, int) and idx < 0:
                 # Negative index counts from the end
                 idx = sorted(self._manager._tool_graph.root_wrappers.keys())[idx]
@@ -850,9 +857,34 @@ class _ActionsController:
                 ),
                 connected=True,
             )
-            wrapper.set_source_input_ndim(darr.ndim)
-            wrapper.set_source_input_dtype(darr.dtype)
-            self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
+            try:
+                prepared_data = (
+                    erlab.interactive.imagetool.viewer_state._prepare_input_data(
+                        darr,
+                        self._manager,
+                        allow_dialog=False,
+                    )
+                )
+            except ValueError:
+                logger.exception(
+                    "Could not open watched variable update in ImageTool",
+                    extra={"suppress_ui_alert": True},
+                )
+                erlab.interactive.utils.MessageDialog.critical(
+                    self._manager,
+                    "Watched Data Update Failed",
+                    f"Could not open watched variable {varname!r} in ImageTool.",
+                    "The previous data remains visible.",
+                )
+                return
+            if prepared_data is None:  # pragma: no cover - no dialog is shown here
+                return
+            prepared = prepared_data[0]
+            wrapper.set_source_input_ndim(prepared.source_ndim)
+            wrapper.set_source_input_dtype(prepared.source_dtype)
+            self._manager.get_imagetool(idx).slicer_area.replace_source_data(
+                prepared.data
+            )
 
     def _data_unwatch(self, uid: str) -> None:
         idx = self._manager._find_watched_idx(uid)

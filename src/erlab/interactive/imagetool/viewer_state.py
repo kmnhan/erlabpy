@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import dataclasses
 import logging
 import typing
 import warnings
@@ -33,7 +34,15 @@ logger = logging.getLogger(__name__)
 
 _FileDataSelection = provenance.FileDataSelection
 _FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
-_ParsedInputData: typing.TypeAlias = tuple[xr.DataArray, _FileDataSelection]
+
+
+@dataclasses.dataclass(frozen=True)
+class _PreparedInputData:
+    data: xr.DataArray
+    selection: _FileSelection
+    source_ndim: int
+    source_dtype: np.dtype[typing.Any]
+    operations: tuple[provenance.ToolProvenanceOperation, ...] = ()
 
 
 class ColorMapState(typing.TypedDict):
@@ -123,8 +132,8 @@ def _supported_shape(darr: xr.DataArray) -> bool:
     return _processed_ndim(darr) in (2, 3, 4)
 
 
-def _parse_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
-    return tuple(d for d in ds.data_vars.values() if _supported_shape(d))
+def _reducible_shape(darr: xr.DataArray) -> bool:
+    return _processed_ndim(darr) >= 2
 
 
 def _datatree_dataarray_path(source_path: str, variable_name: Hashable) -> str:
@@ -149,7 +158,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
 
         if isinstance(data, xr.Dataset):
             for variable_name, darr in data.data_vars.items():
-                if _supported_shape(darr):
+                if _reducible_shape(darr):
                     self._data_arrays.append(darr)
                     self._selections.append(
                         _FileDataSelection(
@@ -163,7 +172,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
             for leaf in data.leaves:
                 source_path = str(leaf.path)
                 for variable_name, darr in leaf.dataset.data_vars.items():
-                    if _supported_shape(darr):
+                    if _reducible_shape(darr):
                         self._data_arrays.append(darr)
                         self._selections.append(
                             _FileDataSelection(
@@ -239,6 +248,8 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
             row_text[name_column] = variable_name
             row_text[ndim_column] = str(darr.ndim)
             row_text[size_column] = erlab.utils.formatting.format_nbytes(darr.nbytes)
+            if not _supported_shape(darr):
+                row_text[ndim_column] = f"{darr.ndim} -> reduce"
             item = QtWidgets.QTreeWidgetItem(row_text)
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, source_index)
             item.setFlags(
@@ -440,14 +451,22 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
         self._path_tree.setCurrentIndex(QtCore.QModelIndex())
         self._filter_for_path(None)
 
-    def selected_dataarrays(self) -> tuple[_ParsedInputData, ...]:
-        selected: list[_ParsedInputData] = []
+    def selected_dataarrays(self) -> tuple[_PreparedInputData, ...]:
+        selected: list[_PreparedInputData] = []
         for item in self._items():
             if self._item_checkbox(item).isChecked():
                 index = typing.cast(
                     "int", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                selected.append((self._data_arrays[index], self._selections[index]))
+                data = self._data_arrays[index]
+                selected.append(
+                    _PreparedInputData(
+                        data=data,
+                        selection=self._selections[index],
+                        source_ndim=data.ndim,
+                        source_dtype=np.dtype(data.dtype),
+                    )
+                )
         return tuple(selected)
 
     def _update_ok_enabled(self, *_args: object) -> None:
@@ -531,7 +550,7 @@ def _select_input_dataarrays(
     | xr.Dataset
     | xr.DataTree,
     parent: QtWidgets.QWidget | None = None,
-) -> tuple[_ParsedInputData, ...] | None:
+) -> tuple[_PreparedInputData, ...] | None:
     parsed_data = _parse_input_data(data)
     if len(parsed_data) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
         dialog = _SelectDataArraysDialog(parent, data)
@@ -540,8 +559,8 @@ def _select_input_dataarrays(
         selected = dialog.selected_dataarrays()
         if not selected:
             return None
-        return selected
-    return tuple(parsed_data)
+        return _prepare_parsed_input_data(selected, parent, allow_dialog=True)
+    return _prepare_parsed_input_data(parsed_data, parent, allow_dialog=True)
 
 
 def _make_cursor_colors(
@@ -601,7 +620,64 @@ def _parse_input(
     | xr.Dataset
     | xr.DataTree,
 ) -> list[xr.DataArray]:
-    return [darr for darr, _selection in _parse_input_data(data)]
+    parsed = _prepare_parsed_input_data(
+        _parse_input_data(data),
+        parent=None,
+        allow_dialog=False,
+    )
+    if parsed is None:  # pragma: no cover - cancellation is impossible here
+        return []
+    return [prepared.data for prepared in parsed]
+
+
+def _prepare_input_data(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+    parent: QtWidgets.QWidget | None = None,
+    *,
+    allow_dialog: bool = True,
+) -> tuple[_PreparedInputData, ...] | None:
+    return _prepare_parsed_input_data(
+        _parse_input_data(data),
+        parent,
+        allow_dialog=allow_dialog,
+    )
+
+
+def _prepare_parsed_input_data(
+    parsed_data: collections.abc.Iterable[_PreparedInputData],
+    parent: QtWidgets.QWidget | None,
+    *,
+    allow_dialog: bool,
+) -> tuple[_PreparedInputData, ...] | None:
+    prepared_data: list[_PreparedInputData] = []
+    for prepared in parsed_data:
+        if _supported_shape(prepared.data):
+            prepared_data.append(prepared)
+            continue
+        if not allow_dialog or QtWidgets.QApplication.instance() is None:
+            raise ValueError(
+                f"Data with {prepared.data.ndim} dimensions has more than four "
+                "non-singleton dimensions. Reduce it to four or fewer dimensions "
+                "before opening it in ImageTool."
+            )
+
+        from erlab.interactive.imagetool import _highdim
+
+        dialog = _highdim._HighDimensionalReductionDialog(parent, prepared.data)
+        if not dialog.exec():
+            return None
+        prepared_data.append(
+            dataclasses.replace(
+                prepared,
+                data=dialog.result_data,
+                operations=tuple(dialog.source_operations()),
+            )
+        )
+    return tuple(prepared_data)
 
 
 def _parse_input_data(
@@ -610,36 +686,48 @@ def _parse_input_data(
     | npt.NDArray
     | xr.Dataset
     | xr.DataTree,
-) -> list[_ParsedInputData]:
+) -> list[_PreparedInputData]:
     input_cls: str = data.__class__.__name__
     if isinstance(data, np.ndarray | xr.DataArray):
+        data_array = xr.DataArray(data) if not isinstance(data, xr.DataArray) else data
+        if not _reducible_shape(data_array):
+            raise ValueError(f"No valid data for ImageTool found in {input_cls}")
         parsed = (
-            (
-                xr.DataArray(data) if not isinstance(data, xr.DataArray) else data,
-                _FileDataSelection(kind="dataarray"),
+            _PreparedInputData(
+                data=data_array,
+                selection=_FileDataSelection(kind="dataarray"),
+                source_ndim=data_array.ndim,
+                source_dtype=np.dtype(data_array.dtype),
             ),
         )
     elif isinstance(data, xr.Dataset):
         parsed = tuple(
-            (
-                darr,
-                _FileDataSelection(kind="dataset_variable", value=variable_name),
+            _PreparedInputData(
+                data=darr,
+                selection=_FileDataSelection(
+                    kind="dataset_variable",
+                    value=variable_name,
+                ),
+                source_ndim=darr.ndim,
+                source_dtype=np.dtype(darr.dtype),
             )
             for variable_name, darr in data.data_vars.items()
-            if _supported_shape(darr)
+            if _reducible_shape(darr)
         )
     elif isinstance(data, xr.DataTree):
         parsed = tuple(
-            (
-                darr,
-                _FileDataSelection(
+            _PreparedInputData(
+                data=darr,
+                selection=_FileDataSelection(
                     kind="datatree_path",
                     value=_datatree_dataarray_path(str(leaf.path), variable_name),
                 ),
+                source_ndim=darr.ndim,
+                source_dtype=np.dtype(darr.dtype),
             )
             for leaf in data.leaves
             for variable_name, darr in leaf.dataset.data_vars.items()
-            if _supported_shape(darr)
+            if _reducible_shape(darr)
         )
     else:
         if not isinstance(data, collections.abc.Collection):
@@ -647,7 +735,7 @@ def _parse_input_data(
                 f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
                 "DataTree, numpy array, or a list of DataArray or numpy arrays."
             )
-        parsed_list: list[_ParsedInputData] = []
+        parsed_list: list[_PreparedInputData] = []
         for index, d in enumerate(data):
             if not isinstance(d, xr.DataArray | np.ndarray):
                 raise TypeError(
@@ -655,10 +743,15 @@ def _parse_input_data(
                     "Dataset, DataTree, numpy array, or a list of DataArray or "
                     "numpy arrays."
                 )
+            data_array = xr.DataArray(d) if not isinstance(d, xr.DataArray) else d
+            if not _reducible_shape(data_array):
+                continue
             parsed_list.append(
-                (
-                    xr.DataArray(d) if not isinstance(d, xr.DataArray) else d,
-                    _FileDataSelection(kind="parsed_index", value=index),
+                _PreparedInputData(
+                    data=data_array,
+                    selection=_FileDataSelection(kind="parsed_index", value=index),
+                    source_ndim=data_array.ndim,
+                    source_dtype=np.dtype(data_array.dtype),
                 )
             )
         parsed = tuple(parsed_list)

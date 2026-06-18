@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
@@ -7471,6 +7472,67 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
             manager._data_watched_update("data", "kernel-0", updated)
 
         xr.testing.assert_identical(tool.slicer_area.data, updated)
+
+
+def test_manager_high_dimensional_watched_data_errors_without_reduction_dialog(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    shape = (2, 3, 4, 5, 6)
+    data = xr.DataArray(
+        np.arange(np.prod(shape), dtype=float).reshape(shape),
+        dims=("scan", "pol", "z", "y", "x"),
+        coords={
+            dim: np.arange(size, dtype=float)
+            for dim, size in zip(("scan", "pol", "z", "y", "x"), shape, strict=True)
+        },
+        name="cube",
+    )
+    valid = xr.DataArray(
+        np.arange(25, dtype=float).reshape(5, 5),
+        dims=("y", "x"),
+        name="valid",
+    )
+    create_errors: list[None] = []
+    update_errors: list[tuple[object, ...]] = []
+
+    class _ReductionDialog:
+        def __init__(self, *_args: object) -> None:
+            raise AssertionError("watched variables must not open reduction dialogs")
+
+    def _critical(*args: object, **_kwargs: object) -> None:
+        update_errors.append(args)
+
+    monkeypatch.setattr(
+        imagetool_highdim,
+        "_HighDimensionalReductionDialog",
+        _ReductionDialog,
+    )
+    monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        monkeypatch.setattr(
+            manager,
+            "_error_creating_imagetool",
+            lambda: create_errors.append(None),
+        )
+
+        manager._data_watched_update("cube", "kernel-0", data)
+        assert manager.ntools == 0
+        assert len(create_errors) == 1
+
+        manager._data_recv([valid], {}, watched_var=("valid", "kernel-1"))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = manager.get_imagetool(0)
+        previous = tool.slicer_area.data.copy(deep=True)
+        manager._data_watched_update("valid", "kernel-1", data)
+        xr.testing.assert_identical(tool.slicer_area.data, previous)
+        assert update_errors
 
 
 def test_manager_workspace_roundtrip_preserves_watched_binding(

@@ -8,7 +8,7 @@ import math
 import operator
 import typing
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -77,6 +77,180 @@ def _set_combo_text(combo: QtWidgets.QComboBox, value: str) -> bool:
         return False
     combo.setCurrentIndex(index)
     return True
+
+
+_AGGREGATION_REDUCERS: dict[str, str] = {
+    "mean": "Mean",
+    "min": "Minimum",
+    "max": "Maximum",
+    "sum": "Sum",
+}
+
+
+def _populate_reducer_combo(combo: QtWidgets.QComboBox) -> None:
+    for reducer, label in _AGGREGATION_REDUCERS.items():
+        combo.addItem(label, userData=reducer)
+
+
+def _current_reducer(
+    combo: QtWidgets.QComboBox,
+) -> typing.Literal["mean", "min", "max", "sum"]:
+    return typing.cast(
+        "typing.Literal['mean', 'min', 'max', 'sum']",
+        combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+    )
+
+
+class _ScalarSelectionControls:
+    """Reusable widgets for selecting one scalar value along a dimension."""
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        dim: Hashable,
+        axis: int,
+        *,
+        object_name_prefix: str,
+        current_index: int | None = None,
+        bin_value: float | None = None,
+        is_binned: bool = False,
+        include_width: bool = True,
+        default_method: typing.Literal["qsel", "sel", "isel"] = "qsel",
+    ) -> None:
+        self.dim = dim
+        self.axis = axis
+        self._include_width = include_width
+
+        dim_size = data.sizes[dim]
+        coord = np.asarray(data[dim].values)
+        try:
+            coord_float = np.asarray(coord, dtype=float)
+        except (TypeError, ValueError):
+            coord_float = np.arange(dim_size, dtype=float)
+            self._has_numeric_coord = False
+        else:
+            self._has_numeric_coord = True
+        if coord_float.size == 0:
+            coord_float = np.array([0.0])
+
+        self.coord = coord_float
+        self.coord_ascending = bool(coord_float[0] <= coord_float[-1])
+        if current_index is None:
+            current_index = dim_size // 2
+        current_index = max(0, min(int(current_index), max(dim_size - 1, 0)))
+        current_value = float(coord_float[current_index])
+
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.setObjectName(f"{object_name_prefix}_method_{axis}")
+        self.method_combo.setToolTip(
+            "Choose how this dimension is selected: qsel selects the nearest "
+            "coordinate value, sel uses coordinate labels, and isel uses "
+            "integer indices."
+        )
+        if self._has_numeric_coord:
+            for method in ("qsel", "sel", "isel"):
+                self.method_combo.addItem(method, method)
+        else:
+            self.method_combo.addItem("isel", "isel")
+            self.method_combo.setToolTip(
+                "This coordinate is not numeric, so scalar selection uses integer "
+                "indices."
+            )
+        _set_combo_data(self.method_combo, default_method)
+
+        self.index_spin = erlab.interactive.utils.BetterSpinBox(
+            integer=True,
+            compact=False,
+            minimum=0,
+            maximum=max(dim_size - 1, 0),
+            value=current_index,
+        )
+        self.index_spin.setObjectName(f"{object_name_prefix}_index_{axis}")
+
+        self.value_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            decimals=6,
+            exact_float=True,
+            significant=True,
+            minimum=float(np.nanmin(coord_float)),
+            maximum=float(np.nanmax(coord_float)),
+            value=current_value,
+        )
+        self.value_spin.setObjectName(f"{object_name_prefix}_value_{axis}")
+
+        self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self.value_spin)
+        self.stack.addWidget(self.index_spin)
+
+        self.width_widget = QtWidgets.QWidget()
+        self.width_widget.setToolTip(
+            "For point qsel selections, include nearby coordinate values within "
+            "this width."
+        )
+        width_layout = QtWidgets.QHBoxLayout(self.width_widget)
+        width_layout.setContentsMargins(0, 0, 0, 0)
+        width_layout.setSpacing(3)
+        self.width_check = QtWidgets.QCheckBox()
+        self.width_check.setObjectName(f"{object_name_prefix}_width_enabled_{axis}")
+        self.width_check.setToolTip(self.width_widget.toolTip())
+        self.width_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            decimals=6,
+            exact_float=True,
+            significant=True,
+            minimum=0.0,
+            value=0.0 if bin_value is None else float(bin_value),
+        )
+        self.width_spin.setObjectName(f"{object_name_prefix}_width_{axis}")
+        self.width_spin.setToolTip(self.width_widget.toolTip())
+        self.width_check.setChecked(is_binned and bin_value is not None)
+        width_layout.addWidget(self.width_check)
+        width_layout.addWidget(self.width_spin)
+        self.width_widget.setVisible(include_width)
+
+        self.method_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.width_check.toggled.connect(self.sync_widgets)
+        self.sync_widgets()
+
+    @property
+    def method(self) -> typing.Literal["qsel", "sel", "isel"]:
+        return typing.cast(
+            "typing.Literal['qsel', 'sel', 'isel']",
+            self.method_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    def connect_changed(self, slot: Callable[..., object]) -> None:
+        self.method_combo.currentIndexChanged.connect(slot)
+        self.index_spin.valueChanged.connect(slot)
+        self.value_spin.valueChanged.connect(slot)
+        self.width_check.toggled.connect(slot)
+        self.width_spin.valueChanged.connect(slot)
+
+    def sync_widgets(self) -> None:
+        is_index = self.method == "isel"
+        is_qsel = self.method == "qsel"
+        self.stack.setCurrentIndex(1 if is_index else 0)
+        self.width_widget.setEnabled(self._include_width and is_qsel)
+        self.width_spin.setEnabled(
+            self._include_width and is_qsel and self.width_check.isChecked()
+        )
+
+    def indexer(self) -> tuple[Hashable, typing.Any]:
+        if self.method == "isel":
+            return self.dim, int(self.index_spin.value())
+        return self.dim, float(self.value_spin.value())
+
+    def qsel_width_indexer(self) -> tuple[str, float] | None:
+        if (
+            not self._include_width
+            or self.method != "qsel"
+            or not self.width_check.isChecked()
+        ):
+            return None
+        width = float(self.width_spin.value())
+        if not np.isfinite(width) or width <= 0.0:
+            return None
+        return f"{self.dim}_width", width
 
 
 class _DataManipulationDialog(QtWidgets.QDialog):
@@ -917,13 +1091,6 @@ class AggregateDialog(DataTransformDialog):
         provenance.QSelAggregationOperation,
     )
 
-    _REDUCERS: typing.ClassVar[dict[str, str]] = {
-        "mean": "Mean",
-        "min": "Minimum",
-        "max": "Maximum",
-        "sum": "Sum",
-    }
-
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
         dim_layout = QtWidgets.QVBoxLayout()
@@ -938,8 +1105,7 @@ class AggregateDialog(DataTransformDialog):
         self.layout_.addRow(dim_group)
 
         self.reducer_combo = QtWidgets.QComboBox()
-        for reducer, label in self._REDUCERS.items():
-            self.reducer_combo.addItem(label, userData=reducer)
+        _populate_reducer_combo(self.reducer_combo)
         self.layout_.addRow("Reducer", self.reducer_combo)
 
     @property
@@ -948,10 +1114,7 @@ class AggregateDialog(DataTransformDialog):
 
     @property
     def _reducer(self) -> typing.Literal["mean", "min", "max", "sum"]:
-        return typing.cast(
-            "typing.Literal['mean', 'min', 'max', 'sum']",
-            self.reducer_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
-        )
+        return _current_reducer(self.reducer_combo)
 
     def source_transform_operation(
         self,
@@ -1024,51 +1187,39 @@ class _SelectionRow:
         self.dim = dim
 
         data = dialog.public_data
-        coord = np.asarray(data[dim].values, dtype=float)
-        self._coord_ascending = coord[0] <= coord[-1]
         current_index = dialog.array_slicer.get_index(
             dialog.slicer_area.current_cursor, axis
         )
-        current_value = float(
-            dialog.array_slicer.get_value(
-                dialog.slicer_area.current_cursor, axis, uniform=False
-            )
+        scalar_controls = _ScalarSelectionControls(
+            data,
+            dim,
+            axis,
+            object_name_prefix="selection",
+            current_index=current_index,
+            bin_value=dialog.array_slicer.get_bin_values(
+                dialog.slicer_area.current_cursor
+            )[axis],
+            is_binned=dialog.array_slicer.get_binned(dialog.slicer_area.current_cursor)[
+                axis
+            ],
         )
+        self._scalar_controls = scalar_controls
+        self._coord_ascending = scalar_controls.coord_ascending
         stop_index = min(current_index + 1, data.sizes[dim] - 1)
-        stop_value = float(coord[stop_index])
-        bin_value = dialog.array_slicer.get_bin_values(
-            dialog.slicer_area.current_cursor
-        )[axis]
-        is_binned = dialog.array_slicer.get_binned(dialog.slicer_area.current_cursor)[
-            axis
-        ]
+        stop_value = float(scalar_controls.coord[stop_index])
 
         self.use_check = QtWidgets.QCheckBox(str(dim))
         self.use_check.setObjectName(f"selection_use_{axis}")
         self.use_check.setChecked(active)
 
-        self.method_combo = QtWidgets.QComboBox()
-        self.method_combo.setObjectName(f"selection_method_{axis}")
-        self.method_combo.setToolTip(
-            "Choose how this dimension is selected: qsel selects the nearest "
-            "coordinate value, sel uses coordinate labels, and isel uses "
-            "integer indices."
-        )
-        for method in ("qsel", "sel", "isel"):
-            self.method_combo.addItem(method, method)
+        self.method_combo = scalar_controls.method_combo
 
         self.kind_combo = QtWidgets.QComboBox()
         self.kind_combo.setObjectName(f"selection_kind_{axis}")
         self.kind_combo.addItem("Point", "point")
         self.kind_combo.addItem("Range", "range")
 
-        self.index_start_spin = erlab.interactive.utils.BetterSpinBox(
-            integer=True,
-            compact=False,
-            minimum=0,
-            maximum=data.sizes[dim] - 1,
-            value=current_index,
-        )
+        self.index_start_spin = scalar_controls.index_spin
         self.index_stop_spin = erlab.interactive.utils.BetterSpinBox(
             integer=True,
             compact=False,
@@ -1077,28 +1228,18 @@ class _SelectionRow:
             value=min(current_index + 1, data.sizes[dim]),
         )
 
-        self.value_start_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False,
-            decimals=6,
-            exact_float=True,
-            significant=True,
-            minimum=float(np.nanmin(coord)),
-            maximum=float(np.nanmax(coord)),
-            value=current_value,
-        )
+        self.value_start_spin = scalar_controls.value_spin
         self.value_stop_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False,
             decimals=6,
             exact_float=True,
             significant=True,
-            minimum=float(np.nanmin(coord)),
-            maximum=float(np.nanmax(coord)),
+            minimum=float(np.nanmin(scalar_controls.coord)),
+            maximum=float(np.nanmax(scalar_controls.coord)),
             value=stop_value,
         )
 
-        self.start_stack = QtWidgets.QStackedWidget()
-        self.start_stack.addWidget(self.value_start_spin)
-        self.start_stack.addWidget(self.index_start_spin)
+        self.start_stack = scalar_controls.stack
 
         self.stop_stack = QtWidgets.QStackedWidget()
         self.stop_stack.addWidget(self.value_stop_spin)
@@ -1126,30 +1267,9 @@ class _SelectionRow:
         step_layout.addWidget(self.step_check)
         step_layout.addWidget(self.step_spin)
 
-        self.width_widget = QtWidgets.QWidget()
-        self.width_widget.setToolTip(
-            "For point qsel selections, include nearby coordinate values within "
-            "this width. Ignored for range selections and for sel/isel."
-        )
-        width_layout = QtWidgets.QHBoxLayout(self.width_widget)
-        width_layout.setContentsMargins(0, 0, 0, 0)
-        width_layout.setSpacing(3)
-        self.width_check = QtWidgets.QCheckBox()
-        self.width_check.setObjectName(f"selection_width_enabled_{axis}")
-        self.width_check.setToolTip(self.width_widget.toolTip())
-        self.width_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False,
-            decimals=6,
-            exact_float=True,
-            significant=True,
-            minimum=0.0,
-            value=0.0 if bin_value is None else float(bin_value),
-        )
-        self.width_spin.setObjectName(f"selection_width_{axis}")
-        self.width_spin.setToolTip(self.width_widget.toolTip())
-        self.width_check.setChecked(is_binned and bin_value is not None)
-        width_layout.addWidget(self.width_check)
-        width_layout.addWidget(self.width_spin)
+        self.width_widget = scalar_controls.width_widget
+        self.width_check = scalar_controls.width_check
+        self.width_spin = scalar_controls.width_spin
 
         widgets: tuple[QtWidgets.QWidget, ...] = (
             self.use_check,
@@ -1186,7 +1306,6 @@ class _SelectionRow:
         self.method_combo.currentIndexChanged.connect(self.sync_widgets)
         self.kind_combo.currentIndexChanged.connect(self.sync_widgets)
         self.step_check.toggled.connect(self.sync_widgets)
-        self.width_check.toggled.connect(self.sync_widgets)
         self.sync_widgets()
 
     @property
@@ -1251,10 +1370,7 @@ class _SelectionRow:
             or not self.width_check.isChecked()
         ):
             return None
-        width = float(self.width_spin.value())
-        if not np.isfinite(width) or width <= 0.0:
-            return None
-        return f"{self.dim}_width", width
+        return self._scalar_controls.qsel_width_indexer()
 
     def restore_indexer(
         self,

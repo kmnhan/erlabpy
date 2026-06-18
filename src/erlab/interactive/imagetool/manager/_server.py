@@ -1143,15 +1143,46 @@ def show_in_manager(
     """
     logger.debug("Parsing input data into DataArrays")
 
+    direct_manager = _direct_manager_for_target(target)
+
     if isinstance(data, xr.Dataset) and _ITOOL_DATA_NAME in data:
         # Dataset created with ImageTool.to_dataset()
         input_data: list[xr.DataArray] | list[xr.Dataset] = [data]
     elif data is None:
         input_data = []
     else:
-        input_data = erlab.interactive.imagetool.viewer_state._parse_input(data)
+        with erlab.interactive.utils.setup_qapp(False):
+            if isinstance(data, xr.Dataset | xr.DataTree):
+                prepared_data = (
+                    erlab.interactive.imagetool.viewer_state._select_input_dataarrays(
+                        data,
+                        direct_manager,
+                    )
+                )
+            else:
+                prepared_data = (
+                    erlab.interactive.imagetool.viewer_state._prepare_input_data(
+                        data,
+                        direct_manager,
+                    )
+                )
+        if prepared_data is None:
+            return None
+        input_data = [prepared.data for prepared in prepared_data]
+        kwargs = {**kwargs}
+        kwargs.setdefault(
+            "source_input_ndims",
+            tuple(prepared.source_ndim for prepared in prepared_data),
+        )
+        kwargs.setdefault(
+            "source_input_dtypes",
+            tuple(prepared.source_dtype for prepared in prepared_data),
+        )
+        kwargs.setdefault(
+            "preparation_operations",
+            tuple(prepared.operations for prepared in prepared_data),
+        )
 
-    direct_manager = _direct_manager_for_target(target)
     if direct_manager is not None:
         # If the manager is running in the same process, directly pass the data
         direct_manager._data_recv(input_data, kwargs)
@@ -1198,7 +1229,15 @@ def replace_data(
     Response
         Manager response.
     """
-    data_list = erlab.interactive.imagetool.viewer_state._parse_input(data)
+    direct_manager = _direct_manager_for_target(target)
+    with erlab.interactive.utils.setup_qapp(False):
+        prepared_data = erlab.interactive.imagetool.viewer_state._prepare_input_data(
+            data,
+            direct_manager,
+        )
+    if prepared_data is None:
+        return Response(status="ok")
+    data_list = [prepared.data for prepared in prepared_data]
 
     if isinstance(index, (int, str)):
         index = [index]
@@ -1209,7 +1248,6 @@ def replace_data(
             f"and provided indices ({len(index)})"
         )
 
-    direct_manager = _direct_manager_for_target(target)
     if direct_manager is not None:
         direct_manager._data_replace(data_list, list(index))
         return Response(status="ok")

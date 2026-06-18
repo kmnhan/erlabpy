@@ -177,10 +177,19 @@ class BaseImageTool(QtWidgets.QMainWindow):
         file_path = self.slicer_area._file_path
         if file_path is None:
             return
+        replay_stages: tuple[provenance.ReplayStage, ...] = ()
+        if self.slicer_area._load_preparation_operations:
+            replay_stages = (
+                provenance.ReplayStage(
+                    source_kind="full_data",
+                    operations=self.slicer_area._load_preparation_operations,
+                ),
+            )
         provenance_spec = _load_provenance_from_file_details(
             file_path,
             self.slicer_area._load_func,
             source_input_dtype=self.slicer_area._source_input_dtype,
+            replay_stages=replay_stages,
         )
         self.set_provenance_spec(provenance_spec)
 
@@ -514,17 +523,19 @@ class ImageTool(BaseImageTool):
                 selected_data = _select_input_dataarrays(loaded_data, self)
                 if selected_data is None:
                     return
-                first_data, first_selection = selected_data[0]
+                first = selected_data[0]
                 self.slicer_area.replace_source_data(
-                    first_data,
+                    first.data,
                     file_path=fname,
-                    load_func=(fn, kargs, first_selection),
+                    load_func=(fn, kargs, first.selection),
+                    preparation_operations=first.operations,
                 )
-                for data_array, selection in selected_data[1:]:
+                for prepared in selected_data[1:]:
                     tool = ImageTool(
-                        data_array,
+                        prepared.data,
                         file_path=fname,
-                        load_func=(fn, kargs, selection),
+                        load_func=(fn, kargs, prepared.selection),
+                        preparation_operations=prepared.operations,
                     )
                     self.slicer_area.add_tool_window(
                         tool, update_title=False, transfer_to_manager=False

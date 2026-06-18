@@ -3233,6 +3233,22 @@ class _WorkspaceIOController:
                     flags.append(True)
             return flags
 
+        try:
+            prepared_data = erlab.interactive.imagetool.viewer_state._prepare_input_data(
+                typing.cast("list[xr.DataArray]", data),
+                self._manager,
+                allow_dialog=watched_var is None,
+            )
+        except ValueError:
+            logger.exception(
+                "Error creating ImageTool window",
+                extra={"suppress_ui_alert": True},
+            )
+            self._manager._error_creating_imagetool()
+            return [False for _item in data]
+        if prepared_data is None:
+            return [False for _item in data]
+
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = []
@@ -3240,15 +3256,19 @@ class _WorkspaceIOController:
 
         load_func = kwargs.pop("load_func", None)
         load_indices = kwargs.pop("load_indices", None)
+        load_preparation_operations = kwargs.pop("preparation_operations", None)
+        source_input_ndims = kwargs.pop("source_input_ndims", None)
+        source_input_dtypes = kwargs.pop("source_input_dtypes", None)
         if show is None:
-            show = len(data) == 1
+            show = len(prepared_data) == 1
         watched_metadata = dict(watched_metadata or {})
         if watched_var is not None:
             watched_metadata.setdefault(
                 "workspace_link_id", self._manager._workspace_state.link_id
             )
 
-        for i, d in enumerate(data):
+        for i, prepared in enumerate(prepared_data):
+            d = prepared.data
             # Set selection-specific load function if provided
             load_selection = (
                 typing.cast("Sequence[typing.Any]", load_indices)[i]
@@ -3256,10 +3276,35 @@ class _WorkspaceIOController:
                 else i
             )
             this_load_func = (*load_func[:2], load_selection) if load_func else None
+            preparation_operations = (
+                tuple(
+                    typing.cast(
+                        "Sequence[provenance.ToolProvenanceOperation]",
+                        load_preparation_operations,
+                    )[i]
+                )
+                if load_preparation_operations is not None
+                else prepared.operations
+            )
+            source_input_ndim = (
+                typing.cast("Sequence[int]", source_input_ndims)[i]
+                if source_input_ndims is not None
+                else prepared.source_ndim
+            )
+            source_input_dtype = (
+                typing.cast("Sequence[typing.Any]", source_input_dtypes)[i]
+                if source_input_dtypes is not None
+                else prepared.source_dtype
+            )
             try:
                 indices.append(
                     self._manager.add_imagetool(
-                        ImageTool(d, **kwargs, load_func=this_load_func),
+                        ImageTool(
+                            d,
+                            **kwargs,
+                            load_func=this_load_func,
+                            preparation_operations=preparation_operations,
+                        ),
                         show=show,
                         activate=show,
                         watched_var=watched_var,
@@ -3276,8 +3321,8 @@ class _WorkspaceIOController:
                         watched_connected=bool(
                             watched_metadata.get("connected", watched_var is not None)
                         ),
-                        source_input_ndim=d.ndim,
-                        source_input_dtype=d.dtype,
+                        source_input_ndim=source_input_ndim,
+                        source_input_dtype=source_input_dtype,
                     )
                 )
                 if watched_var is not None:

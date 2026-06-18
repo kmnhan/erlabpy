@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import pathlib
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -457,6 +457,7 @@ def _load_provenance_from_file_details(
     load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
+    replay_stages: Sequence[provenance.ReplayStage] = (),
 ) -> provenance.ToolProvenanceSpec | None:
     """Build replay provenance whose seed reloads the current data from disk."""
     resolved = _resolve_load_func(
@@ -477,4 +478,5 @@ def _load_provenance_from_file_details(
             replay_call=resolved.replay_call(),
             load_code=details.load_code,
         ),
+        replay_stages=replay_stages,
     )
