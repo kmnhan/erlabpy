@@ -206,6 +206,43 @@ def test_plot_out_of_plane_bz_infers_bounds_from_axes():
     plt.close(fig)
 
 
+def test_bz_slice_helpers_use_current_axes_and_infer_bounds():
+    bvec = erlab.lattice.to_reciprocal(np.eye(3))
+    bounds = (-3.0, 3.0, -2.0, 2.0)
+
+    fig, ax = plt.subplots()
+    plt.sca(ax)
+    ax.set_xlim(bounds[1], bounds[0])
+    ax.set_ylim(bounds[3], bounds[2])
+    in_plane_segments, _, _ = erlab.lattice.get_in_plane_bz(
+        bvec,
+        kz=0.0,
+        angle=0.0,
+        bounds=bounds,
+        return_midpoints=True,
+    )
+    in_plane_lines, _, _ = plot_in_plane_bz(bvec)
+
+    _assert_line_artists_match_segments(in_plane_lines, in_plane_segments)
+    assert all(line.axes is ax for line in in_plane_lines)
+
+    ax.cla()
+    ax.set_xlim(bounds[1], bounds[0])
+    ax.set_ylim(bounds[3], bounds[2])
+    out_of_plane_segments, _, _ = erlab.lattice.get_out_of_plane_bz(
+        bvec,
+        k_parallel=0.0,
+        angle=0.0,
+        bounds=bounds,
+        return_midpoints=True,
+    )
+    out_of_plane_lines, _, _ = plot_out_of_plane_bz(bvec)
+
+    _assert_line_artists_match_segments(out_of_plane_lines, out_of_plane_segments)
+    assert all(line.axes is ax for line in out_of_plane_lines)
+    plt.close(fig)
+
+
 def test_bz_slice_helpers_export_from_plotting_namespace():
     assert eplt.plot_in_plane_bz is plot_in_plane_bz
     assert eplt.plot_out_of_plane_bz is plot_out_of_plane_bz

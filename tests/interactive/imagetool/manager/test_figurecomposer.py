@@ -28,6 +28,7 @@ import erlab.interactive._figurecomposer._line_style as figurecomposer_line_styl
 import erlab.interactive._figurecomposer._norms as figurecomposer_norms
 import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
 import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._text as figurecomposer_text
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
@@ -14431,6 +14432,74 @@ def test_figure_composer_bz_overlay_plain_momentum_seeding() -> None:
     assert ky_kz_operation is not None
     assert ky_kz_operation.bz_mode == "out_of_plane"
     assert ky_kz_operation.bz_bounds == (0.25, 0.75, -1.0, 1.0)
+
+
+def test_figure_composer_bz_overlay_seeding_edge_cases() -> None:
+    no_momentum = xr.DataArray(
+        np.zeros(2),
+        dims=("x",),
+        coords={"x": [0.0, 1.0]},
+    )
+    bad_coord = xr.DataArray(
+        np.zeros(2),
+        dims=("kx",),
+        coords={"kx": ["bad", "coord"]},
+    )
+    nan_coord = xr.DataArray(
+        np.zeros(2),
+        dims=("kx",),
+        coords={"kx": [np.nan, np.nan]},
+    )
+
+    assert figurecomposer_seeding._coordinate_bounds(no_momentum, "kx") is None
+    assert figurecomposer_seeding._coordinate_bounds(bad_coord, "kx") is None
+    assert figurecomposer_seeding._coordinate_bounds(nan_coord, "kx") is None
+    assert figurecomposer_seeding._momentum_bounds(nan_coord, "kx", "ky") is None
+    assert figurecomposer_seeding._representative_coord_value(no_momentum, "kx") is None
+    assert figurecomposer_seeding._representative_coord_value(bad_coord, "kx") is None
+    assert figurecomposer_seeding._representative_coord_value(nan_coord, "kx") is None
+
+    in_plane_bad_bounds = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("kx", "ky"),
+        coords={"kx": [np.nan, np.nan], "ky": [0.0, 1.0]},
+    )
+    out_of_plane_bad_bounds = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("kx", "kz"),
+        coords={"kx": [np.nan, np.nan], "kz": [0.0, 1.0]},
+    )
+    kz_only = xr.DataArray(
+        np.zeros(2),
+        dims=("kz",),
+        coords={"kz": [0.0, 1.0]},
+    )
+
+    assert bz_overlay_operation_from_momentum_data(in_plane_bad_bounds) is None
+    assert bz_overlay_operation_from_momentum_data(no_momentum) is None
+    assert bz_overlay_operation_from_momentum_data(out_of_plane_bad_bounds) is None
+    assert bz_overlay_operation_from_momentum_data(kz_only) is None
+    assert (
+        figurecomposer_seeding._flat_ktool_out_of_plane_value(
+            kz_only, FigureOperationState.bz_overlay(mode="out_of_plane")
+        )
+        is None
+    )
+
+    class DisabledStatus:
+        bz_enabled = False
+
+    class EnabledStatus:
+        bz_enabled = True
+
+    class DisabledKtool:
+        tool_status = DisabledStatus()
+
+    class EnabledKtool:
+        tool_status = EnabledStatus()
+
+    assert bz_overlay_operation_from_ktool(DisabledKtool(), no_momentum) is None
+    assert bz_overlay_operation_from_ktool(EnabledKtool(), no_momentum) is None
 
 
 def test_figure_composer_bz_overlay_ktool_seeding_snapshot() -> None:
