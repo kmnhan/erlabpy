@@ -580,7 +580,8 @@ class _ReprFetcher(QtCore.QRunnable):
                 dat,
                 additional_info=[],
                 show_size=self.include_values,
-                load_values=self.include_values,
+                # Preview-off loads replace only data values; keep coordinate summaries.
+                load_values=True,
             )
             if not self.include_values:
                 dat = None
@@ -1342,6 +1343,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         if not self._stop_preview_workers():
+            self._preview_stopping = False
             if event is not None:
                 event.ignore()
             return

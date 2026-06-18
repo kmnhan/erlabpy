@@ -266,6 +266,10 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         if not self._stop_preview_workers():
+            for index in range(self.tab_widget.count()):
+                explorer = self.get_explorer(index)
+                if explorer is not None:
+                    explorer._preview_stopping = False
             if event is not None:
                 event.ignore()
             return
