@@ -717,6 +717,26 @@ def _code_stores_name(code: str, name: str) -> bool:
     return any(_statement_store_count(stmt, name) > 0 for stmt in module.body)
 
 
+def _script_codes_output_name(
+    codes: Sequence[str],
+    *,
+    active_name: str,
+    current_name: str | None,
+) -> str | None:
+    candidates = [active_name]
+    for name in (current_name, "derived"):
+        if name is not None and name not in candidates:
+            candidates.append(name)
+    for name in candidates:
+        for code in codes:
+            try:
+                if _code_stores_name(code, name):
+                    return name
+            except SyntaxError:
+                continue
+    return current_name
+
+
 def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1030,8 +1050,12 @@ def _operation_from_self_assignment_call(
 
 def _structured_operation_from_script_code(
     operation: ToolProvenanceOperation,
+    *,
+    current_name: str | None,
 ) -> ToolProvenanceOperation:
     if not _operation_is(operation, "script_code"):
+        return operation
+    if current_name is None:
         return operation
     code = getattr(operation, "code", None)
     if not getattr(operation, "copyable", False) or code is None:
@@ -1048,9 +1072,11 @@ def _structured_operation_from_script_code(
         or not isinstance(module.body[0].value, ast.Call)
     ):
         return operation
+    target_name = module.body[0].targets[0].id
+    if target_name != current_name:
+        return operation
     structured = _operation_from_self_assignment_call(
-        module.body[0].targets[0].id,
-        module.body[0].value,
+        current_name, module.body[0].value
     )
     return operation if structured is None else structured
 
@@ -1765,12 +1791,44 @@ def parse_tool_provenance_operation(
 def _normalize_script_code_operations(
     spec: ToolProvenanceSpec,
 ) -> ToolProvenanceSpec:
-    if spec.kind != "script":
+    active_name = spec.active_name
+    if spec.kind != "script" or active_name is None:
         return spec
-    operations = tuple(
-        _structured_operation_from_script_code(operation)
-        for operation in spec.operations
+    current_name: str | None = (
+        active_name
+        if any(script_input.name == active_name for script_input in spec.script_inputs)
+        else None
     )
+    if spec.seed_code is not None:
+        current_name = _script_codes_output_name(
+            (spec.seed_code,),
+            active_name=active_name,
+            current_name=current_name,
+        )
+
+    normalized_operations: list[ToolProvenanceOperation] = []
+    for operation in spec.operations:
+        if _operation_is(operation, "script_code"):
+            operation_code = getattr(operation, "code", None)
+            structured = _structured_operation_from_script_code(
+                operation,
+                current_name=current_name,
+            )
+            normalized_operations.append(structured)
+            if (
+                _operation_is(structured, "script_code")
+                and getattr(operation, "copyable", False)
+                and operation_code is not None
+            ):
+                current_name = _script_codes_output_name(
+                    (operation_code,),
+                    active_name=active_name,
+                    current_name=current_name,
+                )
+            continue
+        normalized_operations.append(operation)
+
+    operations = tuple(normalized_operations)
     if operations == spec.operations:
         return spec
     return spec.model_copy(update={"operations": operations})
