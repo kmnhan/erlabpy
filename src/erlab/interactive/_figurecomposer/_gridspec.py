@@ -138,6 +138,8 @@ def _gridspec_axis_variable_name_error(
         return "Variable name must be a valid Python identifier."
     if keyword.iskeyword(name):
         return "Variable name cannot be a Python keyword."
+    if name.startswith("_"):
+        return "Variable name cannot start with an underscore."
     if name in _gridspec_reserved_axis_code_names(setup, reserved_names=reserved_names):
         return "Variable name is reserved for generated code."
     for index, axis in enumerate(_gridspec_all_axes(setup)):
@@ -462,6 +464,7 @@ def _axis_variable_name_is_available(name: str, used: set[str]) -> bool:
         bool(name)
         and name.isidentifier()
         and not keyword.iskeyword(name)
+        and not name.startswith("_")
         and name not in used
     )
 

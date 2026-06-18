@@ -2268,7 +2268,7 @@ def _build_plot_slices_editor(
             mixed=gradient_mixed,
         )
         gradient_check.setObjectName("figureComposerGradientCheck")
-        gradient_check.setText("Fill under line")
+        gradient_check.setText("Gradient Fill")
         tool._add_form_row(
             colors_layout,
             "Gradient",
