@@ -146,6 +146,13 @@ Once the manager is running, you can open ImageTools in several ways:
   {func}`erlab.interactive.imagetool.manager.load_in_manager` directly (see
   {ref}`imagetool-manager-automation`).
 
+Manual manager opening paths, including `manager=True`, `%itool -m`, file loading,
+drag-and-drop, Data Explorer, `show_in_manager`, and `load_in_manager`, use the same
+ImageTool input preparation as a standalone ImageTool window. When opened data has more
+than four effective dimensions, the manager shows {guilabel}`Reduce Dimensions to Open`
+before adding the ImageTool row. Select or aggregate dimensions there until the preview
+shows a non-empty 2D, 3D, or 4D result, or cancel to skip opening that data.
+
 (imagetool-manager-multiple-instances)=
 
 ## Multiple manager instances

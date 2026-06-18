@@ -1,6 +1,6 @@
 # ERLabPy docs links (stable)
 
-Last verified: 2026-05-22.
+Last updated: 2026-06-18.
 
 ## Base links
 
@@ -52,6 +52,16 @@ Last verified: 2026-05-22.
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-data-explorer
 - Manager automation APIs:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-automation
+- Figure Composer:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html
+- Figure Composer opening:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-open
+- Figure Composer recipe steps:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-recipe
+- Figure Composer step sources:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-sources
+- Manager Figure Composer workflow:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-figure-composer
 - Other interactive tools:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html
 - ktool:
@@ -105,6 +115,12 @@ Last verified: 2026-05-22.
   https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert.html
 - `xarray.DataArray.kspace.convert_coords`:
   https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert_coords.html
+- `xarray.DataArray.kspace.hv_to_kz`:
+  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.hv_to_kz.html
+- `erlab.plotting.plot_in_plane_bz`:
+  https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_in_plane_bz
+- `erlab.plotting.plot_out_of_plane_bz`:
+  https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_out_of_plane_bz
 - `xarray.DataArray.xlm.modelfit`:
   https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.DataArray.xlm.modelfit.html
 - `xarray.Dataset.xlm.modelfit`:
@@ -118,3 +134,9 @@ Last verified: 2026-05-22.
   `https://erlabpy.readthedocs.io/en/stable/accessors/<accessor.page.name>.html`
 - Site-search fallback:
   `site:erlabpy.readthedocs.io/en/stable "<symbol or topic>"`
+- Figure Composer search hints:
+  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "BZ Overlay"`,
+  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "Step sources"`,
+  `site:erlabpy.readthedocs.io/en/stable "Add to Figure" "Replace Source"`,
+  `site:erlabpy.readthedocs.io/en/stable "plot_in_plane_bz"`, and
+  `site:erlabpy.readthedocs.io/en/stable "hv_to_kz" "Photon Energy Overlay"`
