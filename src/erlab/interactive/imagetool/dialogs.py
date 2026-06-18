@@ -6,6 +6,7 @@ import ast
 import contextlib
 import math
 import operator
+import traceback
 import typing
 import weakref
 from collections.abc import Callable, Mapping
@@ -61,6 +62,21 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.viewer_state import ColorMapState
 
 _GAUSSIAN_FWHM_FACTOR: float = 2 * math.sqrt(2 * math.log(2))
+
+
+def _show_warning_with_traceback(
+    parent: QtWidgets.QWidget,
+    title: str,
+    text: str,
+) -> None:
+    erlab.interactive.utils.MessageDialog(
+        parent,
+        title=title,
+        text=text,
+        detailed_text=erlab.interactive.utils._format_traceback(traceback.format_exc()),
+        buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+    ).exec()
 
 
 def _set_combo_data(combo: QtWidgets.QComboBox, value: typing.Any) -> bool:
@@ -1776,7 +1792,7 @@ class InterpolationDialog(DataTransformDialog):
         try:
             self._target_values()
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(
+            _show_warning_with_traceback(
                 self,
                 "Invalid Target Coordinates",
                 str(exc),
@@ -3693,7 +3709,7 @@ class AssignCoordsDialog(DataTransformDialog):
         try:
             self._add_coord_values()
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(
+            _show_warning_with_traceback(
                 self,
                 "Invalid Coordinate Value",
                 str(exc),
@@ -3946,7 +3962,7 @@ class AssignAttrsDialog(DataTransformDialog):
         try:
             self._attrs_from_table()
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(
+            _show_warning_with_traceback(
                 self,
                 "Invalid Attribute Value",
                 str(exc),

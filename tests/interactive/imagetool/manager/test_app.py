@@ -24,6 +24,7 @@ import erlab.interactive.imagetool.manager as manager_package
 import erlab.interactive.imagetool.manager.__main__ as manager_main
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
@@ -56,6 +57,51 @@ def test_manager_runtime_icon_is_sanitized(qapp) -> None:
 
     assert not pixmap.isNull()
     assert not pixmap.toImage().colorSpace().isValid()
+
+
+def test_update_workers_emit_failure_tracebacks(qapp, tmp_path, monkeypatch) -> None:
+    assert qapp is QtWidgets.QApplication.instance()
+
+    def _raise_get(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(manager_updater_gui.requests, "get", _raise_get)
+
+    download_failures: list[tuple[str, str]] = []
+    downloader = manager_updater_gui.Downloader(
+        "https://example.invalid/update.zip",
+        tmp_path / "update.zip",
+        None,
+        {},
+    )
+    downloader.failed.connect(
+        lambda message, traceback_text: download_failures.append(
+            (message, traceback_text)
+        )
+    )
+    downloader.run()
+
+    assert download_failures
+    assert download_failures[0][0] == "Download failed: network down"
+    assert "Traceback" in download_failures[0][1]
+    assert "RuntimeError: network down" in download_failures[0][1]
+
+    bad_zip = tmp_path / "bad.zip"
+    bad_zip.write_text("not a zip archive")
+
+    extract_failures: list[tuple[str, str]] = []
+    extractor = manager_updater_gui.Extractor(bad_zip, tmp_path / "extracted")
+    extractor.failed.connect(
+        lambda message, traceback_text: extract_failures.append(
+            (message, traceback_text)
+        )
+    )
+    extractor.run()
+
+    assert extract_failures
+    assert extract_failures[0][0].startswith("Extraction failed:")
+    assert "Traceback" in extract_failures[0][1]
+    assert "zipfile.BadZipFile" in extract_failures[0][1]
 
 
 def test_manager_main_cache_directory_uses_qstandardpaths(

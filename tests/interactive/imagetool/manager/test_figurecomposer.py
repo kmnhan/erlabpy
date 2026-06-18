@@ -15826,15 +15826,25 @@ def test_figure_composer_line_normalization_reports_zero_scale(
     with pytest.raises(ValueError, match="Cannot normalize profile by max"):
         tool.generated_code()
 
-    warnings: list[str] = []
+    dialogs: list[typing.Any] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "warning",
-        lambda parent, title, text: warnings.append(text),
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
     )
     tool.copy_code()
-    assert warnings
-    assert "Cannot normalize profile by max" in warnings[0]
+    assert dialogs
+    assert dialogs[0].kwargs["title"] == "Cannot Copy Figure Code"
+    assert "Cannot normalize profile by max" in dialogs[0].kwargs["text"]
+    assert "Traceback" in dialogs[0].kwargs["detailed_text"]
 
 
 def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
