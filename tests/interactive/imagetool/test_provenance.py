@@ -363,6 +363,56 @@ def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
     assert adjacent[0].group.id != adjacent[2].group.id
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "", "id": "group", "index": 0, "size": 1},
+        {"kind": "demo", "id": "", "index": 0, "size": 1},
+        {"kind": "demo", "id": "group", "index": -1, "size": 1},
+        {"kind": "demo", "id": "group", "index": 0, "size": 0},
+        {"kind": "demo", "id": "group", "index": 1, "size": 1},
+    ],
+)
+def test_operation_group_marker_rejects_invalid_metadata(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        provenance.OperationGroupMarker(**kwargs)
+
+
+def test_operation_group_helpers_reject_broken_ranges() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+        group_id="group-1",
+    )
+    plain = provenance.AverageOperation(dims=("y",))
+
+    assert provenance.stamp_operation_group((), kind="demo") == ()
+    with pytest.raises(ValueError, match="focuses must match"):
+        provenance.stamp_operation_group(
+            operations,
+            kind="demo",
+            focuses=("first",),
+        )
+    assert provenance.strip_operation_groups((plain,)) == (plain,)
+
+    assert provenance.operation_group_range(operations, -1) is None
+    assert provenance.operation_group_range(operations, len(operations)) is None
+    assert provenance.operation_group_range((plain,), 0) is None
+    assert provenance.operation_group_range(operations, 0, kind="other") is None
+    assert provenance.operation_group_range((operations[1],), 0) is None
+
+    neighbor = plain.model_copy(update={"group": operations[0].group})
+    assert provenance.operation_group_range((*operations, neighbor), 0) is None
+
+    restamped = provenance.restamp_operation_groups((operations[1],))
+    assert restamped[0].group is None
+
+
 def test_tool_provenance_codec_and_combinators() -> None:
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     encoded = provenance.encode_provenance_value(
@@ -592,6 +642,16 @@ def test_operation_code_base_edges() -> None:
 
     with pytest.raises(NotImplementedError):
         provenance.ToolProvenanceOperation().expression_code("data")
+    with pytest.raises(NotImplementedError):
+        provenance.ToolProvenanceOperation().statement_code(
+            "data",
+            output_name="derived",
+        )
+    with pytest.raises(NotImplementedError):
+        provenance.KspaceWorkFunctionOperation(work_function=4.2).replay_code(
+            "data",
+            output_name=None,
+        )
 
     assert (
         provenance.IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
@@ -3145,6 +3205,70 @@ def test_tool_provenance_operation_group_replacement_preserves_script_context() 
     assert [
         binding.model_dump(mode="json") for binding in replaced.script_context_bindings
     ] == [{"operation_index": 1, "names": ["data", "derived"]}]
+
+
+def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+    )
+    spec = provenance.full_data(*operations)
+    ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+
+    assert spec._operation_group_range_ref(ref, kind="demo") == (0, 2)
+    assert (
+        spec._operation_group_range_ref(
+            provenance._ProvenanceStepRef("start"),
+            kind="demo",
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="complete operation group"):
+        spec._replace_operation_group_ref(ref, (), kind="other")
+    with pytest.raises(ValueError, match="operation provenance row"):
+        spec._replace_operation_range_ref(
+            provenance._ProvenanceStepRef("start"),
+            0,
+            1,
+            (),
+        )
+    with pytest.raises(ValueError, match="non-empty operation range"):
+        spec._replace_operation_range_ref(ref, 1, 1, ())
+
+    deleted = spec._delete_operation_group_ref(ref, kind="demo")
+    assert deleted.operations == ()
+
+    file_spec = _file_provenance_spec().append_replay_stage(provenance.full_data())
+    stage_spec = file_spec.append_replay_stage(provenance.full_data(*operations))
+    stage_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=1,
+        stage_index=1,
+    )
+    assert stage_spec._operation_group_range_ref(stage_ref, kind="demo") == (0, 2)
+    replaced = stage_spec._replace_operation_group_ref(
+        stage_ref,
+        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+        kind="demo",
+    )
+    assert [stage.operations for stage in replaced.replay_stages] == [
+        (),
+        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+    ]
+    assert (
+        stage_spec._operation_group_range_ref(
+            provenance._ProvenanceStepRef(
+                "operation",
+                operation_index=0,
+                stage_index=3,
+            ),
+            kind="demo",
+        )
+        is None
+    )
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:
