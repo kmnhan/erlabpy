@@ -471,9 +471,10 @@ def _operations_for_ref(
     if ref.kind != "operation" or ref.operation_index is None:
         return ()
     if ref.stage_index is None:
-        return spec.operations
-    if 0 <= ref.stage_index < len(spec.replay_stages):
-        return spec.replay_stages[ref.stage_index].operations
+        return getattr(spec, "operations", ())
+    replay_stages = getattr(spec, "replay_stages", ())
+    if 0 <= ref.stage_index < len(replay_stages):
+        return replay_stages[ref.stage_index].operations
     return ()
 
 
