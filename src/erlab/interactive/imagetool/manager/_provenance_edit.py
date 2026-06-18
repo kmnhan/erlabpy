@@ -864,7 +864,6 @@ class _ProvenanceEditController:
             and node.parent_uid is not None
             and node.source_spec is not None
             and row.scope == "display"
-            and not row.script_input_path
         )
 
     def _root_display_spec_for_row(

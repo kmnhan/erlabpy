@@ -1055,6 +1055,43 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     assert not controller.can_edit_row(row)[0]
     assert not controller.can_revert_row(row)[0]
 
+    nested_parent_history = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        provenance.IselOperation(kwargs={"y": 0}),
+        start_label="Load parent input",
+        seed_code="data_0 = xr.DataArray([[1.0]], dims=['x', 'y'])",
+        active_name="data_0",
+    )
+    parent_context = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use parent input",
+            code="derived = data_0",
+        ),
+        start_label="Run parent script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Parent input",
+                provenance_spec=nested_parent_history,
+            ),
+        ),
+    )
+    nested_parent_row = parent_context.display_rows()[1].children[1]
+    node = _fake_edit_node(
+        parent_context,
+        source_spec=provenance.selection(),
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(node)
+    assert manager_provenance_edit._ProvenanceEditController._source_child_parent_row(
+        typing.cast("typing.Any", node),
+        nested_parent_row,
+    )
+    assert not controller.can_edit_row(nested_parent_row)[0]
+    assert not controller.can_revert_row(nested_parent_row)[0]
+    assert not controller.can_delete_row(nested_parent_row)[0]
+
     node = _fake_edit_node(None)
     controller = _fake_edit_controller(node)
     assert not controller.can_edit_row(row)[0]
@@ -5567,8 +5604,21 @@ def test_manager_provenance_script_structured_row_can_revert(
             if row.replay_ref
             == provenance._ProvenanceStepRef("operation", operation_index=1)
         )
-        row_index = rows.index(aggregate_row)
-        select_metadata_rows(manager, [row_index])
+        aggregate_item = None
+        for row_index in range(manager.metadata_derivation_list.count()):
+            item = manager.metadata_derivation_list.item(row_index)
+            if (
+                item is not None
+                and item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+                == aggregate_row
+            ):
+                aggregate_item = item
+                break
+        assert aggregate_item is not None
+        select_metadata_rows(
+            manager,
+            [manager.metadata_derivation_list.row(aggregate_item)],
+        )
         row = manager._selected_derivation_row()
         assert row is not None
 
@@ -6671,6 +6721,10 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         ),
         children=(child_row,),
     )
+    sibling_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Use derived data", None, False),
+        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    )
     derivation_list = manager_widgets._MetadataDerivationListWidget()
     qtbot.addWidget(derivation_list)
     manager = types.SimpleNamespace(
@@ -6688,7 +6742,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         uid="node",
         displayed_provenance_spec=provenance.full_data(),
         metadata_fields=[],
-        derivation_display_rows=[parent_row],
+        derivation_display_rows=[parent_row, sibling_row],
     )
 
     controller._set_metadata_node(node)
@@ -6735,11 +6789,20 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         child_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
         is child_row
     )
-    assert derivation_list.count() == 1
+    sibling_item = derivation_list.topLevelItem(1)
+    assert sibling_item is not None
+    assert (
+        sibling_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+        is sibling_row
+    )
+    assert derivation_list.count() == 3
     assert derivation_list.item(0) is parent_item
-    assert derivation_list.item(1) is None
+    assert derivation_list.item(1) is child_item
+    assert derivation_list.item(2) is sibling_item
+    assert derivation_list.item(3) is None
     assert derivation_list.row(parent_item) == 0
     assert derivation_list.row(child_item) == 1
+    assert derivation_list.row(sibling_item) == 2
     assert derivation_list.display_order(child_item) == 1
     assert (
         derivation_list.display_order(

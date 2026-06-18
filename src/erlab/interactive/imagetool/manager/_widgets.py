@@ -206,14 +206,15 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         self.setUniformRowHeights(enabled)
 
     def count(self) -> int:
-        return self.topLevelItemCount()
+        return len(self._flattened_items())
 
     def item(self, row: int) -> QtWidgets.QTreeWidgetItem | None:
-        return self.topLevelItem(row)
+        items = self._flattened_items()
+        if row < 0 or row >= len(items):
+            return None
+        return items[row]
 
     def row(self, item: QtWidgets.QTreeWidgetItem) -> int:
-        if item.parent() is None:
-            return self.indexOfTopLevelItem(item)
         return self.display_order(item)
 
     def display_order(self, item: QtWidgets.QTreeWidgetItem) -> int:
