@@ -1268,6 +1268,13 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     )
     with pytest.raises(ValueError, match="not a valid variable"):
         figurecomposer_sources._valid_source_variable("bad name")
+    assert figurecomposer_plot_slices._source_names(
+        FigureOperationState.plot_slices(
+            label="mapped",
+            sources=(),
+            map_selections=(FigureDataSelectionState(source="extra"),),
+        )
+    ) == ("extra",)
 
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -8894,6 +8901,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "plot_slices",
         "line",
         "bz_overlay",
+        "photon_energy_overlay",
         "method:erlab",
         "method:axes",
         "method:figure",
@@ -8903,6 +8911,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "Slice Plot",
         "Line/Profile",
         "BZ Overlay",
+        "Photon Energy Overlay",
         "ERLab Method",
         "Axes Method",
         "Figure Method",
@@ -14397,6 +14406,8 @@ def test_figure_composer_bz_overlay_text_parsers() -> None:
     for text in ("'not bounds'", "1, 2, 3", "1, 2, 3, object()"):
         with pytest.raises(ValueError, match="four comma-separated numbers"):
             figurecomposer_bz_overlay._bounds_from_text(text)
+    with pytest.raises(ValueError, match="four comma-separated numbers"):
+        figurecomposer_bz_overlay._bounds_from_text("1, 2, 3, 'bad'")
 
     operation = FigureOperationState.bz_overlay(
         axes=FigureAxesSelectionState(axes=((0, 0),))
@@ -14405,6 +14416,98 @@ def test_figure_composer_bz_overlay_text_parsers() -> None:
     assert figurecomposer_bz_overlay._section_summary(tool, "slice", operation) == (
         f"IP, kz=0.5 π/c; {np.pi / 8:g} Å⁻¹"
     )
+
+
+def test_figure_composer_bz_overlay_helper_edges(qtbot, monkeypatch) -> None:
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),))
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+    empty_tool = FigureComposerTool.from_sources(
+        {"data": xr.DataArray(np.zeros((2, 2)), dims=("kx", "ky"), name="data")},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(empty_tool)
+    assert (
+        figurecomposer_bz_overlay._current_bz_operation(empty_tool, operation)
+        is operation
+    )
+
+    nonprimitive = operation.model_copy(update={"bz_centering_type": "I"})
+    assert figurecomposer_bz_overlay._bz_bvec(nonprimitive).shape == (3, 3)
+    assert (
+        figurecomposer_bz_overlay._single_axis_code(
+            tool,
+            operation.model_copy(
+                update={"axes": FigureAxesSelectionState(expression="axs[:1]")}
+            ),
+        )
+        is None
+    )
+
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="axis-a",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="axis-b",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+    )
+    grid_tool = FigureComposerTool(
+        xr.DataArray(np.zeros((2, 2)), dims=("kx", "ky"), name="data"),
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(grid_tool)
+    assert (
+        figurecomposer_bz_overlay._single_axis_code(
+            grid_tool,
+            operation.model_copy(
+                update={"axes": FigureAxesSelectionState(axes_ids=("axis-a", "axis-b"))}
+            ),
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        figurecomposer_bz_overlay,
+        "_axes_from_selection",
+        lambda *_args, **_kwargs: (),
+    )
+    figurecomposer_bz_overlay._render_bz_overlay(tool, operation, None)
+
+    tool.operation_list.setCurrentRow(0)
+    created = figurecomposer_bz_overlay._create_operation(tool)
+    assert created.kind == FigureOperationKind.BZ_OVERLAY
+    assert figurecomposer_bz_overlay._section_summary(tool, "unknown", operation) == ""
 
 
 def test_figure_composer_bz_overlay_generated_code_static_centering(qtbot) -> None:
@@ -15006,7 +15109,7 @@ def test_figure_composer_photon_energy_overlay_blocks_invalid_inputs(qtbot) -> N
     )
 
 
-def test_figure_composer_photon_energy_overlay_helper_edges(qtbot) -> None:
+def test_figure_composer_photon_energy_overlay_helper_edges(qtbot, monkeypatch) -> None:
     assert figurecomposer_photon_energy._optional_float_from_text("") is None
     assert figurecomposer_photon_energy._optional_float_from_text(" -0.3 ") == -0.3
     with pytest.raises(ValueError, match="one number"):
@@ -15068,6 +15171,72 @@ def test_figure_composer_photon_energy_overlay_helper_edges(qtbot) -> None:
             FakeKParallelKzData(), extra_dim_operation
         )
 
+    assert (
+        figurecomposer_photon_energy._single_axis_code(
+            tool,
+            operation.model_copy(
+                update={"axes": FigureAxesSelectionState(expression="axs[:1]")}
+            ),
+        )
+        is None
+    )
+
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="axis-a",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="axis-b",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+    )
+    grid_tool = _photon_energy_tool(
+        operation,
+        data,
+        setup=FigureSubplotsState(
+            layout_mode="gridspec",
+            gridspec=FigureGridSpecLayoutState(root=root),
+        ),
+    )
+    qtbot.addWidget(grid_tool)
+    assert (
+        figurecomposer_photon_energy._single_axis_code(
+            grid_tool,
+            operation.model_copy(
+                update={"axes": FigureAxesSelectionState(axes_ids=("axis-a", "axis-b"))}
+            ),
+        )
+        is None
+    )
+
+    render_operation = operation.model_copy(update={"hv_overlay_source": "hvdep_kconv"})
+    monkeypatch.setattr(
+        figurecomposer_photon_energy,
+        "_axes_from_selection",
+        lambda *_args, **_kwargs: (),
+    )
+    render_tool = _photon_energy_tool(render_operation, data)
+    qtbot.addWidget(render_tool)
+    figurecomposer_photon_energy._render_photon_energy_overlay(
+        render_tool, render_operation, None
+    )
+
 
 def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding(
     qtbot,
@@ -15118,6 +15287,16 @@ def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
 
     assert figurecomposer_photon_energy._seed_source(tool) == "hvdep_kconv"
     assert figurecomposer_photon_energy._seed_binding_energy(tool) is None
+
+    primary_tool = FigureComposerTool.from_sources(
+        {"hvdep_kconv": data},
+        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        operations=(),
+        setup=FigureSubplotsState(),
+        primary_source="hvdep_kconv",
+    )
+    qtbot.addWidget(primary_tool)
+    assert figurecomposer_photon_energy._seed_source(primary_tool) == "hvdep_kconv"
 
     line_operation = FigureOperationState.line(
         label="line", source="hvdep_kconv", axes=FigureAxesSelectionState()
@@ -20520,6 +20699,84 @@ def test_manager_append_operation_to_existing_figure(
         assert figure.tool_status.operations[-1].kind.value == "line"
 
 
+def test_manager_append_momentum_source_seeds_bz_overlay(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 0.0, 1.0], "ky": [-2.0, 0.0, 2.0]},
+        name="momentum",
+    )
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="existing",
+        )
+        figure_tool = FigureComposerTool(
+            figure_data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="existing", label="existing"),),
+                operations=(),
+                primary_source="existing",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        appended = manager.append_figure_from_targets(
+            (0,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            show=False,
+        )
+
+        assert appended is True
+        assert [operation.kind for operation in figure_tool.tool_status.operations] == [
+            FigureOperationKind.PLOT_SLICES,
+            FigureOperationKind.BZ_OVERLAY,
+        ]
+        assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 0),)
+
+
+def test_manager_create_explicit_plot_slices_fills_axes(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="map",
+    )
+    with manager_context() as manager:
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets(
+            (0,),
+            operation=FigureOperationState.plot_slices(
+                label="plot", sources=("map",), axes=FigureAxesSelectionState()
+            ),
+            show=False,
+        )
+
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        assert figure_tool.tool_status.operations[0].axes.axes == ((0, 0),)
+
+
 def test_manager_ktool_output_figure_seeds_bz_overlay(
     qtbot,
     anglemap,
@@ -20579,6 +20836,60 @@ def test_manager_ktool_output_figure_seeds_bz_overlay(
         assert bz_operation.bz_kz_pi_over_c == 0.5
         assert bz_operation.bz_vertices is True
         assert bz_operation.bz_midpoints is True
+
+
+def test_manager_bz_overlay_ignores_converted_output_without_ktool_parent() -> None:
+    class FakeNode:
+        output_id = "ktool.converted_output"
+
+    class FakeParent:
+        tool_window = object()
+
+    class FakeManager:
+        def _node_for_target(self, target: int | str) -> FakeNode:
+            assert target == "converted"
+            return FakeNode()
+
+        def _parent_node(self, node: FakeNode) -> FakeParent:
+            assert isinstance(node, FakeNode)
+            return FakeParent()
+
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 1.0], "ky": [-2.0, 2.0]},
+        name="momentum",
+    )
+    axes = FigureAxesSelectionState(axes=((0, 0),))
+
+    assert (
+        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_targets(
+            FakeManager(),
+            ("first", "second"),
+            {"momentum": data},
+            axes=axes,
+        )
+        is None
+    )
+    assert (
+        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_targets(
+            FakeManager(),
+            ("converted",),
+            {"first": data, "second": data},
+            axes=axes,
+        )
+        is None
+    )
+
+    assert (
+        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_target(
+            FakeManager(),
+            "converted",
+            data,
+            axes=axes,
+        )
+        is None
+    )
 
 
 def test_manager_append_operation_uses_axes_dialog_selection(
