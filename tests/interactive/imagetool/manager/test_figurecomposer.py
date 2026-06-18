@@ -77,6 +77,8 @@ from erlab.interactive._figurecomposer._operations import (
     _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._figurecomposer._seeding import (
+    bz_overlay_operation_from_ktool,
+    bz_overlay_operation_from_momentum_data,
     plot_slices_operation_with_source_styles,
 )
 from erlab.interactive._figurecomposer._toolbar_dialogs import (
@@ -8881,6 +8883,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert [action.data() for action in tool.add_step_menu.actions()] == [
         "plot_slices",
         "line",
+        "bz_overlay",
         "method:erlab",
         "method:axes",
         "method:figure",
@@ -8889,6 +8892,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert [action.text() for action in tool.add_step_menu.actions()] == [
         "Slice Plot",
         "Line/Profile",
+        "BZ Overlay",
         "ERLab Method",
         "Axes Method",
         "Figure Method",
@@ -14095,6 +14099,330 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     _activate_combo_text(policy_combo, "Selected axes together")
     assert tool.tool_status.operations[1].method_call_policy == "ax_keyword"
     assert "eplt.nice_colorbar(ax=axs)" in tool.generated_code()
+
+
+def _bz_tool(operation: FigureOperationState) -> FigureComposerTool:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 1.0], "ky": [-1.0, 1.0]},
+        name="data",
+    )
+    return FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+
+
+def _assert_bz_lines_match_segments(
+    lines: Sequence[typing.Any], segments: np.ndarray
+) -> None:
+    assert len(lines) == len(segments)
+    for line, segment in zip(lines, segments, strict=True):
+        np.testing.assert_allclose(line.get_xdata(), segment[:, 0])
+        np.testing.assert_allclose(line.get_ydata(), segment[:, 1])
+
+
+def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),))
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    tool._select_step_section("slice")
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    mode_combo = page.findChild(QtWidgets.QComboBox, "figureComposerBZModeCombo")
+    angle_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAngleSpin")
+    k_parallel_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerBZKParallelSpin"
+    )
+    bounds_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZBoundsEdit")
+    assert mode_combo is not None
+    assert angle_spin is not None
+    assert k_parallel_spin is not None
+    assert bounds_edit is not None
+
+    _activate_combo_text(mode_combo, "Out-of-plane")
+    angle_spin.setValue(30.0)
+    k_parallel_spin.setValue(0.25)
+    bounds_edit.setText("-2, 2, -3, 3")
+    bounds_edit.editingFinished.emit()
+
+    tool._select_step_section("lattice")
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    c_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZCEdit")
+    centering_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerBZCenteringCombo"
+    )
+    assert c_spin is not None
+    assert centering_combo is not None
+    c_spin.setValue(4.5)
+    _activate_combo_text(centering_combo, "F")
+
+    tool._select_step_section("style")
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    color_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZColorEdit")
+    line_style_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerBZLineStyleCombo"
+    )
+    line_width_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerBZLineWidthSpin"
+    )
+    vertices_check = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerBZVerticesCheck"
+    )
+    vertex_kw_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZVertexKwEdit")
+    assert color_edit is not None
+    assert line_style_combo is not None
+    assert line_width_spin is not None
+    assert vertices_check is not None
+    assert vertex_kw_edit is not None
+
+    color_edit.setText("tab:red")
+    color_edit.editingFinished.emit()
+    _activate_combo_text(line_style_combo, "-.")
+    line_width_spin.setValue(1.5)
+    vertices_check.setChecked(True)
+    vertex_kw_edit.setText("s=12, color='tab:green'")
+    vertex_kw_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.bz_mode == "out_of_plane"
+    assert updated.bz_angle == 30.0
+    assert updated.bz_k_parallel == 0.25
+    assert updated.bz_bounds == (-2.0, 2.0, -3.0, 3.0)
+    assert updated.bz_c == 4.5
+    assert updated.bz_centering_type == "F"
+    assert updated.bz_vertices is True
+    assert updated.bz_vertex_kw == {"s": 12, "color": "tab:green"}
+    assert updated.line_kw == {
+        "color": "tab:red",
+        "linestyle": "-.",
+        "linewidth": 1.5,
+    }
+
+
+def test_figure_composer_bz_overlay_state_round_trip() -> None:
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        mode="out_of_plane",
+    ).model_copy(
+        update={
+            "bz_a": 2.0,
+            "bz_b": 3.0,
+            "bz_c": 4.0,
+            "bz_centering_type": "I",
+            "bz_angle": 15.0,
+            "bz_k_parallel": 0.25,
+            "bz_bounds": (-1.0, 1.0, -2.0, 2.0),
+            "bz_vertices": True,
+            "bz_midpoint_kw": {"color": "tab:blue"},
+            "line_kw": {"color": "tab:red"},
+        }
+    )
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+
+    restored = FigureRecipeState.model_validate(recipe.model_dump(mode="json"))
+
+    assert restored.operations[0].kind == FigureOperationKind.BZ_OVERLAY
+    assert restored.operations[0].bz_centering_type == "I"
+    assert restored.operations[0].bz_bounds == (-1.0, 1.0, -2.0, 2.0)
+    assert restored.operations[0].bz_midpoint_kw == {"color": "tab:blue"}
+    assert restored.operations[0].line_kw == {"color": "tab:red"}
+
+
+def test_figure_composer_bz_overlay_render_matches_plotting_helper(qtbot) -> None:
+    bounds = (-4.0, 4.0, -4.0, 4.0)
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),))
+    ).model_copy(
+        update={
+            "bz_bounds": bounds,
+            "bz_angle": 45.0,
+            "bz_vertices": True,
+            "line_kw": {"color": "tab:purple", "linewidth": 1.25},
+        }
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+
+    figure = Figure(figsize=(3, 3))
+    FigureCanvasAgg(figure)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+
+    bvec = erlab.lattice.to_reciprocal(erlab.lattice.abc2avec(1, 1, 1, 90, 90, 90))
+    segments, vertices, _midpoints = erlab.lattice.get_in_plane_bz(
+        bvec,
+        kz=0.0,
+        angle=45.0,
+        bounds=bounds,
+        return_midpoints=True,
+    )
+    axis = figure.axes[0]
+    _assert_bz_lines_match_segments(axis.lines, segments)
+    assert axis.collections
+    np.testing.assert_allclose(axis.collections[0].get_offsets(), vertices)
+    assert all(line.get_color() == "tab:purple" for line in axis.lines)
+    assert all(line.get_linewidth() == 1.25 for line in axis.lines)
+
+
+def test_figure_composer_bz_overlay_generated_code_static_centering(qtbot) -> None:
+    primitive = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),))
+    ).model_copy(update={"bz_bounds": (-20.0, 20.0, -20.0, 20.0)})
+    primitive_tool = _bz_tool(primitive)
+    qtbot.addWidget(primitive_tool)
+
+    primitive_code = primitive_tool.generated_code()
+    assert "to_primitive" not in primitive_code
+    primitive_namespace = _exec_generated_code(
+        primitive_code, {"data": primitive_tool.source_data()["data"]}
+    )
+    assert primitive_namespace["fig"].axes[0].lines
+
+    nonprimitive = primitive.model_copy(update={"bz_centering_type": "F"})
+    nonprimitive_tool = _bz_tool(nonprimitive)
+    qtbot.addWidget(nonprimitive_tool)
+
+    nonprimitive_code = nonprimitive_tool.generated_code()
+    assert (
+        'avec = erlab.lattice.to_primitive(avec, centering_type="F")'
+        in nonprimitive_code
+    )
+    assert 'if centering_type != "P"' not in nonprimitive_code
+    assert "if " not in "\n".join(
+        line for line in nonprimitive_code.splitlines() if "to_primitive" in line
+    )
+    nonprimitive_namespace = _exec_generated_code(
+        nonprimitive_code, {"data": nonprimitive_tool.source_data()["data"]}
+    )
+    assert nonprimitive_namespace["fig"].axes[0].lines
+
+
+def test_figure_composer_bz_overlay_invalid_axes_block_generated_code(qtbot) -> None:
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 1),))
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+
+    with pytest.raises(ValueError, match="target axes"):
+        tool.generated_code()
+
+
+def test_figure_composer_bz_overlay_plain_momentum_seeding() -> None:
+    in_plane = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 0.0, 1.0], "ky": [-2.0, -1.0, 0.0, 1.0]},
+    )
+    kx_kz = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("kx", "kz"),
+        coords={"kx": [-0.5, 0.0, 0.5], "kz": [-2.0, -1.0, 0.0, 1.0]},
+    )
+    ky_kz = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("ky", "kz"),
+        coords={"ky": [0.25, 0.75], "kz": [-1.0, 0.0, 1.0]},
+    )
+
+    in_plane_operation = bz_overlay_operation_from_momentum_data(in_plane)
+    kx_kz_operation = bz_overlay_operation_from_momentum_data(kx_kz)
+    ky_kz_operation = bz_overlay_operation_from_momentum_data(ky_kz)
+
+    assert in_plane_operation is not None
+    assert in_plane_operation.bz_mode == "in_plane"
+    assert in_plane_operation.bz_bounds == (-1.0, 1.0, -2.0, 1.0)
+    assert kx_kz_operation is not None
+    assert kx_kz_operation.bz_mode == "out_of_plane"
+    assert kx_kz_operation.bz_bounds == (-0.5, 0.5, -2.0, 1.0)
+    assert ky_kz_operation is not None
+    assert ky_kz_operation.bz_mode == "out_of_plane"
+    assert ky_kz_operation.bz_bounds == (0.25, 0.75, -1.0, 1.0)
+
+
+def test_figure_composer_bz_overlay_ktool_seeding_snapshot() -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("kz", "kx"),
+        coords={"kz": [-1.0, 0.0, 1.0], "kx": [-0.5, 0.0, 0.5, 1.0], "ky": 0.25},
+    )
+
+    class FakeStatus:
+        bz_enabled = True
+        lattice_params = (2.0, 3.0, 4.0, 90.0, 100.0, 110.0)
+        centering = "I"
+        rot = 15.0
+        kz = 0.5
+        points = True
+
+    class FakeKtool:
+        tool_status = FakeStatus()
+
+    operation = bz_overlay_operation_from_ktool(FakeKtool(), data)
+
+    assert operation is not None
+    assert operation.bz_mode == "out_of_plane"
+    assert operation.bz_a == 2.0
+    assert operation.bz_b == 3.0
+    assert operation.bz_c == 4.0
+    assert operation.bz_centering_type == "I"
+    assert operation.bz_angle == 15.0
+    assert operation.bz_kz_pi_over_c == 0.5
+    assert operation.bz_k_parallel == 0.25
+    assert operation.bz_vertices is True
+    assert operation.bz_midpoints is True
+
+
+def test_figure_composer_bz_overlay_ktool_seeding_uses_fixed_coord_median() -> None:
+    ky_values = np.array(
+        [
+            [np.nan, -0.25, 0.0, 0.25],
+            [0.5, 0.75, 1.0, 1.25],
+            [1.5, 1.75, 2.0, 2.25],
+        ]
+    )
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("kz", "kx"),
+        coords={
+            "kz": [-1.0, 0.0, 1.0],
+            "kx": [-0.5, 0.0, 0.5, 1.0],
+            "ky": (("kz", "kx"), ky_values),
+        },
+    )
+
+    class FakeStatus:
+        bz_enabled = True
+        lattice_params = (2.0, 3.0, 4.0, 90.0, 100.0, 110.0)
+        centering = "I"
+        rot = 15.0
+        kz = 0.5
+        points = True
+
+    class FakeKtool:
+        tool_status = FakeStatus()
+
+    operation = bz_overlay_operation_from_ktool(FakeKtool(), data)
+
+    assert operation is not None
+    assert operation.bz_mode == "out_of_plane"
+    assert operation.bz_k_parallel == np.nanmedian(ky_values)
 
 
 def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
@@ -19428,6 +19756,67 @@ def test_manager_append_operation_to_existing_figure(
         assert appended is True
         assert len(figure.tool_status.operations) == operation_count + 1
         assert figure.tool_status.operations[-1].kind.value == "line"
+
+
+def test_manager_ktool_output_figure_seeds_bz_overlay(
+    qtbot,
+    anglemap,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    from erlab.interactive.kspace import KspaceTool
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(anglemap.qsel(eV=-0.1), link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.open_in_ktool()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
+        )
+
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, KspaceTool)
+        child._avec = erlab.lattice.abc2avec(2.0, 3.0, 4.0, 90.0, 100.0, 110.0)
+        child.centering_combo.setCurrentText("I")
+        child.rot_spin.setValue(15.0)
+        child.kz_spin.setValue(0.5)
+        child.points_check.setChecked(True)
+        qtbot.wait_until(lambda: child.bz_group.isEnabled(), timeout=5000)
+        child.bz_group.setChecked(True)
+        child.show_converted()
+
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        output_uid = child_node._childtool_indices[0]
+        manager._child_node(output_uid).name = "converted"
+
+        figure_uid = manager.create_figure_from_targets((output_uid,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        operations = figure_tool.tool_status.operations
+
+        assert [operation.kind for operation in operations] == [
+            FigureOperationKind.PLOT_SLICES,
+            FigureOperationKind.BZ_OVERLAY,
+        ]
+        bz_operation = operations[1]
+        assert np.isclose(bz_operation.bz_a, 2.0)
+        assert np.isclose(bz_operation.bz_b, 3.0)
+        assert np.isclose(bz_operation.bz_c, 4.0)
+        assert bz_operation.bz_centering_type == "I"
+        assert bz_operation.bz_angle == 15.0
+        assert bz_operation.bz_kz_pi_over_c == 0.5
+        assert bz_operation.bz_vertices is True
+        assert bz_operation.bz_midpoints is True
 
 
 def test_manager_append_operation_uses_axes_dialog_selection(

@@ -246,6 +246,7 @@ class FigureExportState(pydantic.BaseModel):
 class FigureOperationKind(enum.StrEnum):
     PLOT_SLICES = "plot_slices"
     LINE = "line"
+    BZ_OVERLAY = "bz_overlay"
     METHOD = "method"
     CUSTOM = "custom"
 
@@ -372,6 +373,23 @@ class FigureOperationState(pydantic.BaseModel):
     line_offset_coord: str | None = None
     line_offset_scale: float = 1.0
 
+    bz_mode: typing.Literal["in_plane", "out_of_plane"] = "in_plane"
+    bz_a: float = 1.0
+    bz_b: float = 1.0
+    bz_c: float = 1.0
+    bz_alpha: float = 90.0
+    bz_beta: float = 90.0
+    bz_gamma: float = 90.0
+    bz_centering_type: typing.Literal["P", "A", "B", "C", "F", "I", "R"] = "P"
+    bz_angle: float = 0.0
+    bz_kz_pi_over_c: float = 0.0
+    bz_k_parallel: float = 0.0
+    bz_bounds: tuple[float, float, float, float] | None = None
+    bz_vertices: bool = False
+    bz_midpoints: bool = False
+    bz_vertex_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    bz_midpoint_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
     method_family: FigureMethodFamily = FigureMethodFamily.ERLAB
     method_name: str = "clean_labels"
     method_args: tuple[typing.Any, ...] = ()
@@ -427,6 +445,21 @@ class FigureOperationState(pydantic.BaseModel):
             label=label,
             line_source=source,
             axes=axes or FigureAxesSelectionState(),
+        )
+
+    @classmethod
+    def bz_overlay(
+        cls,
+        *,
+        label: str = "BZ overlay",
+        axes: FigureAxesSelectionState | None = None,
+        mode: typing.Literal["in_plane", "out_of_plane"] = "in_plane",
+    ) -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.BZ_OVERLAY,
+            label=label,
+            axes=axes or FigureAxesSelectionState(),
+            bz_mode=mode,
         )
 
     @classmethod

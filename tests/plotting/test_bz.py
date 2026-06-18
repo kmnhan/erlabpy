@@ -209,3 +209,16 @@ def test_plot_out_of_plane_bz_infers_bounds_from_axes():
 def test_bz_slice_helpers_export_from_plotting_namespace():
     assert eplt.plot_in_plane_bz is plot_in_plane_bz
     assert eplt.plot_out_of_plane_bz is plot_out_of_plane_bz
+
+
+def test_bz_slice_helpers_accept_sequence_bvec():
+    bvec = erlab.lattice.to_reciprocal(np.eye(3)).tolist()
+    bounds = (-4.0, 4.0, -4.0, 4.0)
+
+    fig, ax = plt.subplots()
+    in_plane_lines, _, _ = plot_in_plane_bz(bvec, bounds=bounds, ax=ax)
+    out_of_plane_lines, _, _ = plot_out_of_plane_bz(bvec, bounds=bounds, ax=ax)
+
+    assert in_plane_lines
+    assert out_of_plane_lines
+    plt.close(fig)

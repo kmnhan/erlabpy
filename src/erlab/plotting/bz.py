@@ -270,6 +270,7 @@ def plot_in_plane_bz(
         xmin, xmax = sorted((float(x0), float(x1)))
         ymin, ymax = sorted((float(y0), float(y1)))
         bounds = (xmin, xmax, ymin, ymax)
+    bvec = np.asarray(bvec, dtype=float)
     segments, vertex_points, midpoint_points = erlab.lattice.get_in_plane_bz(
         bvec, kz=kz, angle=angle, bounds=bounds, return_midpoints=True
     )
@@ -342,6 +343,7 @@ def plot_out_of_plane_bz(
         xmin, xmax = sorted((float(x0), float(x1)))
         ymin, ymax = sorted((float(y0), float(y1)))
         bounds = (xmin, xmax, ymin, ymax)
+    bvec = np.asarray(bvec, dtype=float)
     segments, vertex_points, midpoint_points = erlab.lattice.get_out_of_plane_bz(
         bvec,
         k_parallel=k_parallel,
