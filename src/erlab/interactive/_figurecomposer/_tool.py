@@ -8,6 +8,7 @@ import functools
 import json
 import math
 import textwrap
+import traceback
 import typing
 import uuid
 import weakref
@@ -4917,7 +4918,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         try:
             code = self.generated_code()
         except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Cannot Copy Figure Code", str(exc))
+            erlab.interactive.utils.MessageDialog(
+                self,
+                title="Cannot Copy Figure Code",
+                text=str(exc),
+                detailed_text=erlab.interactive.utils._format_traceback(
+                    traceback.format_exc()
+                ),
+                buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+                icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+            ).exec()
             return
         erlab.interactive.utils.copy_to_clipboard(code)
 

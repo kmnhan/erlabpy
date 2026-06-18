@@ -284,20 +284,71 @@ def _validate_script_code_names(
         visiting.remove(name)
         return None
 
-    for stmt in module.body:
-        names = _statement_scope_names(stmt)
+    def require_loads(names: _CurrentScopeNames) -> None:
         for name in sorted(names.loads):
             missing = require(name)
             if missing is not None:
                 raise ReplayGraphError(
                     f"Script provenance references unresolved name {missing!r}"
                 )
+
+    def validate_stmt(stmt: ast.stmt) -> None:
+        if isinstance(stmt, ast.For):
+            iter_names = _CurrentScopeNames()
+            iter_names.visit(stmt.iter)
+            require_loads(iter_names)
+
+            target_names = _CurrentScopeNames()
+            target_names.visit(stmt.target)
+            require_loads(target_names)
+            available_names.update(target_names.stores)
+            for body_stmt in stmt.body:
+                validate_stmt(body_stmt)
+            for orelse_stmt in stmt.orelse:
+                validate_stmt(orelse_stmt)
+            return
+
+        if isinstance(stmt, ast.If):
+            test_names = _CurrentScopeNames()
+            test_names.visit(stmt.test)
+            require_loads(test_names)
+
+            available_before = set(available_names)
+            dependencies_before = dict(function_dependencies)
+            branch_stores: set[str] = set()
+            branch_dependencies: dict[str, set[str]] = {}
+            for branch in (stmt.body, stmt.orelse):
+                available_names.clear()
+                available_names.update(available_before)
+                function_dependencies.clear()
+                function_dependencies.update(dependencies_before)
+                for branch_stmt in branch:
+                    validate_stmt(branch_stmt)
+                branch_stores.update(available_names - available_before)
+                for name, dependencies in function_dependencies.items():
+                    if dependencies_before.get(name) == dependencies:
+                        continue
+                    branch_dependencies.setdefault(name, set()).update(dependencies)
+
+            available_names.clear()
+            available_names.update(available_before)
+            available_names.update(branch_stores)
+            function_dependencies.clear()
+            function_dependencies.update(dependencies_before)
+            function_dependencies.update(branch_dependencies)
+            return
+
+        names = _statement_scope_names(stmt)
+        require_loads(names)
         if isinstance(stmt, ast.FunctionDef):
             function_dependencies[stmt.name] = new_function_dependencies.get(
                 (stmt.name, stmt.lineno),
                 set(),
             )
         available_names.update(names.stores)
+
+    for stmt in module.body:
+        validate_stmt(stmt)
 
 
 def _simple_assignment_source_name(code: str, target_name: str) -> str | None:

@@ -10,7 +10,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _replay_graph, provenance
 
 
 def _exec_generated_code(
@@ -121,6 +121,19 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     assert isinstance(namespace["result"], xr.DataArray)
     xr.testing.assert_identical(win.result, namespace["result"])
+
+    spec = provenance.script(
+        *win._copy_provenance(input_name="data"),
+        start_label="Compute derivative output",
+        active_name="result",
+        script_inputs=(provenance.ScriptInput(name="data", label="Input"),),
+    )
+    assert provenance.script_provenance_replayable(spec)
+    graph = _replay_graph.compile_replay_graph(
+        spec, external_inputs={"data": data.copy(deep=True)}
+    )
+    result = _replay_graph.execute_replay_graph(graph)
+    xr.testing.assert_identical(win.result, result)
 
 
 def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:

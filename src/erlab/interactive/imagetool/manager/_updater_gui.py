@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 import typing
 import zipfile
 
@@ -31,7 +32,7 @@ if typing.TYPE_CHECKING:
 class Downloader(QtCore.QThread):
     progress = QtCore.Signal(int, int)  # bytes_received, total_bytes (-1 if unknown)
     finished_ok = QtCore.Signal(str)  # path to zip
-    failed = QtCore.Signal(str)  # error message
+    failed = QtCore.Signal(str, str)  # error message, traceback
 
     def __init__(
         self,
@@ -65,7 +66,7 @@ class Downloader(QtCore.QThread):
                             self.progress.emit(received, total)
             self.finished_ok.emit(str(self.out_path))
         except Exception as e:
-            self.failed.emit(f"Download failed: {e}")
+            self.failed.emit(f"Download failed: {e}", traceback.format_exc())
 
     def stop(self):
         self._stop = True
@@ -75,7 +76,7 @@ class Downloader(QtCore.QThread):
 class Extractor(QtCore.QThread):
     progress = QtCore.Signal(int, int)  # bytes_processed, total_bytes (-1 if unknown)
     finished_ok = QtCore.Signal(str)  # path to extracted dir
-    failed = QtCore.Signal(str)
+    failed = QtCore.Signal(str, str)
 
     def __init__(self, zip_path: pathlib.Path, out_dir: pathlib.Path):
         super().__init__()
@@ -99,7 +100,7 @@ class Extractor(QtCore.QThread):
                     self.progress.emit(processed, total or -1)
             self.finished_ok.emit(str(self.out_dir))
         except Exception as e:
-            self.failed.emit(f"Extraction failed: {e}")
+            self.failed.emit(f"Extraction failed: {e}", traceback.format_exc())
 
     def stop(self):
         self._stop = True
@@ -249,9 +250,15 @@ class AutoUpdater(QtCore.QObject):
                     f"Downloading…<br>{done / factor:.1f} / {total / factor:.1f} MiB"
                 )
 
-        def _on_fail(msg: str):
+        def _on_fail(msg: str, traceback_text: str):
             progress.cancel()
-            QtWidgets.QMessageBox.critical(parent, "Download failed", msg)
+            erlab.interactive.utils.MessageDialog.critical(
+                parent,
+                "Download failed",
+                "The update could not be downloaded.",
+                informative_text=msg,
+                detailed_text=erlab.interactive.utils._format_traceback(traceback_text),
+            )
 
         def _on_ok(path: str):
             progress.close()
@@ -345,8 +352,11 @@ class AutoUpdater(QtCore.QObject):
                     ["/bin/bash", str(script_path.resolve())], close_fds=True
                 )
             except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    parent, "Update", f"Failed to start updater: {e}"
+                erlab.interactive.utils.MessageDialog.critical(
+                    parent,
+                    "Update",
+                    "Failed to start updater.",
+                    informative_text=str(e),
                 )
                 return
 

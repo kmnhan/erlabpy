@@ -15826,15 +15826,25 @@ def test_figure_composer_line_normalization_reports_zero_scale(
     with pytest.raises(ValueError, match="Cannot normalize profile by max"):
         tool.generated_code()
 
-    warnings: list[str] = []
+    dialogs: list[typing.Any] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "warning",
-        lambda parent, title, text: warnings.append(text),
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
     )
     tool.copy_code()
-    assert warnings
-    assert "Cannot normalize profile by max" in warnings[0]
+    assert dialogs
+    assert dialogs[0].kwargs["title"] == "Cannot Copy Figure Code"
+    assert "Cannot normalize profile by max" in dialogs[0].kwargs["text"]
+    assert "Traceback" in dialogs[0].kwargs["detailed_text"]
 
 
 def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
@@ -19788,15 +19798,20 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    dialogs: list[QtWidgets.QMessageBox] = []
+    dialogs: list[typing.Any] = []
 
-    def _record_dialog(
-        dialog: QtWidgets.QMessageBox,
-    ) -> QtWidgets.QMessageBox.StandardButton:
-        dialogs.append(dialog)
-        return QtWidgets.QMessageBox.StandardButton.Ok
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
 
-    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", _record_dialog)
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
 
     with manager_context() as manager:
         manager.show()
@@ -19826,10 +19841,13 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert not copied
         assert len(dialogs) == 1
-        assert dialogs[0].icon() == QtWidgets.QMessageBox.Icon.Warning
-        assert dialogs[0].text()
-        assert dialogs[0].informativeText()
-        assert dialogs[0].detailedText()
+        assert (
+            dialogs[0].kwargs["icon_pixmap"]
+            == QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+        )
+        assert dialogs[0].kwargs["text"]
+        assert dialogs[0].kwargs["informative_text"]
+        assert dialogs[0].kwargs["detailed_text"]
 
 
 def test_manager_figure_action_new_target_creates_second_figure(

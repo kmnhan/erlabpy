@@ -2112,7 +2112,6 @@ def test_associated_coord_dialog_empty_warning(qtbot, monkeypatch) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     dialog = _AssociatedCoordsDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
     warnings: list[tuple[str, str]] = []
 
     def _record_warning(_parent, title, message, *args, **kwargs):
@@ -8629,20 +8628,29 @@ def test_interpolation_dialog_rejects_invalid_target_values(qtbot, monkeypatch) 
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     dialog = InterpolationDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
     dialog.launch_mode_combo.setCurrentText("Replace Current")
     dialog.coord_widget.table.item(0, 0).setText("bad")
 
-    warnings: list[tuple[str, str]] = []
+    dialogs: list[typing.Any] = []
 
-    def _record_warning(_parent, title, message, *args, **kwargs):
-        warnings.append((title, message))
-        return QtWidgets.QMessageBox.StandardButton.Ok
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
 
-    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
     dialog.accept()
 
-    assert warnings == [("Invalid Target Coordinates", "Invalid value in row 0: bad")]
+    assert len(dialogs) == 1
+    assert dialogs[0].kwargs["title"] == "Invalid Target Coordinates"
+    assert dialogs[0].kwargs["text"] == "Invalid value in row 0: bad"
+    assert "Traceback" in dialogs[0].kwargs["detailed_text"]
     xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
 
     dialog.close()
@@ -9326,16 +9334,28 @@ def test_assign_coords_add_dialog_accept_validates_inputs(qtbot, monkeypatch) ->
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     dialog = AssignCoordsDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
     dialog._mode_tabs.setCurrentIndex(1)
 
     warnings: list[tuple[str, str]] = []
+    dialogs: list[typing.Any] = []
 
     def _record_warning(_parent, title, message, *args, **kwargs):
         warnings.append((title, message))
         return QtWidgets.QMessageBox.StandardButton.Ok
 
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
 
     dialog._add_name_edit.setText("x")
     dialog.accept()
@@ -9355,10 +9375,12 @@ def test_assign_coords_add_dialog_accept_validates_inputs(qtbot, monkeypatch) ->
         "Duplicate Name",
         "A coordinate or dimension named 'x' already exists.",
     )
-    assert [title for title, _message in warnings[1:]] == [
+    assert [title for title, _message in warnings[1:]] == []
+    assert [dialog.kwargs["title"] for dialog in dialogs] == [
         "Invalid Coordinate Value",
         "Invalid Coordinate Value",
     ]
+    assert all("Traceback" in dialog.kwargs["detailed_text"] for dialog in dialogs)
     xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
 
     dialog.close()
@@ -9462,15 +9484,27 @@ def test_assign_attrs_dialog_accept_validates_inputs(qtbot, monkeypatch) -> None
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     dialog = AssignAttrsDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
 
     warnings: list[tuple[str, str]] = []
+    dialogs: list[typing.Any] = []
 
     def _record_warning(_parent, title, message, *args, **kwargs):
         warnings.append((title, message))
         return QtWidgets.QMessageBox.StandardButton.Ok
 
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
 
     dialog.accept()
     dialog._add_empty_row()
@@ -9485,10 +9519,13 @@ def test_assign_attrs_dialog_accept_validates_inputs(qtbot, monkeypatch) -> None
 
     assert [title for title, _message in warnings] == [
         "No Attributes Changed",
-        "Invalid Attribute Value",
         "Duplicate Names",
+    ]
+    assert [dialog.kwargs["title"] for dialog in dialogs] == [
+        "Invalid Attribute Value",
         "Invalid Attribute Value",
     ]
+    assert all("Traceback" in dialog.kwargs["detailed_text"] for dialog in dialogs)
     xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
 
     dialog.close()

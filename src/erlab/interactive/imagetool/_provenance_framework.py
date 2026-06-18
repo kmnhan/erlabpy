@@ -179,7 +179,6 @@ _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.Await,
     ast.ClassDef,
     ast.Delete,
-    ast.For,
     ast.Global,
     ast.Lambda,
     ast.Match,
@@ -191,7 +190,15 @@ _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.Yield,
     ast.YieldFrom,
 )
-_SCRIPT_REPLAY_FORBIDDEN_CALLS = {"__import__", "compile", "eval", "exec", "open"}
+_SCRIPT_REPLAY_FORBIDDEN_CALLS = {
+    "__import__",
+    "compile",
+    "eval",
+    "exec",
+    "globals",
+    "locals",
+    "open",
+}
 
 
 @dataclass(frozen=True)

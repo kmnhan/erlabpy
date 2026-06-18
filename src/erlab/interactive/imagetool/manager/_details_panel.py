@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
+import traceback
 import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import provenance
+import erlab.interactive.utils
+from erlab.interactive.imagetool import _replay_graph, provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
@@ -634,21 +637,52 @@ class _DetailsPanelController:
             )
         return "The replay graph could not be emitted as Python code."
 
+    def _unavailable_replay_code_traceback(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        spec = node.displayed_provenance_spec
+        if spec is None or spec.kind != "script" or not spec.operations:
+            return None
+        try:
+            graph = _replay_graph.compile_replay_graph(spec, display=True)
+            _replay_graph.emit_replay_code(
+                graph,
+                output_name=typing.cast("str", spec.active_name),
+            )
+        except _replay_graph.ReplayGraphError as exc:
+            return "".join(traceback.TracebackException.from_exception(exc).format())
+        return None
+
+    def _unavailable_replay_code_dialog_details(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        details = "<br>".join(
+            html.escape(line)
+            for line in self._unavailable_replay_code_details(node).splitlines()
+        )
+        exc_text = self._unavailable_replay_code_traceback(node)
+        if exc_text is None:
+            return details
+        traceback_html = erlab.interactive.utils._format_traceback(exc_text)
+        return f"{details}<hr>{traceback_html}"
+
     def _show_unavailable_replay_code_dialog(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> None:
-        msg_box = QtWidgets.QMessageBox(self._manager)
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle("Replay Code Unavailable")
-        msg_box.setText("Replay code cannot be copied for the selected result.")
-        msg_box.setInformativeText(
-            "The result has provenance, but at least one recorded input or step "
-            "cannot be converted to replayable Python, so nothing was copied."
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title="Replay Code Unavailable",
+            text="Replay code cannot be copied for the selected result.",
+            informative_text=(
+                "The result has provenance, but at least one recorded input or step "
+                "cannot be converted to replayable Python, so nothing was copied."
+            ),
+            detailed_text=self._unavailable_replay_code_dialog_details(node),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            default_button=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
         )
-        msg_box.setDetailedText(self._unavailable_replay_code_details(node))
-        msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Ok)
-        msg_box.exec()
+        dialog.exec()
 
     def _copy_full_derivation_code(self) -> None:
         node = (
