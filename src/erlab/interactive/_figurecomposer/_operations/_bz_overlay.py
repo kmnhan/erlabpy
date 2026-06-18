@@ -5,7 +5,7 @@ from __future__ import annotations
 import typing
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
@@ -273,14 +273,83 @@ def _spinbox(
     maximum: float = 1_000_000.0,
     step: float = 0.1,
     decimals: int = 4,
+    suffix: str = "",
 ) -> QtWidgets.QDoubleSpinBox:
     spinbox = QtWidgets.QDoubleSpinBox(parent)
     spinbox.setRange(minimum, maximum)
     spinbox.setDecimals(decimals)
     spinbox.setSingleStep(step)
+    spinbox.setSuffix(suffix)
     spinbox.setKeyboardTracking(False)
     spinbox.setValue(float(value))
     return spinbox
+
+
+def _kz_absolute(kz_pi_over_c: float, c: float) -> float:
+    return kz_pi_over_c * np.pi / c
+
+
+def _kz_pi_over_c(kz_absolute: float, c: float) -> float:
+    return kz_absolute * c / np.pi
+
+
+def _operation_kz_absolute(operation: FigureOperationState) -> float:
+    return _kz_absolute(operation.bz_kz_pi_over_c, operation.bz_c)
+
+
+def _set_spinbox_value(spinbox: QtWidgets.QDoubleSpinBox, value: float) -> None:
+    with QtCore.QSignalBlocker(spinbox):
+        spinbox.setValue(float(value))
+
+
+def _current_bz_operation(
+    tool: FigureComposerTool, fallback: FigureOperationState
+) -> FigureOperationState:
+    current = tool._current_operation()
+    if current is None:
+        return fallback
+    return current[1]
+
+
+def _update_bz_kz_pi_over_c(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spinbox: QtWidgets.QDoubleSpinBox,
+    value: float,
+) -> None:
+    operation = _current_bz_operation(tool, operation)
+    _set_spinbox_value(spinbox, _kz_absolute(value, operation.bz_c))
+    tool._update_current_operation(bz_kz_pi_over_c=value)
+
+
+def _update_bz_kz_absolute(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spinbox: QtWidgets.QDoubleSpinBox,
+    value: float,
+) -> None:
+    operation = _current_bz_operation(tool, operation)
+    _set_spinbox_value(spinbox, _kz_pi_over_c(value, operation.bz_c))
+    tool._update_operations(
+        lambda _index, target: target.model_copy(
+            update={"bz_kz_pi_over_c": _kz_pi_over_c(value, target.bz_c)}
+        )
+    )
+
+
+def _update_bz_c_preserve_kz_absolute(tool: FigureComposerTool, value: float) -> None:
+    new_c = float(value)
+
+    def update_c(_index: int, operation: FigureOperationState) -> FigureOperationState:
+        kz_absolute = _operation_kz_absolute(operation)
+        return operation.model_copy(
+            update={
+                "bz_c": new_c,
+                "bz_kz_pi_over_c": _kz_pi_over_c(kz_absolute, new_c),
+            }
+        )
+
+    tool._update_operations(update_c, rebuild_editor=True)
 
 
 def _lattice_spinbox(
@@ -293,6 +362,7 @@ def _lattice_spinbox(
     maximum = 1_000_000.0 if field in {"bz_a", "bz_b", "bz_c"} else 180.0
     step = 0.1 if field in {"bz_a", "bz_b", "bz_c"} else 1.0
     decimals = 4 if field in {"bz_a", "bz_b", "bz_c"} else 3
+    suffix = " Å" if field in {"bz_a", "bz_b", "bz_c"} else "°"
     return _spinbox(
         typing.cast("float", getattr(operation, field)),
         parent=parent,
@@ -300,6 +370,7 @@ def _lattice_spinbox(
         maximum=maximum,
         step=step,
         decimals=decimals,
+        suffix=suffix,
     )
 
 
@@ -314,24 +385,90 @@ def _add_spinbox_row(
     tooltip: str,
     parent: QtWidgets.QWidget,
     spinbox_factory: Callable[..., QtWidgets.QDoubleSpinBox] | None = None,
+    suffix: str = "",
+    update: Callable[[float], None] | None = None,
 ) -> None:
     mixed = tool._batch_is_mixed(operation, lambda target: getattr(target, field))
     if spinbox_factory is None:
         spinbox = _spinbox(float(getattr(operation, field)), parent=parent)
     else:
         spinbox = spinbox_factory(operation, field, parent=parent)
+    if suffix:
+        spinbox.setSuffix(suffix)
     spinbox.setObjectName(object_name)
     tool._connect_value_signal(
         spinbox,
         spinbox.valueChanged,
         float,
-        lambda value: tool._update_current_operation(**{field: value}),
+        update
+        if update is not None
+        else lambda value: tool._update_current_operation(**{field: value}),
     )
     tool._add_form_row(
         layout,
         label,
         tool._mixed_value_widget(spinbox, mixed=mixed, parent=parent),
         tooltip,
+    )
+
+
+def _build_kz_row(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    kz_pi_mixed = tool._batch_is_mixed(operation, lambda target: target.bz_kz_pi_over_c)
+    c_mixed = tool._batch_is_mixed(operation, lambda target: target.bz_c)
+    kz_pi_spin = _spinbox(
+        operation.bz_kz_pi_over_c,
+        parent=page,
+        step=0.1,
+        decimals=4,
+        suffix=" π/c",
+    )
+    kz_pi_spin.setObjectName("figureComposerBZKzSpin")
+    kz_absolute_spin = _spinbox(
+        _operation_kz_absolute(operation),
+        parent=page,
+        step=0.01,
+        decimals=4,
+        suffix=" Å⁻¹",
+    )
+    kz_absolute_spin.setObjectName("figureComposerBZKzAbsoluteSpin")
+
+    tool._connect_value_signal(
+        kz_pi_spin,
+        kz_pi_spin.valueChanged,
+        float,
+        lambda value: _update_bz_kz_pi_over_c(tool, operation, kz_absolute_spin, value),
+    )
+    tool._connect_value_signal(
+        kz_absolute_spin,
+        kz_absolute_spin.valueChanged,
+        float,
+        lambda value: _update_bz_kz_absolute(tool, operation, kz_pi_spin, value),
+    )
+
+    row = QtWidgets.QWidget(page)
+    row_layout = QtWidgets.QHBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(6)
+    row_layout.addWidget(
+        tool._mixed_value_widget(kz_pi_spin, mixed=kz_pi_mixed, parent=row),
+        1,
+    )
+    row_layout.addWidget(
+        tool._mixed_value_widget(
+            kz_absolute_spin, mixed=kz_pi_mixed or c_mixed, parent=row
+        ),
+        1,
+    )
+    tool._add_form_row(
+        layout,
+        "kz",
+        row,
+        "Fixed out-of-plane momentum for in-plane slices.",
     )
 
 
@@ -366,17 +503,9 @@ def _build_slice_editor(
         object_name="figureComposerBZAngleSpin",
         tooltip="Rotation angle in degrees.",
         parent=page,
+        suffix="°",
     )
-    _add_spinbox_row(
-        tool,
-        operation,
-        layout,
-        label="kz (pi/c)",
-        field="bz_kz_pi_over_c",
-        object_name="figureComposerBZKzSpin",
-        tooltip="Normalized kz value for in-plane slices, in units of pi/c.",
-        parent=page,
-    )
+    _build_kz_row(tool, operation, page, layout)
     _add_spinbox_row(
         tool,
         operation,
@@ -386,6 +515,7 @@ def _build_slice_editor(
         object_name="figureComposerBZKParallelSpin",
         tooltip="Fixed in-plane momentum component for out-of-plane slices.",
         parent=page,
+        suffix=" Å⁻¹",
     )
 
     bounds_text, bounds_mixed = tool._batch_text(
@@ -412,13 +542,16 @@ def _build_lattice_editor(
     page: QtWidgets.QWidget,
     layout: QtWidgets.QFormLayout,
 ) -> None:
+    def update_c(value: float) -> None:
+        _update_bz_c_preserve_kz_absolute(tool, value)
+
     for label, field, object_name in (
         ("a", "bz_a", "figureComposerBZAEdit"),
         ("b", "bz_b", "figureComposerBZBEdit"),
         ("c", "bz_c", "figureComposerBZCEdit"),
-        ("alpha", "bz_alpha", "figureComposerBZAlphaEdit"),
-        ("beta", "bz_beta", "figureComposerBZBetaEdit"),
-        ("gamma", "bz_gamma", "figureComposerBZGammaEdit"),
+        ("α", "bz_alpha", "figureComposerBZAlphaEdit"),
+        ("β", "bz_beta", "figureComposerBZBetaEdit"),
+        ("γ", "bz_gamma", "figureComposerBZGammaEdit"),
     ):
         _add_spinbox_row(
             tool,
@@ -430,6 +563,7 @@ def _build_lattice_editor(
             tooltip=f"Lattice parameter {label}.",
             parent=page,
             spinbox_factory=_lattice_spinbox,
+            update=update_c if field == "bz_c" else None,
         )
 
     centering_mixed = tool._batch_is_mixed(
@@ -659,11 +793,16 @@ def _section_summary(
             return tool._axes_target_text(operation.axes)
         case "slice":
             if operation.bz_mode == "out_of_plane":
-                return f"out-of-plane, k={operation.bz_k_parallel:g}"
-            return f"in-plane, kz={operation.bz_kz_pi_over_c:g} pi/c"
+                return f"OOP, k={operation.bz_k_parallel:g} Å⁻¹"
+            return (
+                f"IP, kz={operation.bz_kz_pi_over_c:g} π/c; "
+                f"{_operation_kz_absolute(operation):g} Å⁻¹"
+            )
         case "lattice":
             return (
-                f"{operation.bz_a:g}, {operation.bz_b:g}, {operation.bz_c:g}; "
+                f"a={operation.bz_a:g} Å, b={operation.bz_b:g} Å, "
+                f"c={operation.bz_c:g} Å; α={operation.bz_alpha:g}°, "
+                f"β={operation.bz_beta:g}°, γ={operation.bz_gamma:g}°; "
                 f"{operation.bz_centering_type}"
             )
         case "style":

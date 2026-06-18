@@ -247,6 +247,7 @@ class FigureOperationKind(enum.StrEnum):
     PLOT_SLICES = "plot_slices"
     LINE = "line"
     BZ_OVERLAY = "bz_overlay"
+    PHOTON_ENERGY_OVERLAY = "photon_energy_overlay"
     METHOD = "method"
     CUSTOM = "custom"
 
@@ -390,6 +391,13 @@ class FigureOperationState(pydantic.BaseModel):
     bz_vertex_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     bz_midpoint_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
+    hv_overlay_source: str | None = None
+    photon_energies: tuple[float, ...] = ()
+    binding_energy: float | None = None
+    show_legend: bool = True
+    legend_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    label_template: str = r"$h\nu = {hv:g}$ eV"
+
     method_family: FigureMethodFamily = FigureMethodFamily.ERLAB
     method_name: str = "clean_labels"
     method_args: tuple[typing.Any, ...] = ()
@@ -460,6 +468,23 @@ class FigureOperationState(pydantic.BaseModel):
             label=label,
             axes=axes or FigureAxesSelectionState(),
             bz_mode=mode,
+        )
+
+    @classmethod
+    def photon_energy_overlay(
+        cls,
+        *,
+        label: str = "Photon energy overlay",
+        source: str | None,
+        axes: FigureAxesSelectionState | None = None,
+        binding_energy: float | None = None,
+    ) -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.PHOTON_ENERGY_OVERLAY,
+            label=label,
+            axes=axes or FigureAxesSelectionState(),
+            hv_overlay_source=source,
+            binding_energy=binding_energy,
         )
 
     @classmethod

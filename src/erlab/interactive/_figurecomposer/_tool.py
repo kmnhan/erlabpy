@@ -3792,16 +3792,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @staticmethod
     def _operation_source_names(operation: FigureOperationState) -> tuple[str, ...]:
-        names: list[str] = []
-        for source_name in operation.sources:
-            if source_name not in names:
-                names.append(source_name)
-        for selection in operation.map_selections:
-            if selection.source not in names:
-                names.append(selection.source)
-        if operation.line_source is not None and operation.line_source not in names:
-            names.append(operation.line_source)
-        return tuple(names)
+        return _registry.spec_for(operation.kind).source_names(operation)
 
     def _clipboard(self) -> QtGui.QClipboard | None:
         application = QtWidgets.QApplication.instance()
@@ -3942,6 +3933,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if operation.line_source is not None:
             updates["line_source"] = rename_map.get(
                 operation.line_source, operation.line_source
+            )
+        if operation.hv_overlay_source is not None:
+            updates["hv_overlay_source"] = rename_map.get(
+                operation.hv_overlay_source, operation.hv_overlay_source
             )
         if not updates:
             return operation

@@ -1,5 +1,6 @@
 import ast
 import contextlib
+import functools
 import gc
 import json
 import typing
@@ -78,6 +79,9 @@ from erlab.interactive._figurecomposer._operations import (
     _method as figurecomposer_method,
 )
 from erlab.interactive._figurecomposer._operations import (
+    _photon_energy as figurecomposer_photon_energy,
+)
+from erlab.interactive._figurecomposer._operations import (
     _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._figurecomposer._seeding import (
@@ -91,6 +95,7 @@ from erlab.interactive._figurecomposer._toolbar_dialogs import (
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool, provenance
+from erlab.io.exampledata import generate_hvdep_cuts
 from tests.interactive.imagetool.manager.helpers import (
     InMemoryClipboard,
     _exec_generated_code,
@@ -387,6 +392,7 @@ def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
         figurecomposer_custom_code,
         figurecomposer_line_profile,
         figurecomposer_method,
+        figurecomposer_photon_energy,
         figurecomposer_plot_slices,
     )
     direct_connects: list[str] = []
@@ -14145,17 +14151,31 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     assert page is not None
     mode_combo = page.findChild(QtWidgets.QComboBox, "figureComposerBZModeCombo")
     angle_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAngleSpin")
+    kz_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZKzSpin")
+    kz_absolute_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerBZKzAbsoluteSpin"
+    )
     k_parallel_spin = page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerBZKParallelSpin"
     )
     bounds_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZBoundsEdit")
     assert mode_combo is not None
     assert angle_spin is not None
+    assert kz_spin is not None
+    assert kz_absolute_spin is not None
     assert k_parallel_spin is not None
     assert bounds_edit is not None
+    assert angle_spin.suffix() == "°"
+    assert kz_spin.suffix() == " π/c"
+    assert kz_absolute_spin.suffix() == " Å⁻¹"
+    assert k_parallel_spin.suffix() == " Å⁻¹"
 
     _activate_combo_text(mode_combo, "Out-of-plane")
     angle_spin.setValue(30.0)
+    kz_spin.setValue(0.5)
+    assert np.isclose(kz_absolute_spin.value(), np.pi / 2.0)
+    kz_absolute_spin.setValue(0.25)
+    assert np.isclose(kz_spin.value(), 0.25 / np.pi, atol=5e-5)
     k_parallel_spin.setValue(0.25)
     bounds_edit.setText("-2, 2, -3, 3")
     bounds_edit.editingFinished.emit()
@@ -14163,12 +14183,28 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     tool._select_step_section("lattice")
     page = tool.step_editor_stack.currentWidget()
     assert page is not None
+    a_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAEdit")
+    b_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZBEdit")
     c_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZCEdit")
+    alpha_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAlphaEdit")
+    beta_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZBetaEdit")
+    gamma_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZGammaEdit")
     centering_combo = page.findChild(
         QtWidgets.QComboBox, "figureComposerBZCenteringCombo"
     )
+    assert a_spin is not None
+    assert b_spin is not None
     assert c_spin is not None
+    assert alpha_spin is not None
+    assert beta_spin is not None
+    assert gamma_spin is not None
     assert centering_combo is not None
+    assert a_spin.suffix() == " Å"
+    assert b_spin.suffix() == " Å"
+    assert c_spin.suffix() == " Å"
+    assert alpha_spin.suffix() == "°"
+    assert beta_spin.suffix() == "°"
+    assert gamma_spin.suffix() == "°"
     c_spin.setValue(4.5)
     _activate_combo_text(centering_combo, "F")
 
@@ -14203,12 +14239,17 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     updated = tool.tool_status.operations[0]
     assert updated.bz_mode == "out_of_plane"
     assert updated.bz_angle == 30.0
+    assert np.isclose(updated.bz_kz_pi_over_c, 0.25 * 4.5 / np.pi)
     assert updated.bz_k_parallel == 0.25
     assert updated.bz_bounds == (-2.0, 2.0, -3.0, 3.0)
     assert updated.bz_c == 4.5
     assert updated.bz_centering_type == "F"
     assert updated.bz_vertices is True
     assert updated.bz_vertex_kw == {"s": 12, "color": "tab:green"}
+    assert (
+        figurecomposer_bz_overlay._section_summary(tool, "slice", updated)
+        == "OOP, k=0.25 Å⁻¹"
+    )
     assert updated.line_kw == {
         "color": "tab:red",
         "linestyle": "-.",
@@ -14356,6 +14397,14 @@ def test_figure_composer_bz_overlay_text_parsers() -> None:
     for text in ("'not bounds'", "1, 2, 3", "1, 2, 3, object()"):
         with pytest.raises(ValueError, match="four comma-separated numbers"):
             figurecomposer_bz_overlay._bounds_from_text(text)
+
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),))
+    ).model_copy(update={"bz_kz_pi_over_c": 0.5, "bz_c": 4.0})
+    tool = _bz_tool(operation)
+    assert figurecomposer_bz_overlay._section_summary(tool, "slice", operation) == (
+        f"IP, kz=0.5 π/c; {np.pi / 8:g} Å⁻¹"
+    )
 
 
 def test_figure_composer_bz_overlay_generated_code_static_centering(qtbot) -> None:
@@ -14569,6 +14618,571 @@ def test_figure_composer_bz_overlay_ktool_seeding_uses_fixed_coord_median() -> N
     assert operation is not None
     assert operation.bz_mode == "out_of_plane"
     assert operation.bz_k_parallel == np.nanmedian(ky_values)
+
+
+@functools.cache
+def _cached_photon_energy_source(configuration: int) -> xr.DataArray:
+    data = generate_hvdep_cuts((5, 24, 20), seed=1)
+    data.kspace.inner_potential = 10.0
+    data.attrs["configuration"] = configuration
+    return data.kspace.convert(silent=True)
+
+
+def _photon_energy_source(
+    configuration: int = 1, *, name: str = "hvdep_kconv"
+) -> xr.DataArray:
+    data = _cached_photon_energy_source(configuration).copy(deep=True)
+    data.name = name
+    return data
+
+
+def _photon_energy_tool(
+    operation: FigureOperationState,
+    data: xr.DataArray,
+    *,
+    setup: FigureSubplotsState | None = None,
+    extra_source_data: dict[str, xr.DataArray] | None = None,
+) -> FigureComposerTool:
+    source_name = str(data.name or "hvdep_kconv")
+    source_data = {source_name: data}
+    if extra_source_data:
+        source_data.update(extra_source_data)
+    sources = tuple(FigureSourceState(name=name, label=name) for name in source_data)
+    return FigureComposerTool.from_sources(
+        source_data,
+        sources=sources,
+        operations=(operation,),
+        setup=setup or FigureSubplotsState(),
+        primary_source=source_name,
+    )
+
+
+def _assert_photon_energy_lines_match(
+    lines: Sequence[typing.Any], expected: xr.DataArray, x_dim: str
+) -> None:
+    assert len(lines) == expected.sizes["hv"]
+    for index, line in enumerate(lines):
+        kz = expected.isel(hv=index)
+        np.testing.assert_allclose(line.get_xdata(), kz[x_dim].values)
+        np.testing.assert_allclose(line.get_ydata(), kz.values)
+        assert line.get_label() == f"$h\\nu = {kz.hv:g}$ eV"
+
+
+def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> None:
+    data = _photon_energy_source()
+    other_data = _photon_energy_source(name="other_kconv")
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    ).model_copy(update={"photon_energies": (30.0,)})
+    tool = _photon_energy_tool(
+        operation,
+        data,
+        extra_source_data={"other_kconv": other_data},
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    source_combo = next(
+        (
+            combo
+            for combo in tool.step_source_controls.findChildren(
+                QtWidgets.QComboBox, "figureComposerPhotonEnergySourceCombo"
+            )
+            if combo.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert source_combo is not None
+    other_index = source_combo.findData("other_kconv")
+    assert other_index >= 0
+    _activate_combo_index(source_combo, other_index)
+
+    tool._select_step_section("photon")
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    energies_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyValuesEdit"
+    )
+    binding_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyBindingEnergyEdit"
+    )
+    assert energies_edit is not None
+    assert binding_edit is not None
+    energies_edit.setText("30, 45, 60")
+    energies_edit.editingFinished.emit()
+    binding_edit.setText("-0.3")
+    binding_edit.editingFinished.emit()
+
+    tool._select_step_section("style")
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    color_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyColorEdit"
+    )
+    line_style_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerPhotonEnergyLineStyleCombo"
+    )
+    line_width_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerPhotonEnergyLineWidthSpin"
+    )
+    legend_check = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerPhotonEnergyLegendCheck"
+    )
+    legend_kw_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyLegendKwEdit"
+    )
+    label_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyLabelTemplateEdit"
+    )
+    assert color_edit is not None
+    assert line_style_combo is not None
+    assert line_width_spin is not None
+    assert legend_check is not None
+    assert legend_kw_edit is not None
+    assert label_edit is not None
+
+    color_edit.setText("tab:red")
+    color_edit.editingFinished.emit()
+    _activate_combo_text(line_style_combo, "--")
+    line_width_spin.setValue(1.5)
+    legend_check.setChecked(False)
+    legend_kw_edit.setText("title='Photon energy', frameon=False")
+    legend_kw_edit.editingFinished.emit()
+    label_edit.setText("hv={hv:g} eV")
+    label_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.hv_overlay_source == "other_kconv"
+    assert updated.photon_energies == (30.0, 45.0, 60.0)
+    assert updated.binding_energy == -0.3
+    assert updated.show_legend is False
+    assert updated.legend_kw == {"title": "Photon energy", "frameon": False}
+    assert updated.label_template == "hv={hv:g} eV"
+    assert updated.line_kw == {
+        "color": "tab:red",
+        "linestyle": "--",
+        "linewidth": 1.5,
+    }
+
+
+def test_figure_composer_photon_energy_overlay_state_round_trip() -> None:
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    ).model_copy(
+        update={
+            "photon_energies": (30.0, 45.0, 60.0),
+            "show_legend": False,
+            "legend_kw": {"title": "Photon energy", "frameon": False},
+            "label_template": "hv={hv:g}",
+            "line_kw": {"color": "tab:green", "linewidth": 1.25},
+        }
+    )
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        operations=(operation,),
+        primary_source="hvdep_kconv",
+    )
+
+    restored = FigureRecipeState.model_validate(recipe.model_dump(mode="json"))
+
+    assert restored.operations[0].kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
+    assert restored.operations[0].hv_overlay_source == "hvdep_kconv"
+    assert restored.operations[0].photon_energies == (30.0, 45.0, 60.0)
+    assert restored.operations[0].binding_energy == -0.3
+    assert restored.operations[0].show_legend is False
+    assert restored.operations[0].legend_kw == {
+        "title": "Photon energy",
+        "frameon": False,
+    }
+    assert restored.operations[0].label_template == "hv={hv:g}"
+    assert restored.operations[0].line_kw == {
+        "color": "tab:green",
+        "linewidth": 1.25,
+    }
+
+
+@pytest.mark.parametrize(("configuration", "x_dim"), [(1, "kx"), (2, "ky")])
+def test_figure_composer_photon_energy_overlay_render_and_code(
+    qtbot, configuration: int, x_dim: str
+) -> None:
+    data = _photon_energy_source(configuration)
+    hv_values = (30.0, 45.0, 60.0)
+    binding_energy = -0.3
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=binding_energy,
+    ).model_copy(
+        update={
+            "photon_energies": hv_values,
+            "line_kw": {"color": "tab:blue", "linewidth": 1.5},
+            "legend_kw": {"title": "Photon energy", "frameon": False},
+        }
+    )
+    tool = _photon_energy_tool(operation, data)
+    qtbot.addWidget(tool)
+
+    figure = Figure(figsize=(3, 3))
+    FigureCanvasAgg(figure)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+
+    expected = data.kspace.hv_to_kz(list(hv_values)).qsel(eV=binding_energy)
+    axis = figure.axes[0]
+    _assert_photon_energy_lines_match(axis.lines, expected, x_dim)
+    assert axis.get_legend() is not None
+    assert axis.get_legend().get_title().get_text() == "Photon energy"
+    assert axis.get_legend().get_frame_on() is False
+    assert all(line.get_color() == "tab:blue" for line in axis.lines)
+    assert all(line.get_linewidth() == 1.5 for line in axis.lines)
+
+    code = tool.generated_code()
+    assert "import erlab" in code
+    assert "kz_values = hvdep_kconv.kspace.hv_to_kz([30, 45, 60]).qsel(eV=-0.3)" in code
+    assert "for i in range(len(kz_values.hv)):" in code
+    assert f"axs[0, 0].plot(kz.{x_dim}, kz, label=rf" in code
+    assert "ax.legend()" not in code
+    assert 'axs[0, 0].legend(title="Photon energy", frameon=False)' in code
+
+    namespace = _exec_generated_code(code, {"hvdep_kconv": data})
+    generated_axis = namespace["fig"].axes[0]
+    _assert_photon_energy_lines_match(generated_axis.lines, expected, x_dim)
+    assert generated_axis.get_legend() is not None
+    assert generated_axis.get_legend().get_title().get_text() == "Photon energy"
+    assert generated_axis.get_legend().get_frame_on() is False
+
+
+def test_figure_composer_photon_energy_overlay_multiple_axes_code(qtbot) -> None:
+    data = _photon_energy_source()
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        binding_energy=-0.3,
+    ).model_copy(update={"photon_energies": (30.0, 45.0), "show_legend": False})
+    tool = _photon_energy_tool(
+        operation,
+        data,
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "for ax in axs.flat:\n    for i in range(len(kz_values.hv)):" in code
+    assert "        ax.plot(kz.kx, kz, label=rf" in code
+    assert "legend()" not in code
+
+    namespace = _exec_generated_code(code, {"hvdep_kconv": data})
+    expected = data.kspace.hv_to_kz([30.0, 45.0]).qsel(eV=-0.3)
+    for axis in namespace["fig"].axes:
+        _assert_photon_energy_lines_match(axis.lines, expected, "kx")
+        assert axis.get_legend() is None
+
+
+def test_figure_composer_photon_energy_overlay_custom_label_code(qtbot) -> None:
+    data = _photon_energy_source()
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    ).model_copy(
+        update={
+            "photon_energies": (30.0, 45.0),
+            "label_template": "hv={hv:g} eV",
+            "show_legend": False,
+        }
+    )
+    tool = _photon_energy_tool(operation, data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert ".format(hv=kz.hv)" in code
+    assert 'rf"$h\\nu' not in code
+    assert "legend()" not in code
+
+    namespace = _exec_generated_code(code, {"hvdep_kconv": data})
+    expected = data.kspace.hv_to_kz([30.0, 45.0]).qsel(eV=-0.3)
+    axis = namespace["fig"].axes[0]
+    assert axis.get_legend() is None
+    assert [line.get_label() for line in axis.lines] == [
+        f"hv={expected.isel(hv=index).hv:g} eV" for index in range(expected.sizes["hv"])
+    ]
+
+
+def test_figure_composer_photon_energy_overlay_expression_axes_code(qtbot) -> None:
+    data = _photon_energy_source()
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(expression="axs[0, :]"),
+        binding_energy=-0.3,
+    ).model_copy(update={"photon_energies": (30.0, 45.0)})
+    tool = _photon_energy_tool(
+        operation,
+        data,
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "for ax in axs[0, :]:\n    for i in range(len(kz_values.hv)):" in code
+    assert "    ax.legend()" in code
+
+    namespace = _exec_generated_code(code, {"hvdep_kconv": data})
+    expected = data.kspace.hv_to_kz([30.0, 45.0]).qsel(eV=-0.3)
+    for axis in namespace["fig"].axes:
+        _assert_photon_energy_lines_match(axis.lines, expected, "kx")
+        assert axis.get_legend() is not None
+
+
+def test_figure_composer_photon_energy_overlay_blocks_invalid_inputs(qtbot) -> None:
+    data = _photon_energy_source()
+    missing_values = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    )
+    missing_values_tool = _photon_energy_tool(missing_values, data)
+    qtbot.addWidget(missing_values_tool)
+    with pytest.raises(ValueError, match="at least one photon energy"):
+        missing_values_tool.generated_code()
+
+    unselected_energy = missing_values.model_copy(
+        update={"photon_energies": (30.0,), "binding_energy": None}
+    )
+    unselected_tool = _photon_energy_tool(unselected_energy, data)
+    qtbot.addWidget(unselected_tool)
+    with pytest.raises(ValueError, match="Select a binding energy"):
+        unselected_tool.generated_code()
+
+    invalid_axes = missing_values.model_copy(
+        update={"axes": FigureAxesSelectionState(axes=((0, 1),))}
+    )
+    invalid_axes_tool = _photon_energy_tool(invalid_axes, data)
+    qtbot.addWidget(invalid_axes_tool)
+    with pytest.raises(ValueError, match="target axes"):
+        invalid_axes_tool.generated_code()
+
+    invalid_source = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 1.0], "ky": [-1.0, 1.0]},
+        name="hvdep_kconv",
+    )
+    invalid_source_operation = missing_values.model_copy(
+        update={"photon_energies": (30.0,)}
+    )
+    invalid_source_tool = _photon_energy_tool(invalid_source_operation, invalid_source)
+    qtbot.addWidget(invalid_source_tool)
+    with pytest.raises(ValueError, match="kx-kz or ky-kz"):
+        invalid_source_tool.generated_code()
+
+    no_source_operation = missing_values.model_copy(update={"hv_overlay_source": None})
+    no_source_tool = _photon_energy_tool(no_source_operation, data)
+    qtbot.addWidget(no_source_tool)
+    with pytest.raises(ValueError, match="Select a source"):
+        no_source_tool.generated_code()
+
+    missing_source_operation = missing_values.model_copy(
+        update={"hv_overlay_source": "missing"}
+    )
+    missing_source_tool = _photon_energy_tool(missing_source_operation, data)
+    qtbot.addWidget(missing_source_tool)
+    with pytest.raises(ValueError, match="Source 'missing' is missing"):
+        missing_source_tool.generated_code()
+
+    figure = Figure(figsize=(3, 3))
+    FigureCanvasAgg(figure)
+    figurecomposer_rendering._render_into_figure(
+        missing_values_tool, figure, sync_visible=False
+    )
+    assert (
+        "at least one photon energy"
+        in missing_values_tool._operation_render_errors[missing_values.operation_id]
+    )
+
+
+def test_figure_composer_photon_energy_overlay_helper_edges(qtbot) -> None:
+    assert figurecomposer_photon_energy._optional_float_from_text("") is None
+    assert figurecomposer_photon_energy._optional_float_from_text(" -0.3 ") == -0.3
+    with pytest.raises(ValueError, match="one number"):
+        figurecomposer_photon_energy._optional_float_from_text("bad")
+    assert figurecomposer_photon_energy._photon_energies_from_text("30, 45") == (
+        30.0,
+        45.0,
+    )
+
+    data = _photon_energy_source()
+    operation = FigureOperationState.photon_energy_overlay(
+        source=None,
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    ).model_copy(update={"photon_energies": (30.0,)})
+    tool = _photon_energy_tool(operation, data)
+    qtbot.addWidget(tool)
+
+    assert (
+        figurecomposer_photon_energy._section_summary(tool, "sources", operation)
+        == "none"
+    )
+    with pytest.raises(ValueError, match="Select a source"):
+        figurecomposer_photon_energy._source_data(tool, operation)
+
+    kz_values = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("hv", "angle"),
+        coords={"hv": [30.0, 45.0], "angle": [0.0, 1.0, 2.0]},
+    )
+    with pytest.raises(ValueError, match="kx-kz or ky-kz"):
+        figurecomposer_photon_energy._photon_x_dim(data, kz_values)
+
+    class FakeKspace:
+        slit_axis = "kx"
+
+        @staticmethod
+        def hv_to_kz(values: Sequence[float]) -> xr.DataArray:
+            return xr.DataArray(
+                np.zeros((len(values), 2, 2)),
+                dims=("hv", "kx", "temperature"),
+                coords={
+                    "hv": list(values),
+                    "kx": [-1.0, 1.0],
+                    "temperature": [20.0, 30.0],
+                },
+            )
+
+    class FakeKParallelKzData:
+        dims = ("kx", "kz")
+        kspace = FakeKspace()
+
+        def squeeze(self, *, drop: bool):
+            return self
+
+    extra_dim_operation = operation.model_copy(update={"binding_energy": None})
+    with pytest.raises(ValueError, match="hv and one momentum dimension"):
+        figurecomposer_photon_energy._kz_values(
+            FakeKParallelKzData(), extra_dim_operation
+        )
+
+
+def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding(
+    qtbot,
+) -> None:
+    data = _photon_energy_source()
+    plot_operation = FigureOperationState.plot_slices(
+        label="hvdep",
+        sources=("hvdep_kconv",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        slice_dim="eV",
+        slice_values=(-0.3,),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"hvdep_kconv": data},
+        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        operations=(plot_operation,),
+        setup=FigureSubplotsState(),
+        primary_source="hvdep_kconv",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    action = next(
+        action
+        for action in tool.add_step_menu.actions()
+        if action.data() == FigureOperationKind.PHOTON_ENERGY_OVERLAY.value
+    )
+    action.trigger()
+
+    operation = tool.tool_status.operations[-1]
+    assert operation.kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
+    assert operation.hv_overlay_source == "hvdep_kconv"
+    assert operation.binding_energy == -0.3
+    assert operation.photon_energies == ()
+
+
+def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
+    data = _photon_energy_source()
+    unused_data = _photon_energy_source(name="unused")
+    tool = FigureComposerTool.from_sources(
+        {"unused": unused_data, "hvdep_kconv": data},
+        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        operations=(),
+        setup=FigureSubplotsState(),
+        primary_source="unused",
+    )
+    qtbot.addWidget(tool)
+
+    assert figurecomposer_photon_energy._seed_source(tool) == "hvdep_kconv"
+    assert figurecomposer_photon_energy._seed_binding_energy(tool) is None
+
+    line_operation = FigureOperationState.line(
+        label="line", source="hvdep_kconv", axes=FigureAxesSelectionState()
+    )
+    line_tool = FigureComposerTool.from_sources(
+        {"hvdep_kconv": data},
+        sources=(FigureSourceState(name="hvdep_kconv", label="hvdep_kconv"),),
+        operations=(line_operation,),
+        setup=FigureSubplotsState(),
+        primary_source="hvdep_kconv",
+    )
+    qtbot.addWidget(line_tool)
+    line_tool.operation_list.setCurrentRow(0)
+
+    assert figurecomposer_photon_energy._seed_source(line_tool) == "hvdep_kconv"
+    assert figurecomposer_photon_energy._seed_binding_energy(line_tool) is None
+
+
+def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
+    qtbot,
+) -> None:
+    data = _photon_energy_source()
+    existing_data = _photon_energy_source(name="hvdep_kconv")
+    unused_data = _photon_energy_source(name="unused")
+    operation = FigureOperationState.photon_energy_overlay(
+        source="hvdep_kconv",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        binding_energy=-0.3,
+    ).model_copy(update={"photon_energies": (30.0,)})
+    source_tool = _photon_energy_tool(
+        operation,
+        data,
+        extra_source_data={"unused": unused_data},
+    )
+    destination = _photon_energy_tool(
+        FigureOperationState.photon_energy_overlay(
+            source="hvdep_kconv",
+            axes=FigureAxesSelectionState(axes=((0, 0),)),
+            binding_energy=-0.3,
+        ).model_copy(update={"photon_energies": (45.0,)}),
+        existing_data,
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    _clear_clipboard()
+
+    assert not source_tool._source_removable("hvdep_kconv")
+    assert source_tool._source_removable("unused")
+
+    _select_operation_rows(source_tool, (0,))
+    source_tool.copy_operation_button.click()
+    payload = source_tool._clipboard_step_payload()
+    assert payload is not None
+    _operations, sources, source_data = payload
+    assert [source.name for source in sources] == ["hvdep_kconv"]
+    xr.testing.assert_identical(source_data["hvdep_kconv"], data)
+
+    destination._paste_operations_from_clipboard()
+
+    pasted = destination.tool_status.operations[-1]
+    assert pasted.hv_overlay_source == "hvdep_kconv_copy"
+    assert [source.name for source in destination.tool_status.sources] == [
+        "hvdep_kconv",
+        "hvdep_kconv_copy",
+    ]
+    xr.testing.assert_identical(destination.source_data()["hvdep_kconv"], existing_data)
+    xr.testing.assert_identical(destination.source_data()["hvdep_kconv_copy"], data)
 
 
 def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
