@@ -163,7 +163,7 @@ def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(
     explorer = win.current_explorer
     assert isinstance(explorer, _PreviewTrackingExplorer)
 
-    win.closeEvent(QtGui.QCloseEvent())
+    win.close()
 
     assert win.tab_widget.count() == 1
     assert win.current_explorer is explorer
@@ -208,7 +208,7 @@ def test_explorer_close_stops_preview_workers(
     explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
 
-    explorer.closeEvent(QtGui.QCloseEvent())
+    explorer.close()
 
     assert explorer.stopped_preview_workers
 
