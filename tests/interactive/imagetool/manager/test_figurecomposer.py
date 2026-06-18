@@ -18224,7 +18224,14 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
         manager.tree_view.clearSelection()
         select_child_tool(manager, figure_uid)
         manager._update_info(uid=figure_uid)
-        assert manager.metadata_derivation_list.count() == 4
+        assert manager.metadata_derivation_list.topLevelItemCount() == 4
+        assert manager.metadata_derivation_list.count() == 6
+        child_counts: list[int] = []
+        for row in range(manager.metadata_derivation_list.topLevelItemCount()):
+            item = manager.metadata_derivation_list.topLevelItem(row)
+            assert item is not None
+            child_counts.append(item.childCount())
+        assert child_counts == [0, 1, 1, 0]
 
         copied: list[str] = []
         monkeypatch.setattr(

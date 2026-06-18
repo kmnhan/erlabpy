@@ -17,6 +17,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _CenteredIconToolButton,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
+    _MetadataDerivationTreeItem,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -116,36 +117,44 @@ class _DetailsPanelController:
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
             for row in node.derivation_display_rows:
-                entry = row.entry
-                item = QtWidgets.QListWidgetItem(entry.label)
-                can_activate, activation_reason = (
-                    self._manager._provenance_edit_controller.can_edit_row(row)
+                self._manager.metadata_derivation_list.addItem(
+                    self._metadata_derivation_item(row)
                 )
-                tooltip_lines = [entry.label]
-                if not can_activate and activation_reason:
-                    tooltip_lines.extend(("", activation_reason))
-                if (
-                    not entry.copyable
-                    and entry.code is None
-                    and not entry.label.startswith("Start from ")
-                ):
-                    tooltip_lines.extend(
-                        ("", "Replay code is unavailable for this step.")
-                    )
-                item.setToolTip("\n".join(tooltip_lines))
-                item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
-                item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
-                item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
-                item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
-                if not can_activate:
-                    item.setForeground(
-                        self._manager.metadata_derivation_list.palette().color(
-                            QtGui.QPalette.ColorGroup.Disabled,
-                            QtGui.QPalette.ColorRole.Text,
-                        )
-                    )
-                self._manager.metadata_derivation_list.addItem(item)
         self._manager._update_metadata_pane()
+
+    def _metadata_derivation_item(
+        self,
+        row: provenance._ProvenanceDisplayRow,
+    ) -> _MetadataDerivationTreeItem:
+        entry = row.entry
+        item = _MetadataDerivationTreeItem(entry.label)
+        can_activate, activation_reason = (
+            self._manager._provenance_edit_controller.can_edit_row(row)
+        )
+        tooltip_lines = [entry.label]
+        if not can_activate and activation_reason:
+            tooltip_lines.extend(("", activation_reason))
+        if (
+            not entry.copyable
+            and entry.code is None
+            and not entry.label.startswith("Start from ")
+        ):
+            tooltip_lines.extend(("", "Replay code is unavailable for this step."))
+        item.setToolTip("\n".join(tooltip_lines))
+        item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
+        item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
+        item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
+        item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
+        if not can_activate:
+            item.setForeground(
+                self._manager.metadata_derivation_list.palette().color(
+                    QtGui.QPalette.ColorGroup.Disabled,
+                    QtGui.QPalette.ColorRole.Text,
+                )
+            )
+        for child_row in row.children:
+            item.addChild(self._metadata_derivation_item(child_row))
+        return item
 
     def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
         layout = self._manager.metadata_details_layout
@@ -381,8 +390,9 @@ class _DetailsPanelController:
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._manager._metadata_detail_labels)
         derivation_count = self._manager.metadata_derivation_list.count()
+        has_metadata = has_details or derivation_count > 0
 
-        self._manager.metadata_group.setVisible(has_details or derivation_count > 0)
+        self._manager.metadata_group.setVisible(has_metadata)
         self._manager.metadata_details_widget.setVisible(has_details)
         self._manager.metadata_derivation_list.setVisible(derivation_count > 0)
 
@@ -397,17 +407,26 @@ class _DetailsPanelController:
             frame = self._manager.metadata_derivation_list.frameWidth() * 2
             height = visible_rows * row_height + frame + 4
             self._manager.metadata_derivation_list.setMinimumHeight(height)
-            self._manager.metadata_derivation_list.setMaximumHeight(height)
+            self._manager.metadata_derivation_list.setMaximumHeight(
+                QtWidgets.QWIDGETSIZE_MAX
+            )
 
         self._manager.metadata_details_widget.updateGeometry()
         self._manager.metadata_derivation_list.updateGeometry()
         self._manager.metadata_details_widget.sync_height_for_width()
-        self._manager.metadata_group.sync_height_for_width()
         self._manager.metadata_group.updateGeometry()
 
-    def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
-        items = list(self._manager.metadata_derivation_list.selectedItems())
-        return sorted(items, key=self._manager.metadata_derivation_list.row)
+    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
+        items = typing.cast(
+            "list[_MetadataDerivationTreeItem]",
+            list(self._manager.metadata_derivation_list.selectedItems()),
+        )
+        display_order = getattr(
+            self._manager.metadata_derivation_list,
+            "display_order",
+            self._manager.metadata_derivation_list.row,
+        )
+        return sorted(items, key=display_order)
 
     def _selected_derivation_code(self) -> str | None:
         codes: list[str] = []

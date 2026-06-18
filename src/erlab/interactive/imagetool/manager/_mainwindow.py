@@ -40,6 +40,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _HeightForWidthFrame,
     _manager_settings,
     _MetadataDerivationListWidget,
+    _MetadataDerivationTreeItem,
     _SingleImagePreview,
     _StandaloneAppSpec,
     _WarningEmitter,
@@ -1076,6 +1077,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.main_splitter.addWidget(right_panel)
 
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)
         self.right_splitter.splitterMoved.connect(
             lambda _pos, _index: self._mark_workspace_layout_dirty()
         )
@@ -1088,11 +1090,11 @@ class ImageToolManager(_ImageToolManagerBase):
         self.preview_widget = _SingleImagePreview(self)
         self.right_splitter.addWidget(self.preview_widget)
 
-        self.metadata_group = _HeightForWidthFrame(self)
+        self.metadata_group = QtWidgets.QFrame(self)
         self.metadata_group.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.metadata_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
         metadata_layout = QtWidgets.QVBoxLayout(self.metadata_group)
         metadata_layout.setContentsMargins(0, 0, 0, 0)
@@ -1113,7 +1115,7 @@ class ImageToolManager(_ImageToolManagerBase):
             QtWidgets.QSizePolicy.Policy.Maximum,
         )
         self.metadata_details_widget.setVisible(False)
-        metadata_layout.addWidget(self.metadata_details_widget)
+        metadata_layout.addWidget(self.metadata_details_widget, 0)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
         self._metadata_monospace_font = QtGui.QFontDatabase.systemFont(
             QtGui.QFontDatabase.SystemFont.FixedFont
@@ -1121,6 +1123,10 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.metadata_derivation_list = _MetadataDerivationListWidget(
             self.metadata_group
+        )
+        self.metadata_derivation_list.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
         )
         self.metadata_derivation_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
@@ -1147,14 +1153,17 @@ class ImageToolManager(_ImageToolManagerBase):
             self._show_metadata_derivation_menu
         )
         self.metadata_derivation_list.itemActivated.connect(
-            self._activate_selected_derivation_step
+            lambda _item, _column: self._activate_selected_derivation_step()
         )
         self.metadata_derivation_list.setVisible(False)
-        metadata_layout.addWidget(self.metadata_derivation_list)
-        right_layout.addWidget(self.metadata_group, 0)
+        metadata_layout.addWidget(self.metadata_derivation_list, 1)
+        self.right_splitter.addWidget(self.metadata_group)
+        self.right_splitter.setStretchFactor(0, 2)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setStretchFactor(2, 1)
 
         # Set initial splitter sizes
-        self.right_splitter.setSizes([280, 140])
+        self.right_splitter.setSizes([260, 140, 100])
         self.main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows
@@ -2788,7 +2797,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _update_metadata_pane(self) -> None:
         self._details_panel._update_metadata_pane()
 
-    def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
+    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
         return self._details_panel._selected_derivation_items()
 
     def _selected_derivation_code(self) -> str | None:
@@ -2818,7 +2827,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._edit_selected_derivation_step()
 
     def _activate_selected_derivation_step(
-        self, _item: QtWidgets.QListWidgetItem | None = None
+        self, _item: QtWidgets.QTreeWidgetItem | None = None
     ) -> None:
         self._details_panel._activate_selected_derivation_step()
 

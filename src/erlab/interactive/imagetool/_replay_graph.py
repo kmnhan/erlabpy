@@ -325,22 +325,6 @@ def _simple_assignment_source_name(code: str, target_name: str) -> str | None:
     return None
 
 
-def _script_codes_output_name(
-    codes: Sequence[str],
-    *,
-    active_name: str,
-    current_name: str | None,
-) -> str | None:
-    candidates = [active_name]
-    for name in (current_name, "derived"):
-        if name is not None and name not in candidates:
-            candidates.append(name)
-    for name in candidates:
-        if any(_provenance_framework._code_stores_name(code, name) for code in codes):
-            return name
-    return current_name
-
-
 def _validate_script_provenance(
     spec: typing.Any,
     *,
@@ -393,7 +377,7 @@ def _validate_script_provenance(
         active_available = active_available or _provenance_framework._code_stores_name(
             spec.seed_code, spec.active_name
         )
-        current_name = _script_codes_output_name(
+        current_name = _provenance_framework._script_codes_output_name(
             (spec.seed_code,),
             active_name=spec.active_name,
             current_name=current_name,
@@ -427,7 +411,7 @@ def _validate_script_provenance(
                     operation.code, spec.active_name
                 )
             )
-            current_name = _script_codes_output_name(
+            current_name = _provenance_framework._script_codes_output_name(
                 (operation.code,),
                 active_name=spec.active_name,
                 current_name=current_name,
@@ -722,7 +706,7 @@ def _compile_spec(
             nonlocal current_bindings, current_name, pending_codes, script_current_key
             if not pending_codes:
                 return
-            output_name = _script_codes_output_name(
+            output_name = _provenance_framework._script_codes_output_name(
                 pending_codes,
                 active_name=active_name,
                 current_name=current_name,
@@ -817,7 +801,7 @@ def _compile_spec(
                 continue
 
             if pending_codes:
-                pending_output_name = _script_codes_output_name(
+                pending_output_name = _provenance_framework._script_codes_output_name(
                     pending_codes,
                     active_name=active_name,
                     current_name=current_name,

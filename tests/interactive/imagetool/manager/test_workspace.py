@@ -1226,7 +1226,7 @@ def test_manager_workspace_roundtrip_restores_manager_layout(
 
         manager.resize(640, 520)
         manager.main_splitter.setSizes([220, 420])
-        manager.right_splitter.setSizes([300, 160])
+        manager.right_splitter.setSizes([240, 140, 120])
         expected_layout = manager._workspace_layout_snapshot()
         assert "window_state" in expected_layout
         assert "geometry" not in expected_layout
@@ -1244,7 +1244,7 @@ def test_manager_workspace_roundtrip_restores_manager_layout(
 
         manager.resize(480, 500)
         manager.main_splitter.setSizes([120, 360])
-        manager.right_splitter.setSizes([120, 280])
+        manager.right_splitter.setSizes([120, 250, 80])
         assert manager._workspace_layout_snapshot() != expected_layout
 
         assert manager._load_workspace_file(
@@ -1387,13 +1387,13 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
 
         manager.resize(640, 520)
         manager.main_splitter.setSizes([220, 420])
-        manager.right_splitter.setSizes([300, 160])
+        manager.right_splitter.setSizes([240, 140, 120])
         import_fname = tmp_path / "import-layout.itws"
         manager._save_workspace_document(import_fname, force_full=True)
 
         manager.resize(480, 500)
         manager.main_splitter.setSizes([120, 360])
-        manager.right_splitter.setSizes([120, 280])
+        manager.right_splitter.setSizes([120, 250, 80])
         current_layout = manager._workspace_layout_snapshot()
 
         import h5py

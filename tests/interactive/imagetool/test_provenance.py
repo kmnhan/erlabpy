@@ -225,6 +225,65 @@ def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
     )
 
 
+def _representative_structured_operations() -> tuple[
+    provenance.ToolProvenanceOperation, ...
+]:
+    edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
+    vertices = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
+    return (
+        provenance.QSelOperation(kwargs={"x": 1.0}),
+        provenance.IselOperation(kwargs={"x": slice(0, 2)}),
+        provenance.SelOperation(kwargs={"y": slice(10.0, 12.0)}),
+        provenance.SortCoordOrderOperation(),
+        provenance.SortByOperation(variables=("x",), ascending=False),
+        provenance.SelectCoordOperation(coord_name="x"),
+        provenance.TransposeOperation(dims=("y", "x", "z")),
+        provenance.SqueezeOperation(),
+        provenance.RenameOperation(name="renamed"),
+        provenance.RestoreNonuniformDimsOperation(),
+        provenance.RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
+        provenance.AverageOperation(dims=("x",)),
+        provenance.QSelAggregationOperation(dims=("x",), func="sum"),
+        provenance.InterpolationOperation(dim="x", values=[0.25, 0.75]),
+        provenance.LeadingEdgeOperation(fraction=0.5, dim="x"),
+        provenance.DivideByCoordOperation(coord_name="x"),
+        provenance.GaussianFilterOperation(sigma={"x": 0.5}),
+        provenance.NormalizeOperation(dims=("x",), mode="minmax"),
+        provenance.CoarsenOperation(
+            dim={"x": 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        ),
+        provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+        provenance.SymmetrizeOperation(dim="x", center=1.0),
+        provenance.SymmetrizeNfoldOperation(
+            fold=4,
+            axes=("x", "y"),
+            center={"x": 1.0, "y": 10.0},
+        ),
+        provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False),
+        provenance.SwapDimsOperation(mapping={"x": "x_alt"}),
+        provenance.RenameDimsCoordsOperation(mapping={"x": "energy"}),
+        provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+        provenance.AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0]),
+        provenance.AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        provenance.AssignCoord1DOperation(
+            coord_name="temperature",
+            dim="x",
+            values=[1.0, 2.0, 3.0],
+        ),
+        provenance.AssignAttrsOperation(attrs={"sample": "test"}),
+        provenance.SliceAlongPathOperation(
+            vertices={"x": [0.0, 1.0], "y": [10.0, 11.0]},
+            step_size=0.1,
+            dim_name="path",
+        ),
+        provenance.MaskWithPolygonOperation(vertices=vertices, dims=("x", "y")),
+    )
+
+
 def test_tool_provenance_codec_and_combinators() -> None:
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     encoded = provenance.encode_provenance_value(
@@ -564,10 +623,15 @@ def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
     assert spec.file_load_source is not None
     assert spec.file_load_source.path == "scan.h5"
     assert spec.file_load_source.replay_call is None
+    assert [operation.op for operation in spec.operations] == ["average"]
+    assert spec.display_rows()[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert spec.derivation_code() == (
         "import xarray\n\n"
         "derived = xarray.load_dataarray('scan.h5')\n"
-        'derived = derived.qsel.average("x")'
+        'derived = derived.qsel.mean("x")'
     )
 
 
@@ -2073,6 +2137,349 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
         provenance.require_live_source_spec(reparsed_script)
 
 
+def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None:
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "seed_code": "derived = data",
+        "active_name": "derived",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Concatenate selected ImageTools",
+                "code": "derived = left + right",
+            },
+            {
+                "op": "script_code",
+                "label": 'Sort By(variables=("x",), ascending=False)',
+                "code": 'derived = derived.sortby("x", ascending=False)',
+            },
+            {
+                "op": "script_code",
+                "label": "Average(dims=('y',))",
+                "code": 'derived = derived.qsel.mean("y")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == [
+        "script_code",
+        "sortby",
+        "qsel_aggregate",
+    ]
+    rows = [
+        row
+        for row in parsed.display_rows()
+        if row.replay_ref is not None and row.replay_ref.kind == "operation"
+    ]
+    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    data = _base_data()
+    replayed = provenance.replay_script_provenance(
+        parsed,
+        {
+            "data": data.copy(deep=True),
+            "left": data.copy(deep=True),
+            "right": data.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        replayed,
+        (data + data).sortby("x", ascending=False).qsel.mean("y"),
+    )
+
+
+def test_tool_provenance_parse_keeps_non_active_self_assignments_as_script() -> None:
+    data = xr.DataArray(
+        [10.0, 20.0, 30.0],
+        dims=("x",),
+        coords={"x": [2.0, 1.0, 0.0]},
+        name="scan",
+    )
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "seed_code": "derived = data",
+        "active_name": "derived",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Prepare temporary data",
+                "code": 'temp = derived.sortby("x", ascending=False)',
+            },
+            {
+                "op": "script_code",
+                "label": "Sort temporary data",
+                "code": 'temp = temp.sortby("x")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == [
+        "script_code",
+        "script_code",
+    ]
+    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    xr.testing.assert_identical(replayed, data)
+
+
+def test_tool_provenance_parse_keeps_script_input_self_assignment_as_script() -> None:
+    data = xr.DataArray(
+        [10.0, 20.0, 30.0],
+        dims=("x",),
+        coords={"x": [2.0, 1.0, 0.0]},
+        name="scan",
+    )
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "active_name": "derived",
+        "script_inputs": [{"name": "data_0", "label": "ImageTool 0"}],
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Copy input",
+                "code": "derived = data_0",
+            },
+            {
+                "op": "script_code",
+                "label": "Sort input alias",
+                "code": 'data_0 = data_0.sortby("x")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == [
+        "script_code",
+        "script_code",
+    ]
+    replayed = provenance.replay_script_provenance(parsed, {"data_0": data})
+    xr.testing.assert_identical(replayed, data)
+
+
+def test_tool_provenance_parse_restores_active_alias_structured_steps() -> None:
+    data = xr.DataArray(
+        [10.0, 20.0, 30.0],
+        dims=("x",),
+        coords={"x": [2.0, 1.0, 0.0]},
+        name="scan",
+    )
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "seed_code": "result = data",
+        "active_name": "result",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Sort active result",
+                "code": 'result = result.sortby("x")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == ["sortby"]
+    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    xr.testing.assert_identical(replayed, data.sortby("x"))
+
+
+def test_tool_provenance_parse_legacy_script_call_parser_edges() -> None:
+    def parse_codes(
+        *codes: str | None,
+        seed_code: str | None = "derived = data",
+        active_name: str = "derived",
+        script_inputs: tuple[dict[str, str], ...] = (),
+        copyable: bool = True,
+    ) -> provenance.ToolProvenanceSpec:
+        parsed = provenance.parse_tool_provenance_spec(
+            {
+                "kind": "script",
+                "start_label": "Run ImageTool manager action",
+                "seed_code": seed_code,
+                "active_name": active_name,
+                "script_inputs": script_inputs,
+                "operations": [
+                    {
+                        "op": "script_code",
+                        "label": "Legacy script step",
+                        "code": code,
+                        "copyable": copyable,
+                    }
+                    for code in codes
+                ],
+            }
+        )
+        assert parsed is not None
+        return parsed
+
+    parsed = parse_codes(
+        "derived = derived.isel(x=slice(0, 2))",
+        "derived = derived.coarsen(x=2).mean()",
+        "derived = derived.qsel(x=1.0)",
+    )
+    assert [operation.op for operation in parsed.operations] == [
+        "isel",
+        "coarsen",
+        "qsel",
+    ]
+    assert parsed.operations[0] == provenance.IselOperation(kwargs={"x": slice(0, 2)})
+    assert parsed.operations[1] == provenance.CoarsenOperation(
+        dim={"x": 2},
+        boundary="exact",
+        side="left",
+        coord_func="mean",
+        reducer="mean",
+    )
+    assert parsed.operations[2] == provenance.QSelOperation(kwargs={"x": 1.0})
+
+    conservative_codes = (
+        "derived = derived.isel(x=slice(0, stop))",
+        'derived = derived.sortby(np.array(["x"]))',
+        "derived = derived.sortby(np.array([unknown]))",
+        "derived = derived.sortby(unknown)",
+        "derived = derived.isel(**extra)",
+        "derived = make_data()",
+        'derived = factory().sortby("x")',
+        'derived = factory().data.sortby("x")',
+        'derived = other.sortby("x")',
+        "derived = derived.unknown.accessor()",
+        "derived = derived.coarsen(x=step).mean()",
+        'derived = derived.sortby("x")\nextra = derived',
+        'derived, other = derived.sortby("x"), other',
+        "derived = 1",
+        'other = derived.sortby("x")',
+    )
+    parsed = parse_codes(*conservative_codes)
+    assert all(
+        isinstance(operation, provenance.ScriptCodeOperation)
+        for operation in parsed.operations
+    )
+    assert [operation.code for operation in parsed.operations] == list(
+        conservative_codes
+    )
+
+    parsed = parse_codes(
+        'derived = derived.sortby("x")',
+        seed_code="derived =",
+        script_inputs=({"name": "derived", "label": "ImageTool"},),
+    )
+    assert [operation.op for operation in parsed.operations] == ["sortby"]
+
+    parsed = parse_codes('derived = derived.sortby("x")', seed_code=None)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes('derived = derived.sortby("x")', copyable=False)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes(None)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes("derived =")
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+
+def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
+    data = _base_data().assign_coords(x=[2.0, 1.0, 0.0])
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "seed_code": "result = data",
+        "active_name": "result",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Prepare temporary data",
+                "code": "temp = result + 1.0",
+            },
+            {
+                "op": "script_code",
+                "label": "Sort active result",
+                "code": 'result = result.sortby("x", ascending=False)',
+            },
+            {
+                "op": "script_code",
+                "label": "Average active result",
+                "code": 'result = result.qsel.mean("y")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == [
+        "script_code",
+        "sortby",
+        "qsel_aggregate",
+    ]
+    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    xr.testing.assert_identical(
+        replayed,
+        data.sortby("x", ascending=False).qsel.mean("y"),
+    )
+
+
+def test_current_structured_operations_round_trip_without_script_fallback() -> None:
+    operations = _representative_structured_operations()
+    assert {operation.op for operation in operations} == set(
+        provenance._OPERATION_TYPES
+    ) - {"script_code"}
+
+    def assert_round_trip_operations(
+        spec: provenance.ToolProvenanceSpec,
+        expected_ops: tuple[str, ...],
+    ) -> None:
+        parsed = provenance.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+        assert parsed is not None
+        if parsed.kind == "file":
+            parsed_ops = tuple(
+                operation
+                for stage in parsed.replay_stages
+                for operation in stage.operations
+            )
+        else:
+            parsed_ops = parsed.operations
+        assert tuple(operation.op for operation in parsed_ops) == expected_ops
+        assert not any(
+            isinstance(op, provenance.ScriptCodeOperation) for op in parsed_ops
+        )
+
+    for operation in operations:
+        expected = (operation.op,)
+        assert_round_trip_operations(provenance.full_data(operation), expected)
+        assert_round_trip_operations(provenance.public_data(operation), expected)
+        assert_round_trip_operations(provenance.selection(operation), expected)
+        assert_round_trip_operations(
+            provenance.full_data(operation).to_replay_spec(),
+            expected,
+        )
+        assert_round_trip_operations(
+            provenance.file_load(
+                start_label="Load data",
+                seed_code="derived = data",
+                file_load_source=_file_replay_source(),
+                replay_stages=(
+                    provenance.ReplayStage(
+                        source_kind="full_data",
+                        operations=(operation,),
+                    ),
+                ),
+            ),
+            expected,
+        )
+
+
 def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
 
     parent = provenance.selection(provenance.IselOperation(kwargs={"x": slice(0, 2)}))
@@ -2123,6 +2530,52 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
     xr.testing.assert_identical(derived, (data + 1).qsel.mean("x"))
+
+
+def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
+    data = _base_data()
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Concatenate selected ImageTools",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(name="data_0", label="ImageTool 0: scan"),
+            provenance.ScriptInput(name="data_1", label="ImageTool 1: scan"),
+        ),
+    )
+    local = provenance.full_data(
+        provenance.SortByOperation(variables=("x",), ascending=False),
+        provenance.AverageOperation(dims=("y",)),
+    )
+
+    composed = provenance.compose_full_provenance(parent, local)
+
+    assert composed is not None
+    assert [operation.op for operation in composed.operations] == [
+        "script_code",
+        "sortby",
+        "average",
+    ]
+    rows = [
+        row
+        for row in composed.display_rows()
+        if row.replay_ref is not None and row.replay_ref.kind == "operation"
+    ]
+    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    derived = provenance.replay_script_provenance(
+        composed,
+        {
+            "data_0": data.copy(deep=True),
+            "data_1": data.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        derived,
+        (data + data).sortby("x", ascending=False).qsel.mean("y"),
+    )
 
 
 def test_tool_provenance_script_context_binding_replays_current_output() -> None:
@@ -2730,6 +3183,10 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
 
 def test_script_provenance_supports_named_console_inputs() -> None:
     left = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset left input",
+            code="data_0 = data_0 + 1.0",
+        ),
         start_label="Load left",
         seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
         active_name="data_0",
@@ -2771,11 +3228,28 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         "Use data_1 from ImageTool 1",
         "Subtract console inputs",
     ]
+    rows = spec.display_rows()
+    assert rows[1].children[0].entry.label == "Load left"
+    assert rows[1].children[0].replay_ref == provenance._ProvenanceStepRef("start")
+    assert rows[1].children[0].script_input_path == (0,)
+    assert rows[1].children[1].entry.label == "Offset left input"
+    assert rows[1].children[1].edit_ref is None
+    assert rows[1].children[1].replay_ref == provenance._ProvenanceStepRef(
+        "operation", operation_index=0
+    )
+    assert rows[1].children[1].script_input_path == (0,)
+    assert rows[2].children[0].entry.label == "Load right"
+    assert rows[2].children[0].script_input_path == (1,)
+    assert rows[3].edit_ref is None
+    assert rows[3].replay_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     code = typing.cast("str", spec.derivation_code())
     namespace = _exec_generated_code(code, {})
     xr.testing.assert_identical(
         namespace["derived"],
-        xr.DataArray([0.5, 0.5], dims=["x"]),
+        xr.DataArray([1.5, 1.5], dims=["x"]),
     )
 
 
@@ -4316,6 +4790,7 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
     )
 
     assert composed is not None
+    assert [operation.op for operation in composed.operations] == ["isel"]
     code = composed.display_code()
     assert code is not None
     namespace = _exec_generated_code(

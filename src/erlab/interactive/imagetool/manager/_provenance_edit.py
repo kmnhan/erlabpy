@@ -643,8 +643,6 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             return False, "This row does not have replayable provenance."
-        if spec.kind == "script":
-            return False, "Script provenance rows are not editable in this version."
         if row.edit_ref.kind == "file_load":
             if spec.kind != "file" or spec.file_load_source is None:
                 return False, "This row is not a file load step."
@@ -656,6 +654,21 @@ class _ProvenanceEditController:
             return False, "This operation is not available."
         if isinstance(operation, provenance.ScriptCodeOperation):
             return False, "Free-form script steps are not editable."
+        if spec.kind == "script":
+            input_spec = spec._prefix_before_ref(row.edit_ref)
+            if not provenance.script_provenance_replayable(input_spec):
+                return False, "This script step cannot be replayed automatically."
+            if (
+                row.script_input_path
+                or self._active_filter_ref(node, spec) != row.edit_ref
+            ) and not all(
+                self._manager._script_input_can_reload(
+                    script_input,
+                    target_node_uid=node.uid,
+                )
+                for script_input in input_spec.script_inputs
+            ):
+                return False, "This script step has unavailable inputs."
         if (
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
@@ -759,10 +772,11 @@ class _ProvenanceEditController:
         candidate: provenance.ToolProvenanceSpec | None = None
         try:
             candidate = spec._prefix_through_ref(ref)
+            root_candidate = self._root_candidate_for_row(node, row, candidate)
             self._validate_and_replace(
                 node,
                 row.scope,
-                candidate,
+                root_candidate,
                 where="validating the provenance revert target",
             )
         except Exception as exc:
@@ -807,10 +821,11 @@ class _ProvenanceEditController:
                         )
                     }
                 )
+            root_candidate = self._root_candidate_for_row(node, row, candidate)
             self._validate_and_replace(
                 node,
                 row.scope,
-                candidate,
+                root_candidate,
                 where="validating the provenance delete target",
             )
         except Exception as exc:
@@ -848,7 +863,7 @@ class _ProvenanceEditController:
             and row.scope == "display"
         )
 
-    def _display_spec_for_row(
+    def _root_display_spec_for_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: provenance._ProvenanceDisplayRow,
@@ -856,6 +871,78 @@ class _ProvenanceEditController:
         if row.scope == "source":
             return node.displayed_source_spec
         return node.displayed_provenance_spec
+
+    def _display_spec_for_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: provenance._ProvenanceDisplayRow,
+    ) -> provenance.ToolProvenanceSpec | None:
+        spec = self._root_display_spec_for_row(node, row)
+        if spec is None or not row.script_input_path:
+            return spec
+        return self._script_input_path_spec(spec, row.script_input_path)
+
+    @staticmethod
+    def _script_input_path_spec(
+        spec: provenance.ToolProvenanceSpec,
+        path: tuple[int, ...],
+    ) -> provenance.ToolProvenanceSpec | None:
+        current = spec
+        for index in path:
+            if index < 0 or index >= len(current.script_inputs):
+                return None
+            nested = current.script_inputs[index].parsed_provenance_spec()
+            if nested is None:
+                return None
+            current = nested
+        return current
+
+    def _root_candidate_for_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: provenance._ProvenanceDisplayRow,
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> provenance.ToolProvenanceSpec:
+        if not row.script_input_path:
+            return candidate
+        root = self._root_display_spec_for_row(node, row)
+        if root is None:
+            raise RuntimeError("No root provenance spec is available")
+        return self._replace_script_input_path_spec(
+            root,
+            row.script_input_path,
+            candidate,
+        )
+
+    def _replace_script_input_path_spec(
+        self,
+        spec: provenance.ToolProvenanceSpec,
+        path: tuple[int, ...],
+        replacement: provenance.ToolProvenanceSpec,
+    ) -> provenance.ToolProvenanceSpec:
+        if not path:
+            return replacement
+        index = path[0]
+        if index < 0 or index >= len(spec.script_inputs):
+            raise IndexError("Script input provenance path is not available")
+        script_input = spec.script_inputs[index]
+        nested = script_input.parsed_provenance_spec()
+        if nested is None:
+            raise RuntimeError("Script input does not have replayable provenance")
+        replaced = self._replace_script_input_path_spec(
+            nested,
+            path[1:],
+            replacement,
+        )
+        script_inputs = list(spec.script_inputs)
+        script_inputs[index] = script_input.model_copy(
+            update={
+                "node_uid": None,
+                "node_snapshot_token": None,
+                "provenance_spec": replaced.model_dump(mode="json"),
+            }
+        )
+        return spec.model_copy(update={"script_inputs": tuple(script_inputs)})
 
     def _file_load_source_edit_target(
         self,
@@ -971,7 +1058,10 @@ class _ProvenanceEditController:
             row.scope,
             spec,
             where="validating the edited file-load provenance",
-            batch_peers=self._file_load_batch_peers(node, spec),
+            row=row,
+            batch_peers=(
+                () if row.script_input_path else self._file_load_batch_peers(node, spec)
+            ),
         )
 
     def _edit_file_load_spec(
@@ -981,6 +1071,7 @@ class _ProvenanceEditController:
         spec: provenance.ToolProvenanceSpec,
         *,
         where: str,
+        row: provenance._ProvenanceDisplayRow | None = None,
         batch_peers: Sequence[_FileLoadBatchPeer] = (),
     ) -> None:
         if spec.kind != "file" or spec.file_load_source is None:
@@ -996,8 +1087,13 @@ class _ProvenanceEditController:
             active_name=spec.active_name or "derived",
             replay_stages=spec.replay_stages,
         )
+        edit_candidate = (
+            candidate
+            if row is None
+            else self._root_candidate_for_row(node, row, candidate)
+        )
         validated_edits = [
-            self._validated_edit(node, scope, candidate, where=where),
+            self._validated_edit(node, scope, edit_candidate, where=where),
         ]
         failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
         for peer in dialog.selected_batch_peers():
@@ -1039,7 +1135,7 @@ class _ProvenanceEditController:
         dialog_cls = _dialog_class_for_operation(operation)
         if dialog_cls is None:
             raise RuntimeError("No editing dialog is available for this step")
-        if self._active_filter_ref(node, spec) == ref:
+        if not row.script_input_path and self._active_filter_ref(node, spec) == ref:
             self._edit_active_filter(node, operation, dialog_cls)
             return
 
@@ -1059,10 +1155,11 @@ class _ProvenanceEditController:
         if replacements is None:
             return
         candidate = spec._replace_operation_ref(ref, replacements)
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
         self._validate_and_replace(
             node,
             row.scope,
-            candidate,
+            root_candidate,
             where="validating the edited provenance step",
         )
 
@@ -1468,7 +1565,12 @@ class _ProvenanceEditController:
                         "validating provenance after selecting a replacement "
                         "source file"
                     ),
-                    batch_peers=self._file_load_batch_peers(node, spec),
+                    row=row,
+                    batch_peers=(
+                        ()
+                        if row.script_input_path
+                        else self._file_load_batch_peers(node, spec)
+                    ),
                 )
                 break
             except Exception as repair_exc:

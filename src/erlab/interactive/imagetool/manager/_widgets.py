@@ -111,15 +111,119 @@ class _WarningEmitter(QtCore.QObject):
     warning_received = QtCore.Signal(str, int, str, str)
 
 
-class _MetadataDerivationListWidget(QtWidgets.QListWidget):
+class _MetadataDerivationTreeItem(QtWidgets.QTreeWidgetItem):
+    def __init__(self, text: str = "") -> None:
+        super().__init__([text])
+
+    def text(self, column: int = 0) -> str:
+        return super().text(column)
+
+    def setText(self, *args: typing.Any) -> None:
+        if len(args) == 1:
+            super().setText(0, args[0])
+            return
+        if len(args) == 2:
+            super().setText(args[0], args[1])
+            return
+        raise TypeError("setText() takes 1 or 2 arguments")
+
+    def data(self, *args: typing.Any) -> typing.Any:
+        if len(args) == 1:
+            return super().data(0, args[0])
+        if len(args) == 2:
+            return super().data(args[0], args[1])
+        raise TypeError("data() takes 1 or 2 arguments")
+
+    def setData(self, *args: typing.Any) -> None:
+        if len(args) == 2:
+            super().setData(0, args[0], args[1])
+            return
+        if len(args) == 3:
+            super().setData(args[0], args[1], args[2])
+            return
+        raise TypeError("setData() takes 2 or 3 arguments")
+
+    def toolTip(self, column: int = 0) -> str:
+        return super().toolTip(column)
+
+    def setToolTip(self, *args: typing.Any) -> None:
+        if len(args) == 1:
+            super().setToolTip(0, args[0])
+            return
+        if len(args) == 2:
+            super().setToolTip(args[0], args[1])
+            return
+        raise TypeError("setToolTip() takes 1 or 2 arguments")
+
+    def foreground(self, column: int = 0) -> QtGui.QBrush:
+        return super().foreground(column)
+
+    def setForeground(self, *args: typing.Any) -> None:
+        if len(args) == 1:
+            super().setForeground(0, QtGui.QBrush(args[0]))
+            return
+        if len(args) == 2:
+            super().setForeground(args[0], QtGui.QBrush(args[1]))
+            return
+        raise TypeError("setForeground() takes 1 or 2 arguments")
+
+
+class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
     copy_requested = QtCore.Signal()
     paste_requested = QtCore.Signal()
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setRootIsDecorated(True)
+        self.setItemsExpandable(True)
+        self.setExpandsOnDoubleClick(False)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
+
+    def _flattened_items(self) -> list[QtWidgets.QTreeWidgetItem]:
+        items: list[QtWidgets.QTreeWidgetItem] = []
+
+        def collect(item: QtWidgets.QTreeWidgetItem) -> None:
+            items.append(item)
+            for child_index in range(item.childCount()):
+                child = item.child(child_index)
+                # Valid child indices return items; guard for Qt binding safety.
+                if child is not None:  # pragma: no branch
+                    collect(child)
+
+        for row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(row)
+            # Valid top-level indices return items; guard for Qt binding safety.
+            if item is not None:  # pragma: no branch
+                collect(item)
+        return items
+
+    def addItem(self, item: QtWidgets.QTreeWidgetItem) -> None:
+        self.addTopLevelItem(item)
+
+    def setUniformItemSizes(self, enabled: bool) -> None:
+        self.setUniformRowHeights(enabled)
+
+    def count(self) -> int:
+        return len(self._flattened_items())
+
+    def item(self, row: int) -> QtWidgets.QTreeWidgetItem | None:
+        items = self._flattened_items()
+        if row < 0 or row >= len(items):
+            return None
+        return items[row]
+
+    def row(self, item: QtWidgets.QTreeWidgetItem) -> int:
+        return self.display_order(item)
+
+    def display_order(self, item: QtWidgets.QTreeWidgetItem) -> int:
+        try:
+            return self._flattened_items().index(item)
+        except ValueError:
+            return -1
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
@@ -135,7 +239,7 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
         if event.key() in {QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter}:
             item = self.currentItem()
             if item is not None:
-                self.itemActivated.emit(item)
+                self.itemActivated.emit(item, 0)
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -146,10 +250,9 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
         if self.isVisible() and self.hasHeightForWidth() and self.width() > 0:
             height = self.heightForWidth(self.width())
             self.setMinimumHeight(height)
-            self.setMaximumHeight(height)
         else:
             self.setMinimumHeight(0)
-            self.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self.setMaximumHeight(_QWIDGETSIZE_MAX)
         self.updateGeometry()
 
     def sizeHint(self) -> QtCore.QSize:

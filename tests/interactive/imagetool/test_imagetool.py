@@ -1620,14 +1620,32 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     win.close()
 
 
-def test_figure_composer_operation_reports_uneditable_plot_slices_details(
-    qtbot, monkeypatch
-) -> None:
-    win = itool(_TEST_DATA["3D"], execute=False)
-    qtbot.addWidget(win)
-    main_image = win.slicer_area.images[0]
+def test_figure_composer_operation_reports_uneditable_plot_slices_details() -> None:
+    class _PlotWithSelectionPlan:
+        is_image = True
+        display_axis = (0, 1)
+        slicer_area = types.SimpleNamespace(
+            data=types.SimpleNamespace(ndim=3, dims=("alpha", "beta", "eV")),
+            n_cursors=1,
+        )
+        array_slicer = types.SimpleNamespace(_nonuniform_axes=set())
+        _plot_slices_qsel_key_is_editable = staticmethod(
+            ItoolPlotItem._plot_slices_qsel_key_is_editable
+        )
 
-    cases = (
+        def __init__(self, plan) -> None:
+            self._plan = plan
+
+        def _sync_figure_composer_view_limits(self) -> None:
+            return
+
+        def _selection_dim_name(self, axis: int) -> str:
+            return self.slicer_area.data.dims[axis]
+
+        def _multicursor_selection_plan(self, **_kwargs):
+            return self._plan
+
+    for plan, detail in (
         (
             ({("bad", "key"): 0.0}, None, None, set()),
             "Unsupported qsel selection keys: ('bad', 'key')",
@@ -1640,18 +1658,12 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details(
             (None, None, None, set()),
             "Selection did not produce qsel coordinates",
         ),
-    )
-    for plan, detail in cases:
-        monkeypatch.setattr(
-            main_image,
-            "_multicursor_selection_plan",
-            lambda _plan=plan, **_kwargs: _plan,
-        )
+    ):
         with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
-            main_image.figure_composer_operation(source_name="data")
+            ItoolPlotItem.figure_composer_operation(
+                _PlotWithSelectionPlan(plan), source_name="data"
+            )
         assert detail in str(exc_info.value)
-
-    win.close()
 
 
 def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(

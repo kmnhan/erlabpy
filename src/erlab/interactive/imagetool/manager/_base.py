@@ -51,6 +51,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
     from erlab.interactive.imagetool.manager._widgets import (
         _HeightForWidthFrame,
+        _MetadataDerivationListWidget,
         _SingleImagePreview,
         _StandaloneAppSpec,
         _WarningNotificationHandler,
@@ -111,10 +112,10 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
     main_splitter: QtWidgets.QSplitter
-    metadata_derivation_list: QtWidgets.QListWidget
+    metadata_derivation_list: _MetadataDerivationListWidget
     metadata_details_layout: QtWidgets.QGridLayout
     metadata_details_widget: _HeightForWidthFrame
-    metadata_group: _HeightForWidthFrame
+    metadata_group: QtWidgets.QFrame
     offload_action: QtGui.QAction
     open_recent_menu: QtWidgets.QMenu
     preview_widget: _SingleImagePreview
