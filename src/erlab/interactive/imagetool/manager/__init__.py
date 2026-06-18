@@ -124,6 +124,15 @@ _STARTUP_TARGET_NEW: typing.Literal["new"] = "new"
 _STARTUP_TARGET_CANCEL: typing.Literal["cancel"] = "cancel"
 
 
+def _runtime_window_icon() -> QtGui.QIcon:
+    # Avoid QTBUG-147602 crashes in QImage::toCGImage() color-space handling.
+    image = QtGui.QImage(_ICON_PATH).convertToFormat(
+        QtGui.QImage.Format.Format_ARGB32_Premultiplied
+    )
+    image.setColorSpace(QtGui.QColorSpace())
+    return QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+
+
 @dataclass(frozen=True)
 class _StartupArgs:
     files: list[pathlib.Path]
@@ -412,7 +421,7 @@ def main(execute: bool = True) -> None:
         sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED
     ):
         # Ignore if running in a PyInstaller bundle on macOS.
-        qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
+        qapp.setWindowIcon(_runtime_window_icon())
         qapp.setApplicationName("ImageTool Manager")
         qapp.setApplicationDisplayName("ImageTool Manager")
         qapp.setApplicationVersion(erlab.__version__)

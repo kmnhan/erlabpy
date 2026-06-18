@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import pathlib
-import sys
 import typing
 import uuid
 from collections.abc import Mapping
@@ -391,15 +390,11 @@ class _WorkspaceIOController:
         )
 
     def _update_workspace_window_title(self) -> None:
-        # macOS represented-file/proxy-icon updates can crash inside Qt/Cocoa
-        # while workspaces are being opened or closed. Keep the visible title
-        # and all workspace state in sync without calling setWindowFilePath().
-        if sys.platform != "darwin":
-            if self._manager._workspace_state.path is None:
-                window_file_path = ""
-            else:
-                window_file_path = typing.cast("str", self._manager.workspace_path)
-            self._manager.setWindowFilePath(window_file_path)
+        if self._manager._workspace_state.path is None:
+            window_file_path = ""
+        else:
+            window_file_path = typing.cast("str", self._manager.workspace_path)
+        self._manager.setWindowFilePath(window_file_path)
         workspace_display_name = (
             "Untitled"
             if self._manager._workspace_state.path is None

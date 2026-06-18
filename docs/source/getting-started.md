@@ -6,6 +6,8 @@ Welcome to ERLabPy! This page will guide you through the installation process an
 
 - Data structures in ERLabPy are represented using [xarray](https://docs.xarray.dev/){cite:p}`hoyer2017xarray`, which provides a powerful data structure for working with multi-dimensional arrays. Be sure to review the [xarray tutorial](https://tutorial.xarray.dev/) and the [xarray user guide](https://docs.xarray.dev/en/stable/index.html) to get familiar with it before diving into ERLabPy.
 
+- If you want to use the GUI without installing Python, {ref}`ImageTool Manager <imagetool-manager>` is available as a standalone application on [GitHub Releases](https://github.com/kmnhan/erlabpy/releases). See {ref}`imagetool-manager-standalone`.
+
 :::{admonition} Recommended Editor Setup
 :class: important
 

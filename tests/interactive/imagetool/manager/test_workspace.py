@@ -5089,7 +5089,7 @@ def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
     )
 
 
-def test_manager_workspace_window_title_sets_file_path_on_non_macos(
+def test_manager_workspace_window_title_sets_file_path(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5103,7 +5103,6 @@ def test_manager_workspace_window_title_sets_file_path_on_non_macos(
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager_mainwindow.sys, "platform", "linux")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
@@ -5116,34 +5115,31 @@ def test_manager_workspace_window_title_sets_file_path_on_non_macos(
         assert manager.isWindowModified()
 
 
-def test_manager_workspace_window_title_skips_file_path_on_macos(
+def test_manager_workspace_window_title_clears_file_path_without_workspace(
     monkeypatch,
-    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
     with manager_context() as manager:
-        workspace = tmp_path / "macos-workspace.itws"
-        manager._workspace_state.path = workspace
+        manager._workspace_state.path = None
         manager._workspace_state.structure_modified = True
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
                 lambda _manager, path: file_path_calls.append(path),
             )
             manager._update_workspace_window_title()
-            assert file_path_calls == []
 
-        assert workspace.name in manager.windowTitle()
-        assert manager.isWindowModified()
+        assert file_path_calls == [""]
+        assert "Untitled" in manager.windowTitle()
+        assert not manager.isWindowModified()
 
 
-def test_manager_workspace_window_title_skips_file_path_during_macos_close(
+def test_manager_workspace_window_title_sets_file_path_during_close(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5156,23 +5152,25 @@ def test_manager_workspace_window_title_skips_file_path_during_macos_close(
         manager._workspace_state.structure_modified = True
         previous_closing = manager._workspace_state.closing_document
         manager._workspace_state.closing_document = True
-
-        def _fail_if_called(_manager, _path: str) -> None:
-            raise AssertionError("setWindowFilePath should be skipped")
+        file_path_calls: list[str] = []
 
         try:
             with monkeypatch.context() as patch:
-                patch.setattr(manager_mainwindow.sys, "platform", "darwin")
-                patch.setattr(ImageToolManager, "setWindowFilePath", _fail_if_called)
+                patch.setattr(
+                    ImageToolManager,
+                    "setWindowFilePath",
+                    lambda _manager, path: file_path_calls.append(path),
+                )
                 manager._update_workspace_window_title()
         finally:
             manager._workspace_state.closing_document = previous_closing
 
+        assert file_path_calls == [str(workspace)]
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
 
 
-def test_manager_loaded_workspace_association_skips_macos_file_path_update(
+def test_manager_loaded_workspace_association_updates_file_path(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5185,7 +5183,6 @@ def test_manager_loaded_workspace_association_skips_macos_file_path_update(
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
@@ -5198,7 +5195,10 @@ def test_manager_loaded_workspace_association_skips_macos_file_path_update(
                     workspace_access=access,
                     rebind_data=False,
                 )
-            assert file_path_calls == []
+            assert file_path_calls == [
+                str(workspace.resolve()),
+                str(workspace.resolve()),
+            ]
 
         assert manager.workspace_path == str(workspace.resolve())
         assert workspace.name in manager.windowTitle()
@@ -5233,7 +5233,7 @@ def test_manager_loaded_workspace_association_rebinds_data_after_path_update(
         assert rebind_paths == [workspace.resolve()]
 
 
-def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
+def test_manager_workspace_window_title_sets_file_path_for_close(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5249,7 +5249,6 @@ def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
 
         try:
             with monkeypatch.context() as patch:
-                patch.setattr(manager_mainwindow.sys, "platform", "linux")
                 patch.setattr(
                     ImageToolManager,
                     "setWindowFilePath",
@@ -5275,24 +5274,26 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
         manager._workspace_state.structure_modified = True
         manager._workspace_state.closing_document = False
         event = QtGui.QCloseEvent()
-
-        def _fail_if_called(_manager, _path: str) -> None:
-            raise AssertionError("setWindowFilePath should be skipped")
+        file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
-            patch.setattr(ImageToolManager, "setWindowFilePath", _fail_if_called)
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
             patch.setattr(
                 manager, "_confirm_save_dirty_workspace", lambda _message: False
             )
             manager._update_workspace_window_title()
             manager.closeEvent(event)
 
+        assert file_path_calls == [str(workspace)]
         assert not event.isAccepted()
         assert not manager._workspace_state.closing_document
 
 
-def test_manager_close_save_path_skips_macos_file_path_update(
+def test_manager_close_save_path_updates_file_path(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5303,12 +5304,7 @@ def test_manager_close_save_path_skips_macos_file_path_update(
         manager._workspace_state.path = tmp_path / "close-save.itws"
         manager._workspace_state.structure_modified = True
         save_closing_states: list[bool] = []
-
-        def _fail_during_close_file_path_update(
-            window: ImageToolManager, _path: str
-        ) -> None:
-            if window._workspace_state.closing_document:
-                raise AssertionError("setWindowFilePath should be skipped")
+        file_path_calls: list[str] = []
 
         def _save(*, native: bool = True) -> bool:
             save_closing_states.append(manager._workspace_state.closing_document)
@@ -5316,11 +5312,10 @@ def test_manager_close_save_path_skips_macos_file_path_update(
             return True
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
-                _fail_during_close_file_path_update,
+                lambda _manager, path: file_path_calls.append(path),
             )
             patch.setattr(
                 QtWidgets.QMessageBox,
@@ -5331,6 +5326,7 @@ def test_manager_close_save_path_skips_macos_file_path_update(
             assert manager.close()
 
         assert save_closing_states == [True]
+        assert file_path_calls == [str(manager._workspace_state.path)]
         assert not manager._workspace_state.closing_document
 
 
