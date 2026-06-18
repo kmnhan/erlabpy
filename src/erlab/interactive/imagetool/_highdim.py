@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -249,6 +250,40 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
     def _choices_complete(self) -> bool:
         return all(row.action is not None for row in self.rows)
 
+    @staticmethod
+    def _processed_ndim_from_shape(shape: tuple[int, ...]) -> int:
+        if len(shape) == 1:
+            return 2
+        if len(shape) > 4:
+            return sum(size != 1 for size in shape)
+        return len(shape)
+
+    def _preview_dims_shape(self) -> tuple[tuple[Hashable, ...], tuple[int, ...]]:
+        dims = list(self.data.dims)
+        shape = [self.data.sizes[dim] for dim in dims]
+        for row in self.rows:
+            if row.action not in {"select", "aggregate"}:
+                continue
+            dim_index = dims.index(row.dim)
+            del dims[dim_index]
+            del shape[dim_index]
+        return tuple(dims), tuple(shape)
+
+    def _set_preview_from_metadata(
+        self,
+        dims: tuple[Hashable, ...],
+        shape: tuple[int, ...],
+    ) -> bool:
+        processed_ndim = self._processed_ndim_from_shape(shape)
+        shape_text = " x ".join(str(size) for size in shape)
+        dims_text = ", ".join(str(dim) for dim in dims)
+        if processed_ndim != len(shape):
+            ndim_text = f"{len(shape)}D, opens as {processed_ndim}D"
+        else:
+            ndim_text = f"{len(shape)}D"
+        self.preview_label.setText(f"{ndim_text} ({shape_text}) [{dims_text}]")
+        return 2 <= processed_ndim <= 4 and math.prod(shape) > 0
+
     @QtCore.Slot()
     @QtCore.Slot(int)
     @QtCore.Slot(bool)
@@ -259,39 +294,15 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         ok_button = self.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Open
         )
+        self._result_data = None
 
         if not self._choices_complete():
-            self._result_data = None
             self.preview_label.setText("Choose an action for each required dimension.")
             if ok_button is not None:
                 ok_button.setEnabled(False)
             return
 
-        try:
-            selected = self.process_data(self.data)
-        except Exception as exc:
-            self._result_data = None
-            self.preview_label.setText(f"Invalid reduction: {exc}")
-            if ok_button is not None:
-                ok_button.setEnabled(False)
-            return
-
-        if selected.ndim == 1:
-            processed_ndim = 2
-        elif selected.ndim > 4:
-            processed_ndim = len(tuple(size for size in selected.shape if size != 1))
-        else:
-            processed_ndim = selected.ndim
-
-        shape = " x ".join(str(size) for size in selected.shape)
-        dims = ", ".join(str(dim) for dim in selected.dims)
-        if processed_ndim != selected.ndim:
-            ndim_text = f"{selected.ndim}D, opens as {processed_ndim}D"
-        else:
-            ndim_text = f"{selected.ndim}D"
-        self.preview_label.setText(f"{ndim_text} ({shape}) [{dims}]")
-        valid = 2 <= processed_ndim <= 4 and selected.size > 0
-        self._result_data = selected if valid else None
+        valid = self._set_preview_from_metadata(*self._preview_dims_shape())
         if ok_button is not None:
             ok_button.setEnabled(valid)
 
@@ -308,7 +319,37 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         self.update_preview()
-        if self._result_data is None:
+        ok_button = self.button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Open
+        )
+        if ok_button is None or not ok_button.isEnabled():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Reduction",
+                "Choose reductions that leave data with 2 to 4 dimensions.",
+            )
+            return
+
+        QtWidgets.QApplication.setOverrideCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
+        )
+        try:
+            selected = self.process_data(self.data)
+        except Exception as exc:
+            self._result_data = None
+            self.preview_label.setText(f"Invalid reduction: {exc}")
+            ok_button.setEnabled(False)
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        valid = self._set_preview_from_metadata(
+            tuple(selected.dims),
+            tuple(selected.shape),
+        )
+        self._result_data = selected if valid else None
+        if not valid:
+            ok_button.setEnabled(False)
             QtWidgets.QMessageBox.warning(
                 self,
                 "Invalid Reduction",

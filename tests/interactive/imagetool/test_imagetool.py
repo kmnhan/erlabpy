@@ -4286,7 +4286,7 @@ def test_itool_ds(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         itool_mod,
         "_select_input_dataarrays",
-        lambda _data: tuple((darr, i) for i, darr in enumerate(_parse_input(_data))),
+        lambda _data: tuple(imagetool_viewer_state._parse_input_data(_data)),
     )
     wins = itool(data, execute=False, link=True)
     assert isinstance(wins, list)
@@ -6842,7 +6842,8 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     expected = data.isel(x=2)
     assert open_button.isEnabled()
     assert dialog.source_operations() == [provenance.IselOperation(kwargs={"x": 2})]
-    xarray.testing.assert_identical(dialog.result_data, expected)
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
@@ -6851,6 +6852,7 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     assert pyperclip.paste() == dialog.make_code()
     dialog.accept()
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
 
 
 def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
@@ -6869,10 +6871,109 @@ def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
     expected = data.qsel.sum(("x",))
     assert open_button.isEnabled()
     assert dialog.source_operations() == [operation]
-    xarray.testing.assert_identical(dialog.result_data, expected)
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+    calls: list[provenance.QSelAggregationOperation] = []
+
+    def _fail_apply(
+        self: provenance.QSelAggregationOperation,
+        _data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self)
+        raise AssertionError("preview must not apply aggregation")
+
+    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _fail_apply)
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    _set_combo_data(row.reducer_combo, "sum")
+    _set_combo_data(row.reducer_combo, "mean")
+
+    assert open_button.isEnabled()
+    assert calls == []
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
+def test_high_dimensional_reduction_dialog_accept_applies_once(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    calls: list[provenance.QSelAggregationOperation] = []
+    original_apply = provenance.QSelAggregationOperation.apply
+
+    def _count_apply(
+        self: provenance.QSelAggregationOperation,
+        data_array: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self)
+        return original_apply(self, data_array, parent_data=parent_data)
+
+    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _count_apply)
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    _set_combo_data(row.reducer_combo, "sum")
+
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    assert len(calls) == 1
+    assert calls[0] == provenance.QSelAggregationOperation(dims=("x",), func="sum")
+    xarray.testing.assert_identical(dialog.result_data, data.qsel.sum(("x",)))
+
+
+def test_high_dimensional_reduction_dialog_accept_keeps_dialog_open_on_error(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    assert open_button.isEnabled()
+
+    def _raise_process(_data: xr.DataArray) -> xr.DataArray:
+        raise ValueError("cannot aggregate")
+
+    monkeypatch.setattr(dialog, "process_data", _raise_process)
+
+    dialog.accept()
+
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+    assert not open_button.isEnabled()
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
 
 
 def test_high_dimensional_reduction_dialog_rejects_empty_result(qtbot) -> None:
