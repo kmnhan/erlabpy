@@ -250,10 +250,9 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
         if self.isVisible() and self.hasHeightForWidth() and self.width() > 0:
             height = self.heightForWidth(self.width())
             self.setMinimumHeight(height)
-            self.setMaximumHeight(height)
         else:
             self.setMinimumHeight(0)
-            self.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self.setMaximumHeight(_QWIDGETSIZE_MAX)
         self.updateGeometry()
 
     def sizeHint(self) -> QtCore.QSize:

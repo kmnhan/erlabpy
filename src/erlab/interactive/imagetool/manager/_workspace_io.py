@@ -1767,6 +1767,9 @@ class _WorkspaceIOController:
             "right_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
                 self._manager.right_splitter.saveState()
             ),
+            "metadata_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
+                self._manager.metadata_splitter.saveState()
+            ),
         }
 
     def _restore_workspace_layout(
@@ -1791,6 +1794,12 @@ class _WorkspaceIOController:
         )
         if right_splitter is not None:
             self._manager.right_splitter.restoreState(right_splitter)
+
+        metadata_splitter = erlab.interactive.utils._qt_bytearray_from_base64(
+            layout.get("metadata_splitter")
+        )
+        if metadata_splitter is not None:
+            self._manager.metadata_splitter.restoreState(metadata_splitter)
 
     def _workspace_loader_state_snapshot(self) -> dict[str, typing.Any]:
         manager_loader_kwargs = self._manager._recent_loader_kwargs_by_filter

@@ -2957,7 +2957,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         assert manager._metadata_detail_labels["Inputs"].wordWrap()
         assert (
             manager.metadata_details_widget.sizePolicy().verticalPolicy()
-            == QtWidgets.QSizePolicy.Policy.Maximum
+            == QtWidgets.QSizePolicy.Policy.Preferred
         )
         assert (
             manager._metadata_detail_labels["Inputs"].sizePolicy().verticalPolicy()
@@ -2965,26 +2965,31 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         )
         assert (
             manager.metadata_group.sizePolicy().verticalPolicy()
-            == QtWidgets.QSizePolicy.Policy.Maximum
+            == QtWidgets.QSizePolicy.Policy.Preferred
         )
-        assert not isinstance(
-            manager.metadata_group.parentWidget(), QtWidgets.QSplitter
-        )
-        metadata_layout = manager.metadata_group.layout()
-        assert metadata_layout is not None
+        assert manager.metadata_group.parentWidget() is manager.right_splitter
+        assert manager.metadata_splitter.widget(0) is manager.metadata_details_widget
+        assert manager.metadata_splitter.widget(1) is manager.metadata_derivation_list
+        assert manager.metadata_splitter.handleWidth() > 0
+        assert manager.metadata_splitter.styleSheet() == ""
+        handle = manager.metadata_splitter.handle(1)
+        assert handle is not None
+        assert manager.metadata_splitter.isVisible()
+        qtbot.wait_until(handle.isVisible, timeout=5000)
+        assert manager.metadata_group.maximumHeight() == QtWidgets.QWIDGETSIZE_MAX
         assert (
-            manager.metadata_derivation_list.y()
-            == manager.metadata_details_widget.y()
-            + manager.metadata_details_widget.height()
-            + metadata_layout.spacing()
+            manager.metadata_details_widget.maximumHeight() == QtWidgets.QWIDGETSIZE_MAX
         )
-        qtbot.wait_until(
-            lambda: (
-                manager.metadata_group.height()
-                <= manager.metadata_group.sizeHint().height() + 1
-            ),
-            timeout=5000,
-        )
+        manager.resize(640, 700)
+        manager.right_splitter.setSizes([180, 120, 280])
+        manager.metadata_splitter.setSizes([120, 180])
+        QtWidgets.QApplication.processEvents()
+        before_metadata_sizes = manager.metadata_splitter.sizes()
+        manager.metadata_splitter.moveSplitter(before_metadata_sizes[0] + 40, 1)
+        QtWidgets.QApplication.processEvents()
+        after_metadata_sizes = manager.metadata_splitter.sizes()
+        assert after_metadata_sizes[0] > before_metadata_sizes[0]
+        assert after_metadata_sizes[1] < before_metadata_sizes[1]
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())

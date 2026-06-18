@@ -390,8 +390,10 @@ class _DetailsPanelController:
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._manager._metadata_detail_labels)
         derivation_count = self._manager.metadata_derivation_list.count()
+        has_metadata = has_details or derivation_count > 0
 
-        self._manager.metadata_group.setVisible(has_details or derivation_count > 0)
+        self._manager.metadata_group.setVisible(has_metadata)
+        self._manager.metadata_splitter.setVisible(has_metadata)
         self._manager.metadata_details_widget.setVisible(has_details)
         self._manager.metadata_derivation_list.setVisible(derivation_count > 0)
 
@@ -406,12 +408,22 @@ class _DetailsPanelController:
             frame = self._manager.metadata_derivation_list.frameWidth() * 2
             height = visible_rows * row_height + frame + 4
             self._manager.metadata_derivation_list.setMinimumHeight(height)
-            self._manager.metadata_derivation_list.setMaximumHeight(height)
+            self._manager.metadata_derivation_list.setMaximumHeight(
+                QtWidgets.QWIDGETSIZE_MAX
+            )
 
         self._manager.metadata_details_widget.updateGeometry()
         self._manager.metadata_derivation_list.updateGeometry()
         self._manager.metadata_details_widget.sync_height_for_width()
-        self._manager.metadata_group.sync_height_for_width()
+        if has_details and derivation_count > 0:
+            sizes = self._manager.metadata_splitter.sizes()
+            if len(sizes) >= 2 and (sizes[0] <= 0 or sizes[1] <= 0):
+                self._manager.metadata_splitter.setSizes(
+                    [
+                        self._manager.metadata_details_widget.minimumHeight(),
+                        self._manager.metadata_derivation_list.minimumHeight(),
+                    ]
+                )
         self._manager.metadata_group.updateGeometry()
 
     def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:

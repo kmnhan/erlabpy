@@ -1077,6 +1077,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.main_splitter.addWidget(right_panel)
 
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)
         self.right_splitter.splitterMoved.connect(
             lambda _pos, _index: self._mark_workspace_layout_dirty()
         )
@@ -1089,18 +1090,28 @@ class ImageToolManager(_ImageToolManagerBase):
         self.preview_widget = _SingleImagePreview(self)
         self.right_splitter.addWidget(self.preview_widget)
 
-        self.metadata_group = _HeightForWidthFrame(self)
+        self.metadata_group = QtWidgets.QFrame(self)
         self.metadata_group.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.metadata_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
         metadata_layout = QtWidgets.QVBoxLayout(self.metadata_group)
         metadata_layout.setContentsMargins(0, 0, 0, 0)
         metadata_layout.setSpacing(4)
         self.metadata_group.setLayout(metadata_layout)
 
-        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_group)
+        self.metadata_splitter = QtWidgets.QSplitter(
+            QtCore.Qt.Orientation.Vertical, self.metadata_group
+        )
+        self.metadata_splitter.setObjectName("managerMetadataSplitter")
+        self.metadata_splitter.setChildrenCollapsible(False)
+        self.metadata_splitter.splitterMoved.connect(
+            lambda _pos, _index: self._mark_workspace_layout_dirty()
+        )
+        metadata_layout.addWidget(self.metadata_splitter)
+
+        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_splitter)
         self.metadata_details_layout = QtWidgets.QGridLayout(
             self.metadata_details_widget
         )
@@ -1111,17 +1122,21 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_details_widget.setLayout(self.metadata_details_layout)
         self.metadata_details_widget.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
         self.metadata_details_widget.setVisible(False)
-        metadata_layout.addWidget(self.metadata_details_widget)
+        self.metadata_splitter.addWidget(self.metadata_details_widget)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
         self._metadata_monospace_font = QtGui.QFontDatabase.systemFont(
             QtGui.QFontDatabase.SystemFont.FixedFont
         )
 
         self.metadata_derivation_list = _MetadataDerivationListWidget(
-            self.metadata_group
+            self.metadata_splitter
+        )
+        self.metadata_derivation_list.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
         )
         self.metadata_derivation_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
@@ -1151,11 +1166,17 @@ class ImageToolManager(_ImageToolManagerBase):
             lambda _item, _column: self._activate_selected_derivation_step()
         )
         self.metadata_derivation_list.setVisible(False)
-        metadata_layout.addWidget(self.metadata_derivation_list)
-        right_layout.addWidget(self.metadata_group, 0)
+        self.metadata_splitter.addWidget(self.metadata_derivation_list)
+        self.metadata_splitter.setStretchFactor(0, 0)
+        self.metadata_splitter.setStretchFactor(1, 1)
+        self.right_splitter.addWidget(self.metadata_group)
+        self.right_splitter.setStretchFactor(0, 2)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setStretchFactor(2, 1)
 
         # Set initial splitter sizes
-        self.right_splitter.setSizes([280, 140])
+        self.right_splitter.setSizes([260, 140, 100])
+        self.metadata_splitter.setSizes([80, 160])
         self.main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows

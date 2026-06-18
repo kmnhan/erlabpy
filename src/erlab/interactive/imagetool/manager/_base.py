@@ -115,7 +115,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     metadata_derivation_list: _MetadataDerivationListWidget
     metadata_details_layout: QtWidgets.QGridLayout
     metadata_details_widget: _HeightForWidthFrame
-    metadata_group: _HeightForWidthFrame
+    metadata_group: QtWidgets.QFrame
+    metadata_splitter: QtWidgets.QSplitter
     offload_action: QtGui.QAction
     open_recent_menu: QtWidgets.QMenu
     preview_widget: _SingleImagePreview
