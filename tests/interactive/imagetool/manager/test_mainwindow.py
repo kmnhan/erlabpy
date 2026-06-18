@@ -2363,7 +2363,17 @@ def test_remove_from_window_shortcut(
 
         assert tool.remove_act.isVisible()
 
-        accept_dialog(lambda: qtbot.keyClick(tool, QtCore.Qt.Key.Key_Delete))
+        delete_key = QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Delete)
+        assert (
+            tool.remove_act.shortcut().matches(delete_key)
+            == QtGui.QKeySequence.SequenceMatch.ExactMatch
+        )
+        assert (
+            tool.remove_act.shortcutContext()
+            == QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+
+        accept_dialog(tool.remove_act.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
 
