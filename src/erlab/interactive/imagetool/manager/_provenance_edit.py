@@ -488,7 +488,8 @@ def _dialog_match_for_operation_ref(
     if not operations:
         return None
 
-    for dialog_cls in _iter_dialog_classes(dialogs.DataTransformDialog):
+    for dialog_base_cls in _iter_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
         if not any(
             isinstance(operation, operation_type)
             for operation_type in dialog_cls.operation_types
@@ -526,7 +527,8 @@ def _dialog_match_for_operation_ref(
             ref.operation_index + 1,
         )
 
-    for dialog_cls in _iter_dialog_classes(dialogs.DataFilterDialog):
+    for dialog_base_cls in _iter_dialog_classes(dialogs.DataFilterDialog):
+        dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
         if not any(
             isinstance(operation, operation_type)
             for operation_type in dialog_cls.operation_types

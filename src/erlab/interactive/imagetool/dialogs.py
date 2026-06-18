@@ -455,6 +455,9 @@ class DataTransformDialog(_DataManipulationDialog):
     Set to `True` for transforms that can handle coordinates that are not evenly spaced.
     """
 
+    copy_output_suffix: typing.ClassVar[str] = "_transformed"
+    """Suffix for copied-code output variables when operations require statements."""
+
     _LAUNCH_MODES: typing.ClassVar[tuple[tuple[str, str, str], ...]] = (
         (
             "replace",
@@ -716,10 +719,42 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def make_code(self) -> str:
         try:
-            return provenance.operations_expression_code(
-                self.source_operations(),
-                self._copy_data_name(),
-            )
+            operations = self.source_operations()
+            input_name = self._copy_data_name()
+            if not any(operation.statement_mutates_input for operation in operations):
+                return provenance.operations_expression_code(
+                    operations,
+                    input_name,
+                )
+
+            if not erlab.interactive.utils._is_kwarg_name(input_name):
+                input_name = "data"
+            output_name = f"{input_name}{self.copy_output_suffix}"
+            current_name = input_name
+            lines: list[str] = []
+            for index, operation in enumerate(operations):
+                if operation.statement_mutates_input:
+                    lines.append(
+                        operation.replay_code(current_name, output_name=current_name)
+                    )
+                    continue
+                replay_output_name = (
+                    output_name
+                    if lines
+                    or any(
+                        later_operation.statement_mutates_input
+                        for later_operation in operations[index + 1 :]
+                    )
+                    else current_name
+                )
+                lines.append(
+                    operation.replay_code(
+                        current_name,
+                        output_name=replay_output_name,
+                    )
+                )
+                current_name = replay_output_name
+            return "\n".join(lines)
         except Exception:
             return ""
 
@@ -1051,6 +1086,7 @@ class KspaceConversionDialog(DataTransformDialog):
     apply_on_nonuniform_data = True
     grouped_operation_only = True
     operation_group_kind = _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
+    copy_output_suffix = "_kconv"
     operation_types = (
         provenance.KspaceConfigurationOperation,
         provenance.KspaceWorkFunctionOperation,
@@ -1181,10 +1217,20 @@ class KspaceConversionDialog(DataTransformDialog):
         initial_normal_emission: tuple[float, float] | None = None,
         initial_delta: float | None = None,
     ) -> None:
-        self._clear_layout(self.parameters_group.layout())
-        self._clear_layout(self.normal_emission_group.layout())
-        self._clear_layout(self.bounds_group.layout())
-        self._clear_layout(self.resolution_group.layout())
+        parameters_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.parameters_group.layout()
+        )
+        normal_emission_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.normal_emission_group.layout()
+        )
+        bounds_layout = typing.cast("QtWidgets.QFormLayout", self.bounds_group.layout())
+        resolution_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.resolution_group.layout()
+        )
+        self._clear_layout(parameters_layout)
+        self._clear_layout(normal_emission_layout)
+        self._clear_layout(bounds_layout)
+        self._clear_layout(resolution_layout)
 
         self.bounds_btn = QtWidgets.QPushButton("Calculate")
         self.bounds_btn.clicked.connect(self.calculate_bounds)
@@ -1205,7 +1251,7 @@ class KspaceConversionDialog(DataTransformDialog):
                 _kspace_conversion.kspace_inner_potential(self._control_data)
             )
             self._offset_spins["V0"] = v0_spin
-            self.parameters_group.layout().addRow(self._OFFSET_LABELS["V0"], v0_spin)
+            parameters_layout.addRow(self._OFFSET_LABELS["V0"], v0_spin)
 
         wf_spin = QtWidgets.QDoubleSpinBox()
         wf_spin.setRange(0.0, 9.999)
@@ -1215,7 +1261,7 @@ class KspaceConversionDialog(DataTransformDialog):
         wf_spin.setToolTip("Work function of the system.")
         wf_spin.setValue(_kspace_conversion.kspace_work_function(self._control_data))
         self._offset_spins["wf"] = wf_spin
-        self.parameters_group.layout().addRow(self._OFFSET_LABELS["wf"], wf_spin)
+        parameters_layout.addRow(self._OFFSET_LABELS["wf"], wf_spin)
 
         self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
@@ -1227,7 +1273,7 @@ class KspaceConversionDialog(DataTransformDialog):
             spin.setKeyboardTracking(False)
             spin.setToolTip("Angle corresponding to sample normal emission.")
             self._normal_emission_spins[axis] = spin
-            self.normal_emission_group.layout().addRow(label, spin)
+            normal_emission_layout.addRow(label, spin)
 
         if initial_normal_emission is None:
             initial_normal_emission = self._normal_emission_from_data(
@@ -1252,7 +1298,7 @@ class KspaceConversionDialog(DataTransformDialog):
                 spin.setDecimals(4)
                 spin.setSuffix(" Å⁻¹")
                 self._bound_spins[name] = spin
-                self.bounds_group.layout().addRow(name, spin)
+                bounds_layout.addRow(name, spin)
 
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(0.0001, 10)
@@ -1260,11 +1306,11 @@ class KspaceConversionDialog(DataTransformDialog):
             spin.setDecimals(5)
             spin.setSuffix(" Å⁻¹")
             self._resolution_spins[axis] = spin
-            self.resolution_group.layout().addRow(axis, spin)
+            resolution_layout.addRow(axis, spin)
 
-        self.bounds_group.layout().addRow(self.bounds_btn)
-        self.resolution_group.layout().addRow(self.res_npts_check)
-        self.resolution_group.layout().addRow(self.res_btn)
+        bounds_layout.addRow(self.bounds_btn)
+        resolution_layout.addRow(self.res_npts_check)
+        resolution_layout.addRow(self.res_btn)
         self.calculate_bounds()
         self.calculate_resolution()
 
@@ -1451,25 +1497,6 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self.source_spec_for_data(data).apply(data)
-
-    def make_code(self) -> str:
-        input_name = self._copy_data_name()
-        if not erlab.interactive.utils._is_kwarg_name(input_name):
-            input_name = "data"
-        output_name = f"{input_name}_kconv"
-        lines: list[str] = []
-        current_name = input_name
-        for operation in self.source_operations():
-            if isinstance(operation, provenance.KspaceConvertOperation):
-                lines.append(
-                    operation.replay_code(current_name, output_name=output_name)
-                )
-                current_name = output_name
-            else:
-                lines.append(
-                    operation.replay_code(current_name, output_name=current_name)
-                )
-        return "\n".join(lines)
 
     def focus_operation_group_control(self, focus: str | None) -> None:
         match focus:
