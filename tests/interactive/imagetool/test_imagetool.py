@@ -20,8 +20,8 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._highdim as imagetool_highdim
+import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server

@@ -3234,10 +3234,12 @@ class _WorkspaceIOController:
             return flags
 
         try:
-            prepared_data = erlab.interactive.imagetool.viewer_state._prepare_input_data(
-                typing.cast("list[xr.DataArray]", data),
-                self._manager,
-                allow_dialog=watched_var is None,
+            prepared_data = (
+                erlab.interactive.imagetool.viewer_state._prepare_input_data(
+                    typing.cast("list[xr.DataArray]", data),
+                    self._manager,
+                    allow_dialog=watched_var is None,
+                )
             )
         except ValueError:
             logger.exception(

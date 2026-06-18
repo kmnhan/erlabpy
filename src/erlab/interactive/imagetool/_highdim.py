@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import typing
-from collections.abc import Hashable
 
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -15,6 +13,11 @@ from erlab.interactive.imagetool.dialogs import (
     _populate_reducer_combo,
     _ScalarSelectionControls,
 )
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Hashable
+
+    import xarray as xr
 
 
 class _ReduceDimensionRow:
