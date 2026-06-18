@@ -16,7 +16,6 @@ import zmq
 from qtpy import QtCore
 
 import erlab
-import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool.manager._heartbeat as manager_heartbeat
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
@@ -1011,7 +1010,6 @@ def test_itool_manager_invalid_index_object_and_unavailable_fallback(
         def raise_(self) -> None:
             return None
 
-    monkeypatch.setattr(itool_mod, "_parse_input", lambda _data: [test_data])
     monkeypatch.setattr(erlab.interactive.imagetool, "ImageTool", _DummyImageTool)
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager,
