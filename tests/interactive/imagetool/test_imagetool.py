@@ -6910,6 +6910,40 @@ def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
     xarray.testing.assert_identical(dialog.result_data, expected)
 
 
+def test_high_dimensional_reduction_dialog_scalar_methods_and_parent(qtbot) -> None:
+    data = _high_dimensional_data()
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(parent, data)
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowModality() == QtCore.Qt.WindowModality.WindowModal
+
+    scan_row = dialog.rows[0]
+    _set_combo_data(scan_row.action_combo, "select")
+    _set_combo_data(scan_row.scalar_controls.method_combo, "qsel")
+    scan_row.scalar_controls.value_spin.setValue(1.0)
+
+    x_row = dialog.rows[-1]
+    _set_combo_data(x_row.action_combo, "select")
+    _set_combo_data(x_row.scalar_controls.method_combo, "sel")
+    x_row.scalar_controls.value_spin.setValue(2.0)
+
+    expected = data.sel(x=2.0).qsel(scan=1.0)
+    assert dialog.source_operations() == [
+        provenance.SelOperation(kwargs={"x": 2.0}),
+        provenance.QSelOperation(kwargs={"scan": 1.0}),
+    ]
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
 def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
     qtbot,
     monkeypatch,
@@ -7005,6 +7039,48 @@ def test_high_dimensional_reduction_dialog_accept_keeps_dialog_open_on_error(
         _ = dialog.result_data
 
 
+def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    warnings: list[tuple[object, ...]] = []
+
+    def _record_warning(*args: object) -> QtWidgets.QMessageBox.StandardButton:
+        warnings.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    assert dialog._processed_ndim_from_shape((5,)) == 2
+    assert dialog._processed_ndim_from_shape((2, 1, 3, 1, 4)) == 3
+    assert dialog._set_preview_from_metadata(("profile",), (5,))
+
+    row = dialog.rows[-1]
+    dialog.accept()
+    assert len(warnings) == 1
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        provenance,
+        "operations_expression_code",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no code")),
+    )
+    assert dialog.make_code() == ""
+    dialog.copy_button.click()
+    assert len(warnings) == 2
+
+    _set_combo_data(row.action_combo, "aggregate")
+    monkeypatch.setattr(dialog, "process_data", lambda _data: data)
+    dialog.accept()
+    assert len(warnings) == 3
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
 def test_high_dimensional_reduction_dialog_rejects_empty_result(qtbot) -> None:
     data = xr.DataArray(
         np.empty((0, 2, 3, 4, 5)),
@@ -7028,6 +7104,49 @@ def test_high_dimensional_reduction_dialog_rejects_empty_result(qtbot) -> None:
     assert not open_button.isEnabled()
     with pytest.raises(RuntimeError, match="No reduced data"):
         _ = dialog.result_data
+
+
+def test_scalar_selection_controls_non_numeric_and_width_branches(qtbot) -> None:
+    string_coord_data = xr.DataArray(
+        np.arange(3),
+        dims=("label",),
+        coords={"label": np.array(["a", "b", "c"], dtype=object)},
+    )
+    string_controls = imagetool_dialogs._ScalarSelectionControls(
+        string_coord_data,
+        "label",
+        0,
+        object_name_prefix="test_scalar",
+        include_width=False,
+    )
+    qtbot.addWidget(string_controls.method_combo)
+    qtbot.addWidget(string_controls.stack)
+    qtbot.addWidget(string_controls.width_widget)
+
+    assert string_controls.method == "isel"
+    assert string_controls.indexer() == ("label", 1)
+    assert string_controls.qsel_width_indexer() is None
+
+    numeric_data = xr.DataArray(
+        np.arange(3),
+        dims=("x",),
+        coords={"x": np.arange(3, dtype=float)},
+    )
+    numeric_controls = imagetool_dialogs._ScalarSelectionControls(
+        numeric_data,
+        "x",
+        0,
+        object_name_prefix="test_numeric_scalar",
+        current_index=None,
+    )
+    qtbot.addWidget(numeric_controls.method_combo)
+    qtbot.addWidget(numeric_controls.stack)
+    qtbot.addWidget(numeric_controls.width_widget)
+
+    assert numeric_controls.indexer() == ("x", 1.0)
+    numeric_controls.width_check.setChecked(True)
+    numeric_controls.width_spin.setValue(0.0)
+    assert numeric_controls.qsel_width_indexer() is None
 
 
 def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:
