@@ -26,6 +26,7 @@ class _PreviewTrackingExplorer(QtWidgets.QWidget):
         self.current_directory = pathlib.Path(name)
         self.menu_bar = QtWidgets.QMenuBar(self)
         self.stopped_preview_workers = 0
+        self._preview_stopping = False
 
     def _stop_preview_workers(self) -> bool:
         self.stopped_preview_workers += 1
@@ -36,10 +37,14 @@ class _DeferredPreviewTrackingExplorer(_PreviewTrackingExplorer):
     def __init__(self, name: str, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(name, parent)
         self.deferred_delete_count = 0
+        self.defer_preview_stop = True
 
     def _stop_preview_workers(self) -> bool:
         self.stopped_preview_workers += 1
-        return False
+        if self.defer_preview_stop:
+            self._preview_stopping = True
+            return False
+        return True
 
     def _delete_when_preview_workers_done(self) -> None:
         self.deferred_delete_count += 1
@@ -161,7 +166,7 @@ def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(
     explorer = win.current_explorer
     assert isinstance(explorer, _PreviewTrackingExplorer)
 
-    win.closeEvent(QtGui.QCloseEvent())
+    win.close()
 
     assert win.tab_widget.count() == 1
     assert win.current_explorer is explorer
@@ -173,18 +178,24 @@ def test_tabbed_explorer_close_ignores_busy_preview_workers(qtbot) -> None:
     qtbot.addWidget(win)
     explorer = win.current_explorer
     assert isinstance(explorer, _DeferredPreviewTrackingExplorer)
+    empty_tab = QtWidgets.QWidget()
+    win.tab_widget.addTab(empty_tab, "empty")
     event = QtGui.QCloseEvent()
 
     win.closeEvent(event)
 
     assert not event.isAccepted()
-    assert win.tab_widget.count() == 1
+    assert win.tab_widget.count() == 2
     assert win.current_explorer is explorer
     assert explorer.stopped_preview_workers == 1
+    assert not explorer._preview_stopping
 
     win.closeEvent(None)
 
     assert explorer.stopped_preview_workers == 2
+    assert not explorer._preview_stopping
+    explorer.defer_preview_stop = False
+    win.close()
 
 
 def test_explorer_close_stops_preview_workers(
@@ -204,7 +215,7 @@ def test_explorer_close_stops_preview_workers(
     explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
 
-    explorer.closeEvent(QtGui.QCloseEvent())
+    explorer.close()
 
     assert explorer.stopped_preview_workers
 
@@ -215,13 +226,17 @@ def test_explorer_close_ignores_busy_preview_workers(
     class _BusyDataExplorer(_DataExplorer):
         def __init__(self, *args, **kwargs) -> None:
             self.stopped_preview_workers = False
+            self.defer_preview_stop = True
             super().__init__(*args, **kwargs)
 
         def _stop_preview_workers(
             self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
         ) -> bool:
             self.stopped_preview_workers = True
-            return False
+            if self.defer_preview_stop:
+                self._preview_stopping = True
+                return False
+            return True
 
     explorer = _BusyDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
@@ -231,11 +246,15 @@ def test_explorer_close_ignores_busy_preview_workers(
 
     assert explorer.stopped_preview_workers
     assert not event.isAccepted()
+    assert not explorer._preview_stopping
 
     explorer.stopped_preview_workers = False
     explorer.closeEvent(None)
 
     assert explorer.stopped_preview_workers
+    assert not explorer._preview_stopping
+    explorer.defer_preview_stop = False
+    explorer.close()
 
 
 def test_tabbed_explorer_show_path_adds_selected_file_tab(
@@ -460,6 +479,39 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
     worker = _ReprFetcher(file_path, _preview_loader, include_values=False)
     worker.run()
     assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]
+
+
+def test_repr_fetcher_keeps_coordinate_values_without_preview(
+    tmp_path: pathlib.Path,
+) -> None:
+    import numpy as np
+    import xarray as xr
+
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={
+            "x": np.array([10.0, 12.0, 14.0]),
+            "y": np.array([0.0, 0.5, 1.0, 1.5]),
+        },
+        name="demo",
+    )
+    fetched: list[tuple[str, object]] = []
+
+    worker = _ReprFetcher(tmp_path / "data.h5", lambda *_args, **_kwargs: data, False)
+    worker.signals.fetched.connect(
+        lambda _path, text, preview_data: fetched.append((text, preview_data))
+    )
+
+    worker.run()
+
+    assert len(fetched) == 1
+    text, preview_data = fetched[0]
+    assert preview_data is None
+    assert "10 : 2 : 14" in text
+    assert "0 : 0.5 : 1.5" in text
+    assert "float64 [3]" not in text
+    assert "float64 [4]" not in text
 
 
 def test_repr_fetcher_aborted_before_run_skips_loader(
