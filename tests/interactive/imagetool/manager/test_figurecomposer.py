@@ -14711,6 +14711,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     )
     assert energies_edit is not None
     assert binding_edit is not None
+    assert energies_edit.placeholderText() == "Enter photon energies"
     energies_edit.setText("30, 45, 60")
     energies_edit.editingFinished.emit()
     binding_edit.setText("-0.3")
@@ -14761,6 +14762,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     assert updated.show_legend is False
     assert updated.legend_kw == {"title": "Photon energy", "frameon": False}
     assert updated.label_template == "hv={hv:g} eV"
+    assert tool.step_section_buttons["photon"].text() == "hν: 30, 45, 60; eV=-0.3"
     assert updated.line_kw == {
         "color": "tab:red",
         "linestyle": "--",

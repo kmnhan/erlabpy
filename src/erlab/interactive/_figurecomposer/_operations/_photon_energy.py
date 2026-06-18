@@ -259,6 +259,7 @@ def _build_photon_editor(
     )
     photon_edit = tool._line_edit(photon_text, parent=page)
     photon_edit.setObjectName("figureComposerPhotonEnergyValuesEdit")
+    photon_edit.setPlaceholderText("Enter photon energies")
     tool._apply_mixed_line_edit(photon_edit, photon_mixed)
     tool._connect_line_edit_finished(
         photon_edit,
@@ -268,7 +269,7 @@ def _build_photon_editor(
     )
     tool._add_form_row(
         layout,
-        "Photon energies",
+        "hν",
         photon_edit,
         "Photon energies in eV, entered as comma-separated numbers.",
     )
@@ -443,7 +444,7 @@ def _build_editor(
     _build_style_editor(tool, operation, style_page, style_layout)
 
     return [
-        ("photon", "Photon Energy", photon_page),
+        ("photon", "hν", photon_page),
         ("style", "Style", style_page),
     ]
 
