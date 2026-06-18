@@ -284,20 +284,41 @@ def _validate_script_code_names(
         visiting.remove(name)
         return None
 
-    for stmt in module.body:
-        names = _statement_scope_names(stmt)
+    def require_loads(names: _CurrentScopeNames) -> None:
         for name in sorted(names.loads):
             missing = require(name)
             if missing is not None:
                 raise ReplayGraphError(
                     f"Script provenance references unresolved name {missing!r}"
                 )
+
+    def validate_stmt(stmt: ast.stmt) -> None:
+        if isinstance(stmt, ast.For):
+            iter_names = _CurrentScopeNames()
+            iter_names.visit(stmt.iter)
+            require_loads(iter_names)
+
+            target_names = _CurrentScopeNames()
+            target_names.visit(stmt.target)
+            require_loads(target_names)
+            available_names.update(target_names.stores)
+            for body_stmt in stmt.body:
+                validate_stmt(body_stmt)
+            for orelse_stmt in stmt.orelse:
+                validate_stmt(orelse_stmt)
+            return
+
+        names = _statement_scope_names(stmt)
+        require_loads(names)
         if isinstance(stmt, ast.FunctionDef):
             function_dependencies[stmt.name] = new_function_dependencies.get(
                 (stmt.name, stmt.lineno),
                 set(),
             )
         available_names.update(names.stores)
+
+    for stmt in module.body:
+        validate_stmt(stmt)
 
 
 def _simple_assignment_source_name(code: str, target_name: str) -> str | None:

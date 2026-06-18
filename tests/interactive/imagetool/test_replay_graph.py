@@ -157,6 +157,19 @@ class Child(Base, metaclass=data_5):
             set(),
             {},
         )
+    loop_names = {"axs", "profiles"}
+    _replay_graph._validate_script_code_names(
+        "for profile in profiles:\n    profile.plot(ax=axs, x='alpha')",
+        loop_names,
+        {},
+    )
+    assert "profile" in loop_names
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph._validate_script_code_names(
+            "for holder.profile in profiles:\n    pass",
+            {"profiles"},
+            {},
+        )
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
         _replay_graph._validate_script_provenance(
@@ -1674,6 +1687,107 @@ def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
         namespace["derived"],
         xr.DataArray([11.0, 22.0], dims=["x"]),
     )
+
+
+def test_replay_graph_allows_for_loop_script_code() -> None:
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Build figure",
+            code=(
+                "fig = []\n"
+                "profiles = list(profile_data.transpose('eV', ...))\n"
+                "for profile in profiles:\n"
+                "    fig.append(profile.sum())"
+            ),
+        ),
+        start_label="Build figure",
+        seed_code=(
+            "profile_data = xr.DataArray("
+            "np.arange(6.0).reshape(2, 3), "
+            "dims=('eV', 'alpha'), "
+            "coords={'alpha': [0.0, 1.0, 2.0]}"
+            ")"
+        ),
+        active_name="fig",
+    )
+
+    graph = _replay_graph.compile_replay_graph(spec, display=True)
+    code = _replay_graph.emit_replay_code(graph, output_name="fig")
+    namespace = _exec_generated_code(code)
+
+    assert "for profile in profiles:" in code
+    assert len(namespace["fig"]) == 2
+    xr.testing.assert_identical(namespace["fig"][0], xr.DataArray(3.0))
+    xr.testing.assert_identical(namespace["fig"][1], xr.DataArray(12.0))
+
+
+def test_replay_graph_allows_for_loop_with_script_input() -> None:
+    profile_source = provenance.script(
+        start_label="Make profile data",
+        seed_code=(
+            "profile_data = xr.DataArray("
+            "np.arange(6.0).reshape(2, 3), "
+            "dims=('eV', 'alpha'), "
+            "coords={'alpha': [0.0, 1.0, 2.0]}"
+            ")"
+        ),
+        active_name="profile_data",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Build figure",
+            code=(
+                "fig = []\n"
+                "profiles = list(profile_data.transpose('eV', ...))\n"
+                "for profile in profiles:\n"
+                "    fig.append(profile.sum())"
+            ),
+        ),
+        start_label="Build figure",
+        active_name="fig",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="profile_data",
+                label="Profile data",
+                provenance_spec=profile_source,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "for profile in profiles:" in code
+    assert len(namespace["fig"]) == 2
+    xr.testing.assert_identical(namespace["fig"][0], xr.DataArray(3.0))
+    xr.testing.assert_identical(namespace["fig"][1], xr.DataArray(12.0))
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("while True:\n    derived = data", "unsupported While"),
+        (
+            "try:\n    derived = data\nexcept Exception:\n    derived = data",
+            "unsupported Try",
+        ),
+        ("with open('scan.nc') as handle:\n    derived = data", "unsupported With"),
+        ("derived = globals()", "cannot call 'globals'"),
+        ("derived = locals()", "cannot call 'locals'"),
+    ],
+)
+def test_replay_graph_rejects_unsupported_script_constructs(
+    code: str, message: str
+) -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Unsupported", code=code),
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    with pytest.raises(_replay_graph.ReplayGraphError, match=re.escape(message)):
+        _replay_graph.compile_replay_graph(spec, external_inputs={"data": data})
 
 
 def test_replay_graph_raises_typed_errors_for_unsupported_script() -> None:

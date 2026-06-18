@@ -3595,15 +3595,21 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         dims=("x", "y"),
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
-    dialogs: list[QtWidgets.QMessageBox] = []
+    dialogs: list[erlab.interactive.utils.MessageDialog] = []
 
-    def _record_dialog(
-        dialog: QtWidgets.QMessageBox,
-    ) -> QtWidgets.QMessageBox.StandardButton:
-        dialogs.append(dialog)
-        return QtWidgets.QMessageBox.StandardButton.Ok
+    class _RecordingMessageDialog(erlab.interactive.utils.MessageDialog):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            dialogs.append(self)
 
-    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", _record_dialog)
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
 
     with manager_context() as manager:
         manager.show()
@@ -3634,11 +3640,13 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         manager._copy_full_derivation_code()
         assert not copied
         assert len(dialogs) == 1
-        assert dialogs[0].icon() == QtWidgets.QMessageBox.Icon.Warning
+        assert dialogs[0].windowTitle() == "Replay Code Unavailable"
         assert dialogs[0].text()
         assert dialogs[0].informativeText()
-        assert dialogs[0].detailedText()
-        assert "Run opaque code" in dialogs[0].detailedText()
+        details = dialogs[0].detailedText()
+        assert "Run opaque code" in details
+        assert "ReplayGraphError" in details
+        assert "non-replayable code" in details
 
 
 def test_manager_console_replacement_updates_provenance_and_descendants(
