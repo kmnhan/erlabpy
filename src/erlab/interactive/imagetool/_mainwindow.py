@@ -459,6 +459,9 @@ class ImageTool(BaseImageTool):
 
         self.remove_act = QtWidgets.QAction("Remove from Manager", self)
         self.remove_act.setShortcut(QtGui.QKeySequence.StandardKey.Delete)
+        self.remove_act.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
         self.remove_act.triggered.connect(self.slicer_area.remove_from_manager)
         self.remove_act.setVisible(self.slicer_area._in_manager)
 
