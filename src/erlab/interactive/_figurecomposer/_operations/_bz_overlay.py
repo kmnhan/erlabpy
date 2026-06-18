@@ -99,7 +99,12 @@ def _bounds_from_text(text: str) -> tuple[float, float, float, float] | None:
     if len(value) != 4:
         raise _input_error("Enter four comma-separated numbers.")
     try:
-        return tuple(float(item) for item in value)
+        return (
+            float(value[0]),
+            float(value[1]),
+            float(value[2]),
+            float(value[3]),
+        )
     except (TypeError, ValueError) as exc:
         raise _input_error("Enter four comma-separated numbers.") from exc
 
@@ -127,7 +132,7 @@ def _bz_bvec(operation: FigureOperationState) -> np.ndarray:
 def _render_bz_overlay(
     tool: FigureComposerTool,
     operation: FigureOperationState,
-    axs: object,
+    axs: typing.Any,
 ) -> None:
     axes = _iter_axes(
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
@@ -568,18 +573,24 @@ def _build_style_editor(
             "Keyword arguments forwarded to the midpoint scatter artist.",
         ),
     ):
+
+        def field_getter(
+            target: FigureOperationState, field: str = field
+        ) -> typing.Any:
+            return getattr(target, field)
+
+        def update_field(value: str, field: str = field) -> None:
+            tool._update_current_operation(**{field: _dict_from_text(value)})
+
         text, mixed = tool._batch_text(
-            operation, lambda target, field=field: getattr(target, field), _format_dict
+            operation,
+            field_getter,
+            _format_dict,
         )
         edit = tool._line_edit(text, parent=page)
         edit.setObjectName(object_name)
         tool._apply_mixed_line_edit(edit, mixed)
-        tool._connect_line_edit_finished(
-            edit,
-            lambda value, field=field: tool._update_current_operation(
-                **{field: _dict_from_text(value)}
-            ),
-        )
+        tool._connect_line_edit_finished(edit, update_field)
         tool._add_form_row(layout, label, edit, tooltip)
 
 
