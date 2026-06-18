@@ -2714,7 +2714,14 @@ def test_itool_file_open_uses_selected_dataset_variable(
 
     def _select_second(data, parent=None):
         assert parent is not None
-        return ((data["second"], selection),)
+        return (
+            imagetool_viewer_state._PreparedInputData(
+                data=data["second"],
+                selection=selection,
+                source_ndim=data["second"].ndim,
+                source_dtype=np.dtype(data["second"].dtype),
+            ),
+        )
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -2859,7 +2866,20 @@ def test_itool_file_open_selection_branches(
         assert parent is not None
         if selection == "cancel":
             return None
-        return ((data["first"], 0), (data["second"], 1))
+        return (
+            imagetool_viewer_state._PreparedInputData(
+                data=data["first"],
+                selection=0,
+                source_ndim=data["first"].ndim,
+                source_dtype=np.dtype(data["first"].dtype),
+            ),
+            imagetool_viewer_state._PreparedInputData(
+                data=data["second"],
+                selection=1,
+                source_ndim=data["second"].ndim,
+                source_dtype=np.dtype(data["second"].dtype),
+            ),
+        )
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -4146,10 +4166,10 @@ def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
     dataset_parsed = imagetool_viewer_state._parse_input_data(ds)
     datatree_parsed = imagetool_viewer_state._parse_input_data(tree)
 
-    assert dataset_parsed[0][1] == provenance.FileDataSelection(
+    assert dataset_parsed[0].selection == provenance.FileDataSelection(
         kind="dataset_variable", value="image"
     )
-    assert datatree_parsed[0][1] == provenance.FileDataSelection(
+    assert datatree_parsed[0].selection == provenance.FileDataSelection(
         kind="datatree_path", value="/diag/image"
     )
 
@@ -4166,7 +4186,16 @@ def test_itool_dataset_selection_returns_selected_variable(qtbot, monkeypatch) -
         }
     )
     monkeypatch.setattr(
-        itool_mod, "_select_input_dataarrays", lambda _data: ((ds["second"], 1),)
+        itool_mod,
+        "_select_input_dataarrays",
+        lambda _data: (
+            imagetool_viewer_state._PreparedInputData(
+                data=ds["second"],
+                selection=1,
+                source_ndim=ds["second"].ndim,
+                source_dtype=np.dtype(ds["second"].dtype),
+            ),
+        ),
     )
 
     win = itool(ds, execute=False)
