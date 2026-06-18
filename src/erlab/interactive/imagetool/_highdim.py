@@ -125,11 +125,11 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
 
-        non_singleton_count = sum(size != 1 for size in data.shape)
+        visible_dimension_count = sum(size != 1 for size in data.shape)
         heading = QtWidgets.QLabel(
-            "ImageTool opens data with 2 to 4 non-singleton dimensions. "
-            f"This data has {non_singleton_count}. Select or aggregate "
-            "dimensions to create a non-empty 2D, 3D, or 4D result.",
+            "ImageTool opens data when 2 to 4 dimensions have size greater "
+            f"than 1. This data has {visible_dimension_count}. Select or "
+            "aggregate dimensions to create a non-empty 2D, 3D, or 4D result.",
             self,
         )
         heading.setWordWrap(True)
