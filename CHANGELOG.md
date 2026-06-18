@@ -2,6 +2,26 @@
 
 ### ✨ Features
 
+- **manager:** add replace-source handling for concatenated results (#416) ([9f1c3b9](https://github.com/kmnhan/erlabpy/commit/9f1c3b9b509b6e91daeedc00417ea0ad6bbb7291))
+
+  The ImageTool Manager concatenate dialog now lets users choose whether to open a concatenated result as a new ImageTool or replace one of the selected source tools. Replacing a source keeps compatible child ImageTools linked and refreshed from the new concatenated data, while incompatible children remain attached but unavailable instead of being removed.
+
+- **manager:** add provenance step copy and paste (#410) ([aa11593](https://github.com/kmnhan/erlabpy/commit/aa11593c50ef0e10caa3e3cbe6b908af952dda54))
+
+  ImageTool manager provenance can now be copied and pasted into other ImageTools. This is useful when you want to repeat the same analysis steps on multiple data.
+
+- **manager:** make provenance steps editable and revertible (#409) ([25b54e0](https://github.com/kmnhan/erlabpy/commit/25b54e08001a648507b1aa74d4426ea9054aa7d5))
+
+  ImageTool manager provenance details now let users edit individual rows by double clicking on them.
+
+  Also adds a new action to the right-click menu that allows reverting the ImageTool to a previous state.
+
+  This also applies to the data loading step, so loader arguments and file path can be changed after performing analysis on the data.
+
+- **interactive:** add undo and redo support to interactive tools (#402) ([bc36f17](https://github.com/kmnhan/erlabpy/commit/bc36f17f358cf3fe2060c609ce35b7c6ed14f73e))
+
+  Adds undo & redo functionality that was only available in ImageTool and `ktool` to all interactive tools, including `ktool`, `meshtool`, `goldtool`, and `dtool`.
+
 - **imagetool:** add interface to `xarray.DataArray.sortby` (#397) ([506dc2c](https://github.com/kmnhan/erlabpy/commit/506dc2cc2ebe59b2453150683ddb646357cbb083))
 
   Add a `Sort By` dialog for sorting data with `xarray.DataArray.sortby`.
@@ -17,6 +37,42 @@
   Add a Batch Operation dialog to ImageTool Manager for applying operations to multiple ImageTools at once.
 
 ### 🐞 Bug Fixes
+
+- **manager:** show parent histories in script-derived tool provenance (#418) ([a0c8f5f](https://github.com/kmnhan/erlabpy/commit/a0c8f5f026e9e2f62ba91dc8628ee492623674e0))
+
+  Multi-input script-derived tools now show parent histories as expandable rows, so users can inspect and edit steps from each input history directly from the derived tool.
+
+- **manager:** properly expose reload for child tools (#417) ([a5ff0b9](https://github.com/kmnhan/erlabpy/commit/a5ff0b91e11bed6276e1f52559e188145d72a248))
+
+  Fixes an issue where Reload Data was not exposed in the menu bar or as a keyboard shortcut for child tools.
+
+- **manager:** make console children follow the manager tree (#415) ([50f99ed](https://github.com/kmnhan/erlabpy/commit/50f99edcf47998b25d1dbcd1167de1da9bee1ecf))
+
+  The ImageTool manager console now exposes `tools[i].children` exactly as the manager tree is organized so that child rows of analysis tools such as `dtool`, `ftool`, and `meshtool` can be accessed from the console.
+
+- **manager:** use platform-native manager selection shortcuts (#408) ([1a31e64](https://github.com/kmnhan/erlabpy/commit/1a31e6409f5d5e923d99fa755941d634f379dbfc))
+
+  ImageTool Manager now follows platform conventions when selecting items in the Data/Tools tree and Figures view. On macOS, `Return`/`Enter` starts renaming the selected item and `Cmd+Down` opens the selected window; on Windows and Linux, `F2` renames and `Return`/`Enter` opens.
+
+- **manager:** improve some fragile paths during workspace save and load (#407) ([75de6cb](https://github.com/kmnhan/erlabpy/commit/75de6cb1518ebd995060c940bd0619549a80f3fd))
+
+- **manager:** handle unavailable Data Explorer folders (#405) ([aa8c196](https://github.com/kmnhan/erlabpy/commit/aa8c1963ac7b8eca789f2beb9508311c75c320cf))
+
+  Data Explorer tabs restored from workspace files now stay usable when the saved folder is missing, unreadable, or on a disconnected drive. The saved path remains visible so users can reconnect the source or choose another folder, and the explorer shows an inline recovery message instead of raising an uncaught error.
+
+  Folder metadata lookup is also more efficient when browsing and sorting files, especially for larger directories.
+
+- **imagetool:** fix colorbar handle scaling for large data ranges (#404) ([ee90de9](https://github.com/kmnhan/erlabpy/commit/ee90de9736f8bfd9881f9a015b89e322cd3fdc97))
+
+  Fixes an issue where the colorbar handles in ImageTool did not work properly when image values span large numeric ranges, such as 1e11 to 1e15.
+
+- **ftool:** Suppress harmless restore warnings during fit restore (#403) ([d5f010d](https://github.com/kmnhan/erlabpy/commit/d5f010d3d08a6dd66d0d94287ece1340780c844e))
+
+  `ftool`s saved with another Python version no longer shows warnings when the model can be loaded without problems.
+
+- **ftool:** keep ftool parameter ImageTools bound to their parameter (#401) ([507fafa](https://github.com/kmnhan/erlabpy/commit/507fafa1c4e641e46cda5efca2e711ccd4f72f88))
+
+  ImageTool windows opened from 2D ftool parameter plots now stay tied to the parameter that created them. Different parameters now create distinct manager child windows.
 
 - **imagetool:** keep rotation guidelines above cursors (#400) ([9bf0b1e](https://github.com/kmnhan/erlabpy/commit/9bf0b1e3ad022a6bc09a96ff86da35d0c142c65b))
 
