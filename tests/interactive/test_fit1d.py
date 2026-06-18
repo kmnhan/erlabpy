@@ -1378,12 +1378,13 @@ def test_fit1d_close_event_ignored_if_thread_does_not_stop(qtbot) -> None:
     class _StuckThread:
         def __init__(self) -> None:
             self.cancel_called = False
+            self.running = True
 
         def cancel(self) -> None:
             self.cancel_called = True
 
         def isRunning(self) -> bool:
-            return True
+            return self.running
 
         def requestInterruption(self) -> None:
             return
@@ -1399,6 +1400,8 @@ def test_fit1d_close_event_ignored_if_thread_does_not_stop(qtbot) -> None:
     win.closeEvent(event)
     assert not event.isAccepted()
     assert stuck_thread.cancel_called
+    stuck_thread.running = False
+    win.close()
 
 
 def test_fit1d_slider_drag_updates_value(qtbot) -> None:

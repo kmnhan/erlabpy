@@ -37,11 +37,14 @@ class _DeferredPreviewTrackingExplorer(_PreviewTrackingExplorer):
     def __init__(self, name: str, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(name, parent)
         self.deferred_delete_count = 0
+        self.defer_preview_stop = True
 
     def _stop_preview_workers(self) -> bool:
         self.stopped_preview_workers += 1
-        self._preview_stopping = True
-        return False
+        if self.defer_preview_stop:
+            self._preview_stopping = True
+            return False
+        return True
 
     def _delete_when_preview_workers_done(self) -> None:
         self.deferred_delete_count += 1
@@ -175,12 +178,14 @@ def test_tabbed_explorer_close_ignores_busy_preview_workers(qtbot) -> None:
     qtbot.addWidget(win)
     explorer = win.current_explorer
     assert isinstance(explorer, _DeferredPreviewTrackingExplorer)
+    empty_tab = QtWidgets.QWidget()
+    win.tab_widget.addTab(empty_tab, "empty")
     event = QtGui.QCloseEvent()
 
     win.closeEvent(event)
 
     assert not event.isAccepted()
-    assert win.tab_widget.count() == 1
+    assert win.tab_widget.count() == 2
     assert win.current_explorer is explorer
     assert explorer.stopped_preview_workers == 1
     assert not explorer._preview_stopping
@@ -189,6 +194,8 @@ def test_tabbed_explorer_close_ignores_busy_preview_workers(qtbot) -> None:
 
     assert explorer.stopped_preview_workers == 2
     assert not explorer._preview_stopping
+    explorer.defer_preview_stop = False
+    win.close()
 
 
 def test_explorer_close_stops_preview_workers(
@@ -219,14 +226,17 @@ def test_explorer_close_ignores_busy_preview_workers(
     class _BusyDataExplorer(_DataExplorer):
         def __init__(self, *args, **kwargs) -> None:
             self.stopped_preview_workers = False
+            self.defer_preview_stop = True
             super().__init__(*args, **kwargs)
 
         def _stop_preview_workers(
             self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
         ) -> bool:
             self.stopped_preview_workers = True
-            self._preview_stopping = True
-            return False
+            if self.defer_preview_stop:
+                self._preview_stopping = True
+                return False
+            return True
 
     explorer = _BusyDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
@@ -243,6 +253,8 @@ def test_explorer_close_ignores_busy_preview_workers(
 
     assert explorer.stopped_preview_workers
     assert not explorer._preview_stopping
+    explorer.defer_preview_stop = False
+    explorer.close()
 
 
 def test_tabbed_explorer_show_path_adds_selected_file_tab(

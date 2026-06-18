@@ -840,11 +840,15 @@ def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
+    threadpool_ready = False
+
+    def _wait_for_threadpool(*args, **kwargs) -> bool:
+        return threadpool_ready
 
     monkeypatch.setattr(
         type(win),
         "_wait_for_threadpool",
-        staticmethod(lambda *args, **kwargs: False),
+        staticmethod(_wait_for_threadpool),
     )
 
     event = QtGui.QCloseEvent()
@@ -852,6 +856,8 @@ def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
     win.closeEvent(event)
     assert not event.isAccepted()
     assert not win._fit_closing
+    threadpool_ready = True
+    win.close()
 
 
 def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
@@ -1474,13 +1480,14 @@ def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
         def __init__(self) -> None:
             self.cancel_called = False
             self.interrupted = False
+            self.running = True
             self.wait_timeout_ms: int | None = None
 
         def cancel(self) -> None:
             self.cancel_called = True
 
         def isRunning(self) -> bool:
-            return True
+            return self.running
 
         def requestInterruption(self) -> None:
             self.interrupted = True
@@ -1500,6 +1507,8 @@ def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
     assert stuck_thread.cancel_called
     assert stuck_thread.interrupted
     assert stuck_thread.wait_timeout_ms == 5000
+    stuck_thread.running = False
+    win.close()
 
 
 def test_restool_cancel_fit_waits_without_timeout(qtbot) -> None:
