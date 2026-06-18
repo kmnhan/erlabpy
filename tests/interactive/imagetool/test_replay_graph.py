@@ -164,10 +164,25 @@ class Child(Base, metaclass=data_5):
         {},
     )
     assert "profile" in loop_names
+    nested_loop_names = {"axs", "profiles", "show_profiles"}
+    _replay_graph._validate_script_code_names(
+        "if show_profiles:\n"
+        "    for profile in profiles:\n"
+        "        profile.plot(ax=axs, x='alpha')",
+        nested_loop_names,
+        {},
+    )
+    assert "profile" in nested_loop_names
     with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
         _replay_graph._validate_script_code_names(
             "for holder.profile in profiles:\n    pass",
             {"profiles"},
+            {},
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph._validate_script_code_names(
+            "if use_left:\n    local_value = data\nelse:\n    derived = local_value",
+            {"data", "use_left"},
             {},
         )
 

@@ -308,6 +308,36 @@ def _validate_script_code_names(
                 validate_stmt(orelse_stmt)
             return
 
+        if isinstance(stmt, ast.If):
+            test_names = _CurrentScopeNames()
+            test_names.visit(stmt.test)
+            require_loads(test_names)
+
+            available_before = set(available_names)
+            dependencies_before = dict(function_dependencies)
+            branch_stores: set[str] = set()
+            branch_dependencies: dict[str, set[str]] = {}
+            for branch in (stmt.body, stmt.orelse):
+                available_names.clear()
+                available_names.update(available_before)
+                function_dependencies.clear()
+                function_dependencies.update(dependencies_before)
+                for branch_stmt in branch:
+                    validate_stmt(branch_stmt)
+                branch_stores.update(available_names - available_before)
+                for name, dependencies in function_dependencies.items():
+                    if dependencies_before.get(name) == dependencies:
+                        continue
+                    branch_dependencies.setdefault(name, set()).update(dependencies)
+
+            available_names.clear()
+            available_names.update(available_before)
+            available_names.update(branch_stores)
+            function_dependencies.clear()
+            function_dependencies.update(dependencies_before)
+            function_dependencies.update(branch_dependencies)
+            return
+
         names = _statement_scope_names(stmt)
         require_loads(names)
         if isinstance(stmt, ast.FunctionDef):
