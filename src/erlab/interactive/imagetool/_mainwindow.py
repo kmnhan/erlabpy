@@ -689,7 +689,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._swap_dims,
                         "sep_after": True,
                     },
-                    "Rotate": {"triggered": self._rotate, "sep_after": True},
+                    "Rotate": {"triggered": self._rotate},
+                    "kspaceConversionAct": {
+                        "text": "Convert to kspace…",
+                        "triggered": self._convert_to_kspace,
+                        "sep_after": True,
+                    },
                     "Crop": {"triggered": self._crop},
                     "Crop to View": {
                         "triggered": self._crop_to_view,
@@ -863,6 +868,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
         # Disable/Enable menus based on context
         self.menu_dict["fileMenu"].aboutToShow.connect(self._file_menu_visibility)
+        self.menu_dict["editMenu"].aboutToShow.connect(self._edit_menu_visibility)
         self.menu_dict["viewMenu"].aboutToShow.connect(self._view_menu_visibility)
         self.menu_dict["invertAxisMenu"].setObjectName("itool_invert_axis_menu")
         self.menu_dict["invertAxisMenu"].aboutToShow.connect(
@@ -883,6 +889,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
         self.slicer_area.compute_act.setEnabled(self.slicer_area.data_loadable)
         self.action_dict["moveToManagerAct"].setVisible(visible)
+
+    @QtCore.Slot()
+    def _edit_menu_visibility(self) -> None:
+        self.action_dict["kspaceConversionAct"].setEnabled(
+            self.slicer_area.data.kspace._interactive_compatible
+        )
 
     @QtCore.Slot()
     def _view_menu_visibility(self) -> None:
@@ -922,6 +934,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _rotate(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.RotationDialog)
+
+    @QtCore.Slot()
+    def _convert_to_kspace(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.KspaceConversionDialog)
 
     @QtCore.Slot()
     def _crop(self) -> None:

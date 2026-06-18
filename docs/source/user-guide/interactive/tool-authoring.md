@@ -488,9 +488,18 @@ Some implementation details matter:
   statements before that final expression. Output-specific helpers can still inspect
   `data` when the generated code depends on the current output array.
 - Prefer `expression_method` for ordinary single-step generated code. Use
-  `operations_method` only when the generated code needs multiple labeled steps, and reach for
-  `seed_code`, `seed_code_method`, or explicit `active_name` only for the rarer cases
-  where the simpler expression-plus-assignment path cannot describe the tool cleanly.
+  `operations_method` only when the generated code needs multiple labeled steps, and
+  reach for `seed_code`, `seed_code_method`, or explicit `active_name` only for the
+  rarer cases where the simpler expression-plus-assignment path cannot describe the
+  tool cleanly.
+- If those multiple steps are one user action, keep the steps as primitive
+  `ToolProvenanceOperation` instances and add operation-group metadata instead of
+  replacing them with a single raw script step. Use
+  `erlab.interactive.imagetool.provenance.stamp_operation_group(...)` with a stable
+  `kind` string; it attaches the contiguous `index` / `size` markers and optional
+  `focus` values for the dialog control that should receive focus when that row is
+  edited. The grouped operations should still replay and generate readable public-API
+  code one primitive step at a time.
 - If generated code should be unavailable for the current state, return `None` from a
   dynamic provenance method such as `label_method`, `assign_method`, or
   `prelude_method` rather than returning partial code.
@@ -612,6 +621,17 @@ which ImageTool data and selection opened it:
   ``QSelAggregationOperation(...)``, and ``TransposeOperation(...)`` when a tool
   needs to write or modify the saved operation list explicitly. Pass those operation
   instances to ``selection(...)`` or ``full_data(...)``.
+- When a tool or dialog emits a sequence of primitive operations that should be edited
+  as one unit, stamp the complete sequence as an operation group before returning it.
+  The canonical order should be the order needed for clean generated code and replay.
+  A transform dialog that edits such a group should set `operation_group_kind`, validate
+  the selected contiguous group in `operation_group_for_edit(...)`, restore all controls
+  from `restore_transform_operations(...)`, and optionally use
+  `focus_operation_group_control(...)` to focus the widget associated with the selected
+  row. Rows copied without the full group must stay structured and replayable, but
+  should not remain group-editable. When full groups are pasted, refresh their group
+  identities before appending them to the destination provenance so adjacent copies
+  remain separate editable groups.
 - When implementing a custom ``ToolProvenanceOperation.derivation_entry()``, return a
   ``DerivationEntry`` for steps that should appear in the manager derivation list or
   copied code. Return ``None`` only for operations that must still run during an update
@@ -730,6 +750,10 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
   {guilabel}`Update Now` paths if the tool participates in automatic updates; and
 - manager launch paths, preferably by patching manager functions unless a live manager
   is required.
+- grouped provenance behavior when applicable: serialization, full-group copy/paste
+  preserving editability, partial copy/paste stripping group metadata while staying
+  replayable, grouped edit replacement, grouped delete/revert behavior, and generated
+  code execution for the grouped operation sequence.
 
 If you add a new top-level test module, also update `scripts/_ci_test_groups.py` so the
 CI shards still partition the suite correctly.

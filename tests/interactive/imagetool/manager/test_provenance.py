@@ -25,7 +25,7 @@ from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._modelview import (
@@ -7430,6 +7430,156 @@ def test_manager_copy_paste_structured_provenance_steps(
         manager._paste_provenance_steps_from_clipboard()
         assert failures
         xr.testing.assert_identical(dest_tool.slicer_area._data, before)
+
+
+def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
+    qtbot,
+    anglemap,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_base = anglemap.qsel(eV=-0.1).copy(deep=True)
+    source_operations = provenance.stamp_operation_group(
+        (
+            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    source_spec = provenance.full_data(*source_operations)
+    source_data = source_spec.apply(source_base)
+    dest_base = source_base.copy(deep=True)
+    dest_base.values = dest_base.values + 100.0
+    expected = source_spec.apply(dest_base)
+    child_base_spec = provenance.full_data()
+
+    with manager_context() as manager:
+        source_tool = itool(source_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(
+            source_tool,
+            show=False,
+            provenance_spec=source_spec,
+        )
+        parent_tool = itool(dest_base, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        parent_index = manager.add_imagetool(parent_tool, show=False)
+        child_tool = itool(dest_base, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            parent_index,
+            show=False,
+            source_spec=child_base_spec,
+        )
+        partial_child_tool = itool(dest_base, manager=False, execute=False)
+        assert isinstance(partial_child_tool, erlab.interactive.imagetool.ImageTool)
+        partial_child_uid = manager.add_imagetool_child(
+            partial_child_tool,
+            parent_index,
+            show=False,
+            source_spec=child_base_spec,
+        )
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.clear()
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+
+        select_metadata_rows(manager, [1, 2])
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        partial_payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert partial_payload is not None
+        partial_operations, _active_name, contains_script = partial_payload
+        assert [operation.op for operation in partial_operations] == [
+            "kspace_work_function",
+            "kspace_set_normal",
+        ]
+        assert all(operation.group is None for operation in partial_operations)
+        assert not contains_script
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, partial_child_uid)
+        manager._update_info(uid=partial_child_uid)
+        manager._paste_provenance_steps_from_clipboard()
+        partial_node = manager._child_node(partial_child_uid)
+        assert partial_node.displayed_source_spec is not None
+        assert partial_node.displayed_source_spec.operations == partial_operations
+        manager._update_info(uid=partial_child_uid)
+        for row_index in (1, 2):
+            row_item = manager.metadata_derivation_list.item(row_index)
+            assert row_item is not None
+            row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            assert isinstance(row, provenance._ProvenanceDisplayRow)
+            editable, reason = manager._provenance_edit_controller.can_edit_row(row)
+            assert not editable
+            assert "complete editable momentum-conversion group" in reason
+            assert "`Set normal emission`" in reason
+            assert "`Convert to momentum`" in reason
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [source_index])
+        manager._update_info()
+        select_metadata_rows(manager, [1, 2, 3])
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert payload is not None
+        payload_operations, _active_name, contains_script = payload
+        assert payload_operations == source_operations
+        assert not contains_script
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        manager._paste_provenance_steps_from_clipboard()
+
+        xr.testing.assert_allclose(child_tool.slicer_area._data, expected)
+        child_node = manager._child_node(child_uid)
+        assert child_node.displayed_source_spec is not None
+        pasted_operations = child_node.displayed_source_spec.operations
+        assert provenance.strip_operation_groups(
+            pasted_operations
+        ) == provenance.strip_operation_groups(source_operations)
+        assert provenance.operation_group_range(
+            pasted_operations,
+            0,
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        ) == (0, len(pasted_operations))
+        source_group_ids = {
+            operation.group.id for operation in source_operations if operation.group
+        }
+        pasted_group_ids = {
+            operation.group.id for operation in pasted_operations if operation.group
+        }
+        assert len(pasted_group_ids) == 1
+        assert pasted_group_ids.isdisjoint(source_group_ids)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        for row_index in (1, 2, 3):
+            row_item = manager.metadata_derivation_list.item(row_index)
+            assert row_item is not None
+            row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            assert isinstance(row, provenance._ProvenanceDisplayRow)
+            editable, reason = manager._provenance_edit_controller.can_edit_row(row)
+            assert editable, reason
 
 
 def test_manager_paste_structured_steps_preserves_source_binding(

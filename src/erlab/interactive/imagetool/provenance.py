@@ -30,6 +30,7 @@ __all__ = [
     "LeadingEdgeOperation",
     "MaskWithPolygonOperation",
     "NormalizeOperation",
+    "OperationGroupMarker",
     "QSelAggregationOperation",
     "QSelOperation",
     "RenameDimsCoordsOperation",
@@ -62,6 +63,7 @@ __all__ = [
     "full_data",
     "mark_promoted_1d_source",
     "operation_from_console_call",
+    "operation_group_range",
     "operations_expression_code",
     "parse_tool_provenance_operation",
     "parse_tool_provenance_spec",
@@ -72,10 +74,14 @@ __all__ = [
     "replay_input_name",
     "replay_script_provenance",
     "require_live_source_spec",
+    "restamp_operation_groups",
     "script",
     "script_input_dependency_refs",
     "script_provenance_replayable",
     "selection",
+    "stamp_operation_group",
+    "strip_operation_groups",
+    "strip_partial_operation_groups",
     "to_replay_provenance_spec",
     "uses_default_replay_input",
 ]
@@ -106,6 +112,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     FileLoadSource,
     FileReplayCall,
     NullableProvenanceHashableTuple,
+    OperationGroupMarker,
     ProvenanceFloatMapping,
     ProvenanceFloatSequenceMapping,
     ProvenanceHashable,
@@ -159,6 +166,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     full_data,
     mark_promoted_1d_source,
     operation_from_console_call,
+    operation_group_range,
     operations_expression_code,
     parse_tool_provenance_operation,
     parse_tool_provenance_spec,
@@ -169,10 +177,14 @@ from erlab.interactive.imagetool._provenance_framework import (
     replay_input_name,
     replay_script_provenance,
     require_live_source_spec,
+    restamp_operation_groups,
     script,
     script_input_dependency_refs,
     script_provenance_replayable,
     selection,
+    stamp_operation_group,
+    strip_operation_groups,
+    strip_partial_operation_groups,
     to_replay_provenance_spec,
     uses_default_replay_input,
 )
@@ -1760,6 +1772,7 @@ class AssignAttrsOperation(ToolProvenanceOperation):
 
 class KspaceConfigurationOperation(ToolProvenanceOperation):
     op: typing.Literal["kspace_configuration"] = "kspace_configuration"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("kspace", "as_configuration"),
@@ -1787,6 +1800,7 @@ class KspaceConfigurationOperation(ToolProvenanceOperation):
 
 
 class _MutatingKspaceOperation(ToolProvenanceOperation):
+    batch_available: typing.ClassVar[bool] = True
     console_applies_to_receiver: typing.ClassVar[bool] = True
     statement_mutates_input: typing.ClassVar[bool] = True
 
@@ -1881,6 +1895,7 @@ class KspaceSetNormalOperation(_MutatingKspaceOperation):
 
 class KspaceConvertOperation(ToolProvenanceOperation):
     op: typing.Literal["kspace_convert"] = "kspace_convert"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("kspace", "convert"),

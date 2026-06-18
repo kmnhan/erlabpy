@@ -25,7 +25,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -1639,7 +1639,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         self._script_inputs = _dedupe_script_inputs(script_inputs)
         self._copyable = copyable
         self._code_prelude = _dedupe_code_preludes(code_prelude)
-        self._operations = tuple(operations)
+        self._operations = _kspace_conversion.stamp_kspace_conversion_groups(operations)
         self._seed_expression = seed_expression
         self._console_name: str | None = None
 

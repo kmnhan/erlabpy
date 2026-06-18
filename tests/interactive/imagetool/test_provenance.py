@@ -312,6 +312,57 @@ def _representative_structured_operations() -> tuple[
     )
 
 
+def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+        group_id="group-1",
+        focuses=("first", "second"),
+    )
+
+    assert provenance.operation_group_range(operations, 0, kind="demo") == (0, 2)
+    assert provenance.operation_group_range(operations, 1, kind="demo") == (0, 2)
+    assert operations[0].group is not None
+    assert operations[0].group.focus == "first"
+    assert "group" not in provenance.AverageOperation(dims=("x",)).model_dump(
+        mode="json"
+    )
+
+    parsed = tuple(
+        provenance.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+        for operation in operations
+    )
+    assert parsed == operations
+
+    assert provenance.strip_partial_operation_groups(operations) == operations
+    partial = provenance.strip_partial_operation_groups(operations[:1])
+    assert partial[0].group is None
+
+    scrambled = provenance.strip_partial_operation_groups(
+        (operations[1], operations[0])
+    )
+    assert all(operation.group is None for operation in scrambled)
+
+    restamped = provenance.restamp_operation_groups(operations)
+    assert provenance.strip_operation_groups(
+        restamped
+    ) == provenance.strip_operation_groups(operations)
+    assert provenance.operation_group_range(restamped, 0, kind="demo") == (0, 2)
+    assert restamped[0].group is not None
+    assert operations[0].group is not None
+    assert restamped[0].group.id != operations[0].group.id
+
+    adjacent = provenance.restamp_operation_groups(operations + operations)
+    assert provenance.operation_group_range(adjacent, 0, kind="demo") == (0, 2)
+    assert provenance.operation_group_range(adjacent, 2, kind="demo") == (2, 4)
+    assert adjacent[0].group is not None
+    assert adjacent[2].group is not None
+    assert adjacent[0].group.id != adjacent[2].group.id
+
+
 def test_tool_provenance_codec_and_combinators() -> None:
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     encoded = provenance.encode_provenance_value(
@@ -3017,6 +3068,18 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
         {"operation_index": 3, "names": ["data"]},
     ]
 
+    replaced_at_binding = spec._replace_operation_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=1),
+        (
+            provenance.SqueezeOperation(),
+            provenance.AssignAttrsOperation(attrs={"edited": True}),
+        ),
+    )
+    assert binding_payloads(replaced_at_binding) == [
+        {"operation_index": 1, "names": ["data", "derived"]},
+        {"operation_index": 3, "names": ["data"]},
+    ]
+
     deleted_last = spec._replace_operation_ref(
         provenance._ProvenanceStepRef("operation", operation_index=2),
         (),
@@ -3038,6 +3101,50 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     start_only = spec._prefix_through_ref(provenance._ProvenanceStepRef("start"))
     assert start_only.operations == ()
     assert start_only.script_context_bindings == ()
+
+
+def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
+    grouped = provenance.stamp_operation_group(
+        (
+            provenance.ScriptCodeOperation(
+                label="Offset copied result",
+                code="result = derived + 2",
+            ),
+            provenance.AverageOperation(dims=("x",)),
+        ),
+        kind="demo",
+        group_id="group-1",
+    )
+    spec = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+        operations=(
+            provenance.ScriptCodeOperation(
+                label="Compute intermediate result",
+                code="result = derived + 1",
+            ),
+            *grouped,
+        ),
+        script_context_bindings=[
+            {"operation_index": 1, "names": ["data", "derived"]},
+        ],
+    )
+
+    replaced = spec._replace_operation_group_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=2),
+        (provenance.SqueezeOperation(),),
+        kind="demo",
+    )
+
+    assert [operation.op for operation in replaced.operations] == [
+        "script_code",
+        "squeeze",
+    ]
+    assert [
+        binding.model_dump(mode="json") for binding in replaced.script_context_bindings
+    ] == [{"operation_index": 1, "names": ["data", "derived"]}]
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:

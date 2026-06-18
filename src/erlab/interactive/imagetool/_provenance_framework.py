@@ -32,6 +32,13 @@ reload, copied code, and shared-input deduplication compile those specs on deman
 through :mod:`erlab.interactive.imagetool._replay_graph`; the graph itself is not
 saved.
 
+Operations are intentionally primitive: a user action that needs several public API
+calls should normally remain several structured operations rather than falling back to
+one raw script block. When those primitive operations should behave as one edit unit,
+authoring code can stamp them with optional :class:`OperationGroupMarker` metadata.
+Group markers are edit/copy metadata only. They do not change replay semantics, and
+broken or partial groups can be stripped without changing the numerical operation list.
+
 Manager children opened from an ImageTool cursor or bin selection keep the explicit
 ``qsel`` or ``isel`` arguments generated when the child is opened. Legacy
 :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
@@ -62,23 +69,37 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    :meth:`ToolProvenanceOperation.derivation_entry` only when the operation is not a
    structured transform, such as free-form script code.
 
-6. If the operation maps cleanly from manager-console calls, declare
+6. If the public API for the operation is mutating and cannot be represented as a
+   single expression, implement :meth:`ToolProvenanceOperation.statement_code` and set
+   :attr:`ToolProvenanceOperation.statement_mutates_input`. Mixed expression and
+   statement operation chains are still emitted as ordinary public Python code.
+
+7. If several primitive operations form one user-editable action, stamp the complete
+   contiguous sequence with :func:`stamp_operation_group`. Group-aware dialogs should
+   validate the complete group with :func:`operation_group_range` plus any
+   operation-specific rule, and clipboard code should call
+   :func:`strip_partial_operation_groups` when users copy a subset of rows. Paste code
+   should call :func:`restamp_operation_groups` before appending copied rows to another
+   provenance chain.
+
+8. If the operation maps cleanly from manager-console calls, declare
    :attr:`ToolProvenanceOperation.console_patterns` or implement
    :meth:`ToolProvenanceOperation.from_console_call`. Unsupported or ambiguous console
    calls should return ``None`` so they remain valid script provenance instead of being
    recorded as lossy structured operations.
 
-7. Make generated code executable in the replay namespace. Use the literal helpers in
+9. Make generated code executable in the replay namespace. Use the literal helpers in
    this module for persisted values, and make ``expression_code`` honor the input name
    it is given. The base ``replay_code`` wrapper assigns the caller-selected output
    name.
 
-8. Export the operation class from this module so runtime call sites can instantiate
+10. Export the operation class from this module so runtime call sites can instantiate
    it directly.
 
-9. Add tests that cover round-trip validation, :meth:`apply`, derivation text/code,
-   console matching when supported, and any save/load or reload path that persists the
-   new operation.
+11. Add tests that cover round-trip validation, :meth:`apply`, derivation text/code,
+    console matching when supported, and any save/load or reload path that persists the
+    new operation. For grouped operations, also cover full-group copy/paste, partial
+    group stripping, group replacement/deletion, and generated-code execution.
 
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
@@ -93,6 +114,7 @@ __all__ = [
     "FileDataSelection",
     "FileLoadSource",
     "FileReplayCall",
+    "OperationGroupMarker",
     "ReplayStage",
     "ScriptInput",
     "ScriptInputDependencyRef",
@@ -106,6 +128,7 @@ __all__ = [
     "file_load",
     "full_data",
     "mark_promoted_1d_source",
+    "operation_group_range",
     "operations_expression_code",
     "parse_tool_provenance_spec",
     "public_data",
@@ -114,10 +137,14 @@ __all__ = [
     "replay_file_provenance",
     "replay_script_provenance",
     "require_live_source_spec",
+    "restamp_operation_groups",
     "script",
     "script_input_dependency_refs",
     "script_provenance_replayable",
     "selection",
+    "stamp_operation_group",
+    "strip_operation_groups",
+    "strip_partial_operation_groups",
     "to_replay_provenance_spec",
     "uses_default_replay_input",
 ]
@@ -131,6 +158,7 @@ import keyword
 import math
 import pathlib
 import typing
+import uuid
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
@@ -240,6 +268,35 @@ class ScriptInputDependencyRef:
     label: str
     node_uid: str
     node_snapshot_token: str | None = None
+
+
+class OperationGroupMarker(pydantic.BaseModel):
+    """Optional edit/copy metadata shared by a contiguous operation group."""
+
+    kind: str
+    id: str
+    index: int
+    size: int
+    focus: str | None = pydantic.Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_marker(self) -> typing.Self:
+        if not self.kind:
+            raise ValueError("operation group kind must not be empty")
+        if not self.id:
+            raise ValueError("operation group id must not be empty")
+        if self.index < 0:
+            raise ValueError("operation group index must be non-negative")
+        if self.size <= 0:
+            raise ValueError("operation group size must be positive")
+        if self.index >= self.size:
+            raise ValueError("operation group index must be smaller than size")
+        return self
 
 
 def _encode_fit_dataset(value: xr.Dataset) -> str:
@@ -1313,6 +1370,10 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     console_applies_to_receiver: typing.ClassVar[bool] = False
     statement_mutates_input: typing.ClassVar[bool] = False
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = ()
+    group: OperationGroupMarker | None = pydantic.Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -1592,6 +1653,168 @@ def _default_seed_code_for_operations(
     if any(operation.statement_mutates_input for operation in operations):
         return "derived = data.copy(deep=False)"
     return _DEFAULT_REPLAY_SEED_CODE
+
+
+def _operation_without_group(
+    operation: ToolProvenanceOperation,
+) -> ToolProvenanceOperation:
+    if operation.group is None:
+        return operation
+    return operation.model_copy(update={"group": None})
+
+
+def strip_operation_groups(
+    operations: Sequence[ToolProvenanceOperation],
+) -> tuple[ToolProvenanceOperation, ...]:
+    """Return operations with all edit-group metadata removed."""
+    return tuple(_operation_without_group(operation) for operation in operations)
+
+
+def stamp_operation_group(
+    operations: Sequence[ToolProvenanceOperation],
+    *,
+    kind: str,
+    focuses: Sequence[str | None] = (),
+    group_id: str | None = None,
+) -> tuple[ToolProvenanceOperation, ...]:
+    """Return operations stamped as one complete contiguous edit group."""
+    operation_tuple = tuple(_require_operation_instance(op) for op in operations)
+    if not operation_tuple:
+        return ()
+    focus_tuple = tuple(focuses)
+    if focus_tuple and len(focus_tuple) != len(operation_tuple):
+        raise ValueError("Operation group focuses must match operation count")
+    if not focus_tuple:
+        focus_tuple = (None,) * len(operation_tuple)
+    group_id = group_id or uuid.uuid4().hex
+    size = len(operation_tuple)
+    return tuple(
+        operation.model_copy(
+            update={
+                "group": OperationGroupMarker(
+                    kind=kind,
+                    id=group_id,
+                    index=index,
+                    size=size,
+                    focus=focus,
+                )
+            }
+        )
+        for index, (operation, focus) in enumerate(
+            zip(operation_tuple, focus_tuple, strict=True)
+        )
+    )
+
+
+def _operation_group_markers_match(
+    operations: Sequence[ToolProvenanceOperation],
+    start: int,
+    stop: int,
+    marker: OperationGroupMarker,
+) -> bool:
+    if start < 0 or stop > len(operations) or start >= stop:
+        return False
+
+    for offset, operation in enumerate(operations[start:stop]):
+        operation_marker = operation.group
+        if (
+            operation_marker is None
+            or operation_marker.kind != marker.kind
+            or operation_marker.id != marker.id
+            or operation_marker.size != marker.size
+            or operation_marker.index != offset
+        ):
+            return False
+    return True
+
+
+def operation_group_range(
+    operations: Sequence[ToolProvenanceOperation],
+    operation_index: int,
+    *,
+    kind: str | None = None,
+) -> tuple[int, int] | None:
+    """Return the complete contiguous group range containing an operation."""
+    if not 0 <= operation_index < len(operations):
+        return None
+    marker = operations[operation_index].group
+    if marker is None or (kind is not None and marker.kind != kind):
+        return None
+
+    start = operation_index - marker.index
+    stop = start + marker.size
+    if not _operation_group_markers_match(operations, start, stop, marker):
+        return None
+
+    for neighbor_index in (start - 1, stop):
+        if 0 <= neighbor_index < len(operations):
+            neighbor_marker = operations[neighbor_index].group
+            if (
+                neighbor_marker is not None
+                and neighbor_marker.kind == marker.kind
+                and neighbor_marker.id == marker.id
+            ):
+                return None
+    return start, stop
+
+
+def restamp_operation_groups(
+    operations: Sequence[ToolProvenanceOperation],
+) -> tuple[ToolProvenanceOperation, ...]:
+    """Return operations with complete groups copied to fresh group identities.
+
+    Broken or partial group markers are stripped. This is useful when operations are
+    pasted into another provenance chain, where preserving the copied group's id could
+    make adjacent pasted copies look like one malformed group.
+    """
+    operation_tuple = tuple(_require_operation_instance(op) for op in operations)
+    output = list(operation_tuple)
+    index = 0
+    while index < len(operation_tuple):
+        marker = operation_tuple[index].group
+        if marker is None:
+            index += 1
+            continue
+        start = index - marker.index
+        stop = start + marker.size
+        if start == index and _operation_group_markers_match(
+            operation_tuple,
+            start,
+            stop,
+            marker,
+        ):
+            group_operations = operation_tuple[start:stop]
+            output[start:stop] = stamp_operation_group(
+                tuple(
+                    _operation_without_group(operation)
+                    for operation in group_operations
+                ),
+                kind=marker.kind,
+                focuses=tuple(
+                    None if operation.group is None else operation.group.focus
+                    for operation in group_operations
+                ),
+            )
+            index = stop
+            continue
+        output[index] = _operation_without_group(operation_tuple[index])
+        index += 1
+    return tuple(output)
+
+
+def strip_partial_operation_groups(
+    operations: Sequence[ToolProvenanceOperation],
+) -> tuple[ToolProvenanceOperation, ...]:
+    """Strip markers from broken or partial groups while preserving complete ones."""
+    operation_tuple = tuple(_require_operation_instance(op) for op in operations)
+    output = list(operation_tuple)
+    for index, operation in enumerate(operation_tuple):
+        if operation.group is None:
+            continue
+        group = operation_group_range(operation_tuple, index)
+        if group is None:
+            output[index] = _operation_without_group(operation)
+    return tuple(output)
 
 
 def _expression_receiver_code(expression: str) -> str:
@@ -2381,17 +2604,75 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     ) -> ToolProvenanceSpec:
         if ref.kind != "operation" or ref.operation_index is None:
             raise ValueError("Expected an operation provenance row reference")
+        return self._replace_operation_range_ref(
+            ref,
+            ref.operation_index,
+            ref.operation_index + 1,
+            replacements,
+        )
+
+    def _operation_group_range_ref(
+        self,
+        ref: _ProvenanceStepRef,
+        *,
+        kind: str | None = None,
+    ) -> tuple[int, int] | None:
+        if ref.kind != "operation" or ref.operation_index is None:
+            return None
+        if ref.stage_index is None:
+            operations = self.operations
+        elif 0 <= ref.stage_index < len(self.replay_stages):
+            operations = self.replay_stages[ref.stage_index].operations
+        else:
+            return None
+        return operation_group_range(operations, ref.operation_index, kind=kind)
+
+    def _replace_operation_group_ref(
+        self,
+        ref: _ProvenanceStepRef,
+        replacements: Sequence[ToolProvenanceOperation],
+        *,
+        kind: str | None = None,
+    ) -> ToolProvenanceSpec:
+        group = self._operation_group_range_ref(ref, kind=kind)
+        if group is None:
+            raise ValueError("Expected a complete operation group reference")
+        return self._replace_operation_range_ref(ref, group[0], group[1], replacements)
+
+    def _delete_operation_group_ref(
+        self,
+        ref: _ProvenanceStepRef,
+        *,
+        kind: str | None = None,
+    ) -> ToolProvenanceSpec:
+        return self._replace_operation_group_ref(ref, (), kind=kind)
+
+    def _replace_operation_range_ref(
+        self,
+        ref: _ProvenanceStepRef,
+        start: int,
+        stop: int,
+        replacements: Sequence[ToolProvenanceOperation],
+    ) -> ToolProvenanceSpec:
+        if ref.kind != "operation" or ref.operation_index is None:
+            raise ValueError("Expected an operation provenance row reference")
+        if start < 0 or stop <= start:
+            raise ValueError("Expected a non-empty operation range")
         replacement_ops = tuple(_require_operation_instance(op) for op in replacements)
         if ref.stage_index is None:
             operations = list(self.operations)
-            operations[ref.operation_index : ref.operation_index + 1] = replacement_ops
+            operations[start:stop] = replacement_ops
             updates: dict[str, typing.Any] = {"operations": tuple(operations)}
             if self.kind == "script" and self.script_context_bindings:
-                operation_count_delta = len(replacement_ops) - 1
+                operation_count_delta = len(replacement_ops) - (stop - start)
                 script_context_bindings: list[_ScriptContextBinding] = []
                 for binding in self.script_context_bindings:
                     operation_index = binding.operation_index
-                    if operation_index > ref.operation_index:
+                    if start <= operation_index < stop and not (
+                        operation_index == start and replacement_ops
+                    ):
+                        continue
+                    if operation_index >= stop:
                         operation_index += operation_count_delta
                     if operation_index < len(operations):
                         script_context_bindings.append(
@@ -2405,7 +2686,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         stages = list(self.replay_stages)
         stage = stages[ref.stage_index]
         operations = list(stage.operations)
-        operations[ref.operation_index : ref.operation_index + 1] = replacement_ops
+        operations[start:stop] = replacement_ops
         stages[ref.stage_index] = stage.model_copy(
             update={"operations": tuple(operations)}
         )

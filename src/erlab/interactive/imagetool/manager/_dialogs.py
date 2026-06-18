@@ -46,6 +46,7 @@ _BATCH_OPERATION_CATEGORIES: tuple[tuple[str, tuple[_BatchDialogType, ...]], ...
     (
         "Transforms",
         (
+            imagetool_dialogs.KspaceConversionDialog,
             imagetool_dialogs.RotationDialog,
             imagetool_dialogs.AggregateDialog,
             imagetool_dialogs.InterpolationDialog,

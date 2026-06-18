@@ -15,7 +15,12 @@ import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.utils
-from erlab.interactive.imagetool import _provenance_framework, itool, provenance
+from erlab.interactive.imagetool import (
+    _kspace_conversion,
+    _provenance_framework,
+    itool,
+    provenance,
+)
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -448,6 +453,7 @@ def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
     )
     assert spec is not None
     assert [operation.op for operation in spec.operations] == ["kspace_set_normal"]
+    assert spec.operations[0].group is None
     code = spec.display_code()
     assert code is not None
     assert "derived = data.copy(deep=False)" in code
@@ -457,6 +463,34 @@ def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
     assert namespace["derived"].kspace.offsets["delta"] == pytest.approx(2.0)
     for key, value in original_offsets.items():
         assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
+
+    converted = derived.kspace.convert()
+    grouped_spec = converted._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert grouped_spec is not None
+    assert [operation.op for operation in grouped_spec.operations] == [
+        "kspace_set_normal",
+        "kspace_convert",
+    ]
+    assert provenance.operation_group_range(
+        grouped_spec.operations,
+        0,
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    ) == (0, 2)
+
+    derived._set_console_name("intermediate")
+    separately_converted = derived.kspace.convert()
+    separate_spec = separately_converted._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert separate_spec is not None
+    assert [operation.op for operation in separate_spec.operations] == [
+        "kspace_convert",
+    ]
+    assert separate_spec.operations[0].group is None
 
 
 def test_macos_matplotlib_cursor_patch_applies_once(monkeypatch) -> None:

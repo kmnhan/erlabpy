@@ -9,7 +9,8 @@ import xarray as xr
 
 import erlab
 from erlab.constants import AxesConfiguration
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool.dialogs import KspaceConversionDialog
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
 
@@ -121,6 +122,8 @@ def test_ktool_compatible(anglemap) -> None:
     cut_with_beta_coord = cut_without_beta.assign_coords(
         beta=("alpha", np.linspace(-1.0, 1.0, cut.sizes["alpha"]))
     )
+    cut_without_configuration = cut.copy(deep=True)
+    del cut_without_configuration.attrs["configuration"]
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
 
@@ -130,6 +133,7 @@ def test_ktool_compatible(anglemap) -> None:
     for data in (
         cut_without_beta,
         cut_with_beta_coord,
+        cut_without_configuration,
         data_4d,
         data_3d_without_alpha,
     ):
@@ -137,6 +141,19 @@ def test_ktool_compatible(anglemap) -> None:
             ValueError, match=r"Data is not compatible with the interactive tool."
         ):
             data.kspace.interactive()
+
+
+def test_kspace_conversion_dialog_requires_configuration(qtbot, anglemap) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    del data.attrs["configuration"]
+
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._compatible is False
+    assert not hasattr(dialog, "configuration_combo")
 
 
 @pytest.mark.parametrize("wf", ["wf_auto", "wf_manual"])
@@ -460,6 +477,174 @@ def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
         assert win._offset_spins[key].value() == pytest.approx(
             expected.kspace.offsets[key]
         )
+
+
+@pytest.mark.parametrize("kind", ["cut", "map", "hv"])
+def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None:
+    if kind == "cut":
+        data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    elif kind == "map":
+        data = anglemap.isel(alpha=slice(0, 5), beta=slice(0, 5), eV=slice(0, 5)).copy(
+            deep=True
+        )
+    else:
+        data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
+
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert not {"delta", "xi", "beta", "chi"} & set(dialog._offset_spins)
+    assert ("V0" in dialog._offset_spins) is data.kspace._has_hv
+
+    operations = dialog.source_operations()
+    assert isinstance(operations[-1], provenance.KspaceConvertOperation)
+    assert any(isinstance(op, provenance.KspaceSetNormalOperation) for op in operations)
+    assert all(
+        operation.group is not None
+        and operation.group.kind == _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
+        for operation in operations
+    )
+    assert {operation.group.id for operation in operations if operation.group} == {
+        operations[0].group.id
+    }
+    for index in range(len(operations)):
+        assert provenance.operation_group_range(
+            operations,
+            index,
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        ) == (0, len(operations))
+    assert (
+        any(
+            isinstance(op, provenance.KspaceInnerPotentialOperation)
+            for op in operations
+        )
+        is data.kspace._has_hv
+    )
+
+    code = dialog.make_code()
+    assert ".copy(deep=False)" not in code
+    if not data.kspace._has_hv:
+        assert ".kspace.inner_potential =" not in code
+
+    namespace = {"data": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        dialog.process_data(data.copy(deep=True)),
+        namespace["data_kconv"],
+    )
+
+
+def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    first = ktool(data, execute=False)
+    second = ktool(data, execute=False)
+    qtbot.addWidget(first)
+    qtbot.addWidget(second)
+    first._offset_spins["wf"].setValue(3.25)
+    second._offset_spins["wf"].setValue(4.75)
+    second._offset_spins["delta"].setValue(12.5)
+    second._sync_normal_emission_spins()
+    second.resolution_supergroup.setChecked(True)
+    second.res_npts_check.setChecked(True)
+    for value, spin in zip(
+        (0.12345, 0.23456),
+        second._resolution_spins.values(),
+        strict=False,
+    ):
+        spin.setValue(value)
+    win.slicer_area.add_tool_window(first)
+    win.slicer_area.add_tool_window(second)
+
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._offset_spins["wf"].value() == pytest.approx(4.75)
+    assert dialog._normal_delta == pytest.approx(12.5)
+    assert dialog.normal_emission == pytest.approx(
+        second._current_normal_emission_angles()
+    )
+    assert dialog.res_npts_check.isChecked() is True
+    assert list(dialog._resolution_spins) == list(second._resolution_spins)
+    assert [
+        spin.value() for spin in dialog._resolution_spins.values()
+    ] == pytest.approx([spin.value() for spin in second._resolution_spins.values()])
+
+
+def test_kspace_conversion_dialog_restores_unordered_setup_group(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            provenance.KspaceConfigurationOperation(
+                configuration=AxesConfiguration.Type1
+            ),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    unmarked = provenance.strip_operation_groups(operations)
+
+    assert KspaceConversionDialog.operation_group_for_edit(unmarked, 0) is None
+    duplicate_normal = provenance.stamp_operation_group(
+        (
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            provenance.KspaceSetNormalOperation(alpha=3.0, beta=4.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert KspaceConversionDialog.operation_group_for_edit(duplicate_normal, 0) is None
+    extra_convert = provenance.stamp_operation_group(
+        (
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert KspaceConversionDialog.operation_group_for_edit(extra_convert, 0) is None
+
+    for index in range(len(operations)):
+        assert KspaceConversionDialog.operation_group_for_edit(
+            operations,
+            index,
+        ) == (0, len(operations))
+
+    dialog.restore_transform_operations(operations)
+
+    assert dialog.current_configuration == AxesConfiguration.Type1
+    assert dialog._offset_spins["wf"].value() == pytest.approx(4.2)
+    assert dialog.normal_emission == pytest.approx((1.0, 2.0))
+    assert dialog._normal_delta == pytest.approx(3.0)
+
+    namespace = {"data": data.copy(deep=True)}
+    exec(dialog.make_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        namespace["data_kconv"],
+        dialog.process_data(data.copy(deep=True)),
+    )
+
+    spec = provenance.full_data(*operations)
+    display_code = spec.display_code(parent_data=data)
+    assert display_code is not None
+    namespace = {"data": data.copy(deep=True)}
+    exec(display_code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        namespace["derived"],
+        spec.apply(data.copy(deep=True)),
+    )
 
 
 @pytest.mark.parametrize(

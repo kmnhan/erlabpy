@@ -1,0 +1,385 @@
+"""Shared momentum-conversion helpers for ImageTool and ktool."""
+
+from __future__ import annotations
+
+import contextlib
+import typing
+import warnings
+
+import numpy as np
+
+import erlab
+from erlab.accessors.kspace import IncompleteDataError
+from erlab.constants import AxesConfiguration
+from erlab.interactive.imagetool import provenance
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping, Sequence
+
+    import xarray as xr
+    from qtpy import QtWidgets
+
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
+
+_MISSING_WORK_FUNCTION_WARNING_RE = (
+    r"^Work function not found in data attributes, assuming 4\.5 eV$"
+)
+_MISSING_INNER_POTENTIAL_WARNING_RE = (
+    r"^Inner potential not found in data attributes, assuming 10 eV$"
+)
+KSPACE_CONVERSION_GROUP_KIND = "kspace_conversion"
+_FOCUS_CONFIGURATION = "configuration"
+_FOCUS_WORK_FUNCTION = "work_function"
+_FOCUS_INNER_POTENTIAL = "inner_potential"
+_FOCUS_NORMAL = "normal_emission"
+_FOCUS_CONVERT = "bounds_resolution"
+
+_KSPACE_SETUP_TYPES = (
+    provenance.KspaceConfigurationOperation,
+    provenance.KspaceWorkFunctionOperation,
+    provenance.KspaceInnerPotentialOperation,
+    provenance.KspaceSetNormalOperation,
+)
+_KSPACE_CONVERSION_TYPES = (*_KSPACE_SETUP_TYPES, provenance.KspaceConvertOperation)
+
+
+@contextlib.contextmanager
+def ignore_missing_kspace_parameter_warnings() -> Iterator[None]:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=_MISSING_WORK_FUNCTION_WARNING_RE,
+            category=UserWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=_MISSING_INNER_POTENTIAL_WARNING_RE,
+            category=UserWarning,
+        )
+        yield
+
+
+def configuration_text(configuration: AxesConfiguration | int) -> str:
+    configuration = AxesConfiguration(int(configuration))
+    return f"Configuration {int(configuration)} ({configuration.name})"
+
+
+def initial_normal_emission_from_slicer_area(
+    slicer_area: ImageSlicerArea,
+) -> tuple[tuple[float, float] | None, float | None]:
+    """Return ktool-compatible normal-emission seed values from an ImageTool."""
+    data = slicer_area.data
+    dim_values = {
+        str(dim): float(value)
+        for dim, value in zip(data.dims, slicer_area.current_values, strict=True)
+    }
+    beta_value = dim_values.get("beta")
+    if beta_value is None and "beta" in data.coords:
+        beta_coord = data["beta"]
+        if beta_coord.size == 1:
+            beta_value = float(beta_coord.values)
+    if "alpha" not in dim_values or beta_value is None:
+        return None, None
+
+    initial_normal_emission: tuple[float, float] = (dim_values["alpha"], beta_value)
+    initial_delta: float | None = None
+    guideline_dims = tuple(
+        str(data.dims[axis]) for axis in slicer_area.main_image.display_axis
+    )
+    if slicer_area.main_image.is_guidelines_visible and set(guideline_dims) == {
+        "alpha",
+        "beta",
+    }:
+        guideline_values: dict[str, float] = {}
+        for axis, value in zip(
+            slicer_area.main_image.display_axis,
+            slicer_area.main_image._guideline_offset,
+            strict=True,
+        ):
+            dim = str(data.dims[axis])
+            if axis in slicer_area.array_slicer._nonuniform_axes_set:
+                value = float(
+                    np.interp(
+                        value,
+                        slicer_area.array_slicer.coords_uniform[axis],
+                        slicer_area.array_slicer.coords[axis],
+                    )
+                )
+            guideline_values[dim] = float(value)
+        initial_normal_emission = (
+            guideline_values["alpha"],
+            guideline_values["beta"],
+        )
+        initial_delta = -slicer_area.main_image._guideline_angle
+
+    return initial_normal_emission, initial_delta
+
+
+def kspace_work_function(data: xr.DataArray) -> float:
+    with ignore_missing_kspace_parameter_warnings():
+        return float(data.kspace.work_function)
+
+
+def kspace_inner_potential(data: xr.DataArray) -> float:
+    with ignore_missing_kspace_parameter_warnings():
+        return float(data.kspace.inner_potential)
+
+
+def rounded_spin_value(spin: QtWidgets.QDoubleSpinBox) -> float:
+    return float(np.round(spin.value(), spin.decimals()))
+
+
+def normal_emission_angles(
+    data: xr.DataArray,
+    offsets: Mapping[str, float],
+) -> tuple[float, float]:
+    if "xi" not in data.coords:
+        raise IncompleteDataError("coord", "xi")
+
+    angle_params = {
+        "delta": offsets["delta"],
+        "xi": float(data["xi"].values),
+        "xi0": offsets["xi"],
+    }
+
+    match data.kspace.configuration:
+        case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+            angle_params["beta0"] = offsets["beta"]
+        case _:
+            if "chi" not in data.coords:
+                raise IncompleteDataError("coord", "chi")
+            angle_params["chi"] = float(data["chi"].values)
+            angle_params["chi0"] = offsets["chi"]
+
+    alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
+        data.kspace.configuration, angle_params
+    )
+    return float(np.round(alpha, 5)), float(np.round(beta, 5))
+
+
+def apply_kspace_parameters(
+    data: xr.DataArray,
+    *,
+    source_data: xr.DataArray,
+    work_function: float,
+    inner_potential: float | None,
+    force_work_function: bool = False,
+    force_inner_potential: bool = False,
+    offsets: Mapping[str, float] | None = None,
+    normal_emission: tuple[float, float] | None = None,
+    delta: float | None = None,
+) -> xr.DataArray:
+    if offsets is not None:
+        data.kspace.offsets = offsets
+    elif normal_emission is not None:
+        data.kspace.set_normal(normal_emission[0], normal_emission[1], delta=delta)
+
+    if data.kspace._has_hv and inner_potential is not None:
+        with ignore_missing_kspace_parameter_warnings():
+            current_v0 = source_data.kspace.inner_potential
+        if (
+            force_inner_potential
+            or "inner_potential" not in source_data.attrs
+            or not np.isclose(inner_potential, current_v0)
+        ):
+            data.kspace.inner_potential = inner_potential
+
+    with ignore_missing_kspace_parameter_warnings():
+        current_wf = source_data.kspace.work_function
+    if (
+        force_work_function
+        or "sample_workfunction" not in source_data.attrs
+        or not np.isclose(work_function, current_wf)
+    ):
+        data.kspace.work_function = work_function
+    return data
+
+
+def kspace_conversion_operations(
+    source_data: xr.DataArray,
+    *,
+    target_configuration: AxesConfiguration | int,
+    source_configuration: AxesConfiguration | int | None = None,
+    work_function: float,
+    inner_potential: float | None,
+    normal_emission: tuple[float, float],
+    delta: float | None,
+    bounds: dict[str, tuple[float, float]] | None,
+    resolution: dict[str, float] | None,
+    force_scalars: bool,
+) -> tuple[provenance.ToolProvenanceOperation, ...]:
+    operations: list[provenance.ToolProvenanceOperation] = []
+    focuses: list[str] = []
+    target_configuration = AxesConfiguration(int(target_configuration))
+    if source_configuration is None:
+        source_configuration = source_data.kspace.configuration
+    if int(target_configuration) != int(source_configuration):
+        operations.append(
+            provenance.KspaceConfigurationOperation(
+                configuration=int(target_configuration)
+            )
+        )
+        focuses.append(_FOCUS_CONFIGURATION)
+        configured_data = source_data.kspace.as_configuration(target_configuration)
+    else:
+        configured_data = source_data
+
+    if configured_data.kspace._has_hv and inner_potential is not None:
+        with ignore_missing_kspace_parameter_warnings():
+            current_v0 = configured_data.kspace.inner_potential
+        if force_scalars or not np.isclose(inner_potential, current_v0):
+            operations.append(
+                provenance.KspaceInnerPotentialOperation(
+                    inner_potential=float(inner_potential)
+                )
+            )
+            focuses.append(_FOCUS_INNER_POTENTIAL)
+
+    with ignore_missing_kspace_parameter_warnings():
+        current_wf = configured_data.kspace.work_function
+    if force_scalars or not np.isclose(work_function, current_wf):
+        operations.append(
+            provenance.KspaceWorkFunctionOperation(work_function=float(work_function))
+        )
+        focuses.append(_FOCUS_WORK_FUNCTION)
+
+    operations.append(
+        provenance.KspaceSetNormalOperation(
+            alpha=float(normal_emission[0]),
+            beta=float(normal_emission[1]),
+            delta=None if delta is None else float(delta),
+        )
+    )
+    focuses.append(_FOCUS_NORMAL)
+    operations.append(
+        provenance.KspaceConvertOperation(bounds=bounds, resolution=resolution)
+    )
+    focuses.append(_FOCUS_CONVERT)
+    return provenance.stamp_operation_group(
+        operations,
+        kind=KSPACE_CONVERSION_GROUP_KIND,
+        focuses=focuses,
+    )
+
+
+def _focus_for_operation(
+    operation: provenance.ToolProvenanceOperation,
+) -> str | None:
+    if isinstance(operation, provenance.KspaceConfigurationOperation):
+        return _FOCUS_CONFIGURATION
+    if isinstance(operation, provenance.KspaceWorkFunctionOperation):
+        return _FOCUS_WORK_FUNCTION
+    if isinstance(operation, provenance.KspaceInnerPotentialOperation):
+        return _FOCUS_INNER_POTENTIAL
+    if isinstance(operation, provenance.KspaceSetNormalOperation):
+        return _FOCUS_NORMAL
+    if isinstance(operation, provenance.KspaceConvertOperation):
+        return _FOCUS_CONVERT
+    return None
+
+
+def _complete_kspace_conversion_group(
+    operations: Sequence[provenance.ToolProvenanceOperation],
+) -> bool:
+    if not operations or not isinstance(
+        operations[-1],
+        provenance.KspaceConvertOperation,
+    ):
+        return False
+    setup_operations = operations[:-1]
+    if not all(
+        isinstance(operation, _KSPACE_SETUP_TYPES) for operation in setup_operations
+    ):
+        return False
+    if (
+        sum(
+            isinstance(operation, provenance.KspaceSetNormalOperation)
+            for operation in setup_operations
+        )
+        != 1
+    ):
+        return False
+    for operation_type in _KSPACE_SETUP_TYPES:
+        if (
+            sum(isinstance(operation, operation_type) for operation in setup_operations)
+            > 1
+        ):
+            return False
+    return all(
+        isinstance(operation, _KSPACE_CONVERSION_TYPES) for operation in operations
+    )
+
+
+def is_kspace_conversion_group(
+    operations: Sequence[provenance.ToolProvenanceOperation],
+    operation_index: int,
+) -> tuple[int, int] | None:
+    """Return the contiguous momentum-conversion operation range for an operation."""
+    group = provenance.operation_group_range(
+        operations,
+        operation_index,
+        kind=KSPACE_CONVERSION_GROUP_KIND,
+    )
+    if group is None:
+        return None
+    if not _complete_kspace_conversion_group(operations[group[0] : group[1]]):
+        return None
+    return group
+
+
+def stamp_kspace_conversion_groups(
+    operations: Sequence[provenance.ToolProvenanceOperation],
+) -> tuple[provenance.ToolProvenanceOperation, ...]:
+    """Stamp complete ungrouped kspace conversion runs in a console operation chain."""
+    output = list(operations)
+    index = 0
+    while index < len(output):
+        operation = output[index]
+        if operation.group is not None or not isinstance(
+            operation,
+            _KSPACE_CONVERSION_TYPES,
+        ):
+            index += 1
+            continue
+        start = index
+        while (
+            index < len(output)
+            and output[index].group is None
+            and isinstance(
+                output[index],
+                _KSPACE_CONVERSION_TYPES,
+            )
+        ):
+            if isinstance(output[index], provenance.KspaceConvertOperation):
+                index += 1
+                break
+            index += 1
+        stop = index
+        if _complete_kspace_conversion_group(output[start:stop]):
+            stamped = provenance.stamp_operation_group(
+                output[start:stop],
+                kind=KSPACE_CONVERSION_GROUP_KIND,
+                focuses=tuple(
+                    _focus_for_operation(group_operation)
+                    for group_operation in output[start:stop]
+                ),
+            )
+            output[start:stop] = stamped
+        else:
+            index = max(stop, start + 1)
+    return tuple(output)
+
+
+def incomplete_kspace_conversion_edit_reason(
+    operation: provenance.ToolProvenanceOperation,
+) -> str | None:
+    """Return the edit tooltip/message for standalone primitive kspace rows."""
+    if not isinstance(operation, _KSPACE_CONVERSION_TYPES):
+        return None
+    return (
+        "This kspace step is structured and replayable, but it is not part of a "
+        "complete editable momentum-conversion group. To edit it in the conversion "
+        "dialog, include the full operation set: `Set normal emission` and "
+        "`Convert to momentum`. Configuration, work-function, and inner-potential "
+        "steps are optional setup rows."
+    )

@@ -17,12 +17,10 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
-import contextlib
 import enum
 import hashlib
 import importlib.resources
 import typing
-import warnings
 
 import numpy as np
 import numpy.typing as npt
@@ -31,12 +29,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
+from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterator
-
     import matplotlib
     import varname
     import xarray as xr
@@ -45,30 +41,6 @@ else:
 
     matplotlib = _lazy.load("matplotlib")
     varname = _lazy.load("varname")
-
-
-_MISSING_WORK_FUNCTION_WARNING_RE = (
-    r"^Work function not found in data attributes, assuming 4\.5 eV$"
-)
-_MISSING_INNER_POTENTIAL_WARNING_RE = (
-    r"^Inner potential not found in data attributes, assuming 10 eV$"
-)
-
-
-@contextlib.contextmanager
-def _ignore_missing_kspace_parameter_warnings() -> Iterator[None]:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=_MISSING_WORK_FUNCTION_WARNING_RE,
-            category=UserWarning,
-        )
-        warnings.filterwarnings(
-            "ignore",
-            message=_MISSING_INNER_POTENTIAL_WARNING_RE,
-            category=UserWarning,
-        )
-        yield
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -518,8 +490,7 @@ class KspaceTool(KspaceToolGUI):
 
     @staticmethod
     def _configuration_text(configuration: AxesConfiguration | int) -> str:
-        configuration = AxesConfiguration(int(configuration))
-        return f"Configuration {int(configuration)} ({configuration.name})"
+        return _kspace_conversion.configuration_text(configuration)
 
     @property
     def current_configuration(self) -> AxesConfiguration:
@@ -887,8 +858,9 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setDecimals(1)
             self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS["V0"])
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
-            with _ignore_missing_kspace_parameter_warnings():
-                self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
+            self._offset_spins["V0"].setValue(
+                _kspace_conversion.kspace_inner_potential(self.data)
+            )
             self._offset_spins["V0"].valueChanged.connect(self.queue_update)
             self.offsets_group.layout().addRow(
                 self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
@@ -903,8 +875,9 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setDecimals(4)
         self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS["wf"])
         self._offset_spins["wf"].setToolTip("Work function of the system.")
-        with _ignore_missing_kspace_parameter_warnings():
-            self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self._offset_spins["wf"].setValue(
+            _kspace_conversion.kspace_work_function(self.data)
+        )
         self._offset_spins["wf"].valueChanged.connect(self._update_energy_controls)
         self._offset_spins["wf"].valueChanged.connect(self.queue_update)
         self.offsets_group.layout().addRow(
@@ -1030,8 +1003,7 @@ class KspaceTool(KspaceToolGUI):
         if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:
             work_function = self._work_function
         else:
-            with _ignore_missing_kspace_parameter_warnings():
-                work_function = self.data.kspace.work_function
+            work_function = _kspace_conversion.kspace_work_function(self.data)
 
         if self.data.kspace._is_energy_kinetic:
             if self.data.kspace._has_hv:
@@ -1157,45 +1129,19 @@ class KspaceTool(KspaceToolGUI):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...]:
-        from erlab.interactive.imagetool import provenance
-
-        operations: list[provenance.ToolProvenanceOperation] = []
-        configuration = int(self.data.kspace.configuration)
-        if configuration != self._source_configuration:
-            operations.append(
-                provenance.KspaceConfigurationOperation(configuration=configuration)
-            )
-
-        if self.data.kspace._has_hv:
-            v0 = self._inner_potential
-            with _ignore_missing_kspace_parameter_warnings():
-                current_v0 = self.data.kspace.inner_potential
-            if not np.isclose(v0, current_v0):
-                operations.append(
-                    provenance.KspaceInnerPotentialOperation(inner_potential=v0)
-                )
-
-        wf = self._work_function
-        with _ignore_missing_kspace_parameter_warnings():
-            current_wf = self.data.kspace.work_function
-        if not np.isclose(wf, current_wf):
-            operations.append(provenance.KspaceWorkFunctionOperation(work_function=wf))
-
         alpha_normal, beta_normal = self._current_normal_emission_angles()
-        operations.append(
-            provenance.KspaceSetNormalOperation(
-                alpha=alpha_normal,
-                beta=beta_normal,
-                delta=self.offset_dict["delta"],
-            )
+        return _kspace_conversion.kspace_conversion_operations(
+            self.data,
+            target_configuration=self.data.kspace.configuration,
+            source_configuration=self._source_configuration,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
+            normal_emission=(alpha_normal, beta_normal),
+            delta=self.offset_dict["delta"],
+            bounds=self.bounds,
+            resolution=self.resolution,
+            force_scalars=False,
         )
-        operations.append(
-            provenance.KspaceConvertOperation(
-                bounds=self.bounds,
-                resolution=self.resolution,
-            )
-        )
-        return tuple(operations)
 
     def _copy_assign_target(
         self,
@@ -1243,29 +1189,10 @@ class KspaceTool(KspaceToolGUI):
         }
 
     def _current_normal_emission_angles(self) -> tuple[float, float]:
-        if "xi" not in self.data.coords:
-            raise IncompleteDataError("coord", "xi")
-
-        offsets = self.offset_dict
-        angle_params = {
-            "delta": offsets["delta"],
-            "xi": float(self.data["xi"].values),
-            "xi0": offsets["xi"],
-        }
-
-        match self.data.kspace.configuration:
-            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
-                angle_params["beta0"] = offsets["beta"]
-            case _:
-                if "chi" not in self.data.coords:
-                    raise IncompleteDataError("coord", "chi")
-                angle_params["chi"] = float(self.data["chi"].values)
-                angle_params["chi0"] = offsets["chi"]
-
-        alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
-            self.data.kspace.configuration, angle_params
+        return _kspace_conversion.normal_emission_angles(
+            self.data,
+            self.offset_dict,
         )
-        return float(np.round(alpha, 5)), float(np.round(beta, 5))
 
     @QtCore.Slot()
     def _sync_normal_emission_spins(self) -> None:
@@ -1323,25 +1250,13 @@ class KspaceTool(KspaceToolGUI):
         return self.data.copy(deep=False)
 
     def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
-        data.kspace.offsets = self.offset_dict
-
-        if self.data.kspace._has_hv:
-            v0: float = self._inner_potential
-            with _ignore_missing_kspace_parameter_warnings():
-                current_v0 = self.data.kspace.inner_potential
-            if "inner_potential" not in self.data.attrs or not np.isclose(
-                v0, current_v0
-            ):
-                data.kspace.inner_potential = v0
-
-        wf: float = self._work_function
-        with _ignore_missing_kspace_parameter_warnings():
-            current_wf = self.data.kspace.work_function
-        if "sample_workfunction" not in self.data.attrs or not np.isclose(
-            wf, current_wf
-        ):
-            data.kspace.work_function = wf
-        return data
+        return _kspace_conversion.apply_kspace_parameters(
+            data,
+            source_data=self.data,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
+            offsets=self.offset_dict,
+        )
 
     def _validate_kinetic_energy(self, data: xr.DataArray, *, context: str) -> None:
         data.kspace._check_kinetic_energy(context=context)
