@@ -15,6 +15,7 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import pytest
 import xarray as xr
+from matplotlib import colors as mcolors
 from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -7643,6 +7644,26 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
         "keyword": "ax2",
         "child-axis": "ax3",
     }
+    underscore_setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                nrows=1,
+                ncols=1,
+                axes=(
+                    FigureGridSpecAxesState(
+                        axes_id="underscore",
+                        label="_line",
+                        span=span,
+                    ),
+                ),
+            )
+        ),
+    )
+    assert figurecomposer_gridspec._gridspec_axis_code_names(underscore_setup) == {
+        "underscore": "ax0",
+    }
     assert (
         figurecomposer_gridspec._gridspec_axis_variable_name_error(
             setup, "first", "valid_name"
@@ -7654,6 +7675,9 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
     )
     assert "keyword" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
         setup, "first", "class"
+    )
+    assert figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "_line"
     )
     assert "unique" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
         setup, "first", "peak"
@@ -9447,6 +9471,7 @@ def test_figure_composer_line_profile_operation_uses_semantic_sections(
                 "figureComposerLineMarkerSizeSpin",
                 "figureComposerLineMarkerFaceColorEdit",
                 "figureComposerLineMarkerEdgeColorEdit",
+                "figureComposerLineGradientCheck",
             ),
         ),
         (
@@ -15683,7 +15708,7 @@ def test_figure_composer_line_values_axis_swaps_regular_profile(qtbot) -> None:
         label="profile",
         source="profile",
         axes=FigureAxesSelectionState(axes=((0, 0),)),
-    ).model_copy(update={"line_x": "kx", "line_values_axis": "x"})
+    ).model_copy(update={"line_x": "kx", "line_values_axis": "x", "gradient": True})
     tool = FigureComposerTool(
         profile,
         recipe=FigureRecipeState(
@@ -15700,12 +15725,34 @@ def test_figure_composer_line_values_axis_swaps_regular_profile(qtbot) -> None:
     line = fig.axes[0].lines[0]
     np.testing.assert_allclose(line.get_xdata(), profile.values)
     np.testing.assert_allclose(line.get_ydata(), profile["kx"].values)
+    assert len(fig.axes[0].images) == 1
+    np.testing.assert_allclose(
+        fig.axes[0].images[0].cmap(1.0),
+        mcolors.to_rgba(line.get_color()),
+        rtol=1e-7,
+    )
+
+    code = tool.generated_code()
+    assert "import erlab.plotting as eplt" in code
+    assert "_line = axs[0, 0].plot(profile, profile['kx'])[0]" in code
+    assert "transpose=True" in code
+    code_lines = code.splitlines()
+    plot_index = code_lines.index(
+        "    _line = axs[0, 0].plot(profile, profile['kx'])[0]"
+    )
+    assert code_lines[plot_index + 1] == "    eplt.gradient_fill("
 
     namespace: dict[str, typing.Any] = {"profile": profile}
-    exec(tool.generated_code(), namespace)  # noqa: S102
+    exec(code, namespace)  # noqa: S102
     line = namespace["fig"].axes[0].lines[0]
     np.testing.assert_allclose(line.get_xdata(), profile.values)
     np.testing.assert_allclose(line.get_ydata(), profile["kx"].values)
+    assert len(namespace["fig"].axes[0].images) == 1
+    np.testing.assert_allclose(
+        namespace["fig"].axes[0].images[0].cmap(1.0),
+        mcolors.to_rgba(line.get_color()),
+        rtol=1e-7,
+    )
 
 
 def test_figure_composer_line_mean_normalization_executes(qtbot) -> None:
@@ -15981,6 +16028,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
             "line_offset_source": "associated",
             "line_offset_coord": "temperature",
             "line_offset_scale": 0.01,
+            "gradient": True,
         }
     )
     tool = FigureComposerTool(
@@ -16074,6 +16122,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     marker_edge_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
     )
+    gradient_check = style_page.findChild(
+        QtWidgets.QCheckBox, "figureComposerLineGradientCheck"
+    )
     marker_face_button = style_page.findChild(
         figurecomposer_widgets._ColorPickerButton,
         "figureComposerLineMarkerFaceColorButton",
@@ -16091,6 +16142,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert marker_face_button is not None
     assert marker_edge_edit is not None
     assert marker_edge_edit.text() == "black"
+    assert gradient_check is not None
+    assert gradient_check.isChecked()
 
     color_text_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
@@ -16211,6 +16264,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
     assert fig.axes[0].get_legend() is None
+    assert len(fig.axes[0].images) == 3
     for index, line in enumerate(fig.axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
         np.testing.assert_allclose(
@@ -16224,15 +16278,31 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         assert line.get_markersize() == 6.0
         assert line.get_markerfacecolor() == "yellow"
         assert line.get_markeredgecolor() == "black"
+        np.testing.assert_allclose(
+            fig.axes[0].images[index].cmap(1.0),
+            mcolors.to_rgba(line.get_color()),
+            rtol=1e-7,
+        )
 
     namespace: dict[str, typing.Any] = {"profile_data": profile_data}
     code = tool.generated_code()
+    assert "import erlab.plotting as eplt" in code
     assert "ax.legend()" not in code
     assert "profile_offsets =" not in code
     assert "0.01 * profile_data['temperature'] + profile_data" in code
     assert "for ax in" not in code
-    assert "profile.plot(ax=axs[0, 0]" in code
+    assert "_line = profile.plot(ax=axs[0, 0]" in code
+    assert "for _line in" not in code
+    assert "ax.lines" not in code
+    code_lines = code.splitlines()
+    plot_index = next(
+        index
+        for index, line in enumerate(code_lines)
+        if "_line = profile.plot(" in line
+    )
+    assert code_lines[plot_index + 1] == "    eplt.gradient_fill("
     exec(code, namespace)  # noqa: S102
+    assert len(namespace["fig"].axes[0].images) == 3
     for index, line in enumerate(namespace["fig"].axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
         np.testing.assert_allclose(
@@ -16246,6 +16316,11 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         assert line.get_markersize() == 6.0
         assert line.get_markerfacecolor() == "yellow"
         assert line.get_markeredgecolor() == "black"
+        np.testing.assert_allclose(
+            namespace["fig"].axes[0].images[index].cmap(1.0),
+            mcolors.to_rgba(line.get_color()),
+            rtol=1e-7,
+        )
 
     shared_label_operation = operation.model_copy(
         update={"line_labels": ("shared",), "line_colors": ()}
@@ -16344,6 +16419,7 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
     assert "for profile, scale, offset in zip(" in code
     assert "for ax, profile in zip(" in code
     assert "ax.plot(profile['kx'], profile" in code
+    assert "_line = " not in code
 
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
@@ -16356,6 +16432,118 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
         ] + profile_operation.line_scales[index] * (profile / profile.max(skipna=True))
         np.testing.assert_allclose(line.get_xdata(), kx)
         np.testing.assert_allclose(line.get_ydata(), expected.values)
+
+
+def test_figure_composer_line_gradient_fill_one_profile_per_axis_executes(
+    qtbot,
+) -> None:
+    cut_values = np.array([0.0, 1.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.array([[1.0, 2.0, 1.0], [0.5, 1.5, 0.5]]),
+        dims=("cut", "kx"),
+        coords={"cut": cut_values, "kx": kx},
+        name="data",
+    )
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+    ).model_copy(
+        update={
+            "line_placement": "one_per_axis",
+            "line_x": "kx",
+            "line_iter_dim": "cut",
+            "line_colors": ("red", "blue"),
+            "gradient": True,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    for axis in fig.axes:
+        assert len(axis.lines) == 1
+        assert len(axis.images) == 1
+        np.testing.assert_allclose(
+            axis.images[0].cmap(1.0),
+            mcolors.to_rgba(axis.lines[0].get_color()),
+            rtol=1e-7,
+        )
+
+    code = tool.generated_code()
+    assert "for ax, profile, color in zip(" in code
+    assert "_line = ax.plot(profile['kx'], profile, color=color)[0]" in code
+    assert "for _line in" not in code
+    assert "ax.lines" not in code
+    code_lines = code.splitlines()
+    plot_index = code_lines.index(
+        "    _line = ax.plot(profile['kx'], profile, color=color)[0]"
+    )
+    assert code_lines[plot_index + 1] == "    eplt.gradient_fill("
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    for axis in namespace["fig"].axes:
+        assert len(axis.lines) == 1
+        assert len(axis.images) == 1
+        np.testing.assert_allclose(
+            axis.images[0].cmap(1.0),
+            mcolors.to_rgba(axis.lines[0].get_color()),
+            rtol=1e-7,
+        )
+
+
+def test_figure_composer_line_gradient_fill_codegen_preserves_line_source(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.array([1.0, 2.0, 1.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="line",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="line", label="line"),),
+            operations=(
+                FigureOperationState.line(
+                    label="gradient",
+                    source="line",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(update={"gradient": True}),
+                FigureOperationState.line(
+                    label="later",
+                    source="line",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="line",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    code_lines = code.splitlines()
+    assert not any(line.startswith("    line = profile.plot(") for line in code_lines)
+    assert "_line = profile.plot(ax=axs[0, 0])[0]" in code
+    assert "profile_data = line" in code
+
+    namespace: dict[str, typing.Any] = {"line": data}
+    exec(code, namespace)  # noqa: S102
+    assert len(namespace["fig"].axes[0].lines) == 2
+    assert len(namespace["fig"].axes[0].images) == 1
 
 
 def test_figure_composer_profile_reduce_codegen_executes(qtbot) -> None:

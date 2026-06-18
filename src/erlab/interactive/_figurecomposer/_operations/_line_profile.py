@@ -6,6 +6,7 @@ import typing
 
 from qtpy import QtWidgets
 
+import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import (
     _axes_code,
     _axes_sequence_code,
@@ -796,6 +797,22 @@ def _add_line_style_controls(
         "Marker face and edge colors for the extracted profiles.",
     )
 
+    gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
+    gradient_check = tool._check_box(
+        operation.gradient,
+        lambda checked: tool._update_current_operation(gradient=checked),
+        parent=page,
+        mixed=gradient_mixed,
+    )
+    gradient_check.setObjectName("figureComposerLineGradientCheck")
+    gradient_check.setText("Gradient Fill")
+    tool._add_form_row(
+        layout,
+        "Gradient",
+        gradient_check,
+        "Fill the area under each profile with a gradient using the line color.",
+    )
+
 
 def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
     editable = tool._editable_operations()
@@ -885,9 +902,10 @@ def _render_line(
         for line_data, kwargs in zip(line_items, styles, strict=True):
             if operation.line_values_axis == "x":
                 coordinate = _line_coordinate(line_data, operation.line_x)
-                axis.plot(line_data.values, coordinate.values, **kwargs)
+                line = axis.plot(line_data.values, coordinate.values, **kwargs)[0]
             else:
-                line_data.plot(ax=axis, x=operation.line_x, **kwargs)
+                line = line_data.plot(ax=axis, x=operation.line_x, **kwargs)[0]
+            _apply_line_gradient_fill(axis, line, operation)
         _apply_line_axes_limits(axis, operation)
 
 
@@ -906,10 +924,27 @@ def _render_one_profile_per_axis(
     for axis, profile, kwargs in zip(axes, profiles, styles, strict=True):
         coordinate = _line_coordinate(profile, operation.line_x)
         if operation.line_values_axis == "x":
-            axis.plot(profile.values, coordinate.values, **kwargs)
+            line = axis.plot(profile.values, coordinate.values, **kwargs)[0]
         else:
-            axis.plot(coordinate.values, profile.values, **kwargs)
+            line = axis.plot(coordinate.values, profile.values, **kwargs)[0]
+        _apply_line_gradient_fill(axis, line, operation)
         _apply_line_axes_limits(axis, operation)
+
+
+def _apply_line_gradient_fill(
+    axis: matplotlib.axes.Axes,
+    line: typing.Any,
+    operation: FigureOperationState,
+) -> None:
+    if not operation.gradient:
+        return
+    eplt.gradient_fill(
+        line.get_xdata(),
+        line.get_ydata(),
+        color=line.get_color(),
+        ax=axis,
+        transpose=operation.line_values_axis == "x",
+    )
 
 
 def _apply_line_axes_limits(
@@ -1229,14 +1264,20 @@ def _regular_line_code(
         call_args = f"profile, {coordinate}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
-        lines.append(f"        ax.plot({call_args})")
+        lines.extend(
+            _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "        ")
+        )
     else:
         call_args = "ax=ax"
         if operation.line_x:
             call_args += f", x={operation.line_x!r}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
-        lines.append(f"        profile.plot({call_args})")
+        lines.extend(
+            _line_plot_code(
+                tool, operation, f"profile.plot({call_args})", "ax", "        "
+            )
+        )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
     return lines
@@ -1267,14 +1308,26 @@ def _regular_line_single_axis_code(
         call_args = f"profile, {coordinate}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
-        lines.append(f"    {axis_code}.plot({call_args})")
+        lines.extend(
+            _line_plot_code(
+                tool,
+                operation,
+                f"{axis_code}.plot({call_args})",
+                axis_code,
+                "    ",
+            )
+        )
     else:
         call_args = f"ax={axis_code}"
         if operation.line_x:
             call_args += f", x={operation.line_x!r}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
-        lines.append(f"    profile.plot({call_args})")
+        lines.extend(
+            _line_plot_code(
+                tool, operation, f"profile.plot({call_args})", axis_code, "    "
+            )
+        )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
     return lines
@@ -1360,7 +1413,9 @@ def _one_profile_per_axis_code(
         call_args = f"{coordinate}, profile"
     if kwargs_text:
         call_args += f", {kwargs_text}"
-    lines.append(f"    ax.plot({call_args})")
+    lines.extend(
+        _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "    ")
+    )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
     return lines
@@ -1393,9 +1448,65 @@ def _one_axis_many_profiles_code(
         call_args = f"{coordinate}, profile"
     if kwargs_text:
         call_args += f", {kwargs_text}"
-    lines.append(f"    {axis_code}.plot({call_args})")
+    lines.extend(
+        _line_plot_code(
+            tool, operation, f"{axis_code}.plot({call_args})", axis_code, "    "
+        )
+    )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
+    return lines
+
+
+def _line_plot_code(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    call: str,
+    axis_code: str,
+    indent: str,
+) -> list[str]:
+    if not operation.gradient:
+        return [f"{indent}{call}"]
+    line_name = _line_artist_code_name(tool)
+    lines = [f"{indent}{line_name} = {call}[0]"]
+    lines.extend(
+        _line_gradient_code(
+            operation,
+            line_name=line_name,
+            axis_code=axis_code,
+            indent=indent,
+        )
+    )
+    return lines
+
+
+def _line_artist_code_name(tool: FigureComposerTool) -> str:
+    source_names = set(tool._source_names())
+    name = "_line"
+    suffix = 1
+    while name in source_names:
+        suffix += 1
+        name = f"_line_{suffix}"
+    return name
+
+
+def _line_gradient_code(
+    operation: FigureOperationState,
+    *,
+    line_name: str,
+    axis_code: str,
+    indent: str,
+) -> list[str]:
+    lines = [
+        f"{indent}eplt.gradient_fill(",
+        f"{indent}    {line_name}.get_xdata(),",
+        f"{indent}    {line_name}.get_ydata(),",
+        f"{indent}    color={line_name}.get_color(),",
+        f"{indent}    ax={axis_code},",
+    ]
+    if operation.line_values_axis == "x":
+        lines.append(f"{indent}    transpose=True,")
+    lines.append(f"{indent})")
     return lines
 
 
@@ -1623,6 +1734,14 @@ def _section_summary(
     return ""
 
 
+def _required_imports(
+    _tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, ...]:
+    if operation.gradient:
+        return ("import erlab.plotting as eplt",)
+    return ()
+
+
 SPEC = OperationSpec(
     kind=FigureOperationKind.LINE,
     add_actions=(
@@ -1645,4 +1764,5 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=lambda tool, operation, _figure, axs: _render_line(tool, operation, axs),
     code_lines=_line_code,
+    required_imports=_required_imports,
 )
