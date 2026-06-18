@@ -3383,6 +3383,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def setCentralWidget(self, widget: QtWidgets.QWidget | None) -> None:
         """Set the main content widget while preserving the source-status banner."""
         if widget is self._tool_root_widget:
+            current = self._tool_content_widget
+            if current is not None:
+                self._tool_root_layout.removeWidget(current)
+                current.setParent(None)
+                self._tool_content_widget = None
             QtWidgets.QMainWindow.setCentralWidget(self, widget)
             return
 
