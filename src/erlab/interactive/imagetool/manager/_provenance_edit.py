@@ -655,10 +655,7 @@ class _ProvenanceEditController:
         if isinstance(operation, provenance.ScriptCodeOperation):
             return False, "Free-form script steps are not editable."
         if spec.kind == "script":
-            try:
-                input_spec = spec._prefix_before_ref(row.edit_ref)
-            except ValueError:
-                return False, "This script row is not a replayable step."
+            input_spec = spec._prefix_before_ref(row.edit_ref)
             if not provenance.script_provenance_replayable(input_spec):
                 return False, "This script step cannot be replayed automatically."
             if (

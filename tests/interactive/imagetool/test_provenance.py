@@ -2294,6 +2294,101 @@ def test_tool_provenance_parse_restores_active_alias_structured_steps() -> None:
     xr.testing.assert_identical(replayed, data.sortby("x"))
 
 
+def test_tool_provenance_parse_legacy_script_call_parser_edges() -> None:
+    def parse_codes(
+        *codes: str | None,
+        seed_code: str | None = "derived = data",
+        active_name: str = "derived",
+        script_inputs: tuple[dict[str, str], ...] = (),
+        copyable: bool = True,
+    ) -> provenance.ToolProvenanceSpec:
+        parsed = provenance.parse_tool_provenance_spec(
+            {
+                "kind": "script",
+                "start_label": "Run ImageTool manager action",
+                "seed_code": seed_code,
+                "active_name": active_name,
+                "script_inputs": script_inputs,
+                "operations": [
+                    {
+                        "op": "script_code",
+                        "label": "Legacy script step",
+                        "code": code,
+                        "copyable": copyable,
+                    }
+                    for code in codes
+                ],
+            }
+        )
+        assert parsed is not None
+        return parsed
+
+    parsed = parse_codes(
+        "derived = derived.isel(x=slice(0, 2))",
+        "derived = derived.coarsen(x=2).mean()",
+        "derived = derived.qsel(x=1.0)",
+    )
+    assert [operation.op for operation in parsed.operations] == [
+        "isel",
+        "coarsen",
+        "qsel",
+    ]
+    assert parsed.operations[0] == provenance.IselOperation(kwargs={"x": slice(0, 2)})
+    assert parsed.operations[1] == provenance.CoarsenOperation(
+        dim={"x": 2},
+        boundary="exact",
+        side="left",
+        coord_func="mean",
+        reducer="mean",
+    )
+    assert parsed.operations[2] == provenance.QSelOperation(kwargs={"x": 1.0})
+
+    conservative_codes = (
+        "derived = derived.isel(x=slice(0, stop))",
+        'derived = derived.sortby(np.array(["x"]))',
+        "derived = derived.sortby(np.array([unknown]))",
+        "derived = derived.sortby(unknown)",
+        "derived = derived.isel(**extra)",
+        "derived = make_data()",
+        'derived = factory().sortby("x")',
+        'derived = factory().data.sortby("x")',
+        'derived = other.sortby("x")',
+        "derived = derived.unknown.accessor()",
+        "derived = derived.coarsen(x=step).mean()",
+        'derived = derived.sortby("x")\nextra = derived',
+        'derived, other = derived.sortby("x"), other',
+        "derived = 1",
+        'other = derived.sortby("x")',
+    )
+    parsed = parse_codes(*conservative_codes)
+    assert all(
+        isinstance(operation, provenance.ScriptCodeOperation)
+        for operation in parsed.operations
+    )
+    assert [operation.code for operation in parsed.operations] == list(
+        conservative_codes
+    )
+
+    parsed = parse_codes(
+        'derived = derived.sortby("x")',
+        seed_code="derived =",
+        script_inputs=({"name": "derived", "label": "ImageTool"},),
+    )
+    assert [operation.op for operation in parsed.operations] == ["sortby"]
+
+    parsed = parse_codes('derived = derived.sortby("x")', seed_code=None)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes('derived = derived.sortby("x")', copyable=False)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes(None)
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+    parsed = parse_codes("derived =")
+    assert [operation.op for operation in parsed.operations] == ["script_code"]
+
+
 def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
     data = _base_data().assign_coords(x=[2.0, 1.0, 0.0])
     payload = {

@@ -190,12 +190,14 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
             items.append(item)
             for child_index in range(item.childCount()):
                 child = item.child(child_index)
-                if child is not None:
+                # Valid child indices return items; guard for Qt binding safety.
+                if child is not None:  # pragma: no branch
                     collect(child)
 
         for row in range(self.topLevelItemCount()):
             item = self.topLevelItem(row)
-            if item is not None:
+            # Valid top-level indices return items; guard for Qt binding safety.
+            if item is not None:  # pragma: no branch
                 collect(item)
         return items
 

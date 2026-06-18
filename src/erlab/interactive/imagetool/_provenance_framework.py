@@ -1053,8 +1053,6 @@ def _structured_operation_from_script_code(
     *,
     current_name: str | None,
 ) -> ToolProvenanceOperation:
-    if not _operation_is(operation, "script_code"):
-        return operation
     if current_name is None:
         return operation
     code = getattr(operation, "code", None)
@@ -2699,8 +2697,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         def with_scope(
             row: _ProvenanceDisplayRow,
         ) -> _ProvenanceDisplayRow:
-            if scope == "display":
-                return row
             return replace(
                 row,
                 scope=scope,
