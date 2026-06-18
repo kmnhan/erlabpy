@@ -173,6 +173,13 @@ class Child(Base, metaclass=data_5):
         {},
     )
     assert "profile" in nested_loop_names
+    loop_else_names = {"items"}
+    _replay_graph._validate_script_code_names(
+        "for item in items:\n    pass\nelse:\n    derived = item",
+        loop_else_names,
+        {},
+    )
+    assert {"item", "derived"}.issubset(loop_else_names)
     with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
         _replay_graph._validate_script_code_names(
             "for holder.profile in profiles:\n    pass",
@@ -185,6 +192,26 @@ class Child(Base, metaclass=data_5):
             {"data", "use_left"},
             {},
         )
+    unchanged_dependencies = {"helper": {"data"}}
+    _replay_graph._validate_script_code_names(
+        "if use_left:\n    left = data\nelse:\n    right = data",
+        {"data", "use_left", "helper"},
+        unchanged_dependencies,
+    )
+    assert unchanged_dependencies == {"helper": {"data"}}
+    new_branch_dependencies: dict[str, set[str]] = {}
+    _replay_graph._validate_script_code_names(
+        "if use_left:\n"
+        "    def choose():\n"
+        "        return data\n"
+        "else:\n"
+        "    def choose():\n"
+        "        return fallback\n"
+        "derived = choose()",
+        {"data", "fallback", "use_left"},
+        new_branch_dependencies,
+    )
+    assert new_branch_dependencies["choose"] == {"data", "fallback"}
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
         _replay_graph._validate_script_provenance(

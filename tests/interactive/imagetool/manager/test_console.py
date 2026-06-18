@@ -12,6 +12,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
+import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.utils
 from erlab.interactive.imagetool import _provenance_framework, itool, provenance
@@ -3581,6 +3582,47 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
         types.SimpleNamespace(derivation_entries=(start_entry,))
     )
     assert fallback
+
+    no_spec_node = types.SimpleNamespace(
+        derivation_entries=(start_entry, unavailable_entry),
+        displayed_provenance_spec=None,
+    )
+    assert controller._unavailable_replay_code_traceback(no_spec_node) is None
+    dialog_details = controller._unavailable_replay_code_dialog_details(no_spec_node)
+    assert "Opaque step" in dialog_details
+    assert "Traceback" not in dialog_details
+
+
+def test_unavailable_replay_code_traceback_ignores_successful_emit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = object.__new__(_DetailsPanelController)
+    spec = types.SimpleNamespace(
+        kind="script",
+        operations=(object(),),
+        active_name="derived",
+    )
+    node = types.SimpleNamespace(displayed_provenance_spec=spec)
+    calls: list[tuple[typing.Any, str]] = []
+
+    monkeypatch.setattr(
+        manager_details_panel._replay_graph,
+        "compile_replay_graph",
+        lambda received_spec, *, display: ("graph", received_spec, display),
+    )
+
+    def _emit_replay_code(graph, *, output_name: str) -> str:
+        calls.append((graph, output_name))
+        return "derived = data"
+
+    monkeypatch.setattr(
+        manager_details_panel._replay_graph,
+        "emit_replay_code",
+        _emit_replay_code,
+    )
+
+    assert controller._unavailable_replay_code_traceback(node) is None
+    assert calls == [(("graph", spec, True), "derived")]
 
 
 def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
