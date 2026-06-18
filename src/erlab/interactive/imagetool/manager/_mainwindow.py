@@ -1101,17 +1101,7 @@ class ImageToolManager(_ImageToolManagerBase):
         metadata_layout.setSpacing(4)
         self.metadata_group.setLayout(metadata_layout)
 
-        self.metadata_splitter = QtWidgets.QSplitter(
-            QtCore.Qt.Orientation.Vertical, self.metadata_group
-        )
-        self.metadata_splitter.setObjectName("managerMetadataSplitter")
-        self.metadata_splitter.setChildrenCollapsible(False)
-        self.metadata_splitter.splitterMoved.connect(
-            lambda _pos, _index: self._mark_workspace_layout_dirty()
-        )
-        metadata_layout.addWidget(self.metadata_splitter)
-
-        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_splitter)
+        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_group)
         self.metadata_details_layout = QtWidgets.QGridLayout(
             self.metadata_details_widget
         )
@@ -1122,17 +1112,17 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_details_widget.setLayout(self.metadata_details_layout)
         self.metadata_details_widget.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
         )
         self.metadata_details_widget.setVisible(False)
-        self.metadata_splitter.addWidget(self.metadata_details_widget)
+        metadata_layout.addWidget(self.metadata_details_widget, 0)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
         self._metadata_monospace_font = QtGui.QFontDatabase.systemFont(
             QtGui.QFontDatabase.SystemFont.FixedFont
         )
 
         self.metadata_derivation_list = _MetadataDerivationListWidget(
-            self.metadata_splitter
+            self.metadata_group
         )
         self.metadata_derivation_list.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -1166,9 +1156,7 @@ class ImageToolManager(_ImageToolManagerBase):
             lambda _item, _column: self._activate_selected_derivation_step()
         )
         self.metadata_derivation_list.setVisible(False)
-        self.metadata_splitter.addWidget(self.metadata_derivation_list)
-        self.metadata_splitter.setStretchFactor(0, 0)
-        self.metadata_splitter.setStretchFactor(1, 1)
+        metadata_layout.addWidget(self.metadata_derivation_list, 1)
         self.right_splitter.addWidget(self.metadata_group)
         self.right_splitter.setStretchFactor(0, 2)
         self.right_splitter.setStretchFactor(1, 1)
@@ -1176,7 +1164,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
         # Set initial splitter sizes
         self.right_splitter.setSizes([260, 140, 100])
-        self.metadata_splitter.setSizes([80, 160])
         self.main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows

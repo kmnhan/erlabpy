@@ -393,7 +393,6 @@ class _DetailsPanelController:
         has_metadata = has_details or derivation_count > 0
 
         self._manager.metadata_group.setVisible(has_metadata)
-        self._manager.metadata_splitter.setVisible(has_metadata)
         self._manager.metadata_details_widget.setVisible(has_details)
         self._manager.metadata_derivation_list.setVisible(derivation_count > 0)
 
@@ -415,15 +414,6 @@ class _DetailsPanelController:
         self._manager.metadata_details_widget.updateGeometry()
         self._manager.metadata_derivation_list.updateGeometry()
         self._manager.metadata_details_widget.sync_height_for_width()
-        if has_details and derivation_count > 0:
-            sizes = self._manager.metadata_splitter.sizes()
-            if len(sizes) >= 2 and (sizes[0] <= 0 or sizes[1] <= 0):
-                self._manager.metadata_splitter.setSizes(
-                    [
-                        self._manager.metadata_details_widget.minimumHeight(),
-                        self._manager.metadata_derivation_list.minimumHeight(),
-                    ]
-                )
         self._manager.metadata_group.updateGeometry()
 
     def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:

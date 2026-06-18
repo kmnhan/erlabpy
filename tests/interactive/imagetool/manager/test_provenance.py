@@ -2775,11 +2775,11 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         assert manager.right_splitter.count() == 3
         assert manager.right_splitter.widget(2) is manager.metadata_group
-        assert manager.metadata_splitter.count() == 2
-        assert manager.metadata_splitter.widget(0) is manager.metadata_details_widget
-        assert manager.metadata_splitter.widget(1) is manager.metadata_derivation_list
-        assert manager.metadata_splitter.handleWidth() > 0
-        assert manager.metadata_splitter.styleSheet() == ""
+        assert manager.metadata_details_widget.parentWidget() is manager.metadata_group
+        assert manager.metadata_derivation_list.parentWidget() is manager.metadata_group
+        assert not isinstance(
+            manager.metadata_derivation_list.parentWidget(), QtWidgets.QSplitter
+        )
 
         manager._set_metadata_node(
             typing.cast(
@@ -2796,10 +2796,9 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         )
 
         assert manager.metadata_group.isVisible()
-        assert manager.metadata_splitter.isVisible()
         assert manager.metadata_details_widget.isVisible()
         assert manager.metadata_derivation_list.isVisible()
-        handle = manager.metadata_splitter.handle(1)
+        handle = manager.right_splitter.handle(2)
         assert handle is not None
         qtbot.wait_until(handle.isVisible, timeout=5000)
         assert manager.metadata_derivation_list.minimumHeight() > 0
@@ -2810,28 +2809,21 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
 
         manager.resize(640, 700)
         manager.right_splitter.setSizes([200, 160, 260])
-        manager.metadata_splitter.setSizes([70, 190])
         QtWidgets.QApplication.processEvents()
         assert manager.right_splitter.sizes()[2] > (
             manager.metadata_derivation_list.minimumHeight()
         )
-        assert manager.metadata_splitter.sizes()[1] > (
-            manager.metadata_derivation_list.minimumHeight()
-        )
         before_right_sizes = manager.right_splitter.sizes()
+        before_details_height = manager.metadata_details_widget.height()
+        before_list_height = manager.metadata_derivation_list.height()
         manager.right_splitter.moveSplitter(
             before_right_sizes[0] + before_right_sizes[1] - 40, 2
         )
         QtWidgets.QApplication.processEvents()
         after_right_sizes = manager.right_splitter.sizes()
         assert after_right_sizes[2] > before_right_sizes[2]
-
-        before_metadata_sizes = manager.metadata_splitter.sizes()
-        manager.metadata_splitter.moveSplitter(before_metadata_sizes[0] + 40, 1)
-        QtWidgets.QApplication.processEvents()
-        after_metadata_sizes = manager.metadata_splitter.sizes()
-        assert after_metadata_sizes[0] > before_metadata_sizes[0]
-        assert after_metadata_sizes[1] < before_metadata_sizes[1]
+        assert manager.metadata_details_widget.height() == before_details_height
+        assert manager.metadata_derivation_list.height() > before_list_height
 
 
 def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
