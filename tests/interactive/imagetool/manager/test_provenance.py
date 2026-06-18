@@ -1166,6 +1166,30 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     assert not editable
     assert reason
 
+    script_parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Concatenate selected ImageTools",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(name="data_0", label="ImageTool 0: scan"),
+            provenance.ScriptInput(name="data_1", label="ImageTool 1: scan"),
+        ),
+    )
+    script_with_composed_structured_step = provenance.compose_full_provenance(
+        script_parent,
+        provenance.full_data(provenance.SortByOperation(variables=("x",))),
+    )
+    assert script_with_composed_structured_step is not None
+    script_code_row, sort_row = script_with_composed_structured_step.display_rows()[3:]
+    assert not controller.can_edit_row(script_code_row)[0]
+    controller = _fake_edit_controller(
+        _fake_edit_node(script_with_composed_structured_step)
+    )
+    assert controller.can_edit_row(sort_row) == (True, "")
+
     active_filter = provenance.AverageOperation(dims=("x",))
     active_filter_spec = provenance.script(
         provenance.ScriptCodeOperation(

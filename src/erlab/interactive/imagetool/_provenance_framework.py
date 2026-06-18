@@ -893,6 +893,168 @@ def _operation_instance(op: str, **kwargs: typing.Any) -> ToolProvenanceOperatio
     return _operation_type(op)(**kwargs)
 
 
+_UNPARSED_LITERAL = object()
+
+
+def _literal_node_value(node: ast.AST) -> typing.Any:
+    try:
+        return ast.literal_eval(node)
+    except (SyntaxError, TypeError, ValueError):
+        pass
+
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "slice"
+        and len(node.args) <= 3
+        and not node.keywords
+    ):
+        values = [_literal_node_value(arg) for arg in node.args]
+        if any(value is _UNPARSED_LITERAL for value in values):
+            return _UNPARSED_LITERAL
+        return slice(*values)
+
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "array"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in {"np", "numpy"}
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        value = _literal_node_value(node.args[0])
+        if value is _UNPARSED_LITERAL:
+            return _UNPARSED_LITERAL
+        return np.asarray(value)
+
+    return _UNPARSED_LITERAL
+
+
+def _literal_call_args_kwargs(
+    call: ast.Call,
+) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]] | None:
+    args = tuple(_literal_node_value(arg) for arg in call.args)
+    if any(value is _UNPARSED_LITERAL for value in args):
+        return None
+    kwargs: dict[str, typing.Any] = {}
+    for call_keyword in call.keywords:
+        if call_keyword.arg is None:
+            return None
+        value = _literal_node_value(call_keyword.value)
+        if value is _UNPARSED_LITERAL:
+            return None
+        kwargs[call_keyword.arg] = value
+    return args, kwargs
+
+
+def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
+    if isinstance(node, ast.Name):
+        return node.id, ()
+    if isinstance(node, ast.Attribute):
+        resolved = _receiver_path(node.value)
+        if resolved is None:
+            return None
+        receiver_name, path = resolved
+        return receiver_name, (*path, node.attr)
+    return None
+
+
+def _operation_from_self_assignment_call(
+    target_name: str,
+    call: ast.Call,
+) -> ToolProvenanceOperation | None:
+    parsed_args = _literal_call_args_kwargs(call)
+    if parsed_args is None:
+        return None
+    args, kwargs = parsed_args
+
+    if (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr in {"mean", "min", "max", "sum"}
+        and not args
+        and not kwargs
+        and isinstance(call.func.value, ast.Call)
+        and isinstance(call.func.value.func, ast.Attribute)
+        and call.func.value.func.attr == "coarsen"
+        and isinstance(call.func.value.func.value, ast.Name)
+        and call.func.value.func.value.id == target_name
+    ):
+        parsed_coarsen_args = _literal_call_args_kwargs(call.func.value)
+        if parsed_coarsen_args is None:
+            return None
+        coarsen_args, coarsen_kwargs = parsed_coarsen_args
+        return operation_from_console_call(
+            ConsoleCall(
+                dataarray_method="coarsen",
+                args=coarsen_args,
+                kwargs={**coarsen_kwargs, "_reducer": call.func.attr},
+                display_code=ast.unparse(call),
+                has_extra_tracked_inputs=False,
+            )
+        )
+
+    if not isinstance(call.func, ast.Attribute):
+        return None
+    receiver = _receiver_path(call.func.value)
+    if receiver is None:
+        return None
+    receiver_name, accessor_path = receiver
+    if receiver_name != target_name:
+        return None
+
+    operation = operation_from_console_call(
+        ConsoleCall(
+            dataarray_method=call.func.attr if not accessor_path else None,
+            accessor_path=(*accessor_path, call.func.attr) if accessor_path else (),
+            args=args,
+            kwargs=kwargs,
+            display_code=ast.unparse(call),
+            has_extra_tracked_inputs=False,
+        )
+    )
+    if operation is not None:
+        return operation
+    if accessor_path:
+        return None
+    return operation_from_console_call(
+        ConsoleCall(
+            accessor_path=(call.func.attr,),
+            args=args,
+            kwargs=kwargs,
+            display_code=ast.unparse(call),
+            has_extra_tracked_inputs=False,
+        )
+    )
+
+
+def _structured_operation_from_script_code(
+    operation: ToolProvenanceOperation,
+) -> ToolProvenanceOperation:
+    if not _operation_is(operation, "script_code"):
+        return operation
+    code = getattr(operation, "code", None)
+    if not getattr(operation, "copyable", False) or code is None:
+        return operation
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return operation
+    if (
+        len(module.body) != 1
+        or not isinstance(module.body[0], ast.Assign)
+        or len(module.body[0].targets) != 1
+        or not isinstance(module.body[0].targets[0], ast.Name)
+        or not isinstance(module.body[0].value, ast.Call)
+    ):
+        return operation
+    structured = _operation_from_self_assignment_call(
+        module.body[0].targets[0].id,
+        module.body[0].value,
+    )
+    return operation if structured is None else structured
+
+
 def _callable_paths(func: Callable[..., typing.Any]) -> set[str]:
     paths: set[str] = set()
     for value in (func, inspect.unwrap(func)):
@@ -1598,6 +1760,20 @@ def parse_tool_provenance_operation(
             f"expected one of {sorted(_OPERATION_TYPES)}"
         )
     return operation_type.model_validate(value)
+
+
+def _normalize_script_code_operations(
+    spec: ToolProvenanceSpec,
+) -> ToolProvenanceSpec:
+    if spec.kind != "script":
+        return spec
+    operations = tuple(
+        _structured_operation_from_script_code(operation)
+        for operation in spec.operations
+    )
+    if operations == spec.operations:
+        return spec
+    return spec.model_copy(update={"operations": operations})
 
 
 class FileDataSelection(pydantic.BaseModel):
@@ -2354,29 +2530,21 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         Replay specs are the canonical, composable form used for derivation metadata,
         copied code, workspace save/load, and manager dependency status. Structured
         file provenance remains structured so runtime reloads can replay typed
-        operations without ``exec``. Live ImageTool refresh uses the original
-        single-parent spec via
+        operations without ``exec``. Live-source operations are kept structured inside
+        script replay specs so editable manager rows remain typed after composition.
+        Live ImageTool refresh uses the original single-parent spec via
         :func:`require_live_source_spec`.
         """
         if self.kind in {"script", "file"}:
             return self
 
-        entries = self.derivation_entries()
         return ToolProvenanceSpec(
             kind="script",
-            start_label=entries[0].label,
+            start_label=self._start_entry().label,
             seed_code=_DEFAULT_REPLAY_SEED_CODE,
             active_name="derived",
             file_load_source=self.file_load_source,
-            operations=tuple(
-                _operation_instance(
-                    "script_code",
-                    label=entry.label,
-                    code=entry.code,
-                    copyable=entry.copyable,
-                )
-                for entry in entries[1:]
-            ),
+            operations=self.operations,
         )
 
     def apply(self, parent_data: xr.DataArray) -> xr.DataArray:
@@ -2662,7 +2830,7 @@ def parse_tool_provenance_spec(
     if value.get("schema_version") == 1:
         value = dict(value)
         value["schema_version"] = 2
-    return ToolProvenanceSpec.model_validate(value)
+    return _normalize_script_code_operations(ToolProvenanceSpec.model_validate(value))
 
 
 def script_input_dependency_refs(
@@ -2791,20 +2959,22 @@ def compose_display_provenance(
             if saw_squeeze:
                 return parent_spec
 
-    entries = source.display_entries(parent_data=parent_data)
+    source_kind = typing.cast(
+        "typing.Literal['full_data', 'public_data', 'selection']",
+        source.kind,
+    )
     local_spec = ToolProvenanceSpec(
         kind="script",
-        start_label=entries[0].label,
+        start_label=source._start_entry().label,
         seed_code=_DEFAULT_REPLAY_SEED_CODE,
         active_name="derived",
         operations=tuple(
-            _operation_instance(
-                "script_code",
-                label=entry.label,
-                code=entry.code,
-                copyable=entry.copyable,
+            operation
+            for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
+                source_kind,
+                source.operations,
+                parent_data=parent_data,
             )
-            for entry in entries[1:]
         ),
     )
     if parent_spec is None:

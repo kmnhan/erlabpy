@@ -564,10 +564,15 @@ def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
     assert spec.file_load_source is not None
     assert spec.file_load_source.path == "scan.h5"
     assert spec.file_load_source.replay_call is None
+    assert [operation.op for operation in spec.operations] == ["average"]
+    assert spec.display_rows()[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert spec.derivation_code() == (
         "import xarray\n\n"
         "derived = xarray.load_dataarray('scan.h5')\n"
-        'derived = derived.qsel.average("x")'
+        'derived = derived.qsel.mean("x")'
     )
 
 
@@ -2073,6 +2078,60 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
         provenance.require_live_source_spec(reparsed_script)
 
 
+def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None:
+    payload = {
+        "kind": "script",
+        "start_label": "Run ImageTool manager action",
+        "seed_code": "derived = data",
+        "active_name": "derived",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Concatenate selected ImageTools",
+                "code": "derived = left + right",
+            },
+            {
+                "op": "script_code",
+                "label": 'Sort By(variables=("x",), ascending=False)',
+                "code": 'derived = derived.sortby("x", ascending=False)',
+            },
+            {
+                "op": "script_code",
+                "label": "Average(dims=('y',))",
+                "code": 'derived = derived.qsel.mean("y")',
+            },
+        ],
+    }
+
+    parsed = provenance.parse_tool_provenance_spec(payload)
+
+    assert parsed is not None
+    assert [operation.op for operation in parsed.operations] == [
+        "script_code",
+        "sortby",
+        "qsel_aggregate",
+    ]
+    rows = [
+        row
+        for row in parsed.display_rows()
+        if row.replay_ref is not None and row.replay_ref.kind == "operation"
+    ]
+    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    data = _base_data()
+    replayed = provenance.replay_script_provenance(
+        parsed,
+        {
+            "data": data.copy(deep=True),
+            "left": data.copy(deep=True),
+            "right": data.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        replayed,
+        (data + data).sortby("x", ascending=False).qsel.mean("y"),
+    )
+
+
 def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
 
     parent = provenance.selection(provenance.IselOperation(kwargs={"x": slice(0, 2)}))
@@ -2123,6 +2182,52 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
     xr.testing.assert_identical(derived, (data + 1).qsel.mean("x"))
+
+
+def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
+    data = _base_data()
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Concatenate selected ImageTools",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(name="data_0", label="ImageTool 0: scan"),
+            provenance.ScriptInput(name="data_1", label="ImageTool 1: scan"),
+        ),
+    )
+    local = provenance.full_data(
+        provenance.SortByOperation(variables=("x",), ascending=False),
+        provenance.AverageOperation(dims=("y",)),
+    )
+
+    composed = provenance.compose_full_provenance(parent, local)
+
+    assert composed is not None
+    assert [operation.op for operation in composed.operations] == [
+        "script_code",
+        "sortby",
+        "average",
+    ]
+    rows = [
+        row
+        for row in composed.display_rows()
+        if row.replay_ref is not None and row.replay_ref.kind == "operation"
+    ]
+    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    derived = provenance.replay_script_provenance(
+        composed,
+        {
+            "data_0": data.copy(deep=True),
+            "data_1": data.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        derived,
+        (data + data).sortby("x", ascending=False).qsel.mean("y"),
+    )
 
 
 def test_tool_provenance_script_context_binding_replays_current_output() -> None:
@@ -4337,6 +4442,7 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
     )
 
     assert composed is not None
+    assert [operation.op for operation in composed.operations] == ["isel"]
     code = composed.display_code()
     assert code is not None
     namespace = _exec_generated_code(
