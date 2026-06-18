@@ -16454,6 +16454,7 @@ def test_figure_composer_line_gradient_fill_one_profile_per_axis_executes(
             "line_placement": "one_per_axis",
             "line_x": "kx",
             "line_iter_dim": "cut",
+            "line_values_axis": "x",
             "line_colors": ("red", "blue"),
             "gradient": True,
         }
@@ -16471,9 +16472,12 @@ def test_figure_composer_line_gradient_fill_one_profile_per_axis_executes(
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
-    for axis in fig.axes:
+    for index, axis in enumerate(fig.axes):
+        profile = data.isel(cut=index)
         assert len(axis.lines) == 1
         assert len(axis.images) == 1
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), profile.values)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), kx)
         np.testing.assert_allclose(
             axis.images[0].cmap(1.0),
             mcolors.to_rgba(axis.lines[0].get_color()),
@@ -16482,20 +16486,24 @@ def test_figure_composer_line_gradient_fill_one_profile_per_axis_executes(
 
     code = tool.generated_code()
     assert "for ax, profile, color in zip(" in code
-    assert "_line = ax.plot(profile['kx'], profile, color=color)[0]" in code
+    assert "_line = ax.plot(profile, profile['kx'], color=color)[0]" in code
+    assert "transpose=True" in code
     assert "for _line in" not in code
     assert "ax.lines" not in code
     code_lines = code.splitlines()
     plot_index = code_lines.index(
-        "    _line = ax.plot(profile['kx'], profile, color=color)[0]"
+        "    _line = ax.plot(profile, profile['kx'], color=color)[0]"
     )
     assert code_lines[plot_index + 1] == "    eplt.gradient_fill("
 
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
-    for axis in namespace["fig"].axes:
+    for index, axis in enumerate(namespace["fig"].axes):
+        profile = data.isel(cut=index)
         assert len(axis.lines) == 1
         assert len(axis.images) == 1
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), profile.values)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), kx)
         np.testing.assert_allclose(
             axis.images[0].cmap(1.0),
             mcolors.to_rgba(axis.lines[0].get_color()),
@@ -16510,37 +16518,37 @@ def test_figure_composer_line_gradient_fill_codegen_preserves_line_source(
         np.array([1.0, 2.0, 1.0]),
         dims=("kx",),
         coords={"kx": [-1.0, 0.0, 1.0]},
-        name="line",
+        name="_line",
     )
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
             setup=FigureSubplotsState(),
-            sources=(FigureSourceState(name="line", label="line"),),
+            sources=(FigureSourceState(name="_line", label="_line"),),
             operations=(
                 FigureOperationState.line(
                     label="gradient",
-                    source="line",
+                    source="_line",
                     axes=FigureAxesSelectionState(axes=((0, 0),)),
                 ).model_copy(update={"gradient": True}),
                 FigureOperationState.line(
                     label="later",
-                    source="line",
+                    source="_line",
                     axes=FigureAxesSelectionState(axes=((0, 0),)),
                 ),
             ),
-            primary_source="line",
+            primary_source="_line",
         ),
     )
     qtbot.addWidget(tool)
 
     code = tool.generated_code()
     code_lines = code.splitlines()
-    assert not any(line.startswith("    line = profile.plot(") for line in code_lines)
-    assert "_line = profile.plot(ax=axs[0, 0])[0]" in code
-    assert "profile_data = line" in code
+    assert not any(line.startswith("    _line = profile.plot(") for line in code_lines)
+    assert "_line_2 = profile.plot(ax=axs[0, 0])[0]" in code
+    assert "profile_data = _line" in code
 
-    namespace: dict[str, typing.Any] = {"line": data}
+    namespace: dict[str, typing.Any] = {"_line": data}
     exec(code, namespace)  # noqa: S102
     assert len(namespace["fig"].axes[0].lines) == 2
     assert len(namespace["fig"].axes[0].images) == 1
@@ -16870,6 +16878,70 @@ def test_figure_composer_regular_line_profiles_render_on_each_selected_axis(
     figurecomposer_line_profile._set_axis_ylim(test_axis, 2.0)
     assert test_axis.get_xlim()[0] < 1.0 < test_axis.get_xlim()[1]
     assert test_axis.get_ylim()[0] == pytest.approx(2.0)
+
+
+def test_figure_composer_regular_line_gradient_fill_codegen_executes(
+    qtbot,
+) -> None:
+    cut_values = np.array([0.0, 1.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(cut_values.size * kx.size, dtype=float).reshape(
+            cut_values.size, kx.size
+        ),
+        dims=("cut", "kx"),
+        coords={"cut": cut_values, "kx": kx},
+        name="data",
+    )
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_iter_dim": "cut",
+            "line_colors": ("red", "blue"),
+            "gradient": True,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    for axis in fig.axes:
+        assert len(axis.lines) == 2
+        assert len(axis.images) == 2
+        for index, line in enumerate(axis.lines):
+            np.testing.assert_allclose(line.get_xdata(), kx)
+            np.testing.assert_allclose(line.get_ydata(), data.isel(cut=index).values)
+            assert line.get_color() == ("red", "blue")[index]
+
+    code = tool.generated_code()
+    assert "_line = profile.plot(ax=ax, x='kx', color=color)[0]" in code
+    code_lines = code.splitlines()
+    plot_index = code_lines.index(
+        "        _line = profile.plot(ax=ax, x='kx', color=color)[0]"
+    )
+    assert code_lines[plot_index + 1] == "        eplt.gradient_fill("
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    for axis in namespace["fig"].axes:
+        assert len(axis.lines) == 2
+        assert len(axis.images) == 2
+        for index, line in enumerate(axis.lines):
+            np.testing.assert_allclose(line.get_xdata(), kx)
+            np.testing.assert_allclose(line.get_ydata(), data.isel(cut=index).values)
 
 
 def test_figure_composer_line_labels_auto_add_axes_legend_step(
