@@ -3387,6 +3387,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if current is not None:
                 self._tool_root_layout.removeWidget(current)
                 current.setParent(None)
+                current.deleteLater()
                 self._tool_content_widget = None
             QtWidgets.QMainWindow.setCentralWidget(self, widget)
             return
@@ -3397,6 +3398,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if current is not None:
             self._tool_root_layout.removeWidget(current)
             current.setParent(None)
+            current.deleteLater()
 
         self._tool_content_widget = widget
         if widget is not None:

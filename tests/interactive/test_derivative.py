@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 from pydantic import BaseModel, ValidationError
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
@@ -571,6 +571,8 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.setCentralWidget(tool._tool_root_widget)
     assert tool.centralWidget() is tool._tool_root_widget
     assert tool._tool_content_widget is None
+    QtWidgets.QApplication.sendPostedEvents(original, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(original)
     tool.setCentralWidget(replacement)
     tool.setCentralWidget(replacement)
     assert tool.centralWidget() is replacement
