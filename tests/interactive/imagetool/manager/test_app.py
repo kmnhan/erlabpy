@@ -20,6 +20,7 @@ import zmq
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager as manager_package
 import erlab.interactive.imagetool.manager.__main__ as manager_main
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
@@ -38,6 +39,23 @@ from erlab.interactive.ptable import PeriodicTableWindow
 from .helpers import action_map_by_object_name, menu_map_by_object_name
 
 logger = logging.getLogger(__name__)
+
+
+def test_manager_runtime_icon_asset_exists() -> None:
+    icon_path = pathlib.Path(manager_widgets._ICON_PATH)
+
+    assert icon_path.name == ("icon.icns" if sys.platform == "darwin" else "icon.png")
+    assert icon_path.is_file()
+
+
+def test_manager_runtime_icon_is_sanitized(qapp) -> None:
+    assert qapp is QtWidgets.QApplication.instance()
+
+    icon = manager_package._runtime_window_icon()
+    pixmap = icon.pixmap(32, 32)
+
+    assert not pixmap.isNull()
+    assert not pixmap.toImage().colorSpace().isValid()
 
 
 def test_manager_main_cache_directory_uses_qstandardpaths(
