@@ -20,9 +20,11 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive._figurecomposer import FigureOperationKind, FigureOperationState
 from erlab.interactive._figurecomposer._exceptions import (
@@ -122,6 +124,21 @@ _TEST_DATA: dict[str, xr.DataArray] = {
         },
     ),
 }
+
+
+def _high_dimensional_data(
+    dtype: type[np.generic] | type[float] = float,
+) -> xr.DataArray:
+    shape = (2, 3, 4, 5, 6)
+    return xr.DataArray(
+        np.arange(np.prod(shape), dtype=dtype).reshape(shape),
+        dims=("scan", "pol", "z", "y", "x"),
+        coords={
+            dim: np.arange(size, dtype=float)
+            for dim, size in zip(("scan", "pol", "z", "y", "x"), shape, strict=True)
+        },
+        name="high_dimensional",
+    )
 
 
 def _press_alt(monkeypatch):
@@ -2450,6 +2467,159 @@ def test_parse_data() -> None:
         erlab.interactive.imagetool.viewer_state._parse_input("string")
 
 
+def test_prepare_high_dimensional_data_requires_dialog_when_unavailable() -> None:
+    data = _high_dimensional_data()
+
+    with pytest.raises(ValueError, match="Reduce it to four or fewer dimensions"):
+        imagetool_viewer_state._prepare_input_data(data, allow_dialog=False)
+
+
+@pytest.mark.parametrize("dialog_result", [True, False])
+def test_prepare_high_dimensional_data_dialog_branches(
+    qtbot,
+    monkeypatch,
+    dialog_result: bool,
+) -> None:
+    data = _high_dimensional_data()
+    operation = provenance.IselOperation(kwargs={"x": 2})
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+
+    class _Dialog:
+        def __init__(self, dialog_parent, dialog_data) -> None:
+            assert dialog_parent is parent
+            assert dialog_data is data
+
+        def exec(self) -> bool:
+            return dialog_result
+
+        @property
+        def result_data(self) -> xr.DataArray:
+            return operation.apply(data, parent_data=data)
+
+        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            return [operation]
+
+    monkeypatch.setattr(
+        imagetool_highdim,
+        "_HighDimensionalReductionDialog",
+        _Dialog,
+    )
+
+    prepared = imagetool_viewer_state._prepare_input_data(data, parent)
+
+    if not dialog_result:
+        assert prepared is None
+        return
+
+    assert prepared is not None
+    assert len(prepared) == 1
+    assert prepared[0].source_ndim == data.ndim
+    assert prepared[0].source_dtype == np.dtype(data.dtype)
+    assert prepared[0].operations == (operation,)
+    xarray.testing.assert_identical(prepared[0].data, data.isel(x=2))
+
+
+@pytest.mark.parametrize("dialog_result", [True, False])
+def test_itool_high_dimensional_data_dialog_branches(
+    qtbot,
+    monkeypatch,
+    dialog_result: bool,
+) -> None:
+    data = _high_dimensional_data()
+    operation = provenance.IselOperation(kwargs={"x": 2})
+
+    class _Dialog:
+        def __init__(self, _parent, dialog_data) -> None:
+            assert dialog_data is data
+
+        def exec(self) -> bool:
+            return dialog_result
+
+        @property
+        def result_data(self) -> xr.DataArray:
+            return operation.apply(data, parent_data=data)
+
+        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            return [operation]
+
+    monkeypatch.setattr(
+        imagetool_highdim,
+        "_HighDimensionalReductionDialog",
+        _Dialog,
+    )
+
+    result = itool(data, execute=False)
+
+    if not dialog_result:
+        assert result is None
+        return
+
+    assert isinstance(result, ImageTool)
+    qtbot.addWidget(result)
+    xarray.testing.assert_identical(result.slicer_area.data, data.isel(x=2))
+    assert result.slicer_area._load_preparation_operations == (operation,)
+    result.close()
+
+
+@pytest.mark.parametrize("dialog_result", [True, False])
+def test_show_in_manager_high_dimensional_data_dialog_branches(
+    qtbot,
+    monkeypatch,
+    dialog_result: bool,
+) -> None:
+    data = _high_dimensional_data()
+    operation = provenance.IselOperation(kwargs={"x": 2})
+    received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
+
+    class _Manager(QtWidgets.QWidget):
+        def _data_recv(self, input_data, kwargs) -> None:
+            received.append((input_data, kwargs))
+
+    manager = _Manager()
+    qtbot.addWidget(manager)
+
+    class _Dialog:
+        def __init__(self, dialog_parent, dialog_data) -> None:
+            assert dialog_parent is manager
+            assert dialog_data is data
+
+        def exec(self) -> bool:
+            return dialog_result
+
+        @property
+        def result_data(self) -> xr.DataArray:
+            return operation.apply(data, parent_data=data)
+
+        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            return [operation]
+
+    monkeypatch.setattr(
+        imagetool_highdim,
+        "_HighDimensionalReductionDialog",
+        _Dialog,
+    )
+    monkeypatch.setattr(
+        imagetool_manager_server,
+        "_direct_manager_for_target",
+        lambda _target: manager,
+    )
+
+    response = erlab.interactive.imagetool.manager.show_in_manager(data)
+
+    assert response is None
+    if not dialog_result:
+        assert received == []
+        return
+
+    assert len(received) == 1
+    input_data, kwargs = received[0]
+    xarray.testing.assert_identical(input_data[0], data.isel(x=2))
+    assert kwargs["source_input_ndims"] == (data.ndim,)
+    assert kwargs["source_input_dtypes"] == (np.dtype(data.dtype),)
+    assert kwargs["preparation_operations"] == ((operation,),)
+
+
 def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -2556,7 +2726,14 @@ def test_itool_file_open_uses_selected_dataset_variable(
 
     def _select_second(data, parent=None):
         assert parent is not None
-        return ((data["second"], selection),)
+        return (
+            imagetool_viewer_state._PreparedInputData(
+                data=data["second"],
+                selection=selection,
+                source_ndim=data["second"].ndim,
+                source_dtype=np.dtype(data["second"].dtype),
+            ),
+        )
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -2599,6 +2776,78 @@ def test_itool_file_open_uses_selected_dataset_variable(
     win.close()
 
 
+def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+) -> None:
+    data = _high_dimensional_data(np.int64)
+    operation = provenance.IselOperation(kwargs={"x": 2})
+    expected = data.astype(np.float64).isel(x=2)
+    file_path = tmp_path / "high_dimensional.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+
+    class _ReductionDialog:
+        def __init__(self, parent, dialog_data) -> None:
+            assert parent is win
+            xarray.testing.assert_identical(dialog_data, data)
+            self._data = dialog_data
+
+        def exec(self) -> bool:
+            return True
+
+        @property
+        def result_data(self) -> xr.DataArray:
+            return operation.apply(self._data, parent_data=self._data)
+
+        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            return [operation]
+
+    monkeypatch.setattr(
+        imagetool_highdim,
+        "_HighDimensionalReductionDialog",
+        _ReductionDialog,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {
+            "Test xarray (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"})
+        },
+    )
+
+    win = itool(np.zeros((2, 2)), execute=False)
+    qtbot.addWidget(win)
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(file_path))
+        dialog.selectNameFilter("Test xarray (*.h5)")
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText(file_path.name)
+
+    accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
+
+    xr.testing.assert_identical(win.slicer_area.data, expected)
+    assert win.provenance_spec is not None
+    assert [
+        replay_operation
+        for stage in win.provenance_spec.replay_stages
+        for replay_operation in stage.operations
+    ] == [operation]
+
+    replayed = provenance.replay_file_provenance(win.provenance_spec)
+    xarray.testing.assert_identical(replayed, expected)
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    namespace = _exec_generated_code(display_code, {})
+    xarray.testing.assert_identical(namespace["derived"], expected)
+
+    win.close()
+
+
 @pytest.mark.parametrize("selection", ["all", "cancel"])
 def test_itool_file_open_selection_branches(
     qtbot,
@@ -2629,7 +2878,20 @@ def test_itool_file_open_selection_branches(
         assert parent is not None
         if selection == "cancel":
             return None
-        return ((data["first"], 0), (data["second"], 1))
+        return (
+            imagetool_viewer_state._PreparedInputData(
+                data=data["first"],
+                selection=0,
+                source_ndim=data["first"].ndim,
+                source_dtype=np.dtype(data["first"].dtype),
+            ),
+            imagetool_viewer_state._PreparedInputData(
+                data=data["second"],
+                selection=1,
+                source_ndim=data["second"].ndim,
+                source_dtype=np.dtype(data["second"].dtype),
+            ),
+        )
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -3601,7 +3863,7 @@ def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
     qtbot.addWidget(dialog)
     selected_data = dialog.selected_dataarrays()
 
-    assert [selection for _data_array, selection in selected_data] == [
+    assert [prepared.selection for prepared in selected_data] == [
         provenance.FileDataSelection(kind="datatree_path", value="/branch_a/signal"),
         provenance.FileDataSelection(kind="datatree_path", value="/branch_b/signal"),
     ]
@@ -3609,8 +3871,33 @@ def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
     assert dialog._tree_widget.topLevelItem(0).text(2) == "signal"
     assert dialog._tree_widget.topLevelItem(1).text(1) == "branch_b"
     assert dialog._tree_widget.topLevelItem(1).text(2) == "signal"
-    xr.testing.assert_identical(selected_data[0][0], tree["branch_a"].dataset["signal"])
-    xr.testing.assert_identical(selected_data[1][0], tree["branch_b"].dataset["signal"])
+    xr.testing.assert_identical(
+        selected_data[0].data, tree["branch_a"].dataset["signal"]
+    )
+    xr.testing.assert_identical(
+        selected_data[1].data, tree["branch_b"].dataset["signal"]
+    )
+
+
+def test_select_dataarrays_dialog_includes_high_dimensional_variables(qtbot) -> None:
+    high = _high_dimensional_data()
+    ds = xr.Dataset({"high": high, "scalar": xr.DataArray(1)})
+
+    dialog = _SelectDataArraysDialog(None, ds)
+    qtbot.addWidget(dialog)
+
+    assert dialog._tree_widget.topLevelItemCount() == 1
+    item = dialog._tree_widget.topLevelItem(0)
+    assert item is not None
+    assert item.text(1) == "high"
+    assert item.text(2) == f"{high.ndim} -> reduce"
+    selected_data = dialog.selected_dataarrays()
+    assert len(selected_data) == 1
+    xr.testing.assert_identical(selected_data[0].data, high.rename("high"))
+    assert selected_data[0].selection == provenance.FileDataSelection(
+        kind="dataset_variable",
+        value="high",
+    )
 
 
 def test_select_dataarrays_dialog_formats_selected_dataarray(
@@ -3671,13 +3958,13 @@ def test_select_dataarrays_dialog_formats_selected_dataarray(
     dialog._tree_widget.setCurrentItem(second_item)
 
     selected_data = dialog.selected_dataarrays()
-    assert [selection for _data_array, selection in selected_data] == [
+    assert [prepared.selection for prepared in selected_data] == [
         erlab.interactive.imagetool.provenance.FileDataSelection(
             kind="dataset_variable",
             value="second",
         )
     ]
-    xr.testing.assert_identical(selected_data[0][0], ds["second"])
+    xr.testing.assert_identical(selected_data[0].data, ds["second"])
     xr.testing.assert_identical(formatted[-1][0], ds["second"])
     assert formatted[-1][1] is False
     assert formatted[-1][2] is False
@@ -3776,7 +4063,7 @@ def test_select_dataarrays_dialog_nests_datatree_paths(qtbot) -> None:
 
     dialog._item_checkbox(signal_item).setChecked(False)
 
-    assert [selection for _data_array, selection in dialog.selected_dataarrays()] == [
+    assert [prepared.selection for prepared in dialog.selected_dataarrays()] == [
         erlab.interactive.imagetool.provenance.FileDataSelection(
             kind="datatree_path",
             value="/branch_a/sweep_0/signal",
@@ -3859,8 +4146,18 @@ def test_select_input_dataarrays_dialog_branches(
         def exec(self) -> bool:
             return dialog_result
 
-        def selected_dataarrays(self) -> tuple[tuple[xr.DataArray, int], ...]:
-            return selected
+        def selected_dataarrays(
+            self,
+        ) -> tuple[imagetool_viewer_state._PreparedInputData, ...]:
+            return tuple(
+                imagetool_viewer_state._PreparedInputData(
+                    data=darr,
+                    selection=source_index,
+                    source_ndim=darr.ndim,
+                    source_dtype=np.dtype(darr.dtype),
+                )
+                for darr, source_index in selected
+            )
 
     monkeypatch.setattr(imagetool_viewer_state, "_SelectDataArraysDialog", _Dialog)
 
@@ -3870,7 +4167,7 @@ def test_select_input_dataarrays_dialog_branches(
         assert result is None
     else:
         assert result is not None
-        assert [source_index for _data_array, source_index in result] == list(expected)
+        assert [prepared.selection for prepared in result] == list(expected)
 
 
 def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
@@ -3881,10 +4178,10 @@ def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
     dataset_parsed = imagetool_viewer_state._parse_input_data(ds)
     datatree_parsed = imagetool_viewer_state._parse_input_data(tree)
 
-    assert dataset_parsed[0][1] == provenance.FileDataSelection(
+    assert dataset_parsed[0].selection == provenance.FileDataSelection(
         kind="dataset_variable", value="image"
     )
-    assert datatree_parsed[0][1] == provenance.FileDataSelection(
+    assert datatree_parsed[0].selection == provenance.FileDataSelection(
         kind="datatree_path", value="/diag/image"
     )
 
@@ -3901,7 +4198,16 @@ def test_itool_dataset_selection_returns_selected_variable(qtbot, monkeypatch) -
         }
     )
     monkeypatch.setattr(
-        itool_mod, "_select_input_dataarrays", lambda _data: ((ds["second"], 1),)
+        itool_mod,
+        "_select_input_dataarrays",
+        lambda _data: (
+            imagetool_viewer_state._PreparedInputData(
+                data=ds["second"],
+                selection=1,
+                source_ndim=ds["second"].ndim,
+                source_dtype=np.dtype(ds["second"].dtype),
+            ),
+        ),
     )
 
     win = itool(ds, execute=False)
@@ -4021,7 +4327,7 @@ def test_itool_ds(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         itool_mod,
         "_select_input_dataarrays",
-        lambda _data: tuple((darr, i) for i, darr in enumerate(_parse_input(_data))),
+        lambda _data: tuple(imagetool_viewer_state._parse_input_data(_data)),
     )
     wins = itool(data, execute=False, link=True)
     assert isinstance(wins, list)
@@ -6558,6 +6864,301 @@ def _selection_4d_data() -> xr.DataArray:
         },
         name="scan",
     )
+
+
+def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+
+    assert not open_button.isEnabled()
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "select")
+    row.scalar_controls.index_spin.setValue(2)
+
+    expected = data.isel(x=2)
+    assert open_button.isEnabled()
+    assert dialog.source_operations() == [provenance.IselOperation(kwargs={"x": 2})]
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.copy_button.click()
+    assert pyperclip.paste() == dialog.make_code()
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    _set_combo_data(row.reducer_combo, "sum")
+
+    operation = provenance.QSelAggregationOperation(dims=("x",), func="sum")
+    expected = data.qsel.sum(("x",))
+    assert open_button.isEnabled()
+    assert dialog.source_operations() == [operation]
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_scalar_methods_and_parent(qtbot) -> None:
+    data = _high_dimensional_data()
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(parent, data)
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowModality() == QtCore.Qt.WindowModality.WindowModal
+
+    scan_row = dialog.rows[0]
+    _set_combo_data(scan_row.action_combo, "select")
+    _set_combo_data(scan_row.scalar_controls.method_combo, "qsel")
+    scan_row.scalar_controls.value_spin.setValue(1.0)
+
+    x_row = dialog.rows[-1]
+    _set_combo_data(x_row.action_combo, "select")
+    _set_combo_data(x_row.scalar_controls.method_combo, "sel")
+    x_row.scalar_controls.value_spin.setValue(2.0)
+
+    expected = data.sel(x=2.0).qsel(scan=1.0)
+    assert dialog.source_operations() == [
+        provenance.SelOperation(kwargs={"x": 2.0}),
+        provenance.QSelOperation(kwargs={"scan": 1.0}),
+    ]
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+    calls: list[provenance.QSelAggregationOperation] = []
+
+    def _fail_apply(
+        self: provenance.QSelAggregationOperation,
+        _data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self)
+        raise AssertionError("preview must not apply aggregation")
+
+    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _fail_apply)
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    _set_combo_data(row.reducer_combo, "sum")
+    _set_combo_data(row.reducer_combo, "mean")
+
+    assert open_button.isEnabled()
+    assert calls == []
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
+def test_high_dimensional_reduction_dialog_accept_applies_once(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    calls: list[provenance.QSelAggregationOperation] = []
+    original_apply = provenance.QSelAggregationOperation.apply
+
+    def _count_apply(
+        self: provenance.QSelAggregationOperation,
+        data_array: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self)
+        return original_apply(self, data_array, parent_data=parent_data)
+
+    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _count_apply)
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    _set_combo_data(row.reducer_combo, "sum")
+
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    assert len(calls) == 1
+    assert calls[0] == provenance.QSelAggregationOperation(dims=("x",), func="sum")
+    xarray.testing.assert_identical(dialog.result_data, data.qsel.sum(("x",)))
+
+
+def test_high_dimensional_reduction_dialog_accept_keeps_dialog_open_on_error(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+
+    row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "aggregate")
+    assert open_button.isEnabled()
+
+    def _raise_process(_data: xr.DataArray) -> xr.DataArray:
+        raise ValueError("cannot aggregate")
+
+    monkeypatch.setattr(dialog, "process_data", _raise_process)
+
+    dialog.accept()
+
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+    assert not open_button.isEnabled()
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
+def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    warnings: list[tuple[object, ...]] = []
+
+    def _record_warning(*args: object) -> QtWidgets.QMessageBox.StandardButton:
+        warnings.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    assert dialog._processed_ndim_from_shape((5,)) == 2
+    assert dialog._processed_ndim_from_shape((2, 1, 3, 1, 4)) == 3
+    assert dialog._set_preview_from_metadata(("profile",), (5,))
+
+    row = dialog.rows[-1]
+    dialog.accept()
+    assert len(warnings) == 1
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        provenance,
+        "operations_expression_code",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no code")),
+    )
+    assert dialog.make_code() == ""
+    dialog.copy_button.click()
+    assert len(warnings) == 2
+
+    _set_combo_data(row.action_combo, "aggregate")
+    monkeypatch.setattr(dialog, "process_data", lambda _data: data)
+    dialog.accept()
+    assert len(warnings) == 3
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
+def test_high_dimensional_reduction_dialog_rejects_empty_result(qtbot) -> None:
+    data = xr.DataArray(
+        np.empty((0, 2, 3, 4, 5)),
+        dims=("empty", "scan", "pol", "y", "x"),
+        coords={
+            "empty": np.array([], dtype=float),
+            "scan": np.arange(2, dtype=float),
+            "pol": np.arange(3, dtype=float),
+            "y": np.arange(4, dtype=float),
+            "x": np.arange(5, dtype=float),
+        },
+    )
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+
+    _set_combo_data(dialog.rows[-1].action_combo, "aggregate")
+
+    assert not open_button.isEnabled()
+    with pytest.raises(RuntimeError, match="No reduced data"):
+        _ = dialog.result_data
+
+
+def test_scalar_selection_controls_non_numeric_and_width_branches(qtbot) -> None:
+    string_coord_data = xr.DataArray(
+        np.arange(3),
+        dims=("label",),
+        coords={"label": np.array(["a", "b", "c"], dtype=object)},
+    )
+    string_controls = imagetool_dialogs._ScalarSelectionControls(
+        string_coord_data,
+        "label",
+        0,
+        object_name_prefix="test_scalar",
+        include_width=False,
+    )
+    qtbot.addWidget(string_controls.method_combo)
+    qtbot.addWidget(string_controls.stack)
+    qtbot.addWidget(string_controls.width_widget)
+
+    assert string_controls.method == "isel"
+    assert string_controls.indexer() == ("label", 1)
+    assert string_controls.qsel_width_indexer() is None
+
+    numeric_data = xr.DataArray(
+        np.arange(3),
+        dims=("x",),
+        coords={"x": np.arange(3, dtype=float)},
+    )
+    numeric_controls = imagetool_dialogs._ScalarSelectionControls(
+        numeric_data,
+        "x",
+        0,
+        object_name_prefix="test_numeric_scalar",
+        current_index=None,
+    )
+    qtbot.addWidget(numeric_controls.method_combo)
+    qtbot.addWidget(numeric_controls.stack)
+    qtbot.addWidget(numeric_controls.width_widget)
+
+    assert numeric_controls.indexer() == ("x", 1.0)
+    numeric_controls.width_check.setChecked(True)
+    numeric_controls.width_spin.setValue(0.0)
+    assert numeric_controls.qsel_width_indexer() is None
 
 
 def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:

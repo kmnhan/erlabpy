@@ -9,7 +9,7 @@ import xarray as xr
 import erlab
 from erlab.interactive.imagetool.viewer_linking import SlicerLinkProxy
 from erlab.interactive.imagetool.viewer_state import (
-    _parse_input,
+    _prepare_input_data,
     _select_input_dataarrays,
 )
 
@@ -45,10 +45,14 @@ def itool(
         - A `xarray.DataArray` with 2 to 4 dimensions
 
           The DataArray will be displayed in an ImageTool window.
+          DataArrays with more than 4 non-singleton dimensions can be reduced
+          interactively before opening.
 
         - A numpy array with 2 to 4 dimensions
 
           The array will be converted to a DataArray and displayed in an ImageTool.
+          Arrays with more than 4 non-singleton dimensions can be reduced
+          interactively before opening.
 
         - A list of the above objects
 
@@ -57,8 +61,9 @@ def itool(
         - A `xarray.Dataset`
 
           If the Dataset contains multiple displayable DataArrays, ImageTool asks which
-          variables to open. Data variables that have less than 2 dimensions or more
-          than 4 dimensions are ignored. Dimensions with length 1 are automatically
+          variables to open. Data variables with less than 2 effective dimensions are
+          ignored. Variables with more than 4 non-singleton dimensions can be reduced
+          interactively before opening. Dimensions with length 1 are automatically
           squeezed.
 
         - A `xarray.DataTree`
@@ -88,6 +93,7 @@ def itool(
         .. versionchanged:: 3.22.0
 
             Integer manager indexes select a specific ImageTool Manager instance.
+
     replace
         When using the manager, this argument specifies which existing ImageTool windows
         should be replaced with the new data. If the manager is not used, this argument
@@ -169,34 +175,49 @@ def itool(
         )
         use_manager = False
 
-    parsed = _parse_input(data)
-    if len(parsed) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
-        with erlab.interactive.utils.setup_qapp(False):
+    with erlab.interactive.utils.setup_qapp(
+        False if use_manager else execute
+    ) as execute:
+        if isinstance(data, xr.Dataset | xr.DataTree):
             selected_data = _select_input_dataarrays(data)
+        else:
+            selected_data = _prepare_input_data(data)
         if selected_data is None:
             return None
-        parsed = [darr for darr, _source_index in selected_data]
 
-    data_parsed = parsed
+        data_parsed = [prepared.data for prepared in selected_data]
 
-    if use_manager:
-        if replace is not None:
-            erlab.interactive.imagetool.manager.replace_data(
-                index=replace, data=data_parsed, target=manager_target
-            )
-        else:
-            erlab.interactive.imagetool.manager.show_in_manager(
-                data_parsed,
-                link=link,
-                link_colors=link_colors,
-                target=manager_target,
+        if use_manager:
+            if replace is not None:
+                erlab.interactive.imagetool.manager.replace_data(
+                    index=replace, data=data_parsed, target=manager_target
+                )
+            else:
+                erlab.interactive.imagetool.manager.show_in_manager(
+                    data_parsed,
+                    link=link,
+                    link_colors=link_colors,
+                    target=manager_target,
+                    source_input_ndims=tuple(
+                        prepared.source_ndim for prepared in selected_data
+                    ),
+                    source_input_dtypes=tuple(
+                        prepared.source_dtype for prepared in selected_data
+                    ),
+                    preparation_operations=tuple(
+                        prepared.operations for prepared in selected_data
+                    ),
+                    **kwargs,
+                )
+            return None
+
+        itool_list = [
+            erlab.interactive.imagetool.ImageTool(
+                prepared.data,
+                preparation_operations=prepared.operations,
                 **kwargs,
             )
-        return None
-
-    with erlab.interactive.utils.setup_qapp(execute) as execute:
-        itool_list = [
-            erlab.interactive.imagetool.ImageTool(d, **kwargs) for d in data_parsed
+            for prepared in selected_data
         ]
 
         for w in itool_list:
@@ -211,8 +232,8 @@ def itool(
         itool_list[-1].activateWindow()
         itool_list[-1].raise_()
 
-    if execute:  # pragma: no cover
-        return None
+        if execute:  # pragma: no cover
+            return None
 
     if len(itool_list) == 1:
         return itool_list[0]

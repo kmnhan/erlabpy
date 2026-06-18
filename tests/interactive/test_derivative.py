@@ -569,9 +569,8 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.setCentralWidget(original)
     assert tool.centralWidget() is original
     tool.setCentralWidget(tool._tool_root_widget)
-    tool._tool_content_widget = None
     assert tool.centralWidget() is tool._tool_root_widget
-    tool._tool_content_widget = original
+    assert tool._tool_content_widget is None
     tool.setCentralWidget(replacement)
     tool.setCentralWidget(replacement)
     assert tool.centralWidget() is replacement

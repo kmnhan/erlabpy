@@ -3324,9 +3324,13 @@ def _supported_replay_shape(darr: xr.DataArray) -> bool:
     return _processed_replay_ndim(darr) in (2, 3, 4)
 
 
+def _reducible_replay_shape(darr: xr.DataArray) -> bool:
+    return _processed_replay_ndim(darr) >= 2
+
+
 def _parse_replay_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
     return tuple(
-        darr for darr in ds.data_vars.values() if _supported_replay_shape(darr)
+        darr for darr in ds.data_vars.values() if _reducible_replay_shape(darr)
     )
 
 
@@ -3362,7 +3366,7 @@ def _require_replay_dataarray(data: typing.Any) -> xr.DataArray:
         raise TypeError(
             f"Selected file data must be a DataArray, got {type(data).__name__!r}"
         )
-    if not _supported_replay_shape(data):
+    if not _reducible_replay_shape(data):
         raise ValueError("Selected file data is not valid for ImageTool")
     return data
 

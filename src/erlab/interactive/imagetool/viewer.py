@@ -59,7 +59,7 @@ from erlab.interactive.imagetool.viewer_state import (
     ColorMapState,
     ImageSlicerState,
     PlotItemState,
-    _parse_input,
+    _prepare_input_data,
     _processed_ndim,
 )
 
@@ -238,6 +238,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
+        preparation_operations: collections.abc.Sequence[
+            provenance.ToolProvenanceOperation
+        ] = (),
         auto_compute: bool = True,
         image_cls=None,
         plotdata_cls=None,
@@ -435,6 +438,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._file_path: pathlib.Path | None = None
         self._load_func: _LoadFunc | None = None
+        self._load_preparation_operations: tuple[
+            provenance.ToolProvenanceOperation, ...
+        ] = ()
         self._source_input_dtype: np.dtype[typing.Any] | None = None
         self.current_cursor: int = 0
         self._data: xr.DataArray
@@ -445,6 +451,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             rad2deg=rad2deg,
             file_path=file_path,
             load_func=load_func,
+            preparation_operations=preparation_operations,
             auto_compute=auto_compute,
         )
 
@@ -1752,6 +1759,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
+        preparation_operations: collections.abc.Sequence[
+            provenance.ToolProvenanceOperation
+        ] = (),
         auto_compute: bool = True,
         *,
         source_replaced: bool = False,
@@ -1784,6 +1794,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
             size is below the threshold defined in options.
 
         """
+        prepared_data = _prepare_input_data(data, self)
+        if prepared_data is None:
+            raise ValueError("Opening high-dimensional data was canceled.")
+        darr_list = [prepared.data for prepared in prepared_data]
+        if len(darr_list) > 1:
+            raise ValueError(
+                "This object cannot be opened in a single window. "
+                "Use the manager instead."
+            )
+        if not preparation_operations:
+            preparation_operations = prepared_data[0].operations
+
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
 
         if load_func is not None:
@@ -1794,6 +1816,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._load_func = (func, *load_func[1:])
         else:
             self._load_func = None
+        self._load_preparation_operations = tuple(preparation_operations)
 
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
@@ -1804,15 +1827,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         else:
             n_cursors_old = 1
 
-        darr_list: list[xr.DataArray] = _parse_input(data)
-        if len(darr_list) > 1:
-            raise ValueError(
-                "This object cannot be opened in a single window. "
-                "Use the manager instead."
-            )
-
         data = darr_list[0]
-        self._source_input_dtype = np.dtype(data.dtype)
+        self._source_input_dtype = prepared_data[0].source_dtype
         shares_external_values = True
         if hasattr(self, "_data") and data is self._data:
             shares_external_values = False
@@ -1926,6 +1942,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
+        preparation_operations: collections.abc.Sequence[
+            provenance.ToolProvenanceOperation
+        ] = (),
         auto_compute: bool = True,
         *,
         emit_edited: bool = False,
@@ -1941,6 +1960,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             rad2deg=rad2deg,
             file_path=file_path,
             load_func=load_func,
+            preparation_operations=preparation_operations,
             auto_compute=auto_compute,
             source_replaced=True,
         )

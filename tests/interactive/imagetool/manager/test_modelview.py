@@ -911,7 +911,14 @@ def test_manager_file_open_uses_selected_dataset_variable(
 
     def _select_second(data, parent=None):
         assert parent is not None
-        return ((data["second"], selection),)
+        return (
+            imagetool_viewer_state._PreparedInputData(
+                data=data["second"],
+                selection=selection,
+                source_ndim=data["second"].ndim,
+                source_dtype=np.dtype(data["second"].dtype),
+            ),
+        )
 
     monkeypatch.setattr(
         imagetool_viewer_state,
