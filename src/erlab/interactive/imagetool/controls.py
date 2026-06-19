@@ -790,21 +790,41 @@ class ItoolColormapControls(ItoolControlsBase):
         self.slicer_area.set_colormap(gamma=gamma)
 
     def update_content(self) -> None:
+        try:
+            slicer_area = self.slicer_area
+        except LookupError:  # pragma: no cover - teardown edge
+            return
         if not erlab.interactive.utils.qt_is_valid(
-            self, self.cb_colormap, self.gamma_widget, self.slicer_area
+            self, self.cb_colormap, self.gamma_widget, slicer_area
         ):  # pragma: no cover
             return
-        with contextlib.suppress(AttributeError):
-            if not erlab.interactive.utils.qt_is_valid(
-                self.slicer_area.lock_levels_act
-            ):  # pragma: no cover
+        try:
+            lock_levels_act = slicer_area.lock_levels_act
+        except AttributeError:  # pragma: no cover - teardown edge
+            return
+        except RuntimeError as exc:  # pragma: no cover - teardown edge
+            if erlab.interactive.utils._is_deleted_qt_wrapper_error(exc):
                 return
+            raise
+        if not erlab.interactive.utils.qt_is_valid(lock_levels_act):  # pragma: no cover
+            return
         super().update_content()
-        if isinstance(self.slicer_area.colormap, str):  # pragma: no branch
-            self.cb_colormap.setDefaultCmap(self.slicer_area.colormap)
-        self.gamma_widget.blockSignals(True)
-        self.gamma_widget.setValue(self.slicer_area.colormap_properties["gamma"])
-        self.gamma_widget.blockSignals(False)
+        if not erlab.interactive.utils.qt_is_valid(
+            self, self.cb_colormap, self.gamma_widget, slicer_area
+        ):  # pragma: no cover
+            return
+        try:
+            colormap = slicer_area.colormap
+            gamma = slicer_area.colormap_properties["gamma"]
+        except RuntimeError as exc:  # pragma: no cover - teardown edge
+            if erlab.interactive.utils._is_deleted_qt_wrapper_error(exc):
+                return
+            raise
+        if isinstance(colormap, str):  # pragma: no branch
+            with QtCore.QSignalBlocker(self.cb_colormap):
+                self.cb_colormap.setDefaultCmap(colormap)
+        with QtCore.QSignalBlocker(self.gamma_widget):
+            self.gamma_widget.setValue(gamma)
 
     def connect_signals(self) -> None:
         super().connect_signals()

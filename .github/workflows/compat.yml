@@ -127,11 +127,14 @@ jobs:
             -v
             -o faulthandler_timeout=300
             -o junit_family=legacy
+          )
+          xdist_args=(
             -n auto
             --dist=loadgroup
           )
           uv run pytest \
             "${common_args[@]}" \
+            "${xdist_args[@]}" \
             -m "not gui" \
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml"
           uv run pytest \

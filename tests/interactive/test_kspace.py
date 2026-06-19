@@ -83,6 +83,19 @@ def _make_da_ktool_data(anglemap) -> xr.DataArray:
     return data.assign_coords(xi=0.0, chi=0.0)
 
 
+def _add_kspace_conversion_dialog(qtbot, slicer_area) -> KspaceConversionDialog:
+    dialog = KspaceConversionDialog(slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+    return dialog
+
+
+def _add_hidden_tool(qtbot, widget):
+    qtbot.addWidget(widget)
+    widget.hide()
+    return widget
+
+
 def _memory_budget(
     *,
     total: int = 64 * _GIB,
@@ -193,9 +206,8 @@ def test_kspace_conversion_dialog_requires_configuration(
     del data.attrs["configuration"]
 
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._compatible is False
     assert not hasattr(dialog, "configuration_combo")
@@ -454,7 +466,7 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         cmap="terrain_r",
         execute=False,
     )
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     win.centering_combo.setCurrentText("I")
     if not win.data.kspace._has_hv:
         win.kz_spin.setValue(0.5)
@@ -519,7 +531,7 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         win.to_file(filename)
 
         win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
-        qtbot.addWidget(win_restored)
+        _add_hidden_tool(qtbot, win_restored)
         assert isinstance(win_restored, KspaceTool)
 
         assert win.tool_status == win_restored.tool_status
@@ -531,7 +543,7 @@ def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
         anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3).copy(deep=True)
     )
     win = cut.kspace.interactive(data_name="cut", execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert isinstance(win, KspaceTool)
     assert win.energy_group.isEnabled() is False
@@ -574,7 +586,7 @@ def test_ktool_unsafe_preview_clears_kspace_image(
     data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
     data.kspace.work_function = 4.5
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     assert win.images[1].data_array is not None
 
     monkeypatch.setattr(
@@ -611,7 +623,7 @@ def test_ktool_preview_guard_estimates_full_output_data(
     data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
     data.kspace.work_function = 4.5
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     win.resolution_supergroup.setChecked(True)
 
     preview_data = win._preview_angle_data()
@@ -670,12 +682,10 @@ def test_kspace_memory_estimate_labels_wrap(qtbot, anglemap) -> None:
     data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
     data.kspace.work_function = 4.5
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     dialog_host = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(dialog_host)
-    dialog = KspaceConversionDialog(dialog_host.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, dialog_host)
+    dialog = _add_kspace_conversion_dialog(qtbot, dialog_host.slicer_area)
 
     for label in (win._memory_estimate_label, dialog._memory_estimate_label):
         assert label.wordWrap()
@@ -696,7 +706,7 @@ def test_ktool_unsafe_output_shows_blocking_error(
     data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
     data.kspace.work_function = 4.5
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     messages: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(
         erlab.interactive.utils.MessageDialog,
@@ -757,7 +767,7 @@ def test_ktool_normal_emission_updates_offsets(
     )
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert win.normal_emission_group.title() == "Normal Emission"
 
@@ -802,7 +812,7 @@ def test_ktool_normal_emission_spins_follow_offsets(
     )
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     for key, value in reference_offsets.items():
         win._offset_spins[key].setValue(value)
@@ -823,7 +833,7 @@ def test_ktool_normal_emission_zero_offsets_are_finite_for_da(qtbot, anglemap) -
     )
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert np.isfinite(win._normal_emission_spins["alpha"].value())
     assert np.isfinite(win._normal_emission_spins["beta"].value())
@@ -870,7 +880,7 @@ def test_ktool_initial_normal_emission_seed(
         execute=False,
         initial_normal_emission=(alpha_normal, beta_normal),
     )
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert win._normal_emission_spins["alpha"].value() == pytest.approx(
         alpha_normal, abs=1e-3
@@ -901,7 +911,7 @@ def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
         initial_normal_emission=(alpha_normal, beta_normal),
         initial_delta=14.5,
     )
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert win._offset_spins["delta"].value() == pytest.approx(14.5)
     for key in expected.kspace._valid_offset_keys:
@@ -922,9 +932,8 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
         data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
 
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert not {"delta", "xi", "beta", "chi"} & set(dialog._offset_spins)
     assert ("V0" in dialog._offset_spins) is data.kspace._has_hv
@@ -976,9 +985,8 @@ def test_kspace_conversion_dialog_unsafe_accept_shows_error(
 ) -> None:
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     messages: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(
         erlab.interactive.utils.MessageDialog,
@@ -1014,10 +1022,8 @@ def test_kspace_conversion_dialog_estimate_defensive_paths(
 ) -> None:
     data = _make_da_ktool_data(anglemap)
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     dialog._set_control_configuration(int(AxesConfiguration.Type2DA))
 
     estimate = dialog.conversion_estimate_for_data(data)
@@ -1038,12 +1044,12 @@ def test_kspace_conversion_dialog_estimate_defensive_paths(
 def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> None:
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     first = ktool(data, execute=False)
     second = ktool(data, execute=False)
-    qtbot.addWidget(first)
-    qtbot.addWidget(second)
+    _add_hidden_tool(qtbot, first)
+    _add_hidden_tool(qtbot, second)
     first._offset_spins["wf"].setValue(3.25)
     second._offset_spins["wf"].setValue(4.75)
     second._offset_spins["delta"].setValue(12.5)
@@ -1066,8 +1072,7 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     win.slicer_area.add_tool_window(first)
     win.slicer_area.add_tool_window(second)
 
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._offset_spins["wf"].value() == pytest.approx(4.75)
     assert dialog._normal_delta == pytest.approx(12.5)
@@ -1091,15 +1096,14 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
 ) -> None:
     data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     child = ktool(data, execute=False)
-    qtbot.addWidget(child)
+    _add_hidden_tool(qtbot, child)
     child._offset_spins["V0"].setValue(14.0)
     win.slicer_area.add_tool_window(child)
 
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._offset_spins["V0"].value() == pytest.approx(14.0)
 
@@ -1137,10 +1141,8 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
 ) -> None:
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     win = erlab.interactive.itool(data, execute=False)
-    qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     axes = tuple(dialog._control_data.kspace.momentum_axes)
     bounds = dict.fromkeys(axes, (-0.03, 0.04))
     resolution = dict.fromkeys(axes, 0.02)
@@ -1282,7 +1284,7 @@ def test_ktool_copy_code_uses_set_normal(
 ) -> None:
     data = _make_ktool_data(anglemap, configuration, coords)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     for key, value in reference_offsets.items():
         win._offset_spins[key].setValue(value)
@@ -1339,7 +1341,7 @@ def test_ktool_configuration_combo_rebuilds_controls_and_code(
 ) -> None:
     data = _make_da_ktool_data(anglemap)
     win = ktool(data, data_name="scan", execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert win.configuration_combo.count() == len(AxesConfiguration)
     index = win.configuration_combo.findData(int(target_configuration))
@@ -1368,7 +1370,7 @@ def test_ktool_configuration_combo_rebuilds_controls_and_code(
 def test_ktool_configuration_state_edges(qtbot, anglemap) -> None:
     data = _make_da_ktool_data(anglemap)
     win = ktool(data, data_name="scan", execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     with imagetool_dialogs.QtCore.QSignalBlocker(win.configuration_combo):
         win.configuration_combo.setCurrentIndex(-1)
@@ -1409,7 +1411,7 @@ def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
 ) -> None:
     data = _make_da_ktool_data(anglemap)
     win = ktool(data, data_name="scan", execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     target_configuration = AxesConfiguration.Type2DA
     win.configuration_combo.setCurrentIndex(
         win.configuration_combo.findData(int(target_configuration))
@@ -1435,7 +1437,7 @@ def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
         filename = f"{tmp_dir_name}/tool_save.h5"
         win.to_file(filename)
         win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
-        qtbot.addWidget(win_restored)
+        _add_hidden_tool(qtbot, win_restored)
         assert isinstance(win_restored, KspaceTool)
         assert win_restored.data.kspace.configuration == target_configuration
         assert win_restored.tool_status.configuration == int(target_configuration)
@@ -1454,7 +1456,7 @@ def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
 def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
     assert converted is not None
@@ -1476,7 +1478,7 @@ def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
 def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     win.set_input_provenance_spec(
         erlab.interactive.imagetool.provenance.script(
             start_label="Start from watched variable 'my_data'",
@@ -1507,7 +1509,7 @@ def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
     )
     source_data = source.apply(data)
     win = ktool(source_data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     win.set_source_binding(source)
     win.set_input_provenance_parent_fetcher(lambda: parent_provenance)
 
@@ -1525,7 +1527,7 @@ def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
 
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
     win = ktool(anglemap, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     # Allow any startup-triggered delayed update to finish before counting.
     wait_ms = int(1000 / win._UPDATE_LIMIT_HZ) + 50
@@ -1560,7 +1562,7 @@ def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
     data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     min0, max0 = win.center_spin.minimum(), win.center_spin.maximum()
     win._offset_spins["wf"].setValue(win._offset_spins["wf"].value() - 0.2)
@@ -1603,7 +1605,7 @@ def test_ktool_bounds_estimate_uses_current_inner_potential(qtbot) -> None:
     data.kspace.inner_potential = 10.0
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     initial_kz_bounds = (
         win._bound_spins["kz0"].value(),
@@ -1629,7 +1631,7 @@ def test_ktool_bounds_estimate_uses_current_inner_potential(qtbot) -> None:
 def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -> None:
     data = anglemap.copy().assign_coords(hv=6.0)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     initial_kx_resolution = win._resolution_spins["kx"].value()
     win._offset_spins["wf"].setValue(3.0)
@@ -1655,7 +1657,7 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert not _missing_kspace_parameter_warnings(caught)
     assert win._offset_spins["wf"].value() == pytest.approx(4.5)
@@ -1685,7 +1687,7 @@ def test_ktool_shallow_copy_paths_do_not_mutate_tool_data_attrs(
 ) -> None:
     data = anglemap.copy().assign_coords(hv=21.2)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     original_attrs = win.data.attrs.copy()
 
@@ -1711,7 +1713,7 @@ def test_ktool_nonphysical_kinetic_energy_raises_with_tool_context(
 ) -> None:
     data = anglemap.copy().assign_coords(hv=6.0)
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     wf_spin = win._offset_spins["wf"]
     wf_spin.blockSignals(True)
@@ -1731,7 +1733,7 @@ def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
     data = data.assign_coords(eV=data.eV.values[::-1])
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert np.isclose(win.center_spin.minimum(), float(data.eV.min()))
     assert np.isclose(win.center_spin.maximum(), float(data.eV.max()))
@@ -1766,7 +1768,7 @@ def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
 )
 def test_ktool_preview_symmetry_default_fold(qtbot, anglemap, avec, expected) -> None:
     win = ktool(anglemap.qsel(eV=-0.1), avec=avec, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert win.preview_symmetry_fold_spin.value() == expected
 
@@ -1776,7 +1778,7 @@ def test_ktool_preview_symmetry_is_preview_only(qtbot, anglemap) -> None:
     data.values[2, 7] += 500.0
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     raw_k = win.get_data()[1]
     raw_preview = raw_k.T
@@ -1800,7 +1802,7 @@ def test_ktool_preview_symmetry_rotates_and_averages(
     qtbot, anglemap, monkeypatch
 ) -> None:
     win = ktool(anglemap, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     dummy_ang = anglemap.qsel(eV=-0.1)
     raw_k = xr.DataArray(
@@ -1839,7 +1841,7 @@ def test_ktool_preview_symmetry_disabled_for_non_in_plane_preview(qtbot) -> None
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
 
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     assert not win.preview_symmetry_group.isEnabled()
     assert not win.preview_symmetry_group.isChecked()
@@ -1869,7 +1871,7 @@ def test_ktool_exact_hv_bz_overlay_uses_cache(qtbot, monkeypatch) -> None:
         rotate_bz=30.0,
         execute=False,
     )
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     converted = win.images[1].data_array
     assert converted is not None
@@ -1958,7 +1960,7 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
         deep=True
     )
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     win.center_spin.setValue(float(data.eV.values[2]))
     win.width_spin.setValue(3)
@@ -1986,7 +1988,7 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
 
 def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
     win = ktool(anglemap.qsel(eV=-0.1), execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
     initial = win.tool_status
 
     win.gamma_widget.setValue(initial.cmap_gamma + 0.1)
@@ -2012,7 +2014,7 @@ def test_ktool_update_data_with_single_energy_disables_energy_group(
         deep=True
     )
     win = ktool(initial, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     win.update_data(data)
     fixed_energy = float(data.eV.values[0])
@@ -2031,7 +2033,7 @@ def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
         deep=True
     )
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     update_calls: list[None] = []
     original_update = win.update
@@ -2061,7 +2063,7 @@ def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
         anglemap.isel(alpha=slice(0, 3), eV=slice(0, 5)).qsel(beta=-8.3).copy(deep=True)
     )
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     with pytest.raises(ValueError, match="not compatible with the interactive tool"):
         win.update_data(data.isel(eV=0))
@@ -2087,7 +2089,7 @@ def test_ktool_validate_update_data_rejects_incompatible_metadata(
         deep=True
     )
     win = ktool(data, execute=False)
-    qtbot.addWidget(win)
+    _add_hidden_tool(qtbot, win)
 
     fake_kspace = SimpleNamespace(
         _interactive_compatible=True,

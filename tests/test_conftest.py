@@ -80,8 +80,15 @@ def test_conftest_import_defaults_pyside6_to_offscreen() -> None:
 
 
 def test_is_deleted_qt_wrapper_error_matches_deleted_wrapper_message() -> None:
-    exc = RuntimeError("wrapped C/C++ object of type InfiniteLine has been deleted")
-    assert _CONFTEST._is_deleted_qt_wrapper_error(exc)
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("wrapped C/C++ object of type InfiniteLine has been deleted")
+    )
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("wrapped C/C++ object has been deleted")
+    )
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("Internal C++ object (PySide6.QtWidgets.QWidget) already deleted.")
+    )
     assert not _CONFTEST._is_deleted_qt_wrapper_error(RuntimeError("different error"))
 
 
@@ -111,12 +118,17 @@ def test_serial_xdist_group_serializes_manager_context_tests() -> None:
         "tests/interactive/imagetool/manager/test_console.py",
         "tests/interactive/imagetool/manager/test_console.py::test_console",
     )
+    kspace_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/test_kspace.py",
+        "tests/interactive/test_kspace.py::test_kspace_conversion_dialog_code_and_result",
+    )
 
     assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
     assert workspace_group == "qt-tests-interactive-imagetool-manager-test_workspace"
     assert explorer_group == "qt-tests-interactive-test_explorer"
     assert watcher_group == "qt-tests-interactive-imagetool-test_watcher"
     assert console_group == "qt-tests-interactive-imagetool-manager-test_console"
+    assert kspace_group == "qt-tests-interactive-test_kspace"
     assert slicer_group != workspace_group
     assert console_group != workspace_group
 

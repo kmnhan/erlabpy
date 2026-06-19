@@ -42,7 +42,11 @@ import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._registry as imagetool_manager_registry
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
-from erlab.interactive.utils import _WaitDialog, qt_is_valid
+from erlab.interactive.utils import (
+    _is_deleted_qt_wrapper_error,
+    _WaitDialog,
+    qt_is_valid,
+)
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
@@ -63,11 +67,6 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
 _TEST_OPTIONS_MANAGED_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH_TEST_MANAGED"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
-_DELETED_QT_WRAPPER_PATTERN = re.compile(r"wrapped C/C\+\+ object .* has been deleted")
-
-
-def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
-    return _DELETED_QT_WRAPPER_PATTERN.search(str(exc)) is not None
 
 
 def pytest_configure(config: pytest.Config) -> None:
