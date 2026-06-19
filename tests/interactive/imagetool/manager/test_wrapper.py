@@ -5,6 +5,7 @@ import typing
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 import xarray as xr
 from qtpy import QtCore, QtGui
 
@@ -18,6 +19,7 @@ from erlab.interactive.imagetool._load_source import (
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
+    _coerce_note,
     _format_added_time,
     _format_chunk_summary,
     _preview_from_imagetool,
@@ -127,6 +129,38 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
     ratio, pixmap = _preview(_FakeSlicerArea(_FakeMainImage()))
     assert ratio == 4.0
     assert not pixmap.isNull()
+
+
+def test_wrapper_note_coercion_and_setter_validation(
+    caplog,
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    assert _coerce_note(None) == ""
+    assert _coerce_note(b"encoded note") == "encoded note"
+    assert _coerce_note("plain note") == "plain note"
+
+    with caplog.at_level(logging.WARNING):
+        assert _coerce_note(b"\xff") == ""
+        assert _coerce_note(1) == ""
+    assert "Ignoring invalid saved manager note" in caplog.text
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(tool, show=False, note=b"stored note")
+        wrapper = manager._tool_graph.root_wrappers[index]
+        assert wrapper.note == "stored note"
+        assert wrapper.has_note
+        wrapper.note = "   "
+        assert not wrapper.has_note
+        with pytest.raises(TypeError, match="note must be a string"):
+            wrapper.note = typing.cast("str", object())
 
 
 def test_preview_image_for_node_handles_legacy_preview_nodes(monkeypatch) -> None:

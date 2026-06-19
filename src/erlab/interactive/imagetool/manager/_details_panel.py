@@ -537,17 +537,14 @@ class _DetailsPanelController:
             self._manager.metadata_provenance_page
         )
         notes_index = self._manager.inspector_tabs.indexOf(self._manager.notes_page)
-        if details_index >= 0:
-            self._manager.inspector_tabs.setTabEnabled(
-                details_index, has_details or not has_metadata
-            )
-        if provenance_index >= 0:
-            self._manager.inspector_tabs.setTabEnabled(
-                provenance_index, derivation_count > 0
-            )
-        if notes_index >= 0:
-            self._manager.inspector_tabs.setTabEnabled(notes_index, has_note_target)
         current_widget = self._manager.inspector_tabs.currentWidget()
+        self._manager.inspector_tabs.setTabEnabled(
+            details_index, has_details or not has_metadata
+        )
+        self._manager.inspector_tabs.setTabEnabled(
+            provenance_index, derivation_count > 0
+        )
+        self._manager.inspector_tabs.setTabEnabled(notes_index, has_note_target)
         if current_widget is self._manager.metadata_details_page and not has_details:
             if derivation_count > 0:
                 self._manager.inspector_tabs.setCurrentWidget(

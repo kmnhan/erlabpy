@@ -2103,6 +2103,140 @@ def test_manager_notes_editor_actions(
         assert manager.notes_title_label.accessibleName() == ""
 
 
+def test_manager_notes_controller_guard_branches(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda content: copied.append(str(content)) or str(content),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._tool_graph.root_wrappers[0]
+
+        select_tools(manager, [0])
+        manager.edit_note_action.trigger()
+        manager.notes_editor.setPlainText(wrapper.note)
+        manager._updating_note_editor = True
+        try:
+            manager._commit_note_editor()
+        finally:
+            manager._updating_note_editor = False
+
+        manager.tree_view.clearSelection()
+        manager._update_info()
+        manager.edit_selected_note()
+        manager.copy_selected_note()
+        manager.clear_selected_note()
+        assert copied == []
+
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_notes_ui_available",
+            lambda: False,
+        )
+        manager._details_panel._update_note_actions()
+        manager._schedule_note_commit()
+        manager._commit_note_editor()
+        manager.edit_selected_note()
+        manager.copy_selected_note()
+        manager.clear_selected_note()
+
+
+def test_manager_inspector_tabs_fallback_between_pages(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        def enable_inspector_tabs() -> None:
+            for page in (
+                manager.metadata_details_page,
+                manager.metadata_provenance_page,
+                manager.notes_page,
+            ):
+                manager.inspector_tabs.setTabEnabled(
+                    manager.inspector_tabs.indexOf(page), True
+                )
+
+        manager._set_metadata_fields([])
+        manager.metadata_derivation_list.clear()
+        manager.metadata_derivation_list.addTopLevelItem(QtWidgets.QTreeWidgetItem())
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+        manager._update_metadata_pane()
+        assert (
+            manager.inspector_tabs.currentWidget() is manager.metadata_provenance_page
+        )
+
+        manager.metadata_derivation_list.clear()
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager.metadata_derivation_list.clear()
+        manager._notes_node_uid = "note-target"
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.notes_page
+
+        manager._set_metadata_fields(
+            [manager_wrapper._MetadataField("Kind", "ImageTool")]
+        )
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager._set_metadata_fields([])
+        manager._notes_node_uid = "note-target"
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.notes_page
+
+        manager._set_metadata_fields(
+            [manager_wrapper._MetadataField("Kind", "ImageTool")]
+        )
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager._set_metadata_fields([])
+        manager.metadata_derivation_list.clear()
+        manager.metadata_derivation_list.addTopLevelItem(QtWidgets.QTreeWidgetItem())
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert (
+            manager.inspector_tabs.currentWidget() is manager.metadata_provenance_page
+        )
+
+
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
 def test_manager(
     qtbot,
@@ -3400,6 +3534,14 @@ def test_manager_notes_preserved_by_duplicate_and_promote(
         assert (
             manager._tool_graph.nodes[child_uid].note == "pending promoted child note"
         )
+
+        figure_uid = manager.add_figuretool(
+            FigureComposerTool(test_data),
+            show=False,
+            note="figure note",
+        )
+        duplicated_figure_uid = manager.duplicate_childtool(figure_uid)
+        assert manager._child_node(duplicated_figure_uid).note == "figure note"
 
 
 @pytest.mark.parametrize("auto_update", [False, True], ids=["manual", "auto"])
