@@ -67,7 +67,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `Concatenate`, `tools[0] - tools[1]`, `tools[0].children`,
   `tools.selected`, `tools[0].qsel`, `era.transform.rotate(tools[0])`,
   `xr.concat([tools[0], tools[1]])`, `my_func(tools[0])`,
-  `structured console provenance`,
+  `structured console provenance`, `relink moved file-backed inputs`,
   `Refit after update`, `code for repeating steps`,
   `reuses shared load and processing work`, `shared loader setup`,
   `ImageTool windows opened from tools`, or
