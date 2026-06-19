@@ -523,6 +523,7 @@ def test_file_load_edit_dialog_batch_defensive_branches(
 
     assert dialog.selected_batch_peers() == ()
     dialog._update_batch_peer_paths()
+    dialog._batch_peer_item_changed(typing.cast("typing.Any", _MissingUidItem()), 2)
 
 
 def test_file_load_edit_dialog_rejects_stale_batch_peer(qtbot) -> None:
@@ -556,6 +557,11 @@ def test_file_load_edit_dialog_rejects_stale_batch_peer(qtbot) -> None:
 
     with pytest.raises(RuntimeError, match="no longer replayable"):
         dialog.peer_provenance_spec(stale_peer)
+    with pytest.raises(RuntimeError, match="no longer replayable"):
+        manager_provenance_edit._relinked_file_load_spec(
+            stale_spec,
+            pathlib.Path("current-b.h5"),
+        )
 
 
 def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
@@ -1053,9 +1059,222 @@ def test_manager_provenance_missing_repair_peers_include_nonmatching_nested(
     assert [peer.preserve_loader for peer in repair_peers] == [True]
 
 
+def test_manager_provenance_missing_repair_peers_skip_available_or_unreplayable(
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    available_path = old_dir / "available.h5"
+    available_path.touch()
+    node = _fake_edit_node(provenance.full_data())
+    focused = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=_manager_replay_file_spec(old_dir / "focused.h5"),
+        original_path=old_dir / "focused.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(0,),
+    )
+    unavailable_spec = _manager_replay_file_spec(old_dir / "unavailable.h5")
+    assert unavailable_spec.file_load_source is not None
+    unavailable_spec = unavailable_spec.model_copy(
+        update={
+            "file_load_source": unavailable_spec.file_load_source.model_copy(
+                update={"replay_call": None},
+            )
+        }
+    )
+    unavailable = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=unavailable_spec,
+        original_path=old_dir / "unavailable.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(1,),
+    )
+    available = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=_manager_replay_file_spec(available_path),
+        original_path=available_path,
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(2,),
+    )
+    controller = _fake_edit_controller(node)
+    controller._file_load_targets = lambda *_args, **_kwargs: (
+        focused,
+        unavailable,
+        available,
+    )
+
+    assert (
+        controller._missing_file_load_repair_peers(
+            typing.cast("typing.Any", node),
+            "display",
+            provenance.full_data(),
+            focused,
+        )
+        == ()
+    )
+
+
+def test_manager_provenance_nested_file_load_batch_skips_unmatched_targets(
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    focused_spec = _manager_replay_file_spec(old_dir / "focused.h5")
+    node = _fake_edit_node(provenance.full_data())
+    focused = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=focused_spec,
+        original_path=old_dir / "focused.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(0,),
+    )
+    unavailable_spec = _manager_replay_file_spec(old_dir / "unavailable.h5")
+    assert unavailable_spec.file_load_source is not None
+    unavailable_spec = unavailable_spec.model_copy(
+        update={
+            "file_load_source": unavailable_spec.file_load_source.model_copy(
+                update={"replay_call": None},
+            )
+        }
+    )
+    unavailable = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=unavailable_spec,
+        original_path=old_dir / "unavailable.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(1,),
+    )
+    different_loader_spec = _manager_replay_file_spec(old_dir / "different.h5")
+    assert different_loader_spec.file_load_source is not None
+    replay_call = different_loader_spec.file_load_source.replay_call
+    assert replay_call is not None
+    different_loader_spec = different_loader_spec.model_copy(
+        update={
+            "file_load_source": different_loader_spec.file_load_source.model_copy(
+                update={
+                    "kwargs_text": "engine='scipy'",
+                    "replay_call": replay_call.model_copy(
+                        update={"kwargs": {"engine": "scipy"}},
+                    ),
+                }
+            )
+        }
+    )
+    different_loader = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=different_loader_spec,
+        original_path=old_dir / "different.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(2,),
+    )
+    controller = _fake_edit_controller(node)
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Focused", None),
+        scope="display",
+        script_input_path=(0,),
+    )
+    controller._root_display_spec_for_row = lambda *_args, **_kwargs: (
+        provenance.full_data()
+    )
+    controller._file_load_targets = lambda *_args, **_kwargs: (
+        focused,
+        unavailable,
+        different_loader,
+    )
+
+    assert (
+        controller._file_load_batch_peers(
+            typing.cast("typing.Any", node),
+            focused_spec,
+            row=row,
+        )
+        == ()
+    )
+
+
 def test_manager_provenance_file_load_batch_helper_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    node = _fake_edit_node(None)
+    controller = _fake_edit_controller(node)
+    assert (
+        controller._file_load_targets(typing.cast("typing.Any", node), "display", None)
+        == ()
+    )
+
+    replacement = provenance.full_data()
+    assert (
+        controller._replace_file_load_target_spec(
+            replacement,
+            manager_provenance_edit._FileLoadBatchPeer(
+                node=typing.cast("typing.Any", node),
+                scope="display",
+                spec=replacement,
+                original_path=pathlib.Path("scan.h5"),
+                loader_summary="xarray.load_dataarray",
+            ),
+            replacement,
+        )
+        is replacement
+    )
+
+    source_spec = provenance.selection()
+    source_node = _fake_edit_node(
+        provenance.full_data(),
+        source_display_spec=source_spec,
+    )
+    assert (
+        controller._root_spec_for_batch_peer(
+            manager_provenance_edit._FileLoadBatchPeer(
+                node=typing.cast("typing.Any", source_node),
+                scope="source",
+                spec=source_spec,
+                original_path=pathlib.Path("scan.h5"),
+                loader_summary="xarray.load_dataarray",
+            )
+        )
+        is source_spec
+    )
+    with pytest.raises(RuntimeError, match="root provenance"):
+        controller._root_spec_for_batch_peer(
+            manager_provenance_edit._FileLoadBatchPeer(
+                node=typing.cast("typing.Any", node),
+                scope="display",
+                spec=provenance.full_data(),
+                original_path=pathlib.Path("scan.h5"),
+                loader_summary="xarray.load_dataarray",
+            )
+        )
+
+    stale_target = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", node),
+        scope="display",
+        spec=provenance.full_data(),
+        original_path=pathlib.Path("scan.h5"),
+        loader_summary="xarray.load_dataarray",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_file_load_target_for_path",
+        lambda *_args, **_kwargs: stale_target,
+    )
+    assert controller._file_load_source_edit_target(
+        typing.cast("typing.Any", node),
+        pathlib.Path("scan.h5"),
+    ) == (
+        None,
+        None,
+        None,
+        "This source was not recorded as an editable file-load step.",
+    )
+
     source = provenance.FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
@@ -1930,6 +2149,119 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
     assert edited_second.file_load_source is not None
     assert pathlib.Path(edited_first.file_load_source.path) == new_a
     assert pathlib.Path(edited_second.file_load_source.path) == new_b
+
+
+def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    current_spec = _manager_replay_file_spec(old_dir / "current.h5")
+    peer_file_spec = _manager_replay_file_spec(old_dir / "peer.h5")
+    peer_root = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use file input",
+            code="derived = data_0",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Peer file",
+                provenance_spec=peer_file_spec,
+            ),
+        ),
+    )
+    current_node = _fake_edit_node(current_spec, uid="current")
+    peer_node = _fake_edit_node(peer_root, uid="peer")
+    peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", peer_node),
+        scope="display",
+        spec=peer_file_spec,
+        original_path=old_dir / "peer.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(0,),
+    )
+    controller = _fake_edit_controller(
+        current_node,
+        nodes={"current": current_node, "peer": peer_node},
+        metadata_uid="current",
+    )
+    replacement_current = _manager_replay_file_spec(new_dir / "current.h5")
+    replacement_peer = _manager_replay_file_spec(new_dir / "peer.h5")
+
+    class _Dialog:
+        def __init__(
+            self,
+            _load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            *,
+            batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            **_kwargs: typing.Any,
+        ) -> None:
+            assert batch_peers == (peer,)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(
+            self,
+            *,
+            active_name: str,
+            replay_stages: tuple[provenance.ReplayStage, ...],
+        ) -> provenance.ToolProvenanceSpec:
+            del active_name, replay_stages
+            return replacement_current
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[manager_provenance_edit._FileLoadBatchPeer, ...]:
+            return (peer,)
+
+        def peer_provenance_spec(
+            self,
+            selected_peer: manager_provenance_edit._FileLoadBatchPeer,
+        ) -> provenance.ToolProvenanceSpec:
+            assert selected_peer is peer
+            return replacement_peer
+
+    validated: list[tuple[str, provenance.ToolProvenanceSpec]] = []
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda edit_node, scope, candidate, **_kwargs: (
+            validated.append((edit_node.uid, candidate))
+            or manager_provenance_edit._ValidatedProvenanceEdit(
+                node=typing.cast("typing.Any", edit_node),
+                scope=scope,
+                data=xr.DataArray([1.0], dims=("x",)),
+                spec=candidate,
+                filter_operation=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(controller, "_apply_validated_edit", lambda _edit: None)
+
+    controller._edit_file_load_spec(
+        typing.cast("typing.Any", current_node),
+        "display",
+        current_spec,
+        where="validating edited file load",
+        row=None,
+        batch_peers=(peer,),
+    )
+
+    assert [uid for uid, _candidate in validated] == ["current", "peer"]
+    assert validated[0][1] == replacement_current
+    edited_peer = validated[1][1].script_inputs[0].parsed_provenance_spec()
+    assert edited_peer is not None
+    assert edited_peer.file_load_source is not None
+    assert pathlib.Path(edited_peer.file_load_source.path) == new_dir / "peer.h5"
 
 
 def test_manager_provenance_revert_rejects_current_prefixes(
@@ -3493,6 +3825,36 @@ def test_manager_provenance_edit_controller_recorded_dialog_branches(
         )
 
 
+def test_manager_provenance_recorded_operation_dialog_handles_empty_operations(
+    qtbot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    operation = provenance.SqueezeOperation()
+    dialog = manager_provenance_edit._RecordedOperationEditDialog(
+        (operation,),
+        parent,
+        focus="missing",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.edited_operations() == [operation]
+    assert dialog.findChild(QtWidgets.QLabel) is not None
+
+
+def test_manager_provenance_operation_title_falls_back_on_label_failure() -> None:
+    class _BrokenTitleOperation(provenance.ToolProvenanceOperation):
+        op: typing.Literal["broken_title"] = "broken_title"
+
+        def derivation_label(self) -> str:
+            raise RuntimeError("label failed")
+
+    assert (
+        manager_provenance_edit._operation_title(_BrokenTitleOperation())
+        == "_BrokenTitleOperation"
+    )
+
+
 def test_manager_provenance_recorded_operation_dialog_round_trips_values(
     qtbot,
 ) -> None:
@@ -3571,6 +3933,8 @@ def test_manager_provenance_recorded_operation_dialog_invalid_literal_stays_open
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+    with pytest.raises(ValueError, match="Python literals"):
+        manager_provenance_edit._parse_operation_value("")
 
 
 def test_manager_provenance_recorded_operation_unavailable_reason_for_nonliteral(
@@ -3589,6 +3953,31 @@ def test_manager_provenance_recorded_operation_unavailable_reason_for_nonliteral
 
     assert reason is not None
     assert "recorded metadata" in reason
+
+
+def test_manager_provenance_recorded_operation_unavailable_blocks_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    spec = _manager_replay_file_spec(pathlib.Path("scan.h5"), operation)
+    controller = _fake_edit_controller(_fake_edit_node(spec))
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Normalize", None),
+        edit_ref=provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=0,
+            stage_index=0,
+        ),
+    )
+    monkeypatch.setattr(
+        manager_provenance_edit,
+        "_recorded_operation_edit_unavailable_reason",
+        lambda _operations: "unsafe operation metadata",
+    )
+
+    assert controller.can_edit_row(row) == (False, "unsafe operation metadata")
+    with pytest.raises(RuntimeError, match="unsafe operation metadata"):
+        controller._edited_recorded_operations((operation,))
 
 
 def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
@@ -3631,6 +4020,30 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     assert edit.data is data
     assert edit.spec == base_candidate
     assert edit.filter_operation == filter_operation
+
+
+def test_manager_provenance_filter_validation_uses_live_slicer_result() -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    calls: list[tuple[xr.DataArray, provenance.ToolProvenanceOperation]] = []
+    node = types.SimpleNamespace(
+        imagetool=object(),
+        slicer_area=types.SimpleNamespace(
+            _filter_operation_result_for_replacement=lambda data, operation: (
+                calls.append((data, operation))
+            )
+        ),
+    )
+
+    controller._validate_filter_operation(
+        typing.cast("typing.Any", node),
+        data,
+        operation,
+        where="validating edited filter",
+    )
+
+    assert calls == [(data, operation)]
 
 
 def test_manager_provenance_validation_reports_active_filter_validation_failure(
