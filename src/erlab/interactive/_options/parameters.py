@@ -220,6 +220,22 @@ class StylesheetListWidget(QtWidgets.QWidget):
         self.add_button.clicked.connect(self.add_stylesheet)
         layout.addWidget(self.add_button, 0, 1)
 
+        self.open_folder_button = QtWidgets.QToolButton(self)
+        self.open_folder_button.setObjectName("matplotlibStylesheetOpenFolderButton")
+        self.open_folder_button.setText("Open Folder")
+        self.open_folder_button.setToolTip(
+            "Open the ERLab custom Matplotlib stylesheet folder."
+        )
+        self.open_folder_button.clicked.connect(self.open_stylesheet_directory)
+        layout.addWidget(self.open_folder_button, 0, 2)
+
+        self.reload_button = QtWidgets.QToolButton(self)
+        self.reload_button.setObjectName("matplotlibStylesheetReloadButton")
+        self.reload_button.setText("Reload")
+        self.reload_button.setToolTip("Reload Matplotlib stylesheets.")
+        self.reload_button.clicked.connect(self.reload_stylesheets)
+        layout.addWidget(self.reload_button, 0, 3)
+
         self.list_widget = QtWidgets.QListWidget(self)
         self.list_widget.setObjectName("matplotlibStylesheetList")
         self.list_widget.setSelectionMode(
@@ -227,7 +243,7 @@ class StylesheetListWidget(QtWidgets.QWidget):
         )
         self.list_widget.setFixedHeight(88)
         self.list_widget.currentRowChanged.connect(self._update_button_state)
-        layout.addWidget(self.list_widget, 1, 0, 1, 2)
+        layout.addWidget(self.list_widget, 1, 0, 1, 4)
 
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
@@ -253,7 +269,7 @@ class StylesheetListWidget(QtWidgets.QWidget):
         self.down_button.clicked.connect(lambda: self.move_selected_stylesheet(1))
         button_layout.addWidget(self.down_button)
         button_layout.addStretch(1)
-        layout.addLayout(button_layout, 2, 0, 1, 2)
+        layout.addLayout(button_layout, 2, 0, 1, 4)
 
         self._refresh()
 
@@ -309,11 +325,29 @@ class StylesheetListWidget(QtWidgets.QWidget):
     @QtCore.Slot()
     def _load_available_stylesheets(self) -> None:
         current = self.add_combo.currentText()
-        erlab.interactive._stylesheets.load_erlab_plotting_stylesheets()
+        erlab.interactive._stylesheets.reload_stylesheets()
         self._refresh_list()
         self._refresh_add_combo()
         if current:
             self.add_combo.setCurrentText(current)
+
+    @QtCore.Slot()
+    def open_stylesheet_directory(self) -> None:
+        try:
+            style_dir = erlab.interactive._stylesheets.user_stylesheet_directory()
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Stylesheet folder unavailable",
+                str(exc),
+            )
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(style_dir)))
+
+    @QtCore.Slot()
+    def reload_stylesheets(self) -> None:
+        erlab.interactive._stylesheets.reload_stylesheets()
+        self._refresh()
 
     def _update_button_state(self, *_args) -> None:
         row = self.list_widget.currentRow()

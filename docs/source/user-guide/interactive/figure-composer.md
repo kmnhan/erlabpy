@@ -171,3 +171,16 @@ settings dialog in {guilabel}`File → Settings`. These stylesheets affect new f
 defaults such as size, dpi, and export settings, as well as the styling of all figure
 elements. If a saved stylesheet is unavailable on the current computer, it remains
 visible in settings but is skipped when rendering or generating code.
+
+To add custom Matplotlib stylesheets:
+
+1. Open {menuselection}`File --> Settings`.
+2. In {menuselection}`Figure --> Stylesheets`, select {guilabel}`Open Folder`.
+3. Copy `*.mplstyle` files into that folder. The stylesheet name shown in settings is
+   the file name without the `.mplstyle` suffix.
+4. Select {guilabel}`Reload`, then add the stylesheet by name.
+
+Saved stylesheets that are no longer available stay in the configured list and are
+marked unavailable. Figure Composer skips unavailable styles during rendering and code
+generation, and uses them again after the `.mplstyle` file is restored and stylesheets
+are reloaded.

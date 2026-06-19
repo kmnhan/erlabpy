@@ -1,4 +1,5 @@
-from qtpy import QtGui, QtWidgets
+import pytest
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._stylesheets
 from erlab.interactive._options.parameters import (
@@ -70,10 +71,99 @@ def test_colorlistparameter_save_state() -> None:
     assert state["value"][0][:3] == (1, 2, 3)
 
 
+def test_user_stylesheet_directory_uses_generic_data_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "erlabpy" / "ImageTool Manager"
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets, "_app_data_directory", lambda: None
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_generic_data_directory",
+        lambda: data_dir,
+    )
+
+    style_dir = erlab.interactive._stylesheets.user_stylesheet_directory()
+
+    assert style_dir == data_dir / "stylelib"
+    assert style_dir.is_dir()
+
+
+def test_user_stylesheet_directory_raises_without_qt_data_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets, "_app_data_directory", lambda: None
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_generic_data_directory",
+        lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="custom Matplotlib stylesheets"):
+        erlab.interactive._stylesheets.user_stylesheet_directory()
+
+
+def test_load_user_stylesheets_tracks_added_and_removed_files(
+    tmp_path, monkeypatch
+) -> None:
+    library_paths = erlab.interactive._stylesheets._style_library_paths()
+    old_library_paths = list(library_paths)
+    user_registered = erlab.interactive._stylesheets._USER_REGISTERED_STYLESHEETS
+    old_registered = set(user_registered)
+    old_names = erlab.interactive._stylesheets._USER_STYLESHEET_NAMES
+    user_registered.clear()
+    erlab.interactive._stylesheets._USER_STYLESHEET_NAMES = frozenset()
+    data_dir = tmp_path / "app-data"
+    style_dir = data_dir / "stylelib"
+    style_name = "erlab-test-user-style"
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_app_data_directory",
+        lambda: data_dir,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_generic_data_directory",
+        lambda: None,
+    )
+    try:
+        (style_dir / f"{style_name}.mplstyle").parent.mkdir(parents=True)
+        (style_dir / f"{style_name}.mplstyle").write_text("axes.facecolor: white\n")
+
+        erlab.interactive._stylesheets.load_user_stylesheets(reload=True)
+
+        assert str(style_dir) in library_paths
+        assert style_name in erlab.interactive._stylesheets.available_stylesheets()
+        assert erlab.interactive._stylesheets.stylesheets_require_user_stylesheets(
+            [style_name]
+        )
+
+        (style_dir / f"{style_name}.mplstyle").unlink()
+        erlab.interactive._stylesheets.load_user_stylesheets(reload=True)
+
+        assert style_name not in erlab.interactive._stylesheets.available_stylesheets()
+        assert not erlab.interactive._stylesheets.stylesheets_require_user_stylesheets(
+            [style_name]
+        )
+    finally:
+        library_paths[:] = old_library_paths
+        erlab.interactive._stylesheets.mpl_style.reload_library()
+        user_registered.clear()
+        user_registered.update(old_registered)
+        erlab.interactive._stylesheets._USER_STYLESHEET_NAMES = old_names
+
+
 def test_stylesheetlistwidget_preserves_unavailable_styles(qtbot, monkeypatch):
     monkeypatch.setattr(
         "erlab.interactive._stylesheets.mpl_style.available",
         ["classic", "ggplot"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
     )
     monkeypatch.setattr(
         erlab.interactive._stylesheets,
@@ -86,6 +176,12 @@ def test_stylesheetlistwidget_preserves_unavailable_styles(qtbot, monkeypatch):
     assert widget.get_stylesheets() == ["classic", "missing-style"]
     assert widget.list_widget.item(1).data(_STYLESHEET_AVAILABLE_ROLE) is False
     assert "unavailable" in widget.list_widget.item(1).toolTip()
+    widget.list_widget.setCurrentRow(1)
+    assert widget.remove_button.isEnabled()
+    assert widget.up_button.isEnabled()
+    assert not widget.down_button.isEnabled()
+    widget.remove_selected_stylesheet()
+    assert widget.get_stylesheets() == ["classic"]
 
 
 def test_stylesheet_names_normalizes_and_deduplicates_values() -> None:
@@ -106,6 +202,11 @@ def test_stylesheetlistwidget_add_remove_and_reorder(qtbot, monkeypatch):
     monkeypatch.setattr(
         "erlab.interactive._stylesheets.mpl_style.available",
         ["classic", "ggplot", "bmh"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
     )
     widget = StylesheetListWidget(stylesheets=["classic"])
     qtbot.addWidget(widget)
@@ -129,6 +230,11 @@ def test_stylesheetlistwidget_ignores_invalid_actions_and_preserves_roles(
     monkeypatch.setattr(
         "erlab.interactive._stylesheets.mpl_style.available",
         ["classic", "ggplot"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
     )
     widget = StylesheetListWidget(stylesheets=["classic", "ggplot"])
     qtbot.addWidget(widget)
@@ -172,7 +278,12 @@ def test_stylesheetlistwidget_loads_erlab_styles_on_popup(qtbot, monkeypatch):
     )
     monkeypatch.setattr(
         erlab.interactive._stylesheets,
-        "load_erlab_plotting_stylesheets",
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "reload_stylesheets",
         lambda: calls.append(None),
     )
     widget = StylesheetListWidget(stylesheets=[])
@@ -191,6 +302,11 @@ def test_stylesheetlistwidget_rechecks_saved_styles_after_erlab_import(
     monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
     monkeypatch.setattr(
         erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
         "load_erlab_plotting_stylesheets",
         lambda: available.append("nature"),
     )
@@ -199,6 +315,69 @@ def test_stylesheetlistwidget_rechecks_saved_styles_after_erlab_import(
     qtbot.addWidget(widget)
 
     assert widget.list_widget.item(0).data(_STYLESHEET_AVAILABLE_ROLE) is True
+
+
+def test_stylesheetlistwidget_reload_updates_saved_style_availability(
+    qtbot, monkeypatch
+) -> None:
+    available = ["classic"]
+    monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: None,
+    )
+
+    def reload_stylesheets() -> None:
+        available.append("restored-style")
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "reload_stylesheets",
+        reload_stylesheets,
+    )
+    widget = StylesheetListWidget(stylesheets=["restored-style"])
+    qtbot.addWidget(widget)
+
+    assert widget.get_stylesheets() == ["restored-style"]
+    assert widget.list_widget.item(0).data(_STYLESHEET_AVAILABLE_ROLE) is False
+
+    widget.reload_button.click()
+
+    assert widget.get_stylesheets() == ["restored-style"]
+    assert widget.list_widget.item(0).data(_STYLESHEET_AVAILABLE_ROLE) is True
+
+
+def test_stylesheetlistwidget_open_folder_uses_custom_style_directory(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    opened_urls: list[QtCore.QUrl] = []
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "user_stylesheet_directory",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        QtGui.QDesktopServices,
+        "openUrl",
+        lambda url: opened_urls.append(url) or True,
+    )
+    widget = StylesheetListWidget(stylesheets=[])
+    qtbot.addWidget(widget)
+
+    widget.open_folder_button.click()
+
+    assert opened_urls[0].toLocalFile() == str(tmp_path)
 
 
 def test_stylesheetlistparameter_value_roundtrip() -> None:

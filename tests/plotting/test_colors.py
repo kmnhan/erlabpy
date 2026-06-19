@@ -22,6 +22,19 @@ def test_plotting_import_registration_is_idempotent() -> None:
         assert plt.rcParams["pcolor.shading"] == "auto"
 
 
+@pytest.mark.parametrize("style", ["nature", "fira", "firalight"])
+def test_custom_mathtext_styles_use_concrete_calligraphic_font(style) -> None:
+    with matplotlib.style.context(style):
+        assert plt.rcParams["mathtext.fontset"] == "custom"
+        assert plt.rcParams["mathtext.cal"] == "cmsy10"
+
+
+def test_firalight_selects_light_face_without_numeric_global_weight() -> None:
+    with matplotlib.style.context("firalight"):
+        assert plt.rcParams["font.family"][0] == "Fira Sans Light"
+        assert plt.rcParams["font.weight"] == "normal"
+
+
 def sample_plot(norms, kw0, kw1, cmap):
     if isinstance(kw0, dict):
         kw0 = (kw0,) * len(norms)

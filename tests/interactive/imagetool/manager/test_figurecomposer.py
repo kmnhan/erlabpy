@@ -5826,6 +5826,32 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert export.bbox_inches == expected_bbox
 
 
+def test_figure_composer_defaults_skip_unavailable_stylesheets(
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic", "missing-style"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "available_stylesheets",
+        lambda names=(): frozenset({"classic"}),
+    )
+    with mpl_style.context(["classic"]):
+        expected_figsize = tuple(
+            float(value) for value in mpl.rcParams["figure.figsize"]
+        )
+
+    assert figurecomposer_defaults._available_configured_stylesheets() == ("classic",)
+    assert figurecomposer_defaults._unavailable_configured_stylesheets() == (
+        "missing-style",
+    )
+    assert figurecomposer_defaults._default_figsize() == expected_figsize
+
+
 @pytest.mark.parametrize("dpi", [0, -1])
 def test_figure_composer_export_dpi_must_be_positive(dpi: int) -> None:
     with pytest.raises(ValueError, match="export dpi must be positive"):
@@ -5878,6 +5904,57 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
     finally:
         mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
         mpl_style.reload_library()
+
+
+def test_figure_composer_generated_code_loads_user_stylesheets(
+    qtbot,
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    @contextlib.contextmanager
+    def style_context(_stylesheets):
+        yield
+
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("user-style", "missing-style"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "available_stylesheets",
+        lambda names=(): frozenset({"user-style"}),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_erlab_plotting",
+        lambda names: False,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: "user-style" in names,
+    )
+    monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    user_import = "import erlab.interactive._stylesheets as _erlab_stylesheets"
+    user_load = "_erlab_stylesheets.load_user_stylesheets()"
+    style_use = "plt.style.use(['user-style'])"
+    assert user_import in code
+    assert user_load in code
+    assert style_use in code
+    assert code.index(user_import) < code.index(user_load) < code.index(style_use)
+    assert "# Skipped unavailable stylesheets: 'missing-style'" in code
 
 
 def test_figure_composer_preview_uses_live_canvas_without_rerender(
@@ -6053,6 +6130,11 @@ def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
     monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
     monkeypatch.setattr(
         erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
         "load_erlab_plotting_stylesheets",
         lambda: available.append("classic"),
     )
@@ -6107,6 +6189,16 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
         "load_erlab_plotting_stylesheets",
         load_stylesheets,
     )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: False,
+    )
     erlab.interactive._stylesheets._ERLAB_REGISTERED_STYLESHEETS.clear()
     monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
     monkeypatch.setattr(
@@ -6145,6 +6237,11 @@ def test_figure_composer_generated_code_imports_erlab_for_preloaded_erlab_style(
     monkeypatch,
     restore_interactive_options,
 ) -> None:
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: False,
+    )
     monkeypatch.setattr(
         figurecomposer_defaults,
         "_configured_stylesheets",

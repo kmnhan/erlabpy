@@ -95,7 +95,7 @@ text.latex.preamble:
 # The following settings allow you to select the fonts in math mode.
 mathtext.fontset: custom
 mathtext.bf: Arial:style=normal:variant=normal:weight=bold:stretch=normal
-mathtext.cal: cursive
+mathtext.cal: cmsy10
 mathtext.it: Arial:style=italic:variant=normal:weight=normal:stretch=normal,Symbol
 mathtext.rm: Arial:style=normal:variant=normal:weight=normal:stretch=normal,Symbol
 mathtext.sf: Arial:style=normal:variant=normal:weight=normal:stretch=normal

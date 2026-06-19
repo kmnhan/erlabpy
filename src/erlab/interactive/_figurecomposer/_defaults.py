@@ -127,8 +127,15 @@ def _style_code_lines() -> list[str]:
 
 
 def _style_required_imports() -> tuple[str, ...]:
-    if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(
-        _configured_stylesheets()
-    ):
-        return ("import erlab.plotting  # registers ERLab matplotlib stylesheets",)
-    return ()
+    configured = _configured_stylesheets()
+    lines: list[str] = []
+    if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(configured):
+        lines.append("import erlab.plotting  # registers ERLab matplotlib stylesheets")
+    if erlab.interactive._stylesheets.stylesheets_require_user_stylesheets(configured):
+        lines.extend(
+            [
+                "import erlab.interactive._stylesheets as _erlab_stylesheets",
+                "_erlab_stylesheets.load_user_stylesheets()",
+            ]
+        )
+    return tuple(lines)
