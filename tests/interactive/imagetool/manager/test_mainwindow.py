@@ -3889,6 +3889,10 @@ def test_managed_child_tool_shows_reload_reason_without_reloadable_ancestor(
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
+        child_node = manager._child_node(child_uid)
+        with monkeypatch.context() as patch:
+            patch.setattr(child_node, "_tool_window", None)
+            assert child_node.reload_unavailable_reason()
 
         reload_action = child.findChild(QtGui.QAction, "tool_reload_data_action")
         assert reload_action is not None

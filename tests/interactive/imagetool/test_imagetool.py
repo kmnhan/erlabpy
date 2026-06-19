@@ -3095,11 +3095,21 @@ def test_itool_reload_reports_failure_and_nonreloadable_noop(
 
     existing_file = tmp_path / "data.h5"
     win.slicer_area.data.to_netcdf(existing_file, engine="h5netcdf")
+    win.slicer_area._file_path = None
+    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    assert win.slicer_area._direct_reload_unavailable_reason() is not None
+
     win.slicer_area._file_path = existing_file
+    win.slicer_area._load_func = None
+    assert win.slicer_area._direct_reload_unavailable_reason() is not None
+
     win.slicer_area._load_func = ("missing-loader", {}, 0)
     unavailable_reasons.clear()
     win.slicer_area.reload()
     assert "missing-loader" in unavailable_reasons[-1]
+    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    assert win.slicer_area._direct_reload_unavailable_reason() is None
+    assert win.slicer_area._local_reload_unavailable_reason() is None
 
     errors: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -3118,6 +3128,81 @@ def test_itool_reload_reports_failure_and_nonreloadable_noop(
 
     assert not win.slicer_area._reload()
     assert errors == [("Error", "An error occurred while reloading data.")]
+    win.close()
+
+
+def test_itool_reload_unavailable_reason_metadata_branches(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
+    qtbot.addWidget(win)
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
+
+    source_file = tmp_path / "source.h5"
+    win.slicer_area.data.to_netcdf(source_file, engine="h5netcdf")
+    load_source = provenance.FileLoadSource(
+        path=str(source_file),
+        loader_label="xarray.load_dataarray",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="",
+        replay_call=provenance.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            selected_index=0,
+        ),
+    )
+
+    valid_file_spec = provenance.file_load(
+        start_label="Load valid file",
+        seed_code="derived = xr.load_dataarray(path)",
+        file_load_source=load_source,
+    )
+    win.set_provenance_spec(
+        valid_file_spec.model_copy(update={"file_load_source": None})
+    )
+    win.slicer_area.reload()
+    assert unavailable_reasons[-1]
+
+    win.set_provenance_spec(
+        valid_file_spec.model_copy(
+            update={
+                "file_load_source": load_source.model_copy(update={"replay_call": None})
+            }
+        )
+    )
+    win.slicer_area.reload()
+    assert unavailable_reasons[-1]
+
+    win.set_provenance_spec(valid_file_spec)
+    assert win.slicer_area._provenance_reload_unavailable_reason() is None
+    win.set_provenance_spec(provenance.full_data())
+    assert win.slicer_area._provenance_reload_unavailable_reason() is None
+
+    win.set_provenance_spec(
+        provenance.script(
+            provenance.ScriptCodeOperation(label="Use input", code="derived = data"),
+            start_label="Run script",
+            active_name="derived",
+        )
+    )
+    assert win.slicer_area._provenance_reload_unavailable_reason() is not None
+
+    manager = types.SimpleNamespace(
+        target_from_slicer_area=lambda _area: "target",
+        _reload_target_for_child=lambda _target: None,
+        _reload_unavailable_reason_for_target=lambda _target: "manager reason",
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(win.slicer_area, "_in_manager", True)
+        patch.setattr(
+            type(win.slicer_area), "_manager_instance", property(lambda _: manager)
+        )
+        assert win.slicer_area._reload_unavailable_reason() == "manager reason"
+        manager.target_from_slicer_area = lambda _area: None
+        assert win.slicer_area._reload_unavailable_reason()
+
     win.close()
 
 

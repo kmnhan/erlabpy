@@ -3466,6 +3466,19 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_spec=provenance.full_data().model_dump(mode="json"),
         )
         assert not manager._script_input_can_reload(full_data_input)
+        assert manager._script_input_unavailable_reason(full_data_input) is not None
+        file_without_source_input = types.SimpleNamespace(
+            node_uid=None,
+            label="File without source",
+            parsed_provenance_spec=lambda: file_spec.model_copy(
+                update={"file_load_source": None}
+            ),
+        )
+        assert not manager._script_input_can_reload(file_without_source_input)
+        assert (
+            manager._script_input_unavailable_reason(file_without_source_input)
+            is not None
+        )
         missing_file_input = provenance.ScriptInput(
             name="missing_file",
             label="Missing file",
@@ -3478,10 +3491,35 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             ).model_dump(mode="json"),
         )
         assert not manager._script_input_has_recorded_file(missing_file_input)
+        missing_file_reason = manager._script_input_unavailable_reason(
+            missing_file_input
+        )
+        assert missing_file_reason is not None
+        assert str(tmp_path / "missing.nc") in missing_file_reason
         load_source = file_spec.file_load_source
         assert load_source is not None
         replay_call = load_source.replay_call
         assert replay_call is not None
+        no_replay_call_input = types.SimpleNamespace(
+            node_uid=None,
+            label="No replay call",
+            parsed_provenance_spec=lambda: file_spec.model_copy(
+                update={
+                    "file_load_source": load_source.model_copy(
+                        update={"replay_call": None}
+                    )
+                }
+            ),
+        )
+        assert not manager._script_input_can_reload(no_replay_call_input)
+        assert manager._script_input_unavailable_reason(no_replay_call_input)
+        valid_file_input = provenance.ScriptInput(
+            name="valid_file",
+            label="Valid file",
+            provenance_spec=file_spec.model_dump(mode="json"),
+        )
+        assert manager._script_input_can_reload(valid_file_input)
+        assert manager._script_input_unavailable_reason(valid_file_input) is None
         missing_loader = "definitely-missing-erlab-loader"
         missing_loader_input = provenance.ScriptInput(
             name="missing_loader",
@@ -3507,6 +3545,50 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         reason = manager._script_input_unavailable_reason(missing_loader_input)
         assert reason is not None
         assert missing_loader in reason
+
+        nonreplayable_script_input = provenance.ScriptInput(
+            name="nonreplayable",
+            label="Nonreplayable script",
+            provenance_spec=provenance.script(
+                provenance.ScriptCodeOperation(label="Opaque", code=None),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(valid_file_input,),
+            ).model_dump(mode="json"),
+        )
+        assert not manager._script_input_can_reload(nonreplayable_script_input)
+        assert (
+            manager._script_input_unavailable_reason(nonreplayable_script_input)
+            is not None
+        )
+        nested_missing_input = provenance.ScriptInput(
+            name="nested_missing",
+            label="Nested missing file",
+            provenance_spec=provenance.script(
+                provenance.ScriptCodeOperation(
+                    label="Use missing", code="derived = missing_file"
+                ),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(missing_file_input,),
+            ).model_dump(mode="json"),
+        )
+        nested_reason = manager._script_input_unavailable_reason(nested_missing_input)
+        assert nested_reason is not None
+        assert str(tmp_path / "missing.nc") in nested_reason
+        nested_valid_input = provenance.ScriptInput(
+            name="nested_valid",
+            label="Nested valid file",
+            provenance_spec=provenance.script(
+                provenance.ScriptCodeOperation(
+                    label="Use valid", code="derived = valid_file"
+                ),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(valid_file_input,),
+            ).model_dump(mode="json"),
+        )
+        assert manager._script_input_unavailable_reason(nested_valid_input) is None
 
         file_marker = "file-marker"
         child_marker = "child-marker"
@@ -3627,6 +3709,85 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             patch.setattr(manager, "target_from_slicer_area", lambda _area: 0)
             patch.setattr(manager, "_node_can_reload_script_inputs", lambda _node: True)
             assert manager._script_reload_from_slicer_area(object(), execute=False)
+
+        lineage = manager._lineage_controller
+        non_imagetool_node = types.SimpleNamespace(is_imagetool=False)
+        assert lineage._node_reload_unavailable_reason(non_imagetool_node)
+        closed_imagetool_node = types.SimpleNamespace(
+            is_imagetool=True,
+            imagetool=None,
+        )
+        assert lineage._node_reload_unavailable_reason(closed_imagetool_node)
+        script_no_inputs_node = types.SimpleNamespace(
+            uid="script-no-inputs",
+            is_imagetool=True,
+            imagetool=object(),
+            slicer_area=types.SimpleNamespace(
+                _direct_reloadable=lambda: False,
+                _provenance_reloadable=lambda: False,
+                _local_reload_unavailable_reason=lambda: "local reason",
+            ),
+            provenance_spec=provenance.script(
+                provenance.ScriptCodeOperation(
+                    label="Use input", code="derived = data"
+                ),
+                start_label="Run script",
+                active_name="derived",
+            ),
+        )
+        assert lineage._node_reload_unavailable_reason(script_no_inputs_node)
+        script_file_input_node = types.SimpleNamespace(
+            uid="script-file-input",
+            is_imagetool=True,
+            imagetool=object(),
+            slicer_area=script_no_inputs_node.slicer_area,
+            provenance_spec=provenance.script(
+                provenance.ScriptCodeOperation(
+                    label="Use file", code="derived = valid_file"
+                ),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(valid_file_input,),
+            ),
+        )
+        assert lineage._node_reload_unavailable_reason(script_file_input_node) is None
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_selected_reload_candidates", lambda: None)
+            assert manager._selected_reload_targets() is None
+            manager.reload_selected()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager,
+                "_selected_reload_candidates",
+                lambda: ([0], {}, "blocked"),
+            )
+            assert manager._selected_reload_targets() is None
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager,
+                "_selected_reload_candidates",
+                lambda: ([0], {}, None),
+            )
+            assert manager._selected_reload_targets() == ([0], {})
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager,
+                "_node_for_target",
+                lambda _target: (_ for _ in ()).throw(KeyError("missing")),
+            )
+            assert manager._reload_unavailable_reason_for_target(0)
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_node_for_target", lambda _target: object())
+            patch.setattr(manager, "_reload_target_for_child", lambda _uid: 0)
+            assert manager._reload_unavailable_reason_for_target("child") is None
+            patch.setattr(manager, "_reload_target_for_child", lambda _uid: None)
+            patch.setattr(
+                manager,
+                "_reload_unavailable_reason_for_child",
+                lambda _uid: "child reason",
+            )
+            assert manager._reload_unavailable_reason_for_target("child")
 
         old_parent_uid = "saved-parent"
         derived_wrapper.set_displayed_provenance(
