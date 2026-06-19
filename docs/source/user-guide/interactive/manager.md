@@ -259,6 +259,11 @@ and right-click context menus:
   conducting experiments, where you can repeat analysis on a continually updated file
   source with a single click.
 
+  If the selected data cannot currently be reloaded, the action remains available and
+  explains what is missing. Common fixes are reconnecting the drive that contains the
+  source file, restoring a moved or deleted file, or reopening the ImageTool inputs that
+  created the result.
+
   :::{note}
 
   This action is also available inside each ImageTool window, and is associated with the

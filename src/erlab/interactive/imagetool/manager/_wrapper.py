@@ -427,7 +427,9 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.destroyed.connect(self._handle_tool_window_destroyed)
         tool._set_managed_source_update_dialog(self.show_source_update_dialog)
         tool._set_managed_source_reload(
-            self.reload_source_data, self.can_reload_source_data
+            self.reload_source_data,
+            self.can_reload_source_data,
+            self.reload_unavailable_reason,
         )
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
@@ -1284,6 +1286,11 @@ class _ManagedWindowNode(QtCore.QObject):
             self.tool_window is not None
             and self.manager._reload_target_for_child(self.uid) is not None
         )
+
+    def reload_unavailable_reason(self) -> str | None:
+        if self.tool_window is None:
+            return "The selected tool is no longer available. Select an open item."
+        return self.manager._reload_unavailable_reason_for_child(self.uid)
 
     @QtCore.Slot()
     def _refresh_node_info(self) -> None:

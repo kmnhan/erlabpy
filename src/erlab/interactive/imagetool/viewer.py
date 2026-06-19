@@ -1347,6 +1347,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def initialize_actions(self) -> None:
         """Initialize :class:`QtWidgets.QAction` instances."""
         self.reload_act = QtWidgets.QAction("&Reload Data", self)
+        self.reload_act.setObjectName("itool_reload_data_action")
         self.reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
         self.reload_act.triggered.connect(self.reload)
         self.reload_act.setToolTip(
@@ -2026,12 +2027,120 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
         provenance_spec = self.provenance_spec
-        return not (
+        if (
             provenance_spec is None
             or provenance_spec.kind != "file"
             or provenance_spec.file_load_source is None
             or not pathlib.Path(provenance_spec.file_load_source.path).exists()
+        ):
+            return False
+        replay_call = provenance_spec.file_load_source.replay_call
+        return replay_call is not None and (
+            replay_call.kind != "erlab_loader" or replay_call.target in erlab.io.loaders
         )
+
+    def _direct_reload_unavailable_reason(self) -> str | None:
+        """Return why direct file metadata cannot reload, if it is relevant."""
+        if self._file_path is None and self._load_func is None:
+            return None
+        if self._file_path is None:
+            return (
+                "This data has loader information but no recorded source file. "
+                "Reopen the data from its file to enable reload."
+            )
+        if not self._file_path.exists():
+            return (
+                "The source file is not available:\n"
+                f"{self._file_path}\n\n"
+                "Reconnect the drive or restore the file, then try again."
+            )
+        if self._load_func is None:
+            return (
+                "This data has a recorded source file, but the loader information "
+                "needed to read it is missing. Reopen the data from its file to "
+                "enable reload."
+            )
+        loader = self._load_func[0]
+        if not callable(loader) and loader not in erlab.io.loaders:
+            return (
+                f"The saved loader {loader!r} is not available in this ImageTool "
+                "session. Reopen the data from its file with an available loader."
+            )
+        return None
+
+    def _provenance_reload_unavailable_reason(self) -> str | None:
+        """Return why file provenance cannot reload, if it is relevant."""
+        provenance_spec = self.provenance_spec
+        if provenance_spec is None:
+            return None
+        if provenance_spec.kind == "file":
+            load_source = provenance_spec.file_load_source
+            if load_source is None:
+                return (
+                    "This data has file provenance, but it does not include the "
+                    "source file needed for reload. Reopen the data from its file "
+                    "to enable reload."
+                )
+            file_path = pathlib.Path(load_source.path)
+            if not file_path.exists():
+                return (
+                    "The source file is not available:\n"
+                    f"{file_path}\n\n"
+                    "Reconnect the drive or restore the file, then try again."
+                )
+            replay_call = load_source.replay_call
+            if replay_call is None:
+                return (
+                    "This data has file provenance, but the loader information "
+                    "needed to read it is missing. Reopen the data from its file "
+                    "to enable reload."
+                )
+            if (
+                replay_call.kind == "erlab_loader"
+                and replay_call.target not in erlab.io.loaders
+            ):
+                return (
+                    f"The saved loader {replay_call.target!r} is not available "
+                    "in this ImageTool session. Reopen the data from its file "
+                    "with an available loader."
+                )
+            return None
+        if provenance_spec.kind == "script":
+            return (
+                "This data was created from recorded script steps that cannot be "
+                "reloaded outside ImageTool Manager. Reopen or recreate it from "
+                "reloadable inputs to enable reload."
+            )
+        return None
+
+    def _local_reload_unavailable_reason(self) -> str | None:
+        """Return why this slicer area cannot reload without manager routing."""
+        if self._direct_reloadable() or self._provenance_reloadable():
+            return None
+        reason = self._direct_reload_unavailable_reason()
+        if reason is not None:
+            return reason
+        reason = self._provenance_reload_unavailable_reason()
+        if reason is not None:
+            return reason
+        return (
+            "This data was not opened from a reloadable file or recorded input. "
+            "Reopen it from a file, or recreate it from reloadable ImageTool "
+            "inputs, to enable reload."
+        )
+
+    def _reload_unavailable_reason(self) -> str | None:
+        """Return why Reload Data cannot run, or `None` when reload is available."""
+        if self._managed_source_chain_reload_target() is not None:
+            return None
+        if self._direct_reloadable() or self._provenance_reloadable():
+            return None
+        manager = self._manager_instance if self._in_manager else None
+        if manager is not None:
+            target = manager.target_from_slicer_area(self)
+            if target is not None:
+                return manager._reload_unavailable_reason_for_target(target)
+        return self._local_reload_unavailable_reason()
 
     def _fetch_for_reload(self) -> xr.DataArray:
         file_path = self._file_path
@@ -2145,13 +2254,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def reload(self) -> None:
         """Reload the displayed data from recorded source information.
 
-        Silently fails if the data cannot be reloaded. If an error occurs while
-        reloading the data, a message is shown to the user.
+        Shows an explanation if the data cannot be reloaded. If an error occurs
+        while reloading the data, a message is shown to the user.
+
+        .. versionchanged:: 3.24.0
+
+           User-triggered reload now explains why reload is unavailable instead
+           of silently doing nothing.
 
         See Also
         --------
         :attr:`reloadable`
         """
+        reason = self._reload_unavailable_reason()
+        if reason is not None:
+            erlab.interactive.utils._show_reload_unavailable_dialog(self, reason)
+            return
         self._reload()
 
     def update_values(

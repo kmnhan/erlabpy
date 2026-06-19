@@ -591,6 +591,68 @@ def test_tool_window_reload_refresh_ignores_deleted_file_menu(qtbot) -> None:
     assert not tool.reload_source_data()
 
 
+def test_reload_unavailable_dialog_executes_information_message(
+    qtbot,
+    monkeypatch,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    exec_calls: list[MessageDialog] = []
+
+    def _exec(dialog: MessageDialog) -> int:
+        exec_calls.append(dialog)
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "exec", _exec)
+
+    result = erlab.interactive.utils._show_reload_unavailable_dialog(
+        parent,
+        "specific reason",
+    )
+
+    assert result == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert exec_calls
+    assert exec_calls[0].informativeText() == "specific reason"
+
+
+def test_tool_window_reload_unavailable_reason_falls_back_after_callback_error(
+    qtbot,
+    monkeypatch,
+) -> None:
+    tool = erlab.interactive.utils.ToolWindow()
+    qtbot.addWidget(tool)
+    unavailable_reasons: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_show_reload_unavailable_dialog",
+        lambda _parent, reason: unavailable_reasons.append(reason),
+    )
+
+    tool._set_managed_source_reload(
+        lambda: True,
+        lambda: False,
+        lambda: "custom reason",
+    )
+    assert tool._source_reload_unavailable_reason() == "custom reason"
+    assert tool.reload_data_action.isVisible()
+    assert tool.reload_data_action.isEnabled()
+    tool._set_managed_source_reload(lambda: True, lambda: False)
+    assert tool._source_reload_unavailable_reason()
+
+    def _raise_reason() -> str:
+        raise RuntimeError("boom")
+
+    tool._set_managed_source_reload(
+        lambda: True,
+        lambda: False,
+        _raise_reason,
+    )
+    assert not tool.reload_source_data()
+    assert unavailable_reasons
+    assert unavailable_reasons[-1]
+    assert unavailable_reasons[-1] == tool.reload_data_action.toolTip()
+
+
 def test_close_shortcut_reaches_child_line_edit(qtbot) -> None:
     window = QtWidgets.QMainWindow()
     line_edit = QtWidgets.QLineEdit(window)
