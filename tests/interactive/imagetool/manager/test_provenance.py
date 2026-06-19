@@ -119,6 +119,19 @@ def _add_file_replay_tool(
     return tool
 
 
+def _recorded_operation_field_edit(
+    dialog: QtWidgets.QDialog,
+    operation_index: int,
+    field_name: str,
+) -> QtWidgets.QLineEdit:
+    edit = dialog.findChild(
+        QtWidgets.QLineEdit,
+        f"managerProvenanceOperationField_{operation_index}_{field_name}",
+    )
+    assert edit is not None
+    return edit
+
+
 def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
     return xr.DataArray(
         np.arange(3 * 4 * 5, dtype=float).reshape(3, 4, 5),
@@ -155,6 +168,45 @@ def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
         "engine": "h5netcdf",
         "chunks": {"x": 1},
     }
+
+
+def test_file_load_edit_dialog_open_is_metadata_only(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    load_source = provenance.FileLoadSource(
+        path="scan.h5",
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="engine='h5netcdf'",
+        replay_call=provenance.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
+            selected_index=0,
+        ),
+    )
+    monkeypatch.setattr(
+        provenance,
+        "replay_file_provenance",
+        lambda *_args, **_kwargs: pytest.fail(
+            "opening file-load editor must not replay the file"
+        ),
+    )
+    monkeypatch.setattr(
+        manager_provenance_edit,
+        "_load_provenance_from_file_details",
+        lambda *_args, **_kwargs: pytest.fail(
+            "opening file-load editor must not rebuild load provenance"
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+
+    dialog = manager_provenance_edit._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+
+    assert dialog.file_path() == pathlib.Path("scan.h5")
 
 
 def test_file_load_edit_dialog_allows_loader_change(
@@ -295,6 +347,134 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
 
     item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert dialog.selected_batch_peers() == ()
+
+
+def test_file_load_edit_dialog_batch_manual_path_override(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    manual_dir = tmp_path / "manual"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    manual_dir.mkdir()
+    current_spec = _manager_replay_file_spec(old_dir / "a.h5")
+    peer_spec = _manager_replay_file_spec(old_dir / "b.h5")
+    assert current_spec.file_load_source is not None
+    peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
+    peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", peer_node),
+        scope="display",
+        spec=peer_spec,
+        original_path=old_dir / "b.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(1,),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(
+        current_spec.file_load_source,
+        parent,
+        batch_peers=(peer,),
+        batch_apply_default=True,
+    )
+    qtbot.addWidget(dialog)
+
+    item = dialog.batch_peer_tree.topLevelItem(0)
+    assert not dialog.batch_peer_tree.isHidden()
+    assert dialog.selected_batch_peers() == (peer,)
+
+    manual_path = manual_dir / "explicit.h5"
+    item.setText(2, str(manual_path))
+    dialog.path_edit.setText(str(new_dir / "a.h5"))
+
+    assert pathlib.Path(item.text(2)) == manual_path
+    assert dialog.peer_provenance_spec(peer).file_load_source is not None
+    assert pathlib.Path(dialog.peer_provenance_spec(peer).file_load_source.path) == (
+        manual_path
+    )
+
+
+def test_file_load_edit_dialog_repair_checks_required_and_preserves_peer_loader(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    current_spec = _manager_replay_file_spec(old_dir / "a.h5")
+    required_spec = _manager_replay_file_spec(
+        old_dir / "b.h5",
+        provenance.IselOperation(kwargs={"x": 0}),
+    )
+    optional_spec = _manager_replay_file_spec(old_dir / "c.h5")
+    assert current_spec.file_load_source is not None
+    assert required_spec.file_load_source is not None
+    required_replay_call = required_spec.file_load_source.replay_call
+    assert required_replay_call is not None
+    required_spec = required_spec.model_copy(
+        update={
+            "file_load_source": required_spec.file_load_source.model_copy(
+                update={
+                    "kwargs_text": "engine='scipy'",
+                    "replay_call": required_replay_call.model_copy(
+                        update={"kwargs": {"engine": "scipy"}},
+                    ),
+                }
+            )
+        }
+    )
+    peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
+    required_peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", peer_node),
+        scope="display",
+        spec=required_spec,
+        original_path=old_dir / "b.h5",
+        loader_summary="xarray.load_dataarray (engine='scipy')",
+        script_input_path=(1,),
+        preserve_loader=True,
+    )
+    optional_peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", peer_node),
+        scope="display",
+        spec=optional_spec,
+        original_path=old_dir / "c.h5",
+        loader_summary="xarray.load_dataarray",
+        script_input_path=(2,),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._FileLoadEditDialog(
+        current_spec.file_load_source,
+        parent,
+        batch_peers=(required_peer, optional_peer),
+        batch_apply_default=True,
+        checked_batch_peer_ids=frozenset({required_peer.target_id}),
+    )
+    qtbot.addWidget(dialog)
+
+    required_item = dialog.batch_peer_tree.topLevelItem(0)
+    optional_item = dialog.batch_peer_tree.topLevelItem(1)
+    assert required_item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert optional_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+    assert dialog.selected_batch_peers() == (required_peer,)
+
+    new_b = new_dir / "manual-b.h5"
+    required_item.setText(2, str(new_b))
+    relinked = dialog.peer_provenance_spec(required_peer)
+
+    assert relinked.active_name == required_spec.active_name
+    assert relinked.replay_stages == required_spec.replay_stages
+    assert relinked.file_load_source is not None
+    relinked_replay_call = relinked.file_load_source.replay_call
+    assert relinked_replay_call is not None
+    assert pathlib.Path(relinked.file_load_source.path) == new_b
+    assert relinked_replay_call.kwargs == {"engine": "scipy"}
+    assert relinked.seed_code is not None
+    assert str(new_b) in relinked.seed_code
+    assert str(old_dir / "b.h5") not in relinked.seed_code
 
 
 def test_file_load_edit_dialog_batch_defensive_branches(
@@ -687,6 +867,190 @@ def test_manager_provenance_file_load_batch_peer_matching(
         )
         == ()
     )
+
+
+def test_manager_provenance_collects_nested_file_load_targets(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_spec = _manager_replay_file_spec(tmp_path / "a.h5")
+    second_file_spec = _manager_replay_file_spec(tmp_path / "b.h5")
+    second_parent_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use nested file",
+            code="derived = nested",
+        ),
+        start_label="Run nested script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="nested",
+                label="Nested",
+                provenance_spec=second_file_spec,
+            ),
+        ),
+    )
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_parent_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec, display_text="Derived")
+    controller = _fake_edit_controller(node)
+
+    targets = controller._file_load_targets(
+        typing.cast("typing.Any", node),
+        "display",
+        root_spec,
+    )
+
+    assert [target.script_input_path for target in targets] == [(0,), (1, 0)]
+    assert [target.original_path for target in targets] == [
+        tmp_path / "a.h5",
+        tmp_path / "b.h5",
+    ]
+    assert [target.display_text for target in targets] == [
+        "Derived: First",
+        "Derived: Second: Nested",
+    ]
+
+
+def test_manager_provenance_nested_file_load_batch_keeps_top_level_matches(
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    first_spec = _manager_replay_file_spec(old_dir / "a.h5")
+    second_spec = _manager_replay_file_spec(old_dir / "b.h5")
+    matching_spec = _manager_replay_file_spec(old_dir / "c.h5")
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    current = _fake_edit_node(root_spec, uid="current", display_text="Current")
+    matching = _fake_edit_node(
+        matching_spec,
+        uid="matching",
+        display_text="Matching",
+    )
+    controller = _fake_edit_controller(
+        current,
+        nodes={"current": current, "matching": matching},
+        metadata_uid="current",
+    )
+    first_file_row = root_spec.display_rows()[1].children[0]
+
+    peers = controller._file_load_batch_peers(
+        typing.cast("typing.Any", current),
+        first_spec,
+        row=first_file_row,
+    )
+
+    assert [(peer.node.uid, peer.script_input_path) for peer in peers] == [
+        ("current", (1,)),
+        ("matching", ()),
+    ]
+
+
+def test_manager_provenance_missing_repair_peers_include_nonmatching_nested(
+    tmp_path: pathlib.Path,
+) -> None:
+    old_a_dir = tmp_path / "old-a"
+    old_b_dir = tmp_path / "old-b"
+    old_a_dir.mkdir()
+    old_b_dir.mkdir()
+    first_spec = _manager_replay_file_spec(old_a_dir / "a.h5")
+    second_spec = _manager_replay_file_spec(old_b_dir / "b.h5")
+    assert second_spec.file_load_source is not None
+    second_replay_call = second_spec.file_load_source.replay_call
+    assert second_replay_call is not None
+    second_spec = second_spec.model_copy(
+        update={
+            "file_load_source": second_spec.file_load_source.model_copy(
+                update={
+                    "kwargs_text": "engine='scipy'",
+                    "replay_call": second_replay_call.model_copy(
+                        update={"kwargs": {"engine": "scipy"}},
+                    ),
+                }
+            )
+        }
+    )
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    focused = controller._file_load_target_for_path(
+        typing.cast("typing.Any", node),
+        "display",
+        root_spec,
+        old_a_dir / "a.h5",
+    )
+    assert focused is not None
+
+    matching_peers = controller._file_load_batch_peers(
+        typing.cast("typing.Any", node),
+        first_spec,
+        row=root_spec.display_rows()[1].children[0],
+    )
+    repair_peers = controller._missing_file_load_repair_peers(
+        typing.cast("typing.Any", node),
+        "display",
+        root_spec,
+        focused,
+    )
+
+    assert matching_peers == ()
+    assert [peer.script_input_path for peer in repair_peers] == [(1,)]
+    assert [peer.preserve_loader for peer in repair_peers] == [True]
 
 
 def test_manager_provenance_file_load_batch_helper_branches(
@@ -1163,9 +1527,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         _fake_edit_node(script_with_structured_step),
         script_input_can_reload=lambda *_args, **_kwargs: False,
     )
-    editable, reason = controller.can_edit_row(structured_row)
-    assert not editable
-    assert reason
+    assert controller.can_edit_row(structured_row) == (True, "")
 
     script_parent = provenance.script(
         provenance.ScriptCodeOperation(
@@ -1300,11 +1662,11 @@ def test_manager_provenance_edit_nested_script_input_operation(
     monkeypatch.setattr(
         controller,
         "_replay_candidate",
-        lambda *_args, **_kwargs: xr.DataArray([1.0], dims=("x",)),
+        lambda *_args, **_kwargs: pytest.fail("editing must not replay on open"),
     )
     monkeypatch.setattr(
         controller,
-        "_edited_operations_from_dialog",
+        "_edited_recorded_operations",
         lambda *_args, **_kwargs: [replacement],
     )
     monkeypatch.setattr(
@@ -1440,6 +1802,134 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
 
     controller._edit_file_load_row(node, file_load_row)
     assert file_load_calls == [(node, "display", file_spec, file_load_row, ())]
+
+
+def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    old_a = old_dir / "a.h5"
+    old_b = old_dir / "b.h5"
+    new_a = new_dir / "a.h5"
+    new_b = new_dir / "b.h5"
+    first_spec = _manager_replay_file_spec(old_a)
+    second_spec = _manager_replay_file_spec(old_b)
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                node_uid="first",
+                node_snapshot_token=str(object()),
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                node_uid="second",
+                node_snapshot_token=str(object()),
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    first_file_row = root_spec.display_rows()[1].children[0]
+    peers = controller._file_load_batch_peers(
+        typing.cast("typing.Any", node),
+        first_spec,
+        row=first_file_row,
+    )
+    assert [peer.script_input_path for peer in peers] == [(1,)]
+
+    replacement_first = _manager_replay_file_spec(new_a)
+    replacement_second = _manager_replay_file_spec(new_b)
+
+    class _Dialog:
+        def __init__(
+            self,
+            _load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            *,
+            batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            **_kwargs: typing.Any,
+        ) -> None:
+            assert batch_peers == peers
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(
+            self,
+            *,
+            active_name: str,
+            replay_stages: tuple[provenance.ReplayStage, ...],
+        ) -> provenance.ToolProvenanceSpec:
+            del active_name, replay_stages
+            return replacement_first
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[manager_provenance_edit._FileLoadBatchPeer, ...]:
+            return peers
+
+        def peer_provenance_spec(
+            self,
+            peer: manager_provenance_edit._FileLoadBatchPeer,
+        ) -> provenance.ToolProvenanceSpec:
+            assert peer is peers[0]
+            return replacement_second
+
+    validated: list[provenance.ToolProvenanceSpec] = []
+    applied: list[str] = []
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda edit_node, scope, candidate, **_kwargs: (
+            validated.append(candidate)
+            or manager_provenance_edit._ValidatedProvenanceEdit(
+                node=typing.cast("typing.Any", edit_node),
+                scope=scope,
+                data=xr.DataArray([1.0], dims=("x",)),
+                spec=candidate,
+                filter_operation=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_apply_validated_edit",
+        lambda edit: applied.append(edit.node.uid),
+    )
+
+    controller._edit_file_load_row(typing.cast("typing.Any", node), first_file_row)
+
+    assert applied == ["node"]
+    assert len(validated) == 1
+    edited_inputs = validated[0].script_inputs
+    assert edited_inputs[0].node_uid is None
+    assert edited_inputs[0].node_snapshot_token is None
+    assert edited_inputs[1].node_uid is None
+    assert edited_inputs[1].node_snapshot_token is None
+    edited_first = edited_inputs[0].parsed_provenance_spec()
+    edited_second = edited_inputs[1].parsed_provenance_spec()
+    assert edited_first is not None
+    assert edited_second is not None
+    assert edited_first.file_load_source is not None
+    assert edited_second.file_load_source is not None
+    assert pathlib.Path(edited_first.file_load_source.path) == new_a
+    assert pathlib.Path(edited_second.file_load_source.path) == new_b
 
 
 def test_manager_provenance_revert_rejects_current_prefixes(
@@ -1622,6 +2112,7 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            **_kwargs: typing.Any,
         ) -> None:
             assert batch_peers == peers
 
@@ -1949,7 +2440,7 @@ def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
         (int(QtWidgets.QDialog.DialogCode.Rejected), 0),
     ],
 )
-def test_manager_provenance_missing_source_edit_opens_file_load_editor(
+def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
     dialog_result: int,
@@ -2010,6 +2501,21 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
     )
     monkeypatch.setattr(
         controller,
+        "_edited_recorded_operations",
+        lambda _operations, **_kwargs: [provenance.IselOperation(kwargs={"x": 0})],
+    )
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(missing_path)
+    failure = manager_provenance_edit._ProvenanceReplayFailure(
+        "validating the edited provenance step",
+        missing,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        controller,
         "_edit_file_load_spec",
         lambda node_arg, scope, spec_arg, **kwargs: opened.append(
             (node_arg, scope, spec_arg, kwargs["batch_peers"])
@@ -2020,11 +2526,8 @@ def test_manager_provenance_missing_source_edit_opens_file_load_editor(
 
     assert len(dialogs) == 1
     assert dialogs[0]["parent"] is controller._manager
-    assert "source file" in dialogs[0]["text"].lower()
-    assert (
-        "preparing data before the selected provenance step"
-        in (dialogs[0]["informative_text"])
-    )
+    assert "recorded source file" in dialogs[0]["text"].lower()
+    assert "validating the edited provenance step" in (dialogs[0]["informative_text"])
     assert str(missing_path) in dialogs[0]["informative_text"]
     assert "Revert to This Step" not in dialogs[0]["informative_text"]
     assert dialogs[0]["buttons"] == (
@@ -2163,6 +2666,594 @@ def test_manager_provenance_missing_source_dialog_button_fallback(
         missing,
         can_edit=True,
     )
+
+
+def test_manager_provenance_missing_nested_source_uses_batch_relink_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    first_spec = _manager_replay_file_spec(old_dir / "a.h5")
+    second_spec = _manager_replay_file_spec(old_dir / "b.h5")
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+        old_dir / "a.h5"
+    )
+    exc = manager_provenance_edit._ProvenanceReplayFailure(
+        "replaying script input",
+        missing,
+    )
+    script_row = root_spec.display_rows()[-1]
+    dialog_calls: list[
+        tuple[
+            pathlib.Path,
+            tuple[tuple[int, ...], ...],
+            tuple[tuple[int, ...], ...],
+            bool,
+        ]
+    ] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _Dialog:
+        def __init__(
+            self,
+            load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            *,
+            batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            batch_apply_default: bool = False,
+            checked_batch_peer_ids: frozenset[str] | None = None,
+        ) -> None:
+            checked_batch_peer_ids = checked_batch_peer_ids or frozenset()
+            dialog_calls.append(
+                (
+                    pathlib.Path(load_source.path),
+                    tuple(peer.script_input_path for peer in batch_peers),
+                    tuple(
+                        peer.script_input_path
+                        for peer in batch_peers
+                        if peer.target_id in checked_batch_peer_ids
+                    ),
+                    batch_apply_default,
+                )
+            )
+            assert [peer.preserve_loader for peer in batch_peers] == [True]
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        script_row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+    )
+
+    assert dialog_calls == [(old_dir / "a.h5", ((1,),), ((1,),), True)]
+
+
+def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_a_dir = tmp_path / "old-a"
+    old_b_dir = tmp_path / "old-b"
+    new_dir = tmp_path / "new"
+    old_a_dir.mkdir()
+    old_b_dir.mkdir()
+    new_dir.mkdir()
+    old_a_path = old_a_dir / "a.h5"
+    old_b_path = old_b_dir / "b.h5"
+    new_a_path = new_dir / "a.h5"
+    new_b_path = new_dir / "b.h5"
+    first_spec = _manager_replay_file_spec(old_a_path)
+    second_spec = _manager_replay_file_spec(
+        old_b_path,
+        provenance.IselOperation(kwargs={"x": 0}),
+    )
+    assert second_spec.file_load_source is not None
+    second_replay_call = second_spec.file_load_source.replay_call
+    assert second_replay_call is not None
+    second_spec = second_spec.model_copy(
+        update={
+            "file_load_source": second_spec.file_load_source.model_copy(
+                update={
+                    "kwargs_text": "engine='scipy'",
+                    "replay_call": second_replay_call.model_copy(
+                        update={"kwargs": {"engine": "scipy"}},
+                    ),
+                }
+            )
+        }
+    )
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                node_uid="deleted-a",
+                node_snapshot_token=str(object()),
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                node_uid="deleted-b",
+                node_snapshot_token=str(object()),
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(old_a_path)
+    exc = manager_provenance_edit._ProvenanceReplayFailure(
+        "replaying script input",
+        missing,
+    )
+    script_row = root_spec.display_rows()[-1]
+    validated: list[provenance.ToolProvenanceSpec] = []
+    applied: list[provenance.ToolProvenanceSpec] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _Dialog:
+        def __init__(
+            self,
+            load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            *,
+            batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            batch_apply_default: bool = False,
+            checked_batch_peer_ids: frozenset[str] | None = None,
+        ) -> None:
+            assert pathlib.Path(load_source.path) == old_a_path
+            assert batch_apply_default is True
+            assert [peer.script_input_path for peer in batch_peers] == [(1,)]
+            assert [peer.preserve_loader for peer in batch_peers] == [True]
+            assert checked_batch_peer_ids == frozenset(
+                peer.target_id for peer in batch_peers
+            )
+            self._batch_peers = batch_peers
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(
+            self,
+            *,
+            active_name: str,
+            replay_stages: tuple[provenance.ReplayStage, ...],
+        ) -> provenance.ToolProvenanceSpec:
+            del active_name, replay_stages
+            return _manager_replay_file_spec(new_a_path)
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[manager_provenance_edit._FileLoadBatchPeer, ...]:
+            return self._batch_peers
+
+        def peer_provenance_spec(
+            self,
+            peer: manager_provenance_edit._FileLoadBatchPeer,
+        ) -> provenance.ToolProvenanceSpec:
+            return manager_provenance_edit._relinked_file_load_spec(
+                peer.spec,
+                new_b_path,
+            )
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda edit_node, scope, candidate, **_kwargs: (
+            validated.append(candidate)
+            or manager_provenance_edit._ValidatedProvenanceEdit(
+                node=typing.cast("typing.Any", edit_node),
+                scope=scope,
+                data=xr.DataArray([1.0], dims=("x",)),
+                spec=candidate,
+                filter_operation=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_apply_validated_edit",
+        lambda edit: applied.append(edit.spec),
+    )
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        script_row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+    )
+
+    assert len(validated) == 1
+    assert applied == validated
+    first_relinked = validated[0].script_inputs[0].parsed_provenance_spec()
+    second_relinked = validated[0].script_inputs[1].parsed_provenance_spec()
+    assert first_relinked is not None
+    assert second_relinked is not None
+    assert first_relinked.file_load_source is not None
+    assert second_relinked.file_load_source is not None
+    assert pathlib.Path(first_relinked.file_load_source.path) == new_a_path
+    assert pathlib.Path(second_relinked.file_load_source.path) == new_b_path
+    assert second_relinked.replay_stages == second_spec.replay_stages
+    second_replay_call = second_relinked.file_load_source.replay_call
+    assert second_replay_call is not None
+    assert second_replay_call.kwargs == {"engine": "scipy"}
+    assert validated[0].script_inputs[0].node_uid is None
+    assert validated[0].script_inputs[1].node_uid is None
+
+
+def test_manager_provenance_missing_nested_repair_partial_selection_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    old_a_path = old_dir / "a.h5"
+    old_b_path = old_dir / "b.h5"
+    new_a_path = new_dir / "a.h5"
+    first_spec = _manager_replay_file_spec(old_a_path)
+    second_spec = _manager_replay_file_spec(old_b_path)
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine inputs",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(old_a_path)
+    exc = manager_provenance_edit._ProvenanceReplayFailure(
+        "replaying script input",
+        missing,
+    )
+    script_row = root_spec.display_rows()[-1]
+    validated: list[provenance.ToolProvenanceSpec] = []
+    dialog_results = [
+        int(QtWidgets.QDialog.DialogCode.Accepted),
+        int(QtWidgets.QDialog.DialogCode.Rejected),
+    ]
+
+    class _MessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return dialog_results.pop(0)
+
+    class _Dialog:
+        def __init__(
+            self,
+            load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            *,
+            batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
+            batch_apply_default: bool = False,
+            checked_batch_peer_ids: frozenset[str] | None = None,
+        ) -> None:
+            assert pathlib.Path(load_source.path) == old_a_path
+            assert batch_apply_default is True
+            assert [peer.script_input_path for peer in batch_peers] == [(1,)]
+            assert checked_batch_peer_ids == frozenset(
+                peer.target_id for peer in batch_peers
+            )
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(
+            self,
+            *,
+            active_name: str,
+            replay_stages: tuple[provenance.ReplayStage, ...],
+        ) -> provenance.ToolProvenanceSpec:
+            del active_name, replay_stages
+            return _manager_replay_file_spec(new_a_path)
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[manager_provenance_edit._FileLoadBatchPeer, ...]:
+            return ()
+
+    def _validated_edit(
+        _edit_node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+        **_kwargs: typing.Any,
+    ) -> manager_provenance_edit._ValidatedProvenanceEdit:
+        validated.append(candidate)
+        second_candidate = candidate.script_inputs[1].parsed_provenance_spec()
+        assert second_candidate is not None
+        assert second_candidate.file_load_source is not None
+        assert pathlib.Path(second_candidate.file_load_source.path) == old_b_path
+        still_missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+            old_b_path,
+        )
+        raise manager_provenance_edit._ProvenanceReplayFailure(
+            "validating replacement",
+            still_missing,
+        ) from still_missing
+
+    monkeypatch.setattr(erlab.interactive.utils, "MessageDialog", _MessageDialog)
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(controller, "_validated_edit", _validated_edit)
+    monkeypatch.setattr(
+        controller,
+        "_apply_validated_edit",
+        lambda _edit: pytest.fail("invalid partial repair must not apply"),
+    )
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        script_row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+    )
+
+    assert len(validated) == 1
+    first_candidate = validated[0].script_inputs[0].parsed_provenance_spec()
+    assert first_candidate is not None
+    assert first_candidate.file_load_source is not None
+    assert pathlib.Path(first_candidate.file_load_source.path) == new_a_path
+    assert node.displayed_provenance_spec == root_spec
+
+
+def test_manager_provenance_missing_nested_source_repair_keeps_script_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    file_spec = _manager_replay_file_spec(tmp_path / "missing.h5")
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use file input",
+            code="derived = data_0",
+        ),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="File input",
+                provenance_spec=file_spec,
+            ),
+        ),
+    )
+    node = _fake_edit_node(root_spec)
+    controller = _fake_edit_controller(node)
+    file_row = root_spec.display_rows()[1].children[0]
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(
+        tmp_path / "missing.h5"
+    )
+    exc = manager_provenance_edit._ProvenanceReplayFailure(
+        "replaying nested file input",
+        missing,
+    )
+    edit_calls: list[
+        tuple[
+            typing.Literal["display", "source"],
+            provenance.ToolProvenanceSpec,
+            provenance._ProvenanceDisplayRow | None,
+        ]
+    ] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda _node, scope, spec, *, row=None, **_kwargs: edit_calls.append(
+            (scope, spec, row)
+        ),
+    )
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        file_row,
+        title="Could Not Apply Provenance Edit",
+        exc=exc,
+        repair_spec=file_spec,
+    )
+
+    assert len(edit_calls) == 1
+    scope, edited_spec, repair_row = edit_calls[0]
+    assert scope == "display"
+    assert edited_spec == file_spec
+    assert repair_row is not None
+    assert repair_row.script_input_path == file_row.script_input_path
+
+
+def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_path = tmp_path / "missing.h5"
+    new_path = tmp_path / "current.h5"
+    old_file_spec = _manager_replay_file_spec(old_path)
+    new_file_spec = _manager_replay_file_spec(new_path)
+    current_root = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use file input",
+            code="derived = data_0",
+        ),
+        provenance.AverageOperation(dims=("x",)),
+        provenance.IselOperation(kwargs={"y": 0}),
+        start_label="Run manager script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="File input",
+                provenance_spec=old_file_spec,
+            ),
+        ),
+    )
+    repair_root = current_root.model_copy(
+        update={"operations": current_root.operations[:-1]}
+    )
+    assert current_root.operations != repair_root.operations
+    node = _fake_edit_node(current_root)
+    controller = _fake_edit_controller(node)
+    missing = manager_provenance_edit._MissingProvenanceSourceFileError(old_path)
+    exc = manager_provenance_edit._ProvenanceReplayFailure(
+        "replaying revert target",
+        missing,
+    )
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Aggregate", None),
+    )
+    validated: list[provenance.ToolProvenanceSpec] = []
+
+    class _AcceptingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    class _Dialog:
+        def __init__(
+            self,
+            load_source: provenance.FileLoadSource,
+            _parent: QtWidgets.QWidget,
+            **_kwargs: typing.Any,
+        ) -> None:
+            assert pathlib.Path(load_source.path) == old_path
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(
+            self,
+            *,
+            active_name: str,
+            replay_stages: tuple[provenance.ReplayStage, ...],
+        ) -> provenance.ToolProvenanceSpec:
+            del active_name, replay_stages
+            return new_file_spec
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[manager_provenance_edit._FileLoadBatchPeer, ...]:
+            return ()
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _AcceptingMessageDialog,
+    )
+    monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda edit_node, scope, candidate, **_kwargs: (
+            validated.append(candidate)
+            or manager_provenance_edit._ValidatedProvenanceEdit(
+                node=typing.cast("typing.Any", edit_node),
+                scope=scope,
+                data=xr.DataArray([1.0], dims=("x",)),
+                spec=candidate,
+                filter_operation=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(controller, "_apply_validated_edit", lambda _edit: None)
+
+    assert controller._handle_missing_source_file(
+        typing.cast("typing.Any", node),
+        row,
+        title="Could Not Revert Provenance Step",
+        exc=exc,
+        repair_spec=repair_root,
+    )
+
+    assert len(validated) == 1
+    assert validated[0].operations == repair_root.operations
+    edited_input = validated[0].script_inputs[0].parsed_provenance_spec()
+    assert edited_input is not None
+    assert edited_input.file_load_source is not None
+    assert pathlib.Path(edited_input.file_load_source.path) == new_path
 
 
 @pytest.mark.parametrize("missing_again", [False, True])
@@ -2344,61 +3435,55 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         )
 
 
-def test_manager_provenance_edit_controller_dialog_execution_branches(
+def test_manager_provenance_edit_controller_recorded_dialog_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = _fake_edit_controller()
-    data = xr.DataArray(np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y"))
     operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    original_itool = erlab.interactive.itool
 
-    monkeypatch.setattr(erlab.interactive, "itool", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError, match="temporary ImageTool"):
-        controller._edited_operations_from_dialog(
-            manager_provenance_edit.dialogs.NormalizeDialog,
-            operation,
-            data,
-        )
+    class _RejectingDialog:
+        def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+            del args, kwargs
 
-    monkeypatch.setattr(erlab.interactive, "itool", original_itool)
-    monkeypatch.setattr(
-        manager_provenance_edit.dialogs.NormalizeDialog,
-        "exec",
-        lambda self: int(QtWidgets.QDialog.DialogCode.Rejected),
-    )
-    assert (
-        controller._edited_operations_from_dialog(
-            manager_provenance_edit.dialogs.NormalizeDialog,
-            operation,
-            data,
-        )
-        is None
-    )
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        def edited_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            raise AssertionError("cancel must not read edited operations")
 
     monkeypatch.setattr(
-        manager_provenance_edit.dialogs.NormalizeDialog,
-        "exec",
-        lambda self: int(QtWidgets.QDialog.DialogCode.Accepted),
+        manager_provenance_edit,
+        "_RecordedOperationEditDialog",
+        _RejectingDialog,
     )
-    assert controller._edited_operations_from_dialog(
-        manager_provenance_edit.dialogs.NormalizeDialog,
-        operation,
-        data,
-    ) == [operation]
+    assert controller._edited_recorded_operations((operation,), focus="dims") is None
+
+    replacement = provenance.NormalizeOperation(dims=("y",), mode="min")
+
+    class _AcceptingDialog:
+        def __init__(
+            self, operations: typing.Any, _parent: typing.Any, **kwargs: typing.Any
+        ) -> None:
+            assert tuple(operations) == (operation,)
+            assert kwargs == {"focus": "dims"}
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def edited_operations(self) -> list[provenance.ToolProvenanceOperation]:
+            return [replacement]
 
     monkeypatch.setattr(
-        manager_provenance_edit.dialogs.NormalizeDialog,
-        "filter_operation",
-        lambda self: None,
+        manager_provenance_edit,
+        "_RecordedOperationEditDialog",
+        _AcceptingDialog,
     )
-    assert (
-        controller._edited_operations_from_dialog(
-            manager_provenance_edit.dialogs.NormalizeDialog,
-            operation,
-            data,
-        )
-        == []
-    )
+    assert controller._edited_recorded_operations((operation,), focus="dims") == [
+        replacement
+    ]
+
+    with pytest.raises(ValueError, match="No provenance operations"):
+        controller._edited_recorded_operations(())
 
     with pytest.raises(RuntimeError, match="Active display filter"):
         controller._edit_active_filter(
@@ -2408,56 +3493,153 @@ def test_manager_provenance_edit_controller_dialog_execution_branches(
         )
 
 
-def test_manager_provenance_edit_controller_skips_deleted_temp_tool_cleanup(
+def test_manager_provenance_recorded_operation_dialog_round_trips_values(
+    qtbot,
+) -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.IselOperation(kwargs={"x": 0}),
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=None),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind="test_group",
+        focuses=("dims", "kwargs", "delta", "resolution"),
+        group_id="stable-group",
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._RecordedOperationEditDialog(
+        operations,
+        parent,
+        focus="kwargs",
+    )
+    qtbot.addWidget(dialog)
+
+    dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
+    kwargs_edit = _recorded_operation_field_edit(dialog, 1, "kwargs")
+    delta_edit = _recorded_operation_field_edit(dialog, 2, "delta")
+    resolution_edit = _recorded_operation_field_edit(dialog, 3, "resolution")
+
+    dims_edit.setText("('y',)")
+    kwargs_edit.setText("{'y': 1}")
+    delta_edit.setText("3.0")
+    resolution_edit.setText("{'kx': 0.05}")
+
+    edited = dialog.edited_operations()
+
+    assert isinstance(edited[0], provenance.AverageOperation)
+    assert edited[0].dims == ("y",)
+    assert isinstance(edited[1], provenance.IselOperation)
+    assert edited[1].kwargs == {"y": 1}
+    assert isinstance(edited[2], provenance.KspaceSetNormalOperation)
+    assert edited[2].delta == 3.0
+    assert isinstance(edited[3], provenance.KspaceConvertOperation)
+    assert edited[3].resolution == {"kx": 0.05}
+    assert [operation.group for operation in edited] == [
+        operation.group for operation in operations
+    ]
+
+
+def test_manager_provenance_recorded_operation_dialog_invalid_literal_stays_open(
+    qtbot,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    controller = _fake_edit_controller()
-    data = xr.DataArray(np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y"))
     operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    original_itool = erlab.interactive.itool
-    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
-    created_tools: list[QtWidgets.QWidget] = []
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._RecordedOperationEditDialog(
+        (operation,),
+        parent,
+    )
+    qtbot.addWidget(dialog)
+    dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
+    dims_edit.setText("not a literal")
+    warnings_shown: list[tuple[str, str]] = []
 
-    def recording_itool(*args, **kwargs):
-        tool = original_itool(*args, **kwargs)
-        created_tools.append(tool)
-        return tool
+    def _record_warning(
+        _parent: typing.Any,
+        title: str,
+        text: str,
+    ) -> QtWidgets.QMessageBox.StandardButton:
+        warnings_shown.append((title, text))
+        return QtWidgets.QMessageBox.StandardButton.Ok
 
-    def fake_qt_is_valid(*objects: object) -> bool:
-        if created_tools and any(obj is created_tools[-1] for obj in objects):
-            return False
-        return original_qt_is_valid(*objects)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings_shown
+    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_provenance_recorded_operation_unavailable_reason_for_nonliteral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    monkeypatch.setattr(
+        manager_provenance_edit,
+        "_operation_value_text",
+        lambda _value: "<not a Python literal>",
+    )
+
+    reason = manager_provenance_edit._recorded_operation_edit_unavailable_reason(
+        (operation,)
+    )
+
+    assert reason is not None
+    assert "recorded metadata" in reason
+
+
+def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    candidate = provenance.full_data()
+    base_candidate = provenance.full_data()
+    filter_operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    replayed_specs: list[provenance.ToolProvenanceSpec] = []
+
+    def _replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed_specs.append(spec)
+        return data, spec
 
     monkeypatch.setattr(
-        manager_provenance_edit.dialogs.NormalizeDialog,
-        "exec",
-        lambda self: int(QtWidgets.QDialog.DialogCode.Rejected),
+        controller,
+        "_replay_candidate_result",
+        _replay_candidate_result,
     )
-    with monkeypatch.context() as context:
-        context.setattr(erlab.interactive, "itool", recording_itool)
-        context.setattr(erlab.interactive.utils, "qt_is_valid", fake_qt_is_valid)
-        assert (
-            controller._edited_operations_from_dialog(
-                manager_provenance_edit.dialogs.NormalizeDialog,
-                operation,
-                data,
-            )
-            is None
-        )
+    monkeypatch.setattr(
+        controller,
+        "_split_active_filter",
+        lambda _node, _spec: (base_candidate, filter_operation),
+    )
 
-    for tool in created_tools:
-        if original_qt_is_valid(tool):
-            tool.close()
-            tool.deleteLater()
+    edit = controller._validated_edit(
+        typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+        "display",
+        candidate,
+        where="validating edited filter",
+    )
+
+    assert replayed_specs == [base_candidate]
+    assert edit.data is data
+    assert edit.spec == base_candidate
+    assert edit.filter_operation == filter_operation
 
 
-def test_manager_provenance_validation_reports_active_filter_replay_failure(
+def test_manager_provenance_validation_reports_active_filter_validation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
     data = xr.DataArray([1.0], dims=("x",))
     candidate = provenance.full_data()
-    base_candidate = provenance.full_data(provenance.IselOperation(kwargs={"x": 0}))
+    base_candidate = provenance.full_data()
     calls = 0
 
     def _replay_candidate_result(
@@ -2467,9 +3649,7 @@ def test_manager_provenance_validation_reports_active_filter_replay_failure(
     ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            return data, spec
-        raise RuntimeError("base replay failed")
+        return data, spec
 
     monkeypatch.setattr(
         controller,
@@ -2481,7 +3661,7 @@ def test_manager_provenance_validation_reports_active_filter_replay_failure(
         "_split_active_filter",
         lambda _node, _spec: (
             base_candidate,
-            provenance.NormalizeOperation(dims=("x",), mode="area"),
+            provenance.DivideByCoordOperation(coord_name="missing"),
         ),
     )
 
@@ -2494,6 +3674,7 @@ def test_manager_provenance_validation_reports_active_filter_replay_failure(
         )
 
     assert "active display filter" in str(exc.value)
+    assert calls == 1
 
 
 def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
@@ -5295,6 +6476,100 @@ def test_manager_provenance_file_load_batch_edit_updates_matching_peer(
         assert pathlib.Path(second_spec.file_load_source.path) == paths["new_b"]
 
 
+def test_manager_provenance_nested_file_load_batch_relinks_deleted_parents(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    old_a_path = old_dir / "a.h5"
+    old_b_path = old_dir / "b.h5"
+    new_a_path = new_dir / "a.h5"
+    new_b_path = new_dir / "b.h5"
+    old_a = test_data.copy(deep=True)
+    old_b = (test_data + 10).rename(test_data.name)
+    new_a = (test_data + 100).rename(test_data.name)
+    new_b = (test_data + 200).rename(test_data.name)
+    new_a.to_netcdf(new_a_path, engine="h5netcdf")
+    new_b.to_netcdf(new_b_path, engine="h5netcdf")
+
+    first_spec = _manager_replay_file_spec(old_a_path)
+    second_spec = _manager_replay_file_spec(old_b_path)
+    root_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Combine deleted parent tools",
+            code="derived = data_0 + data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="ImageTool 0: a",
+                node_uid="deleted-a",
+                node_snapshot_token=str(object()),
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="ImageTool 1: b",
+                node_uid="deleted-b",
+                node_snapshot_token=str(object()),
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = _add_file_replay_tool(
+            manager,
+            old_a + old_b,
+            root_spec,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [2])
+        row = manager._selected_derivation_row()
+        assert row is not None
+        assert row.script_input_path == (0,)
+        assert manager._provenance_edit_controller.can_edit_row(row)[0]
+
+        def _edit_batch(dialog: QtWidgets.QDialog) -> None:
+            dialog.path_edit.setText(str(new_a_path))  # type: ignore[attr-defined]
+            dialog.batch_apply_check.setChecked(True)  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_batch)
+
+        xr.testing.assert_identical(
+            tool.slicer_area._data.rename(None),
+            (new_a + new_b).astype(np.float64).rename(None),
+        )
+        assert root.provenance_spec is not None
+        first_input, second_input = root.provenance_spec.script_inputs
+        assert first_input.node_uid is None
+        assert second_input.node_uid is None
+        first_relinked = first_input.parsed_provenance_spec()
+        second_relinked = second_input.parsed_provenance_spec()
+        assert first_relinked is not None
+        assert second_relinked is not None
+        assert first_relinked.file_load_source is not None
+        assert second_relinked.file_load_source is not None
+        assert pathlib.Path(first_relinked.file_load_source.path) == new_a_path
+        assert pathlib.Path(second_relinked.file_load_source.path) == new_b_path
+
+
 def test_manager_provenance_rows_dim_when_not_activatable(
     qtbot,
     tmp_path: pathlib.Path,
@@ -5799,11 +7074,10 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
         xr.testing.assert_identical(tool.slicer_area._data, before_data)
 
         def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
-            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
-                check.setChecked(False)
-            dialog.dim_checks["x"].setChecked(True)  # type: ignore[attr-defined]
-            reducer_index = dialog.reducer_combo.findData("sum")  # type: ignore[attr-defined]
-            dialog.reducer_combo.setCurrentIndex(reducer_index)  # type: ignore[attr-defined]
+            dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
+            func_edit = _recorded_operation_field_edit(dialog, 0, "func")
+            dims_edit.setText("('x',)")
+            func_edit.setText("'sum'")
 
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
@@ -5876,11 +7150,10 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         select_metadata_rows(manager, [3])
 
         def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
-            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
-                check.setChecked(False)
-            dialog.dim_checks["x"].setChecked(True)  # type: ignore[attr-defined]
-            reducer_index = dialog.reducer_combo.findData("sum")  # type: ignore[attr-defined]
-            dialog.reducer_combo.setCurrentIndex(reducer_index)  # type: ignore[attr-defined]
+            dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
+            func_edit = _recorded_operation_field_edit(dialog, 0, "func")
+            dims_edit.setText("('x',)")
+            func_edit.setText("'sum'")
 
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
@@ -6004,8 +7277,8 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
         )
         monkeypatch.setattr(
             manager._provenance_edit_controller,
-            "_edited_operations_from_dialog",
-            lambda _dialog_cls, _operation, _input_data: [
+            "_edited_recorded_operations",
+            lambda _operations, **_kwargs: [
                 provenance.QSelAggregationOperation(dims=("y",), func="mean")
             ],
         )

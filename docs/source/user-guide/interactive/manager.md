@@ -406,6 +406,9 @@ manager uses their current data. If an input was removed but its recorded file s
 still available, the manager reloads that input from the file before recomputing the
 result.
 
+If those recorded files moved, edit the file load row in the operation history and use
+{guilabel}`Also relink selected file loads` to update the moved inputs together.
+
 For results from console scripts, {guilabel}`Reload Data` replays the recorded code in
 the console if possible. Only reload derived results from workspaces you trust.
 
