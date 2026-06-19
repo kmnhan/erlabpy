@@ -2,6 +2,24 @@
 
 ### ✨ Features
 
+- **interactive:** make momentum conversion easy to apply to multiple tools (#427) ([0ab2f4f](https://github.com/kmnhan/erlabpy/commit/0ab2f4fdf99da713285d1c9518dbf7049e9103c8))
+
+  ImageTool now has a `Convert to kspace…` menu item that opens a dialog with momentum conversion parameters. The dialog can be applied to multiple tools at once using the batch workflows.
+
+  Also adds some improvements for `ktool`, such as the ability to switch experimental configurations directly, and automatic guards against badly conditioned grid sizes that would use too much memory.
+
+- **manager:** add notes to the ImageTool manager (#429) ([6c11d7e](https://github.com/kmnhan/erlabpy/commit/6c11d7e35034f8102808a531f368ce5a5b4db27c))
+
+  Add a Notes tab to the ImageTool Manager where users can add notes for each tool.
+
+- **plotting:** add utilities for plotting arbitrary BZs (#420) ([584af41](https://github.com/kmnhan/erlabpy/commit/584af41f8b463794209e97cbfffa62b0bafecd2e))
+
+  Adds `eplt.plot_in_plane_bz` and `eplt.plot_out_of_plane_bz` that allows overlaying Brillouin zones on plots. They are also available as steps in the Figure Composer.
+
+- **imagetool:** reduce high-dimensional data before opening (#419) ([79d7355](https://github.com/kmnhan/erlabpy/commit/79d735534e4f64fc7dccd77475c6ca2d1dfe1dbf))
+
+  ImageTool now shows a dialog when the user tries to import data with more than four dimensions instead of rejecting it. The dialog lets users keep, select, or aggregate dimensions until the data is reduced to a compatible number of dimensions.
+
 - **manager:** add replace-source handling for concatenated results (#416) ([9f1c3b9](https://github.com/kmnhan/erlabpy/commit/9f1c3b9b509b6e91daeedc00417ea0ad6bbb7291))
 
   The ImageTool Manager concatenate dialog now lets users choose whether to open a concatenated result as a new ImageTool or replace one of the selected source tools. Replacing a source keeps compatible child ImageTools linked and refreshed from the new concatenated data, while incompatible children remain attached but unavailable instead of being removed.
