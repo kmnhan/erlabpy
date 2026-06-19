@@ -4257,6 +4257,7 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
 
 def test_manager_from_h5py_workspace_logs_restore_failure(
     qtbot,
+    caplog,
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -4285,10 +4286,17 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
         monkeypatch.setattr(manager, "_load_workspace_imagetool_dataset", _raise_load)
         monkeypatch.setattr(manager, "_restore_replaced_workspace", _raise_restore)
 
-        with pytest.raises(RuntimeError, match="load failed"):
+        with (
+            caplog.at_level(logging.ERROR, logger=manager_workspace_io.logger.name),
+            pytest.raises(ValueError, match="No workspace windows") as exc_info,
+        ):
             manager._from_h5py_workspace_file(
                 fname, manifest, replace=True, mark_dirty=False
             )
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "load failed"
+        assert "Failed to restore previous workspace" in caplog.text
+        assert "restore failed" in caplog.text
 
 
 def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
@@ -9609,7 +9617,7 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
             h5_file.attrs["imagetool_workspace_schema_version"] = 4
             h5_file.create_group("0")
 
-        with pytest.raises(ValueError, match="Workspace node"):
+        with pytest.raises(ValueError, match="No workspace windows") as exc_info:
             manager._load_workspace_file(
                 broken_fname,
                 replace=True,
@@ -9617,6 +9625,8 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
                 mark_dirty=False,
                 select=False,
             )
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "Workspace node" in str(exc_info.value.__cause__)
 
         assert manager.workspace_path == str(current_fname.resolve())
         assert manager.ntools == 1

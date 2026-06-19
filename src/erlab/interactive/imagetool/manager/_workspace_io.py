@@ -134,7 +134,7 @@ class _WorkspaceIOController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
-        self._skipped_workspace_nodes: list[tuple[str, str, str]] = []
+        self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
 
     def _record_missing_workspace_colormap(
@@ -209,22 +209,30 @@ class _WorkspaceIOController:
             exc_info=(type(exc), exc, exc.__traceback__),
             extra={"suppress_ui_alert": True},
         )
-        self._skipped_workspace_nodes.append((node_label, exc_summary, exc_text))
+        self._skipped_workspace_nodes.append((node_label, exc_summary, exc_text, exc))
 
-    @staticmethod
-    def _raise_no_workspace_windows_loaded() -> typing.NoReturn:
-        raise ValueError("No workspace windows could be loaded")
+    def _raise_no_workspace_windows_loaded(self) -> typing.NoReturn:
+        skipped_nodes = self._skipped_workspace_nodes
+        details = "\n".join(
+            f"- {node_label}: {exc_summary}"
+            for node_label, exc_summary, _exc_text, _exc in skipped_nodes
+        )
+        exc = ValueError(f"No workspace windows could be loaded:\n{details}")
+        if skipped_nodes:
+            raise exc from skipped_nodes[0][3]
+        raise exc
 
     def _show_skipped_workspace_node_warning(self) -> None:
         if not self._skipped_workspace_nodes:
             return
+        skipped_nodes = self._skipped_workspace_nodes
         affected = "\n".join(
             f"- {node_label}: {exc_summary}"
-            for node_label, exc_summary, _exc_text in self._skipped_workspace_nodes
+            for node_label, exc_summary, _exc_text, _exc in skipped_nodes
         )
         tracebacks = "\n\n".join(
             f"Workspace node {node_label}\n{exc_text}"
-            for node_label, _exc_summary, exc_text in self._skipped_workspace_nodes
+            for node_label, _exc_summary, exc_text, _exc in skipped_nodes
         )
         dialog = erlab.interactive.utils.MessageDialog(
             self._manager,
