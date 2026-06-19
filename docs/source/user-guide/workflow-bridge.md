@@ -40,7 +40,7 @@ code for reproducibility and batch processing.
   - {ref}`Figure Composer <figure-composer>`
   - Matplotlib API and {mod}`erlab.plotting` functions
 - - Select a point or range from multidimensional data
-  - {guilabel}`Edit → Select Data…` or the right-click context menu of each plot
+  - {menuselection}`Edit --> Select Data…` or the right-click context menu of each plot
   - {meth}`xarray.DataArray.qsel`, {meth}`xarray.DataArray.sel`, and
     {meth}`xarray.DataArray.isel`
 - - Aggregate over dimensions
@@ -61,19 +61,19 @@ code for reproducibility and batch processing.
   - {ref}`Crop dialogs <imagetool-editing>`
   - {meth}`xarray.DataArray.sel`, {meth}`xarray.DataArray.isel`
 - - Rotate or symmetrize
-  - {ref}`Transform dialogs <imagetool-editing>` including {guilabel}`Edit → Rotate` and
-    {guilabel}`Edit → Symmetrize`
+  - {ref}`Transform dialogs <imagetool-editing>` including {menuselection}`Edit --> Rotate` and
+    {menuselection}`Edit --> Symmetrize`
   - {func}`erlab.analysis.transform.rotate`,
     {func}`erlab.analysis.transform.symmetrize`,
     {func}`erlab.analysis.transform.symmetrize_nfold`
 - - Edit or add coordinates
-  - {guilabel}`Edit → Edit Coordinates` in {ref}`ImageTool data controls <imagetool-data>`
+  - {menuselection}`Edit --> Edit Coordinates` in {ref}`ImageTool data controls <imagetool-data>`
   - {meth}`xarray.DataArray.assign_coords`, such as
     `data.assign_coords(y=scale * data.y + offset)`,
     `data.assign_coords(temperature=20.0)`, or
     `data.assign_coords(label=("x", labels))`
 - - Edit or add attributes
-  - {guilabel}`Edit → Edit Attributes` in {ref}`ImageTool data controls <imagetool-data>`
+  - {menuselection}`Edit --> Edit Attributes` in {ref}`ImageTool data controls <imagetool-data>`
   - {meth}`xarray.DataArray.assign_attrs`, such as
     `data.assign_attrs(sample_temp=20.0, note="checked")`
 - - Swap dimensions

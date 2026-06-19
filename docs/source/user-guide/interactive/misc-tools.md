@@ -47,7 +47,7 @@ There are four ways to start `ktool`.
 
 3. From the ImageTool View menu
 
-   Click {guilabel}`View → Open ktool`.
+   Click {menuselection}`View --> Open ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
 
@@ -520,7 +520,7 @@ import erlab.interactive as eri
 eri.meshtool(data)
 ```
 
-It can also be opened from the ImageTool View menu with {guilabel}`View → Open meshtool`.
+It can also be opened from the ImageTool View menu with {menuselection}`View --> Open meshtool`.
 
 The `%meshtool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
 
@@ -592,7 +592,7 @@ you want the overview as a DataFrame inside Python or when you are implementing 
 You can open the explorer in several ways:
 
 1. From the {ref}`ImageTool manager <imagetool-manager-data-explorer>` with
-   {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`.
+   {menuselection}`File --> Data Explorer` or {kbd}`Ctrl+E`.
 2. From Python with {func}`erlab.interactive.data_explorer`.
 3. From the command line with `python -m erlab.interactive.explorer`.
 
@@ -641,7 +641,7 @@ python -m erlab.interactive.ptable
 ```
 
 In the {ref}`ImageTool manager <imagetool-manager>`, you can open it from
-{guilabel}`Apps → Periodic Table` or with the keyboard shortcut {kbd}`Ctrl+Shift+P`.
+{menuselection}`Apps --> Periodic Table` or with the keyboard shortcut {kbd}`Ctrl+Shift+P`.
 
 - The search bar highlights matching elements by symbol or name and offers autocomplete
   suggestions that select the chosen element. Entering a comma- or space-separated
