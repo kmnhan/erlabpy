@@ -38,6 +38,7 @@ import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
+import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
@@ -1464,17 +1465,8 @@ def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
 def test_imagetool_plot_slices_selection_warning_shows_error_detail(
     qtbot, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tool = erlab.interactive.itool(
-        _unsupported_plot_slices_data(), manager=False, execute=False
-    )
-    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-    qtbot.addWidget(tool)
-
-    _set_unsupported_plot_slices_cursor_state(tool)
-
-    with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
-        tool.slicer_area.images[0].figure_composer_operation(source_name="data")
-
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
     messages: list[tuple[QtWidgets.QWidget | None, str, str]] = []
 
     def warning(
@@ -1485,12 +1477,15 @@ def test_imagetool_plot_slices_selection_warning_shows_error_detail(
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warning)
 
-    tool.slicer_area.images[0]._show_plot_slices_selection_error(
-        tool.slicer_area, exc_info.value
+    imagetool_plot_items.ItoolPlotItem._show_plot_slices_selection_error(
+        parent,
+        FigureComposerPlotSlicesSelectionError(
+            "Cannot plot when more than one dimension"
+        ),
     )
 
     assert len(messages) == 1
-    assert messages[0][0] is tool.slicer_area
+    assert messages[0][0] is parent
     assert messages[0][1] == "Cannot Create Plot Slices Figure"
     assert "Details:" in messages[0][2]
     assert "Cannot plot when more than one dimension" in messages[0][2]

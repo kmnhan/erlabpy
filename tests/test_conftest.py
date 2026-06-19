@@ -111,12 +111,17 @@ def test_serial_xdist_group_serializes_manager_context_tests() -> None:
         "tests/interactive/imagetool/manager/test_console.py",
         "tests/interactive/imagetool/manager/test_console.py::test_console",
     )
+    kspace_group = _CONFTEST.serial_xdist_group(
+        "tests/interactive/test_kspace.py",
+        "tests/interactive/test_kspace.py::test_kspace_conversion_dialog_code_and_result",
+    )
 
     assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
     assert workspace_group == "qt-tests-interactive-imagetool-manager-test_workspace"
     assert explorer_group == "qt-tests-interactive-test_explorer"
     assert watcher_group == "qt-tests-interactive-imagetool-test_watcher"
     assert console_group == "qt-tests-interactive-imagetool-manager-test_console"
+    assert kspace_group == "qt-tests-interactive-test_kspace"
     assert slicer_group != workspace_group
     assert console_group != workspace_group
 
@@ -133,3 +138,16 @@ def test_pyqtgraph_boundingrect_ignores_deleted_infinite_line(qtbot) -> None:
     qtbot.waitUntil(lambda: not qt_is_valid(line), timeout=1000)
 
     assert line.boundingRect() == QtCore.QRectF()
+
+
+def test_pyqtgraph_graphics_view_skips_paint_after_close(qtbot) -> None:
+    import pyqtgraph as pg
+    from qtpy import QtCore, QtGui
+
+    view = pg.GraphicsView()
+    qtbot.addWidget(view)
+
+    view.close()
+    event = QtGui.QPaintEvent(QtCore.QRect(0, 0, 1, 1))
+
+    assert view.paintEvent(event) is None

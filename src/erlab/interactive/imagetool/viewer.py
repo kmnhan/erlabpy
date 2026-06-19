@@ -1116,7 +1116,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         entry = self._pending_history_entry
         if entry is None:
             return
-        if not erlab.interactive.utils.qt_is_valid(self, self.lock_levels_act):
+        if not erlab.interactive.utils.qt_is_valid(self):
+            self._discard_pending_history_entry()
+            return
+        try:
+            lock_levels_act = self.lock_levels_act
+        except RuntimeError:
+            self._discard_pending_history_entry()
+            return
+        if not erlab.interactive.utils.qt_is_valid(lock_levels_act):
             self._discard_pending_history_entry()
             return
 
@@ -1128,6 +1136,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self._prev_states.remove(entry)
             self._pending_history_entry = None
             self._pending_history_committed = False
+            if not erlab.interactive.utils.qt_is_valid(self):
+                return
             self.sigHistoryChanged.emit()
             return
 
@@ -1139,6 +1149,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if not keep_pending:
             self._pending_history_entry = None
             self._pending_history_committed = False
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
         self.sigHistoryChanged.emit()
 
     def record_history_mutation(

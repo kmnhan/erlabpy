@@ -174,6 +174,11 @@ def qt_is_valid(*objects: object) -> bool:
     return all(obj is None or _qt_object_is_valid(obj) for obj in objects)
 
 
+def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return "wrapped C/C++ object" in message and "has been deleted" in message
+
+
 _ERLAB_CURSOR_SHAPE_PROPERTY = "_erlab_cursor_shape"
 _ERLAB_CURSOR_UNSET = "unset"
 _MPL_QT_CURSOR_PATCH_ATTR = "_erlab_original_set_cursor"
@@ -2062,6 +2067,16 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 class BetterAxisItem(pg.AxisItem):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+
+    def paint(self, painter, option, widget=None):
+        if not qt_is_valid(self):
+            return None
+        try:
+            return super().paint(painter, option, widget)
+        except RuntimeError as exc:
+            if _is_deleted_qt_wrapper_error(exc):
+                return None
+            raise
 
     def updateAutoSIPrefix(self) -> None:
         if self.label.isVisible():

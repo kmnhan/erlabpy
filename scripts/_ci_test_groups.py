@@ -108,8 +108,7 @@ GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
 SERIAL_PREFIX_GROUPS: tuple[tuple[str, str | None], ...] = (
-    ("tests/interactive/imagetool/manager/", None),
-    ("tests/interactive/imagetool/", None),
+    ("tests/interactive/", None),
 )
 SERIAL_TARGET_GROUPS: dict[str, str] = {
     "tests/io/plugins/test_erpes.py": "hdf5-cache",

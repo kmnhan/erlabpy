@@ -83,6 +83,13 @@ def _make_da_ktool_data(anglemap) -> xr.DataArray:
     return data.assign_coords(xi=0.0, chi=0.0)
 
 
+def _add_kspace_conversion_dialog(qtbot, slicer_area) -> KspaceConversionDialog:
+    dialog = KspaceConversionDialog(slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+    return dialog
+
+
 def _memory_budget(
     *,
     total: int = 64 * _GIB,
@@ -194,8 +201,7 @@ def test_kspace_conversion_dialog_requires_configuration(
 
     win = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._compatible is False
     assert not hasattr(dialog, "configuration_combo")
@@ -673,9 +679,7 @@ def test_kspace_memory_estimate_labels_wrap(qtbot, anglemap) -> None:
     qtbot.addWidget(win)
     dialog_host = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(dialog_host)
-    dialog = KspaceConversionDialog(dialog_host.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, dialog_host.slicer_area)
 
     for label in (win._memory_estimate_label, dialog._memory_estimate_label):
         assert label.wordWrap()
@@ -923,8 +927,7 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
 
     win = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert not {"delta", "xi", "beta", "chi"} & set(dialog._offset_spins)
     assert ("V0" in dialog._offset_spins) is data.kspace._has_hv
@@ -977,8 +980,7 @@ def test_kspace_conversion_dialog_unsafe_accept_shows_error(
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     win = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     messages: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(
         erlab.interactive.utils.MessageDialog,
@@ -1015,9 +1017,7 @@ def test_kspace_conversion_dialog_estimate_defensive_paths(
     data = _make_da_ktool_data(anglemap)
     win = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     dialog._set_control_configuration(int(AxesConfiguration.Type2DA))
 
     estimate = dialog.conversion_estimate_for_data(data)
@@ -1066,8 +1066,7 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     win.slicer_area.add_tool_window(first)
     win.slicer_area.add_tool_window(second)
 
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._offset_spins["wf"].value() == pytest.approx(4.75)
     assert dialog._normal_delta == pytest.approx(12.5)
@@ -1098,8 +1097,7 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
     child._offset_spins["V0"].setValue(14.0)
     win.slicer_area.add_tool_window(child)
 
-    dialog = KspaceConversionDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
     assert dialog._offset_spins["V0"].value() == pytest.approx(14.0)
 
@@ -1138,9 +1136,7 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     win = erlab.interactive.itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = KspaceConversionDialog(win.slicer_area)
-    dialog.setParent(None)
-    qtbot.addWidget(dialog)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
     axes = tuple(dialog._control_data.kspace.momentum_axes)
     bounds = dict.fromkeys(axes, (-0.03, 0.04))
     resolution = dict.fromkeys(axes, 0.02)

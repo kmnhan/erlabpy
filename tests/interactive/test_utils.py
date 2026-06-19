@@ -576,6 +576,20 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
+def test_better_axis_item_paint_ignores_deleted_axis(qtbot) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    axis.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(axis), timeout=1000)
+
+    pixmap = QtGui.QPixmap(8, 8)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        assert axis.paint(painter, None, None) is None
+    finally:
+        painter.end()
+
+
 def test_tool_window_reload_refresh_ignores_deleted_file_menu(qtbot) -> None:
     tool = erlab.interactive.utils.ToolWindow()
     qtbot.addWidget(tool)
