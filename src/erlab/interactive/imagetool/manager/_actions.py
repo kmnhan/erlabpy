@@ -159,6 +159,7 @@ class _ActionsController:
 
     def promote_child_imagetool(self, uid: str) -> int:
         """Promote the nested ImageTool identified by ``uid`` to a top-level row."""
+        self._manager._commit_note_editor()
         node = self._manager._child_node(uid)
         if not node.is_imagetool:
             raise KeyError(f"Target {uid!r} is not an ImageTool")
@@ -179,6 +180,7 @@ class _ActionsController:
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
+        note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
         self._manager._unregister_node(uid)
@@ -191,6 +193,7 @@ class _ActionsController:
                 provenance_spec=provenance_spec,
                 snapshot_token=snapshot_token,
                 created_time=created_time,
+                note=note,
             )
         wrapper = self._manager._tool_graph.root_wrappers[new_index]
         wrapper._recent_geometry = recent_geometry
@@ -627,6 +630,7 @@ class _ActionsController:
                     source_binding=persistence.source_binding,
                     source_auto_update=persistence.source_auto_update,
                     source_state=persistence.source_state,
+                    note=node.note,
                 )
             else:
                 parent_target = (
@@ -644,11 +648,14 @@ class _ActionsController:
                     source_auto_update=persistence.source_auto_update,
                     source_state=persistence.source_state,
                     output_id=persistence.output_id,
+                    note=node.note,
                 )
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
             if node.parent_uid is None and self._manager._is_figure_node(node):
-                new_target = self._manager.add_figuretool(tool.duplicate())
+                new_target = self._manager.add_figuretool(
+                    tool.duplicate(), note=node.note
+                )
             else:
                 parent_target = (
                     parent_override
@@ -656,7 +663,7 @@ class _ActionsController:
                     else self._manager._parent_node(node).uid
                 )
                 new_target = self._manager.add_childtool(
-                    tool.duplicate(), parent_target
+                    tool.duplicate(), parent_target, note=node.note
                 )
 
         for child_uid in node._childtool_indices:
@@ -676,6 +683,7 @@ class _ActionsController:
         int
             Index of the newly created ImageTool window.
         """
+        self._manager._commit_note_editor()
         return self._manager._duplicate_subtree(index)
 
     def duplicate_childtool(self, uid: str) -> str:
@@ -691,6 +699,7 @@ class _ActionsController:
         str
             UID of the newly created child tool.
         """
+        self._manager._commit_note_editor()
         duplicated = self._manager._duplicate_subtree(uid)
         if isinstance(duplicated, str):
             return duplicated
@@ -1337,6 +1346,7 @@ class _ActionsController:
         uid: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> str:
         """Register a child tool window.
 
@@ -1359,6 +1369,7 @@ class _ActionsController:
                 uid=uid,
                 snapshot_token=snapshot_token,
                 created_time=created_time,
+                note=note,
             )
 
         parent = self._manager._node_for_target(index)
@@ -1369,6 +1380,7 @@ class _ActionsController:
             tool,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
@@ -1408,6 +1420,7 @@ class _ActionsController:
         output_id: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> str:
         parent_node = self._manager._node_for_target(parent)
         if source_spec is None and source_binding is not None:
@@ -1436,6 +1449,7 @@ class _ActionsController:
             output_id=output_id,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
         self._manager._register_child_node(node)
         if output_id is not None and parent_node.tool_window is not None:

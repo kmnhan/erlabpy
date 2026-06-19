@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
 _RowBadgeKind = typing.Literal[
-    "dask", "link", "watched", "tool_type", "source_status", "dependency_status"
+    "dask",
+    "link",
+    "watched",
+    "tool_type",
+    "source_status",
+    "dependency_status",
 ]
 
 
@@ -176,17 +181,15 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     status_rect, _, _ = self._compute_child_status_info(
                         option,
                         child_node,
-                        right_edge=dask_rect.left() if dask_rect is not None else None,
+                        right_edge=self._right_badge_edge(dask_rect),
                     )
                     if status_rect is None:
                         status_rect, _, _ = self._compute_dependency_status_info(
                             option,
                             child_node,
-                            right_edge=(
-                                dask_rect.left() if dask_rect is not None else None
-                            ),
+                            right_edge=self._right_badge_edge(dask_rect),
                         )
-                    right_badge_rect = status_rect or dask_rect
+                    right_badge_rect = self._leftmost_rect(status_rect, dask_rect)
                     if right_badge_rect is not None:
                         rect.setRight(right_badge_rect.left() - self.icon_right_pad)
             rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
@@ -290,6 +293,16 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         return icons_width, dask_rect, link_rect, watched_rect
 
+    @staticmethod
+    def _right_badge_edge(*rects: QtCore.QRect | None) -> int | None:
+        visible = [rect.left() for rect in rects if rect is not None]
+        return min(visible) if visible else None
+
+    @staticmethod
+    def _leftmost_rect(*rects: QtCore.QRect | None) -> QtCore.QRect | None:
+        visible = [rect for rect in rects if rect is not None]
+        return min(visible, key=lambda rect: rect.left()) if visible else None
+
     def _paint_icon(
         self,
         painter: QtGui.QPainter,
@@ -367,7 +380,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         )
 
         # Precompute icon geometry
-        icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
+        _icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
             option, tool_wrapper
         )
         icon_rects = [
@@ -401,16 +414,13 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             fm = QtGui.QFontMetrics(option.font)
             text = index.data(role=QtCore.Qt.ItemDataRole.DisplayRole)
             text_rect = QtCore.QRect(option.rect)
-            if dependency_rect is not None:
-                text_rect.setRight(dependency_rect.left() - self.icon_right_pad)
+            right_badge_rect = self._leftmost_rect(dependency_rect, *icon_rects)
+            if right_badge_rect is not None:
+                text_rect.setRight(right_badge_rect.left() - self.icon_right_pad)
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
-                (
-                    max(text_rect.width(), 0)
-                    if dependency_rect is not None
-                    else option.rect.width() - self.icon_right_pad - icons_width
-                ),
+                max(text_rect.width(), 0),
             )
             painter.setPen(palette.color(color_group, role))
             painter.drawText(
@@ -530,14 +540,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             status_rect, status_text, status_color = self._compute_child_status_info(
                 option,
                 child_node,
-                right_edge=dask_rect.left() if dask_rect is not None else None,
+                right_edge=self._right_badge_edge(dask_rect),
             )
             if status_rect is None:
                 status_rect, status_text, status_color = (
                     self._compute_dependency_status_info(
                         option,
                         child_node,
-                        right_edge=dask_rect.left() if dask_rect is not None else None,
+                        right_edge=self._right_badge_edge(dask_rect),
                     )
                 )
 
@@ -574,7 +584,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             text_rect = QtCore.QRect(option.rect)
             if type_rect is not None:
                 text_rect.setLeft(type_rect.right() + self.tool_type_rect_gap + 1)
-            right_badge_rect = status_rect or dask_rect
+            right_badge_rect = self._leftmost_rect(status_rect, dask_rect)
             if right_badge_rect is not None:
                 text_rect.setRight(right_badge_rect.left() - self.icon_right_pad)
 
@@ -875,14 +885,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         status_rect, _, _ = self._compute_child_status_info(
             option,
             child_node,
-            right_edge=dask_rect.left() if dask_rect is not None else None,
+            right_edge=self._right_badge_edge(dask_rect),
         )
         source_status = status_rect is not None
         if status_rect is None:
             status_rect, _, _ = self._compute_dependency_status_info(
                 option,
                 child_node,
-                right_edge=dask_rect.left() if dask_rect is not None else None,
+                right_edge=self._right_badge_edge(dask_rect),
             )
         if dask_rect is not None and dask_rect.contains(pos):
             tooltip = (
@@ -1708,6 +1718,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)
         self._menu.addAction(manager.unlink_action)
+        self._menu.addSeparator()
+        self._menu.addAction(manager.edit_note_action)
+        self._menu.addAction(manager.copy_note_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.store_action)
 

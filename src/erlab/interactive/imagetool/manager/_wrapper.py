@@ -89,6 +89,23 @@ def _format_added_time(value: datetime.datetime) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
 
 
+def _coerce_note(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode()
+        except UnicodeDecodeError:
+            logger.warning("Ignoring invalid saved manager note", exc_info=True)
+            return ""
+    if isinstance(value, str):
+        return value
+    logger.warning(
+        "Ignoring invalid saved manager note of type %s", type(value).__name__
+    )
+    return ""
+
+
 def _preview_from_imagetool(
     imagetool: ImageTool | None,
     fallback_ratio: float,
@@ -279,6 +296,7 @@ class _ManagedWindowNode(QtCore.QObject):
         output_id: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
@@ -307,6 +325,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._snapshot_token = (
             str(snapshot_token) if snapshot_token else uuid.uuid4().hex
         )
+        self._note = _coerce_note(note)
         self._suspend_snapshot_token_updates = True
 
         self.window = window
@@ -588,6 +607,20 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def created_time(self) -> datetime.datetime:
         return self._created_time
+
+    @property
+    def note(self) -> str:
+        return self._note
+
+    @note.setter
+    def note(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise TypeError("note must be a string")
+        self._note = value
+
+    @property
+    def has_note(self) -> bool:
+        return bool(self._note.strip())
 
     @property
     def added_time_iso(self) -> str:
@@ -1453,6 +1486,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> None:
         self._index = index
         self._watched_varname: str | None = None
@@ -1486,6 +1520,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             source_state=source_state,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
 
     @property

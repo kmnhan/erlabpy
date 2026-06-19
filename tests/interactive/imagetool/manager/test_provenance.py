@@ -2776,8 +2776,14 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         assert manager.right_splitter.count() == 3
         assert manager.right_splitter.widget(2) is manager.metadata_group
-        assert manager.metadata_details_widget.parentWidget() is manager.metadata_group
-        assert manager.metadata_derivation_list.parentWidget() is manager.metadata_group
+        assert (
+            manager.metadata_details_widget.parentWidget()
+            is manager.metadata_details_page
+        )
+        assert (
+            manager.metadata_derivation_list.parentWidget()
+            is manager.metadata_provenance_page
+        )
         assert not isinstance(
             manager.metadata_derivation_list.parentWidget(), QtWidgets.QSplitter
         )
@@ -2787,6 +2793,11 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
                 "typing.Any",
                 types.SimpleNamespace(
                     uid="node",
+                    display_text="Node",
+                    note="",
+                    has_note=False,
+                    is_imagetool=True,
+                    type_badge_text="",
                     displayed_provenance_spec=provenance.full_data(),
                     metadata_fields=[
                         manager_wrapper._MetadataField("Kind", "ImageTool")
@@ -2797,7 +2808,11 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         )
 
         assert manager.metadata_group.isVisible()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
         assert manager.metadata_details_widget.isVisible()
+        assert not manager.metadata_derivation_list.isVisible()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+        QtWidgets.QApplication.processEvents()
         assert manager.metadata_derivation_list.isVisible()
         handle = manager.right_splitter.handle(2)
         assert handle is not None
@@ -2805,7 +2820,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         assert manager.metadata_derivation_list.minimumHeight() > 0
         assert (
             manager.metadata_derivation_list.maximumHeight()
-            == QtWidgets.QWIDGETSIZE_MAX
+            == manager_widgets._QWIDGETSIZE_MAX
         )
 
         manager.resize(640, 700)
@@ -2815,7 +2830,6 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
             manager.metadata_derivation_list.minimumHeight()
         )
         before_right_sizes = manager.right_splitter.sizes()
-        before_details_height = manager.metadata_details_widget.height()
         before_list_height = manager.metadata_derivation_list.height()
         manager.right_splitter.moveSplitter(
             before_right_sizes[0] + before_right_sizes[1] - 40, 2
@@ -2823,7 +2837,6 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         QtWidgets.QApplication.processEvents()
         after_right_sizes = manager.right_splitter.sizes()
         assert after_right_sizes[2] > before_right_sizes[2]
-        assert manager.metadata_details_widget.height() == before_details_height
         assert manager.metadata_derivation_list.height() > before_list_height
 
 

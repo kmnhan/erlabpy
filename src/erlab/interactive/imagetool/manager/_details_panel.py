@@ -17,6 +17,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
+    _QWIDGETSIZE_MAX,
     _CenteredIconToolButton,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
@@ -102,15 +103,145 @@ class _DetailsPanelController:
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
 
+    def _notes_ui_available(self) -> bool:
+        return hasattr(self._manager, "notes_editor")
+
+    def _selected_note_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        targets: list[int | str] = []
+        targets.extend(self._manager._selected_imagetool_targets())
+        targets.extend(self._manager._selected_tool_uids())
+        if len(targets) != 1:
+            return None
+        return self._manager._node_for_target(targets[0])
+
+    def _current_note_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        uid = self._manager._notes_node_uid
+        if uid is None:
+            return None
+        return self._manager._tool_graph.nodes.get(uid)
+
+    def _selected_or_current_note_node(
+        self,
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        return self._selected_note_node() or self._current_note_node()
+
+    def _note_kind_text(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
+        if self._manager._is_figure_uid(node.uid):
+            return "Figure Composer"
+        if node.is_imagetool:
+            return "ImageTool"
+        return node.type_badge_text or "Analysis Tool"
+
+    def _set_notes_node(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode | None,
+    ) -> None:
+        if not self._notes_ui_available():
+            return
+        if node is None:
+            self._manager._commit_note_editor()
+            self._manager._notes_node_uid = None
+            self._manager._updating_note_editor = True
+            try:
+                self._manager.notes_title_label.setText("")
+                self._manager.notes_kind_label.clear()
+                self._manager.notes_editor.clear()
+            finally:
+                self._manager._updating_note_editor = False
+            self._manager.notes_editor.setEnabled(False)
+            self._update_note_actions()
+            return
+
+        if self._manager._notes_node_uid != node.uid:
+            self._manager._commit_note_editor()
+        self._manager._notes_node_uid = node.uid
+        self._manager.notes_title_label.setText(node.display_text)
+        self._manager.notes_kind_label.setText(self._note_kind_text(node))
+        self._manager._updating_note_editor = True
+        try:
+            if self._manager.notes_editor.toPlainText() != node.note:
+                self._manager.notes_editor.setPlainText(node.note)
+        finally:
+            self._manager._updating_note_editor = False
+        self._manager.notes_editor.setEnabled(True)
+        self._update_note_actions()
+
+    def _update_note_actions(self) -> None:
+        if not self._notes_ui_available():
+            return
+        node = self._selected_or_current_note_node()
+        can_edit = node is not None
+        has_note = bool(node is not None and node.has_note)
+        self._manager.edit_note_action.setEnabled(can_edit)
+        self._manager.copy_note_action.setEnabled(has_note)
+        self._manager.clear_note_action.setEnabled(has_note)
+
+    def _schedule_note_commit(self) -> None:
+        if not self._notes_ui_available():
+            return
+        if self._manager._updating_note_editor:
+            return
+        self._manager._note_commit_timer.start()
+
+    def _commit_note_editor(self) -> None:
+        if not self._notes_ui_available():
+            return
+        self._manager._note_commit_timer.stop()
+        if self._manager._updating_note_editor:
+            return
+        node = self._current_note_node()
+        if node is None:
+            return
+        note = self._manager.notes_editor.toPlainText()
+        if node.note == note:
+            self._update_note_actions()
+            return
+        node.note = note
+        self._manager._mark_node_state_dirty(node.uid)
+        self._manager.tree_view.refresh(node.uid)
+        self._update_note_actions()
+
+    def _edit_selected_note(self) -> None:
+        if not self._notes_ui_available():
+            return
+        node = self._selected_note_node()
+        if node is None:
+            return
+        self._set_notes_node(node)
+        self._manager.inspector_tabs.setCurrentWidget(self._manager.notes_page)
+        self._manager.notes_editor.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
+    def _copy_selected_note(self) -> None:
+        if not self._notes_ui_available():
+            return
+        self._commit_note_editor()
+        node = self._selected_or_current_note_node()
+        if node is None or not node.note:
+            return
+        erlab.interactive.utils.copy_to_clipboard(node.note)
+
+    def _clear_selected_note(self) -> None:
+        if not self._notes_ui_available():
+            return
+        self._commit_note_editor()
+        node = self._selected_or_current_note_node()
+        if node is None:
+            return
+        self._set_notes_node(node)
+        self._manager.notes_editor.clear()
+        self._commit_note_editor()
+
     def _clear_metadata(self) -> None:
         self._manager._metadata_full_code_available = False
         self._manager._metadata_node_uid = None
+        self._set_notes_node(None)
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
         self._manager._set_metadata_fields([])
         self._manager._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
+        self._set_notes_node(node)
         self._manager._metadata_full_code_available = (
             node.displayed_provenance_spec is not None
         )
@@ -393,11 +524,56 @@ class _DetailsPanelController:
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._manager._metadata_detail_labels)
         derivation_count = self._manager.metadata_derivation_list.count()
-        has_metadata = has_details or derivation_count > 0
+        has_note_target = self._manager._notes_node_uid is not None
+        has_metadata = has_details or derivation_count > 0 or has_note_target
 
         self._manager.metadata_group.setVisible(has_metadata)
         self._manager.metadata_details_widget.setVisible(has_details)
         self._manager.metadata_derivation_list.setVisible(derivation_count > 0)
+        details_index = self._manager.inspector_tabs.indexOf(
+            self._manager.metadata_details_page
+        )
+        provenance_index = self._manager.inspector_tabs.indexOf(
+            self._manager.metadata_provenance_page
+        )
+        notes_index = self._manager.inspector_tabs.indexOf(self._manager.notes_page)
+        if details_index >= 0:
+            self._manager.inspector_tabs.setTabEnabled(
+                details_index, has_details or not has_metadata
+            )
+        if provenance_index >= 0:
+            self._manager.inspector_tabs.setTabEnabled(
+                provenance_index, derivation_count > 0
+            )
+        if notes_index >= 0:
+            self._manager.inspector_tabs.setTabEnabled(notes_index, has_note_target)
+        current_widget = self._manager.inspector_tabs.currentWidget()
+        if current_widget is self._manager.metadata_details_page and not has_details:
+            if derivation_count > 0:
+                self._manager.inspector_tabs.setCurrentWidget(
+                    self._manager.metadata_provenance_page
+                )
+            elif has_note_target:
+                self._manager.inspector_tabs.setCurrentWidget(self._manager.notes_page)
+        elif (
+            current_widget is self._manager.metadata_provenance_page
+            and derivation_count == 0
+        ):
+            if has_details:
+                self._manager.inspector_tabs.setCurrentWidget(
+                    self._manager.metadata_details_page
+                )
+            elif has_note_target:
+                self._manager.inspector_tabs.setCurrentWidget(self._manager.notes_page)
+        elif current_widget is self._manager.notes_page and not has_note_target:
+            if has_details:
+                self._manager.inspector_tabs.setCurrentWidget(
+                    self._manager.metadata_details_page
+                )
+            elif derivation_count > 0:
+                self._manager.inspector_tabs.setCurrentWidget(
+                    self._manager.metadata_provenance_page
+                )
 
         if derivation_count == 0:
             self._manager.metadata_derivation_list.setMinimumHeight(0)
@@ -410,9 +586,7 @@ class _DetailsPanelController:
             frame = self._manager.metadata_derivation_list.frameWidth() * 2
             height = visible_rows * row_height + frame + 4
             self._manager.metadata_derivation_list.setMinimumHeight(height)
-            self._manager.metadata_derivation_list.setMaximumHeight(
-                QtWidgets.QWIDGETSIZE_MAX
-            )
+            self._manager.metadata_derivation_list.setMaximumHeight(_QWIDGETSIZE_MAX)
 
         self._manager.metadata_details_widget.updateGeometry()
         self._manager.metadata_derivation_list.updateGeometry()
@@ -923,6 +1097,7 @@ class _DetailsPanelController:
         self._manager.source_update_action.setEnabled(
             source_update_child_uid is not None
         )
+        self._update_note_actions()
 
         if not imagetool_targets or selection_children:
             self._manager.link_action.setDisabled(True)
