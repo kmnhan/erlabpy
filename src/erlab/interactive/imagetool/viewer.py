@@ -26,7 +26,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _history, provenance
+from erlab.interactive.imagetool import _history, _kspace_conversion, provenance
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
@@ -3007,52 +3007,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = None
             gamma = 0.5
 
-        dim_values = {
-            str(dim): float(value)
-            for dim, value in zip(self.data.dims, self.current_values, strict=True)
-        }
-        beta_value = dim_values.get("beta")
-        if beta_value is None and "beta" in self.data.coords:
-            beta_coord = self.data["beta"]
-            if beta_coord.size == 1:
-                beta_value = float(beta_coord.values)
-        if "alpha" in dim_values and beta_value is not None:
-            initial_normal_emission: tuple[float, float] | None = (
-                dim_values["alpha"],
-                beta_value,
-            )
-            initial_delta: float | None = None
-            guideline_dims = tuple(
-                str(self.data.dims[axis]) for axis in self.main_image.display_axis
-            )
-            if self.main_image.is_guidelines_visible and set(guideline_dims) == {
-                "alpha",
-                "beta",
-            }:
-                guideline_values: dict[str, float] = {}
-                for axis, value in zip(
-                    self.main_image.display_axis,
-                    self.main_image._guideline_offset,
-                    strict=True,
-                ):
-                    dim = str(self.data.dims[axis])
-                    if axis in self.array_slicer._nonuniform_axes_set:
-                        value = float(
-                            np.interp(
-                                value,
-                                self.array_slicer.coords_uniform[axis],
-                                self.array_slicer.coords[axis],
-                            )
-                        )
-                    guideline_values[dim] = float(value)
-                initial_normal_emission = (
-                    guideline_values["alpha"],
-                    guideline_values["beta"],
-                )
-                initial_delta = -self.main_image._guideline_angle
-        else:
-            initial_normal_emission = None
-            initial_delta = None
+        initial_normal_emission, initial_delta = (
+            _kspace_conversion.initial_normal_emission_from_slicer_area(self)
+        )
 
         tool = erlab.interactive.ktool(
             self.data,

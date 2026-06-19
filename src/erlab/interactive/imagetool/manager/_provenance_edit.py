@@ -11,7 +11,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import dialogs, provenance
+from erlab.interactive.imagetool import _kspace_conversion, dialogs, provenance
 from erlab.interactive.imagetool._load_source import (
     _load_provenance_from_file_details,
     _loader_callable_text,
@@ -47,6 +47,14 @@ class _ValidatedProvenanceEdit:
     data: xr.DataArray
     spec: provenance.ToolProvenanceSpec
     filter_operation: provenance.ToolProvenanceOperation | None
+
+
+@dataclasses.dataclass(frozen=True)
+class _OperationDialogMatch:
+    dialog_cls: type[dialogs._DataManipulationDialog]
+    start: int
+    stop: int
+    focus: str | None = None
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -442,6 +450,11 @@ def _dialog_class_for_operation(
         ):
             continue
         if (
+            issubclass(dialog_cls, dialogs.DataTransformDialog)
+            and dialog_cls.grouped_operation_only
+        ):
+            continue
+        if (
             issubclass(dialog_cls, dialogs.DataFilterDialog)
             and dialog_cls.restore_filter_operation
             is dialogs.DataFilterDialog.restore_filter_operation
@@ -449,6 +462,106 @@ def _dialog_class_for_operation(
             continue
         return dialog_cls
     return None
+
+
+def _operations_for_ref(
+    spec: provenance.ToolProvenanceSpec,
+    ref: provenance._ProvenanceStepRef,
+) -> tuple[provenance.ToolProvenanceOperation, ...]:
+    if ref.kind != "operation" or ref.operation_index is None:
+        return ()
+    if ref.stage_index is None:
+        return getattr(spec, "operations", ())
+    replay_stages = getattr(spec, "replay_stages", ())
+    if 0 <= ref.stage_index < len(replay_stages):
+        return replay_stages[ref.stage_index].operations
+    return ()
+
+
+def _dialog_match_for_operation_ref(
+    spec: provenance.ToolProvenanceSpec,
+    ref: provenance._ProvenanceStepRef,
+) -> _OperationDialogMatch | None:
+    operation = spec._operation_for_ref(ref)
+    if operation is None or ref.operation_index is None:
+        return None
+    operations = _operations_for_ref(spec, ref)
+    if not operations:
+        return None
+
+    for dialog_base_cls in _iter_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
+        if not any(
+            isinstance(operation, operation_type)
+            for operation_type in dialog_cls.operation_types
+        ):
+            continue
+        if (
+            dialog_cls.restore_transform_operation
+            is dialogs.DataTransformDialog.restore_transform_operation
+            and dialog_cls.restore_transform_operations
+            is dialogs.DataTransformDialog.restore_transform_operations
+        ):
+            continue
+        group_kind = dialog_cls.operation_group_kind
+        if group_kind is not None:
+            marker = operation.group
+            if marker is None or marker.kind != group_kind:
+                continue
+            group = dialog_cls.operation_group_for_edit(operations, ref.operation_index)
+            if group is not None:
+                return _OperationDialogMatch(
+                    dialog_cls,
+                    group[0],
+                    group[1],
+                    marker.focus,
+                )
+            continue
+        group = dialog_cls.operation_group_for_edit(operations, ref.operation_index)
+        if group is not None:
+            return _OperationDialogMatch(dialog_cls, group[0], group[1])
+        if dialog_cls.grouped_operation_only:
+            continue
+        return _OperationDialogMatch(
+            dialog_cls,
+            ref.operation_index,
+            ref.operation_index + 1,
+        )
+
+    for dialog_base_cls in _iter_dialog_classes(dialogs.DataFilterDialog):
+        dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
+        if not any(
+            isinstance(operation, operation_type)
+            for operation_type in dialog_cls.operation_types
+        ):
+            continue
+        if (
+            dialog_cls.restore_filter_operation
+            is dialogs.DataFilterDialog.restore_filter_operation
+        ):
+            continue
+        return _OperationDialogMatch(
+            dialog_cls,
+            ref.operation_index,
+            ref.operation_index + 1,
+        )
+    return None
+
+
+def _editable_group_range_for_ref(
+    spec: provenance.ToolProvenanceSpec,
+    ref: provenance._ProvenanceStepRef,
+) -> tuple[int, int] | None:
+    match = _dialog_match_for_operation_ref(spec, ref)
+    if match is None or match.stop - match.start <= 1:
+        return None
+    return match.start, match.stop
+
+
+def _uneditable_operation_reason(
+    operation: provenance.ToolProvenanceOperation,
+) -> str | None:
+    return _kspace_conversion.incomplete_kspace_conversion_edit_reason(operation)
 
 
 class _ProvenanceEditController:
@@ -481,7 +594,7 @@ class _ProvenanceEditController:
             "_ImageToolWrapper | _ManagedWindowNode",
             self._metadata_node(),
         )
-        steps = tuple(operations)
+        steps = provenance.restamp_operation_groups(operations)
         try:
             if contains_script or any(
                 not operation.live_applicable for operation in steps
@@ -616,7 +729,16 @@ class _ProvenanceEditController:
             return False, "This operation is not available."
         if spec.kind == "script":
             try:
-                candidate = spec._replace_operation_ref(row.replay_ref, ())
+                group = _editable_group_range_for_ref(spec, row.replay_ref)
+                if group is None:
+                    candidate = spec._replace_operation_ref(row.replay_ref, ())
+                else:
+                    candidate = spec._replace_operation_range_ref(
+                        row.replay_ref,
+                        group[0],
+                        group[1],
+                        (),
+                    )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
             if not provenance.script_provenance_replayable(candidate):
@@ -675,8 +797,9 @@ class _ProvenanceEditController:
             and self._active_filter_ref(node, spec) != row.edit_ref
         ):
             return False, "This live row needs a parent source to replay."
-        if _dialog_class_for_operation(operation) is None:
-            return False, "No editing dialog is available for this step."
+        if _dialog_match_for_operation_ref(spec, row.edit_ref) is None:
+            reason = _uneditable_operation_reason(operation)
+            return False, reason or "No editing dialog is available for this step."
         return True, ""
 
     def can_revert_row(
@@ -696,6 +819,13 @@ class _ProvenanceEditController:
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             return False, "This row does not have replayable provenance."
+        if row.replay_ref.kind == "operation":
+            group = _editable_group_range_for_ref(spec, row.replay_ref)
+            if group is not None and row.replay_ref.operation_index != group[1] - 1:
+                return (
+                    False,
+                    "Revert is available from the final momentum-conversion row.",
+                )
         try:
             candidate = spec._prefix_through_ref(row.replay_ref)
         except ValueError:
@@ -810,7 +940,16 @@ class _ProvenanceEditController:
             return
         candidate: provenance.ToolProvenanceSpec | None = None
         try:
-            candidate = spec._replace_operation_ref(ref, ())
+            group = _editable_group_range_for_ref(spec, ref)
+            if group is None:
+                candidate = spec._replace_operation_ref(ref, ())
+            else:
+                candidate = spec._replace_operation_range_ref(
+                    ref,
+                    group[0],
+                    group[1],
+                    (),
+                )
             if candidate.kind == "file":
                 candidate = candidate.model_copy(
                     update={
@@ -1132,14 +1271,15 @@ class _ProvenanceEditController:
         operation = spec._operation_for_ref(ref)
         if operation is None:
             raise RuntimeError("Selected operation is not available")
-        dialog_cls = _dialog_class_for_operation(operation)
-        if dialog_cls is None:
+        dialog_match = _dialog_match_for_operation_ref(spec, ref)
+        if dialog_match is None:
             raise RuntimeError("No editing dialog is available for this step")
         if not row.script_input_path and self._active_filter_ref(node, spec) == ref:
-            self._edit_active_filter(node, operation, dialog_cls)
+            self._edit_active_filter(node, operation, dialog_match.dialog_cls)
             return
 
-        input_spec = spec._prefix_before_ref(ref)
+        group_ref = dataclasses.replace(ref, operation_index=dialog_match.start)
+        input_spec = spec._prefix_before_ref(group_ref)
         try:
             input_data = self._replay_candidate(node, row.scope, input_spec)
         except Exception as exc:
@@ -1147,14 +1287,23 @@ class _ProvenanceEditController:
                 "preparing data before the selected provenance step",
                 exc,
             ) from exc
+        operations = _operations_for_ref(spec, ref)[
+            dialog_match.start : dialog_match.stop
+        ]
         replacements = self._edited_operations_from_dialog(
-            dialog_cls,
-            operation,
+            dialog_match.dialog_cls,
+            operations,
             input_data,
+            focus=dialog_match.focus,
         )
         if replacements is None:
             return
-        candidate = spec._replace_operation_ref(ref, replacements)
+        candidate = spec._replace_operation_range_ref(
+            ref,
+            dialog_match.start,
+            dialog_match.stop,
+            replacements,
+        )
         root_candidate = self._root_candidate_for_row(node, row, candidate)
         self._validate_and_replace(
             node,
@@ -1166,9 +1315,20 @@ class _ProvenanceEditController:
     def _edited_operations_from_dialog(
         self,
         dialog_cls: type[dialogs._DataManipulationDialog],
-        operation: provenance.ToolProvenanceOperation,
+        operations: (
+            provenance.ToolProvenanceOperation
+            | Sequence[provenance.ToolProvenanceOperation]
+        ),
         input_data: xr.DataArray,
+        *,
+        focus: str | None = None,
     ) -> list[provenance.ToolProvenanceOperation] | None:
+        if isinstance(operations, provenance.ToolProvenanceOperation):
+            operations = (operations,)
+        operations = tuple(operations)
+        if not operations:
+            raise ValueError("No provenance operations were provided for editing")
+
         tool = typing.cast(
             "ImageTool | None",
             erlab.interactive.itool(input_data, manager=False, execute=False),
@@ -1179,6 +1339,9 @@ class _ProvenanceEditController:
         try:
             dialog = dialog_cls(tool.slicer_area)
             if isinstance(dialog, dialogs.DataFilterDialog):
+                if len(operations) != 1:
+                    raise ValueError("Filter dialogs can only edit one operation")
+                operation = operations[0]
                 dialog.restore_filter_operation(operation)
                 if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
                     return None
@@ -1186,7 +1349,8 @@ class _ProvenanceEditController:
                 return [] if new_operation is None else [new_operation]
 
             transform_dialog = typing.cast("dialogs.DataTransformDialog", dialog)
-            transform_dialog.restore_transform_operation(operation)
+            transform_dialog.restore_transform_operations(operations)
+            transform_dialog.focus_operation_group_control(focus)
             replace_index = transform_dialog.launch_mode_combo.findData(
                 "replace",
                 QtCore.Qt.ItemDataRole.UserRole,

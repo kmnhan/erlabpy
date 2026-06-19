@@ -25,7 +25,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -438,7 +438,14 @@ def _structured_seed_and_operations(
 ]:
     if operation is None or (source.seed_expression is None and not source.copyable):
         return None, ()
-    return source.seed_expression or source.code, (*source.operations, operation)
+    seed_expression = source.seed_expression or source.code
+    if operation.statement_mutates_input and not any(
+        previous.statement_mutates_input for previous in source.operations
+    ):
+        seed_expression = (
+            f"{provenance._expression_receiver_code(seed_expression)}.copy(deep=False)"
+        )
+    return seed_expression, (*source.operations, operation)
 
 
 class _ConsoleAccessorProxy:
@@ -479,11 +486,6 @@ class _ConsoleAccessorProxy:
             call_prelude,
         ) = _format_call_code(args, kwargs)
         source_operand = self._owner._console_operand()
-        result = func(*raw_args, **raw_kwargs)
-        inputs, copyable, code_prelude = _merge_operands(
-            source_operand,
-            _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
-        )
         call = provenance.ConsoleCall(
             func=func,
             accessor_path=path,
@@ -493,8 +495,20 @@ class _ConsoleAccessorProxy:
             has_extra_tracked_inputs=bool(call_inputs),
             receiver_data=source_operand.value,
         )
+        operation = _structured_operation_from_call(call)
+        if operation is not None and operation.console_applies_to_receiver:
+            result = operation.apply(
+                source_operand.value,
+                parent_data=source_operand.value,
+            )
+        else:
+            result = func(*raw_args, **raw_kwargs)
+        inputs, copyable, code_prelude = _merge_operands(
+            source_operand,
+            _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
+        )
         seed_expression, operations = _structured_seed_and_operations(
-            source_operand, _structured_operation_from_call(call)
+            source_operand, operation
         )
         return self._owner._wrap_console_result(
             result,
@@ -1625,7 +1639,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         self._script_inputs = _dedupe_script_inputs(script_inputs)
         self._copyable = copyable
         self._code_prelude = _dedupe_code_preludes(code_prelude)
-        self._operations = tuple(operations)
+        self._operations = _kspace_conversion.stamp_kspace_conversion_groups(operations)
         self._seed_expression = seed_expression
         self._console_name: str | None = None
 

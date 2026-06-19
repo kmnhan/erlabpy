@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import logging
 import pathlib
 import traceback
@@ -11,7 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
@@ -344,6 +345,29 @@ class _ActionsController:
         target: int | str | None = None,
         error: BaseException | None = None,
     ) -> None:
+        if isinstance(error, _kspace_conversion.KspaceConversionMemoryError):
+            details = _kspace_conversion.kspace_conversion_memory_dialog_details(
+                error.estimate
+            )
+            if target is not None:
+                details = (
+                    f"Target: {html.escape(self._target_display_text(target))}<br>"
+                    f"{details}"
+                )
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                _kspace_conversion.kspace_conversion_memory_dialog_title(),
+                _kspace_conversion.kspace_conversion_memory_dialog_text(),
+                informative_text=(
+                    _kspace_conversion.kspace_conversion_memory_dialog_info(
+                        error.estimate
+                    )
+                ),
+                detailed_text=details,
+                buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            )
+            return
+
         details = ""
         if target is not None:
             details = f"Target: {self._target_display_text(target)}"
@@ -386,7 +410,7 @@ class _ActionsController:
             self._show_batch_error("Batch operation could not be started.", error=exc)
             return False
 
-        plan: list[tuple[typing.Any, ...]] = []
+        preflight_plan: list[tuple[typing.Any, ...]] = []
         for target in targets:
             try:
                 node = self._manager._node_for_target(target)
@@ -410,6 +434,36 @@ class _ActionsController:
                     source_spec.operations,
                     source_data,
                 )
+                if hasattr(dialog, "preflight_data"):
+                    dialog.preflight_data(source_data)
+                preflight_plan.append(
+                    (
+                        target,
+                        node,
+                        slicer_area,
+                        input_name,
+                        new_name,
+                        source_spec,
+                    )
+                )
+            except Exception as exc:
+                self._show_batch_error(
+                    "Batch operation failed before changing data.",
+                    target=target,
+                    error=exc,
+                )
+                return False
+
+        plan: list[tuple[typing.Any, ...]] = []
+        for (
+            target,
+            node,
+            slicer_area,
+            input_name,
+            new_name,
+            source_spec,
+        ) in preflight_plan:
+            try:
                 processed = source_spec.apply(slicer_area.data).rename(input_name)
                 erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
                     processed,

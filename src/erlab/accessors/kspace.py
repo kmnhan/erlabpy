@@ -900,6 +900,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     def _interactive_compatible(self) -> bool:
         """Check if the data is compatible with the interactive tool."""
+        try:
+            _ = self.configuration
+        except (IncompleteDataError, ValueError):
+            return False
+
         if self._obj.ndim == 2:
             # alpha-beta 2D scan or alpha-energy cut with a fixed beta coordinate
             if set(self._obj.dims) == {"alpha", "beta"}:

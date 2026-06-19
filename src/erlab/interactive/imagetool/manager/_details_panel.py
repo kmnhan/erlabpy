@@ -79,6 +79,7 @@ def _provenance_step_clipboard_payload(
             provenance.parse_tool_provenance_operation(operation)
             for operation in operations_payload
         )
+        operations = provenance.strip_partial_operation_groups(operations)
     except (
         TypeError,
         ValueError,
@@ -662,6 +663,7 @@ class _DetailsPanelController:
             active_name != script_active_name for active_name in script_active_names
         ):
             return None
+        operations = list(provenance.strip_partial_operation_groups(operations))
         return (
             tuple(operations),
             script_active_name,

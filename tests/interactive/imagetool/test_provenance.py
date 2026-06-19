@@ -68,6 +68,26 @@ def _base_data() -> xr.DataArray:
     )
 
 
+def _kspace_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(27.0).reshape(3, 3, 3),
+        dims=("alpha", "beta", "eV"),
+        coords={
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+            "eV": [-0.2, 0.0, 0.2],
+            "xi": 0.0,
+            "hv": 21.2,
+        },
+        attrs={
+            "configuration": int(erlab.constants.AxesConfiguration.Type1),
+            "inner_potential": 10.0,
+            "sample_workfunction": 4.5,
+        },
+        name="anglemap",
+    )
+
+
 def _hashable_data() -> xr.DataArray:
     data = xr.DataArray(
         np.arange(12).reshape((3, 4)),
@@ -275,6 +295,14 @@ def _representative_structured_operations() -> tuple[
             values=[1.0, 2.0, 3.0],
         ),
         provenance.AssignAttrsOperation(attrs={"sample": "test"}),
+        provenance.KspaceConfigurationOperation(configuration=2),
+        provenance.KspaceWorkFunctionOperation(work_function=4.2),
+        provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        provenance.KspaceConvertOperation(
+            bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+            resolution={"kx": 0.02, "ky": 0.02},
+        ),
         provenance.SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 11.0]},
             step_size=0.1,
@@ -282,6 +310,107 @@ def _representative_structured_operations() -> tuple[
         ),
         provenance.MaskWithPolygonOperation(vertices=vertices, dims=("x", "y")),
     )
+
+
+def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+        group_id="group-1",
+        focuses=("first", "second"),
+    )
+
+    assert provenance.operation_group_range(operations, 0, kind="demo") == (0, 2)
+    assert provenance.operation_group_range(operations, 1, kind="demo") == (0, 2)
+    assert operations[0].group is not None
+    assert operations[0].group.focus == "first"
+    assert "group" not in provenance.AverageOperation(dims=("x",)).model_dump(
+        mode="json"
+    )
+
+    parsed = tuple(
+        provenance.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+        for operation in operations
+    )
+    assert parsed == operations
+
+    assert provenance.strip_partial_operation_groups(operations) == operations
+    partial = provenance.strip_partial_operation_groups(operations[:1])
+    assert partial[0].group is None
+
+    scrambled = provenance.strip_partial_operation_groups(
+        (operations[1], operations[0])
+    )
+    assert all(operation.group is None for operation in scrambled)
+
+    restamped = provenance.restamp_operation_groups(operations)
+    assert provenance.strip_operation_groups(
+        restamped
+    ) == provenance.strip_operation_groups(operations)
+    assert provenance.operation_group_range(restamped, 0, kind="demo") == (0, 2)
+    assert restamped[0].group is not None
+    assert operations[0].group is not None
+    assert restamped[0].group.id != operations[0].group.id
+
+    adjacent = provenance.restamp_operation_groups(operations + operations)
+    assert provenance.operation_group_range(adjacent, 0, kind="demo") == (0, 2)
+    assert provenance.operation_group_range(adjacent, 2, kind="demo") == (2, 4)
+    assert adjacent[0].group is not None
+    assert adjacent[2].group is not None
+    assert adjacent[0].group.id != adjacent[2].group.id
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "", "id": "group", "index": 0, "size": 1},
+        {"kind": "demo", "id": "", "index": 0, "size": 1},
+        {"kind": "demo", "id": "group", "index": -1, "size": 1},
+        {"kind": "demo", "id": "group", "index": 0, "size": 0},
+        {"kind": "demo", "id": "group", "index": 1, "size": 1},
+    ],
+)
+def test_operation_group_marker_rejects_invalid_metadata(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        provenance.OperationGroupMarker(**kwargs)
+
+
+def test_operation_group_helpers_reject_broken_ranges() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+        group_id="group-1",
+    )
+    plain = provenance.AverageOperation(dims=("y",))
+
+    assert provenance.stamp_operation_group((), kind="demo") == ()
+    with pytest.raises(ValueError, match="focuses must match"):
+        provenance.stamp_operation_group(
+            operations,
+            kind="demo",
+            focuses=("first",),
+        )
+    assert provenance.strip_operation_groups((plain,)) == (plain,)
+
+    assert provenance.operation_group_range(operations, -1) is None
+    assert provenance.operation_group_range(operations, len(operations)) is None
+    assert provenance.operation_group_range((plain,), 0) is None
+    assert provenance.operation_group_range(operations, 0, kind="other") is None
+    assert provenance.operation_group_range((operations[1],), 0) is None
+
+    neighbor = plain.model_copy(update={"group": operations[0].group})
+    assert provenance.operation_group_range((*operations, neighbor), 0) is None
+
+    restamped = provenance.restamp_operation_groups((operations[1],))
+    assert restamped[0].group is None
 
 
 def test_tool_provenance_codec_and_combinators() -> None:
@@ -426,7 +555,12 @@ def test_registered_provenance_define_operation_code_api() -> None:
     assert [
         operation_type
         for operation_type in structured_operation_types
-        if "expression_code" not in operation_type.__dict__
+        if (
+            operation_type.expression_code
+            is provenance.ToolProvenanceOperation.expression_code
+            and operation_type.statement_code
+            is provenance.ToolProvenanceOperation.statement_code
+        )
     ] == []
 
 
@@ -508,6 +642,16 @@ def test_operation_code_base_edges() -> None:
 
     with pytest.raises(NotImplementedError):
         provenance.ToolProvenanceOperation().expression_code("data")
+    with pytest.raises(NotImplementedError):
+        provenance.ToolProvenanceOperation().statement_code(
+            "data",
+            output_name="derived",
+        )
+    with pytest.raises(NotImplementedError):
+        provenance.KspaceWorkFunctionOperation(work_function=4.2).replay_code(
+            "data",
+            output_name=None,
+        )
 
     assert (
         provenance.IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
@@ -589,6 +733,60 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
         parent_data=data,
     )
     xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
+
+
+def test_statement_operation_replay_code_mutates_working_copy() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceWorkFunctionOperation(work_function=4.2)
+
+    code = operation.replay_code("data", output_name="result", source_name="data")
+
+    assert "result = data.copy(deep=False)" in code
+    assert "result.kspace.work_function = 4.2" in code
+    assert "sample_workfunction" not in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["result"].kspace.work_function == pytest.approx(4.2)
+    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
+
+
+def test_statement_operation_derivation_entry_omits_same_name_noop() -> None:
+    operation = provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0)
+
+    code = operation.derivation_entry().code
+
+    assert code == "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)"
+
+
+def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
+    data = _kspace_data()
+    operations = (
+        provenance.KspaceWorkFunctionOperation(work_function=4.2),
+        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        provenance.KspaceConvertOperation(
+            bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+            resolution={"kx": 0.02, "ky": 0.02},
+        ),
+    )
+    spec = provenance.full_data(*operations).to_replay_spec()
+
+    code = typing.cast("str", spec.display_code())
+
+    assert "derived = data.copy(deep=False)" in code
+    assert code.count(".copy(deep=False)") == 1
+    assert "derived.kspace.work_function = 4.2" in code
+    assert "derived.kspace.set_normal(" in code
+    assert "derived = derived.kspace.convert(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    expected = data.copy(deep=False)
+    expected.kspace.work_function = 4.2
+    expected.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)
+    expected = expected.kspace.convert(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+        silent=True,
+    )
+    xr.testing.assert_allclose(namespace["derived"], expected)
+    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
@@ -1033,6 +1231,164 @@ def test_tool_provenance_assign_attrs_operation() -> None:
     assert any(call.endswith(".assign_attrs") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_kspace_configuration_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceConfigurationOperation(
+        configuration=erlab.constants.AxesConfiguration.Type2
+    )
+    expected = data.kspace.as_configuration(erlab.constants.AxesConfiguration.Type2)
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    assert parsed == operation
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    assert operation.derivation_entry().label == "Set kspace configuration(2 Type2)"
+    code = operation.replay_code("anglemap", output_name="converted")
+    assert code == "converted = anglemap.kspace.as_configuration(2)"
+    namespace = _exec_generated_code(code, {"anglemap": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["converted"], expected)
+
+
+@pytest.mark.parametrize(
+    ("operation", "attr_name", "expected"),
+    [
+        (
+            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            "sample_workfunction",
+            4.2,
+        ),
+        (
+            provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+            "inner_potential",
+            12.0,
+        ),
+    ],
+)
+def test_kspace_scalar_statement_operations_round_trip_and_code(
+    operation: provenance.ToolProvenanceOperation,
+    attr_name: str,
+    expected: float,
+) -> None:
+    data = _kspace_data()
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    result = parsed.apply(data, parent_data=data)
+
+    assert result.attrs[attr_name] == pytest.approx(expected)
+    assert data.attrs[attr_name] != pytest.approx(expected)
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.copy(deep=False)" in code
+    if attr_name == "sample_workfunction":
+        assert "result.kspace.work_function =" in code
+        assert "result.attrs" not in code
+    else:
+        assert "result.kspace.inner_potential =" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["result"].attrs[attr_name] == pytest.approx(expected)
+    assert namespace["data"].attrs[attr_name] != pytest.approx(expected)
+
+
+def test_kspace_set_normal_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceSetNormalOperation(
+        alpha=1.5,
+        beta=-0.5,
+        delta=2.0,
+    )
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+    result = parsed.apply(data, parent_data=data)
+
+    assert result.kspace.offsets["delta"] == pytest.approx(2.0)
+    assert result.kspace.offsets != data.kspace.offsets
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.copy(deep=False)" in code
+    assert "result.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["result"], result)
+    for key, value in data.kspace.offsets.items():
+        assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
+
+
+def test_kspace_convert_operation_round_trip_and_code() -> None:
+    data = _kspace_data()
+    operation = provenance.KspaceConvertOperation(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+    )
+    expected = data.kspace.convert(
+        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        resolution={"kx": 0.02, "ky": 0.02},
+        silent=True,
+    )
+
+    parsed = provenance.parse_tool_provenance_operation(
+        operation.model_dump(mode="json")
+    )
+
+    assert parsed == operation
+    xr.testing.assert_allclose(parsed.apply(data, parent_data=data), expected)
+    code = parsed.replay_code("data", output_name="result")
+    assert "result = data.kspace.convert(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_allclose(namespace["result"], expected)
+
+
+@pytest.mark.parametrize(
+    ("call", "operation"),
+    [
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "as_configuration"),
+                args=(2,),
+                display_code="data.kspace.as_configuration(2)",
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceConfigurationOperation(configuration=2),
+        ),
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "set_normal"),
+                args=(1.5, -0.5),
+                kwargs={"delta": 2.0},
+                display_code="data.kspace.set_normal(1.5, -0.5, delta=2.0)",
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        ),
+        (
+            provenance.ConsoleCall(
+                accessor_path=("kspace", "convert"),
+                args=(),
+                kwargs={
+                    "bounds": {"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+                    "resolution": {"kx": 0.02, "ky": 0.02},
+                },
+                display_code=(
+                    "data.kspace.convert(bounds=bounds, resolution=resolution)"
+                ),
+                has_extra_tracked_inputs=False,
+            ),
+            provenance.KspaceConvertOperation(
+                bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+                resolution={"kx": 0.02, "ky": 0.02},
+            ),
+        ),
+    ],
+)
+def test_kspace_operations_match_console_calls(
+    call: provenance.ConsoleCall,
+    operation: provenance.ToolProvenanceOperation,
+) -> None:
+    assert provenance.operation_from_console_call(call) == operation
 
 
 def _expected_affine_coord(
@@ -2772,6 +3128,18 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
         {"operation_index": 3, "names": ["data"]},
     ]
 
+    replaced_at_binding = spec._replace_operation_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=1),
+        (
+            provenance.SqueezeOperation(),
+            provenance.AssignAttrsOperation(attrs={"edited": True}),
+        ),
+    )
+    assert binding_payloads(replaced_at_binding) == [
+        {"operation_index": 1, "names": ["data", "derived"]},
+        {"operation_index": 3, "names": ["data"]},
+    ]
+
     deleted_last = spec._replace_operation_ref(
         provenance._ProvenanceStepRef("operation", operation_index=2),
         (),
@@ -2793,6 +3161,114 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     start_only = spec._prefix_through_ref(provenance._ProvenanceStepRef("start"))
     assert start_only.operations == ()
     assert start_only.script_context_bindings == ()
+
+
+def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
+    grouped = provenance.stamp_operation_group(
+        (
+            provenance.ScriptCodeOperation(
+                label="Offset copied result",
+                code="result = derived + 2",
+            ),
+            provenance.AverageOperation(dims=("x",)),
+        ),
+        kind="demo",
+        group_id="group-1",
+    )
+    spec = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+        operations=(
+            provenance.ScriptCodeOperation(
+                label="Compute intermediate result",
+                code="result = derived + 1",
+            ),
+            *grouped,
+        ),
+        script_context_bindings=[
+            {"operation_index": 1, "names": ["data", "derived"]},
+        ],
+    )
+
+    replaced = spec._replace_operation_group_ref(
+        provenance._ProvenanceStepRef("operation", operation_index=2),
+        (provenance.SqueezeOperation(),),
+        kind="demo",
+    )
+
+    assert [operation.op for operation in replaced.operations] == [
+        "script_code",
+        "squeeze",
+    ]
+    assert [
+        binding.model_dump(mode="json") for binding in replaced.script_context_bindings
+    ] == [{"operation_index": 1, "names": ["data", "derived"]}]
+
+
+def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> None:
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.AverageOperation(dims=("x",)),
+            provenance.SqueezeOperation(),
+        ),
+        kind="demo",
+    )
+    spec = provenance.full_data(*operations)
+    ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+
+    assert spec._operation_group_range_ref(ref, kind="demo") == (0, 2)
+    assert (
+        spec._operation_group_range_ref(
+            provenance._ProvenanceStepRef("start"),
+            kind="demo",
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="complete operation group"):
+        spec._replace_operation_group_ref(ref, (), kind="other")
+    with pytest.raises(ValueError, match="operation provenance row"):
+        spec._replace_operation_range_ref(
+            provenance._ProvenanceStepRef("start"),
+            0,
+            1,
+            (),
+        )
+    with pytest.raises(ValueError, match="non-empty operation range"):
+        spec._replace_operation_range_ref(ref, 1, 1, ())
+
+    deleted = spec._delete_operation_group_ref(ref, kind="demo")
+    assert deleted.operations == ()
+
+    file_spec = _file_provenance_spec().append_replay_stage(provenance.full_data())
+    stage_spec = file_spec.append_replay_stage(provenance.full_data(*operations))
+    stage_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=1,
+        stage_index=1,
+    )
+    assert stage_spec._operation_group_range_ref(stage_ref, kind="demo") == (0, 2)
+    replaced = stage_spec._replace_operation_group_ref(
+        stage_ref,
+        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+        kind="demo",
+    )
+    assert [stage.operations for stage in replaced.replay_stages] == [
+        (),
+        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+    ]
+    assert (
+        stage_spec._operation_group_range_ref(
+            provenance._ProvenanceStepRef(
+                "operation",
+                operation_index=0,
+                stage_index=3,
+            ),
+            kind="demo",
+        )
+        is None
+    )
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:

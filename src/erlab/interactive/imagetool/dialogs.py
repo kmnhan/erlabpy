@@ -17,7 +17,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
 from erlab.interactive.imagetool._dialog_widgets import (
     CoordinateEditorWidget,
     CoordinateGridWidget,
@@ -36,6 +36,7 @@ __all__ = [
     "EdgeCorrectionDialog",
     "GaussianFilterDialog",
     "InterpolationDialog",
+    "KspaceConversionDialog",
     "LeadingEdgeDialog",
     "NormalizeDialog",
     "ROIMaskDialog",
@@ -454,6 +455,9 @@ class DataTransformDialog(_DataManipulationDialog):
     Set to `True` for transforms that can handle coordinates that are not evenly spaced.
     """
 
+    copy_output_suffix: typing.ClassVar[str] = "_transformed"
+    """Suffix for copied-code output variables when operations require statements."""
+
     _LAUNCH_MODES: typing.ClassVar[tuple[tuple[str, str, str], ...]] = (
         (
             "replace",
@@ -570,6 +574,35 @@ class DataTransformDialog(_DataManipulationDialog):
         """Restore widgets from a transform operation when supported."""
         del operation
 
+    grouped_operation_only: typing.ClassVar[bool] = False
+    """Whether this dialog only edits matched operation groups."""
+
+    operation_group_kind: typing.ClassVar[str | None] = None
+    """Optional operation-group kind this dialog edits as one unit."""
+
+    @classmethod
+    def operation_group_for_edit(
+        cls,
+        operations: typing.Sequence[provenance.ToolProvenanceOperation],
+        operation_index: int,
+    ) -> tuple[int, int] | None:
+        """Return the operation range edited together with ``operation_index``."""
+        del operations, operation_index
+        return None
+
+    def restore_transform_operations(
+        self,
+        operations: typing.Sequence[provenance.ToolProvenanceOperation],
+    ) -> None:
+        """Restore widgets from one or more transform operations."""
+        if len(operations) != 1:
+            raise ValueError("This dialog can only restore one provenance operation")
+        self.restore_transform_operation(operations[0])
+
+    def focus_operation_group_control(self, focus: str | None) -> None:
+        """Focus a control associated with a grouped operation row."""
+        del focus
+
     def source_spec_for_data(
         self,
         data: xr.DataArray,
@@ -684,12 +717,53 @@ class DataTransformDialog(_DataManipulationDialog):
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
 
+    def preflight_data(self, data: xr.DataArray) -> None:
+        """Validate a target before processing it."""
+        del data
+
+    def _handle_process_error(self, exc: BaseException) -> bool:
+        """Handle a transform error before the generic error dialog is shown."""
+        del exc
+        return False
+
     def make_code(self) -> str:
         try:
-            return provenance.operations_expression_code(
-                self.source_operations(),
-                self._copy_data_name(),
-            )
+            operations = self.source_operations()
+            input_name = self._copy_data_name()
+            if not any(operation.statement_mutates_input for operation in operations):
+                return provenance.operations_expression_code(
+                    operations,
+                    input_name,
+                )
+
+            if not erlab.interactive.utils._is_kwarg_name(input_name):
+                input_name = "data"
+            output_name = f"{input_name}{self.copy_output_suffix}"
+            current_name = input_name
+            lines: list[str] = []
+            for index, operation in enumerate(operations):
+                if operation.statement_mutates_input:
+                    lines.append(
+                        operation.replay_code(current_name, output_name=current_name)
+                    )
+                    continue
+                replay_output_name = (
+                    output_name
+                    if lines
+                    or any(
+                        later_operation.statement_mutates_input
+                        for later_operation in operations[index + 1 :]
+                    )
+                    else current_name
+                )
+                lines.append(
+                    operation.replay_code(
+                        current_name,
+                        output_name=replay_output_name,
+                    )
+                )
+                current_name = replay_output_name
+            return "\n".join(lines)
         except Exception:
             return ""
 
@@ -760,12 +834,13 @@ class DataTransformDialog(_DataManipulationDialog):
 
         try:
             if self.apply_on_nonuniform_data:
-                processed = self.process_data(
-                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                        self.slicer_area.data
-                    )
+                input_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                    self.slicer_area.data
                 )
+                self.preflight_data(input_data)
+                processed = self.process_data(input_data)
             else:
+                self.preflight_data(self.slicer_area.data)
                 processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
                     self.process_data(self.slicer_area.data)
                 )
@@ -841,7 +916,9 @@ class DataTransformDialog(_DataManipulationDialog):
 
             del processed
 
-        except Exception:
+        except Exception as exc:
+            if self._handle_process_error(exc):
+                return
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
@@ -1013,6 +1090,622 @@ class DataFilterDialog(_DataManipulationDialog):
             )
         except Exception:
             return ""
+
+
+class KspaceConversionDialog(DataTransformDialog):
+    title = "Convert to kspace"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    grouped_operation_only = True
+    operation_group_kind = _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
+    copy_output_suffix = "_kconv"
+    operation_types = (
+        provenance.KspaceConfigurationOperation,
+        provenance.KspaceWorkFunctionOperation,
+        provenance.KspaceInnerPotentialOperation,
+        provenance.KspaceSetNormalOperation,
+        provenance.KspaceConvertOperation,
+    )
+
+    _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {"V0": "V₀", "wf": "𝜙"}
+    _OFFSET_UNITS: typing.ClassVar[dict[str, str]] = {"V0": " eV", "wf": " eV"}
+    _NORMAL_EMISSION_LABELS: typing.ClassVar[dict[str, str]] = {
+        "alpha": "𝛼",
+        "beta": "𝛽",
+    }
+
+    @classmethod
+    def operation_group_for_edit(
+        cls,
+        operations: typing.Sequence[provenance.ToolProvenanceOperation],
+        operation_index: int,
+    ) -> tuple[int, int] | None:
+        return _kspace_conversion.is_kspace_conversion_group(
+            operations,
+            operation_index,
+        )
+
+    def setup_widgets(self) -> None:
+        self.setObjectName("kspaceConversionDialog")
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        self._compatible = bool(self._source_data.kspace._interactive_compatible)
+        self._control_data = self._source_data
+        self._normal_delta: float | None = None
+
+        if not self._compatible:
+            self.layout_.addRow(
+                QtWidgets.QLabel("Momentum conversion is not available for this data.")
+            )
+            return
+
+        self._source_configuration = int(self._source_data.kspace.configuration)
+        self.configuration_combo = QtWidgets.QComboBox()
+        for configuration in erlab.constants.AxesConfiguration:
+            self.configuration_combo.addItem(
+                _kspace_conversion.configuration_text(configuration),
+                int(configuration),
+            )
+        self.configuration_combo.currentIndexChanged.connect(
+            self._handle_configuration_changed
+        )
+        self.layout_.addRow("Configuration", self.configuration_combo)
+
+        self.parameters_group = QtWidgets.QGroupBox("Parameters")
+        self.parameters_group.setLayout(QtWidgets.QFormLayout())
+        self.layout_.addRow(self.parameters_group)
+
+        self.normal_emission_group = QtWidgets.QGroupBox("Normal Emission")
+        self.normal_emission_group.setLayout(QtWidgets.QFormLayout())
+        self.layout_.addRow(self.normal_emission_group)
+
+        self.bounds_supergroup = QtWidgets.QGroupBox("Bounds")
+        self.bounds_supergroup.setCheckable(True)
+        self.bounds_supergroup.setChecked(False)
+        self.bounds_supergroup.setLayout(QtWidgets.QFormLayout())
+        self.bounds_supergroup.toggled.connect(self._update_memory_estimate)
+        self.bounds_group = self.bounds_supergroup
+        self.layout_.addRow(self.bounds_supergroup)
+
+        self.resolution_supergroup = QtWidgets.QGroupBox("Resolution")
+        self.resolution_supergroup.setCheckable(True)
+        self.resolution_supergroup.setChecked(False)
+        self.resolution_supergroup.setLayout(QtWidgets.QFormLayout())
+        self.resolution_supergroup.toggled.connect(self._update_memory_estimate)
+        self.resolution_group = self.resolution_supergroup
+        self.layout_.addRow(self.resolution_supergroup)
+
+        self._set_configuration_combo(self._source_configuration)
+        self._rebuild_kspace_controls()
+        if not self._seed_from_newest_ktool():
+            self._seed_from_current_view()
+
+    @staticmethod
+    def _clear_layout(layout: QtWidgets.QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _set_configuration_combo(self, configuration: int) -> None:
+        index = self.configuration_combo.findData(configuration)
+        if index < 0:
+            raise ValueError(f"Invalid kspace configuration: {configuration!r}")
+        with QtCore.QSignalBlocker(self.configuration_combo):
+            self.configuration_combo.setCurrentIndex(index)
+
+    @property
+    def current_configuration(self) -> erlab.constants.AxesConfiguration:
+        value = self.configuration_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+        if value is None:
+            return self._control_data.kspace.configuration
+        return erlab.constants.AxesConfiguration(int(value))
+
+    def _set_control_configuration(self, configuration: int) -> None:
+        self._control_data = self._source_data.kspace.as_configuration(configuration)
+        self._set_configuration_combo(configuration)
+
+    @QtCore.Slot(int)
+    def _handle_configuration_changed(self, _index: int = -1) -> None:
+        if not self._compatible:
+            return
+        normal = (
+            self.normal_emission if hasattr(self, "_normal_emission_spins") else None
+        )
+        delta = self._normal_delta
+        self._control_data = self._source_data.kspace.as_configuration(
+            self.current_configuration
+        )
+        self._rebuild_kspace_controls(
+            initial_normal_emission=normal,
+            initial_delta=delta,
+        )
+
+    def _rebuild_kspace_controls(
+        self,
+        *,
+        initial_normal_emission: tuple[float, float] | None = None,
+        initial_delta: float | None = None,
+    ) -> None:
+        parameters_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.parameters_group.layout()
+        )
+        normal_emission_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.normal_emission_group.layout()
+        )
+        bounds_layout = typing.cast("QtWidgets.QFormLayout", self.bounds_group.layout())
+        resolution_layout = typing.cast(
+            "QtWidgets.QFormLayout", self.resolution_group.layout()
+        )
+        self._clear_layout(parameters_layout)
+        self._clear_layout(normal_emission_layout)
+        self._clear_layout(bounds_layout)
+        self._clear_layout(resolution_layout)
+
+        self.bounds_btn = QtWidgets.QPushButton("Calculate")
+        self.bounds_btn.clicked.connect(self.calculate_bounds)
+        self.res_btn = QtWidgets.QPushButton("Calculate")
+        self.res_btn.clicked.connect(self.calculate_resolution)
+        self.res_npts_check = QtWidgets.QCheckBox("From number of points")
+        self.res_npts_check.toggled.connect(self.calculate_resolution)
+        self.res_npts_check.toggled.connect(self._update_memory_estimate)
+
+        self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        if self._control_data.kspace._has_hv:
+            v0_spin = QtWidgets.QDoubleSpinBox()
+            v0_spin.setRange(0, 100)
+            v0_spin.setSingleStep(1)
+            v0_spin.setDecimals(1)
+            v0_spin.setSuffix(self._OFFSET_UNITS["V0"])
+            v0_spin.setToolTip("Inner potential of the sample.")
+            v0_spin.setValue(
+                _kspace_conversion.kspace_inner_potential(self._control_data)
+            )
+            v0_spin.valueChanged.connect(self._update_memory_estimate)
+            self._offset_spins["V0"] = v0_spin
+            parameters_layout.addRow(self._OFFSET_LABELS["V0"], v0_spin)
+
+        wf_spin = QtWidgets.QDoubleSpinBox()
+        wf_spin.setRange(0.0, 9.999)
+        wf_spin.setSingleStep(0.01)
+        wf_spin.setDecimals(4)
+        wf_spin.setSuffix(self._OFFSET_UNITS["wf"])
+        wf_spin.setToolTip("Work function of the system.")
+        wf_spin.setValue(_kspace_conversion.kspace_work_function(self._control_data))
+        wf_spin.valueChanged.connect(self._update_memory_estimate)
+        self._offset_spins["wf"] = wf_spin
+        parameters_layout.addRow(self._OFFSET_LABELS["wf"], wf_spin)
+
+        self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        for axis, label in self._NORMAL_EMISSION_LABELS.items():
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-360, 360)
+            spin.setSingleStep(0.01)
+            spin.setDecimals(3)
+            spin.setSuffix("°")
+            spin.setKeyboardTracking(False)
+            spin.setToolTip("Angle corresponding to sample normal emission.")
+            spin.valueChanged.connect(self._update_memory_estimate)
+            self._normal_emission_spins[axis] = spin
+            normal_emission_layout.addRow(label, spin)
+
+        if initial_normal_emission is None:
+            initial_normal_emission = self._normal_emission_from_data(
+                self._control_data
+            )
+        if initial_delta is None:
+            initial_delta = float(self._control_data.kspace.offsets["delta"])
+        self._normal_delta = initial_delta
+        self._set_normal_emission_spins(initial_normal_emission)
+
+        self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        for axis in self._control_data.kspace.momentum_axes:
+            for index in range(2):
+                name = f"{axis}{index}"
+                spin = QtWidgets.QDoubleSpinBox()
+                if axis == "kz":
+                    spin.setRange(0, 100)
+                else:
+                    spin.setRange(-10, 10)
+                spin.setSingleStep(0.01)
+                spin.setDecimals(4)
+                spin.setSuffix(" Å⁻¹")
+                spin.valueChanged.connect(self._update_memory_estimate)
+                self._bound_spins[name] = spin
+                bounds_layout.addRow(name, spin)
+
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(0.0001, 10)
+            spin.setSingleStep(0.001)
+            spin.setDecimals(5)
+            spin.setSuffix(" Å⁻¹")
+            spin.valueChanged.connect(self._update_memory_estimate)
+            self._resolution_spins[axis] = spin
+            resolution_layout.addRow(axis, spin)
+
+        bounds_layout.addRow(self.bounds_btn)
+        resolution_layout.addRow(self.res_npts_check)
+        resolution_layout.addRow(self.res_btn)
+        self._memory_estimate_label = QtWidgets.QLabel()
+        self._memory_estimate_label.setObjectName("kspaceConversionMemoryEstimate")
+        self._memory_estimate_label.setMinimumWidth(0)
+        self._memory_estimate_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._memory_estimate_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        self._memory_estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._memory_estimate_label.setWordWrap(True)
+        self._memory_estimate_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        resolution_layout.addRow(self._memory_estimate_label)
+        self.calculate_bounds()
+        self.calculate_resolution()
+        self._update_memory_estimate()
+
+    def _normal_emission_from_data(self, data: xr.DataArray) -> tuple[float, float]:
+        return _kspace_conversion.normal_emission_angles(data, data.kspace.offsets)
+
+    def _set_normal_emission_spins(self, values: tuple[float, float]) -> None:
+        for axis, value in {"alpha": values[0], "beta": values[1]}.items():
+            spin = self._normal_emission_spins[axis]
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(value)
+
+    def _seed_from_current_view(self) -> None:
+        initial_normal_emission, initial_delta = (
+            _kspace_conversion.initial_normal_emission_from_slicer_area(
+                self.slicer_area
+            )
+        )
+        if initial_normal_emission is not None:
+            if initial_delta is None:
+                initial_delta = float(self._control_data.kspace.offsets["delta"])
+            self._normal_delta = initial_delta
+            self._set_normal_emission_spins(initial_normal_emission)
+            self.calculate_bounds()
+            self.calculate_resolution()
+
+    def _seed_from_newest_ktool(self) -> bool:
+        ktool = self._newest_child_ktool()
+        if ktool is None:
+            return False
+        configuration = int(ktool.current_configuration)
+        self._set_control_configuration(configuration)
+        self._rebuild_kspace_controls(
+            initial_normal_emission=ktool._current_normal_emission_angles(),
+            initial_delta=ktool.offset_dict["delta"],
+        )
+
+        self._offset_spins["wf"].setValue(ktool._work_function)
+        if "V0" in self._offset_spins and ktool.data.kspace._has_hv:
+            self._offset_spins["V0"].setValue(ktool._inner_potential)
+
+        self.bounds_supergroup.setChecked(ktool.bounds_supergroup.isChecked())
+        if ktool.bounds is not None:
+            for axis, values in ktool.bounds.items():
+                for index, value in enumerate(values):
+                    name = f"{axis}{index}"
+                    if name in self._bound_spins:
+                        self._bound_spins[name].setValue(value)
+
+        self.resolution_supergroup.setChecked(ktool.resolution_supergroup.isChecked())
+        if ktool.resolution is not None:
+            for axis, value in ktool.resolution.items():
+                if axis in self._resolution_spins:
+                    self._resolution_spins[axis].setValue(value)
+        with QtCore.QSignalBlocker(self.res_npts_check):
+            self.res_npts_check.setChecked(ktool.res_npts_check.isChecked())
+        return True
+
+    def _newest_child_ktool(self) -> typing.Any | None:
+        from erlab.interactive.kspace import KspaceTool
+
+        manager = self.slicer_area._manager_instance
+        if manager is not None:
+            target = manager.target_from_slicer_area(self.slicer_area)
+            if target is not None:
+                node = manager._node_for_target(target)
+                for uid in reversed(node._childtool_indices):
+                    with contextlib.suppress(Exception):
+                        child = manager.get_childtool(uid)
+                        if isinstance(child, KspaceTool):
+                            return child
+
+        for child in reversed(self.slicer_area._associated_tools_list):
+            if isinstance(child, KspaceTool):
+                return child
+        return None
+
+    @property
+    def _work_function(self) -> float:
+        return _kspace_conversion.rounded_spin_value(self._offset_spins["wf"])
+
+    @property
+    def _inner_potential(self) -> float | None:
+        if "V0" not in self._offset_spins:
+            return None
+        return _kspace_conversion.rounded_spin_value(self._offset_spins["V0"])
+
+    @property
+    def normal_emission(self) -> tuple[float, float]:
+        return (
+            _kspace_conversion.rounded_spin_value(self._normal_emission_spins["alpha"]),
+            _kspace_conversion.rounded_spin_value(self._normal_emission_spins["beta"]),
+        )
+
+    @property
+    def bounds(self) -> dict[str, tuple[float, float]] | None:
+        if self.bounds_supergroup.isChecked():
+            return {
+                axis: (
+                    float(np.round(self._bound_spins[f"{axis}0"].value(), 5)),
+                    float(np.round(self._bound_spins[f"{axis}1"].value(), 5)),
+                )
+                for axis in self._control_data.kspace.momentum_axes
+            }
+        return None
+
+    @property
+    def resolution(self) -> dict[str, float] | None:
+        if self.resolution_supergroup.isChecked():
+            return {
+                axis: float(np.round(self._resolution_spins[axis].value(), 5))
+                for axis in self._control_data.kspace.momentum_axes
+            }
+        return None
+
+    def _parameterized_data(
+        self,
+        data: xr.DataArray,
+        *,
+        source_data: xr.DataArray | None = None,
+    ) -> xr.DataArray:
+        return _kspace_conversion.apply_kspace_parameters(
+            data,
+            source_data=self._control_data if source_data is None else source_data,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential,
+            force_work_function=True,
+            force_inner_potential=True,
+            normal_emission=self.normal_emission,
+            delta=self._normal_delta,
+        )
+
+    def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
+        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        if int(source_data.kspace.configuration) != int(self.current_configuration):
+            source_data = source_data.kspace.as_configuration(
+                self.current_configuration
+            )
+        return self._parameterized_data(
+            source_data.copy(deep=False),
+            source_data=source_data,
+        )
+
+    def conversion_estimate_for_data(
+        self,
+        data: xr.DataArray,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        return _kspace_conversion.estimate_kspace_conversion(
+            self._conversion_input_for_data(data),
+            bounds=self.bounds,
+            resolution=self.resolution,
+        )
+
+    def _set_memory_estimate(
+        self,
+        estimate: _kspace_conversion.KspaceConversionEstimate,
+    ) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(
+            _kspace_conversion.kspace_conversion_estimate_text(estimate)
+        )
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty(
+            "kspaceMemoryUnsafe",
+            not estimate.is_safe,
+        )
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    @QtCore.Slot(bool)
+    @QtCore.Slot(float)
+    def _update_memory_estimate(self, *args: object) -> None:
+        del args
+        if not self._compatible or not hasattr(self, "_memory_estimate_label"):
+            return
+        try:
+            estimate = self.conversion_estimate_for_data(self._source_data)
+        except Exception as exc:
+            self._memory_estimate_label.setText(str(exc))
+            self._memory_estimate_label.setProperty("kspaceMemoryUnsafe", True)
+            return
+        self._set_memory_estimate(estimate)
+
+    def preflight_data(self, data: xr.DataArray) -> None:
+        estimate = self.conversion_estimate_for_data(data)
+        self._set_memory_estimate(estimate)
+        if not estimate.is_safe:
+            raise _kspace_conversion.KspaceConversionMemoryError(estimate)
+
+    def _handle_process_error(self, exc: BaseException) -> bool:
+        if not isinstance(exc, _kspace_conversion.KspaceConversionMemoryError):
+            return False
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            _kspace_conversion.kspace_conversion_memory_dialog_title(),
+            _kspace_conversion.kspace_conversion_memory_dialog_text(),
+            informative_text=_kspace_conversion.kspace_conversion_memory_dialog_info(
+                exc.estimate
+            ),
+            detailed_text=_kspace_conversion.kspace_conversion_memory_dialog_details(
+                exc.estimate
+            ),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+        return True
+
+    @QtCore.Slot()
+    def calculate_bounds(self) -> None:
+        data = self._parameterized_data(self._control_data.copy(deep=False))
+        data.kspace._check_kinetic_energy(
+            context="estimating momentum bounds in kspace conversion dialog"
+        )
+        bounds = data.kspace.estimate_bounds()
+        for axis in data.kspace.momentum_axes:
+            for index, value in enumerate(bounds[axis]):
+                spin = self._bound_spins[f"{axis}{index}"]
+                with QtCore.QSignalBlocker(spin):
+                    spin.setValue(value)
+        self._update_memory_estimate()
+
+    @QtCore.Slot()
+    def calculate_resolution(self) -> None:
+        data = self._parameterized_data(self._control_data.copy(deep=False))
+        data.kspace._check_kinetic_energy(
+            context="estimating momentum resolution in kspace conversion dialog"
+        )
+        for axis, spin in self._resolution_spins.items():
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(
+                    data.kspace.estimate_resolution(
+                        axis,
+                        from_numpoints=self.res_npts_check.isChecked(),
+                    )
+                )
+        self._update_memory_estimate()
+
+    def _operations_for_data(
+        self,
+        data: xr.DataArray,
+    ) -> tuple[provenance.ToolProvenanceOperation, ...]:
+        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        return _kspace_conversion.kspace_conversion_operations(
+            source_data,
+            target_configuration=self.current_configuration,
+            source_configuration=source_data.kspace.configuration,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential,
+            normal_emission=self.normal_emission,
+            delta=self._normal_delta,
+            bounds=self.bounds,
+            resolution=self.resolution,
+            force_scalars=True,
+        )
+
+    def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        return list(self._operations_for_data(self.slicer_area.data))
+
+    def source_spec_for_data(
+        self,
+        data: xr.DataArray,
+        new_name: str | None = None,
+    ) -> provenance.ToolProvenanceSpec:
+        del new_name
+        return provenance.public_data(*self._operations_for_data(data))
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return self.source_spec_for_data(data).apply(data)
+
+    def focus_operation_group_control(self, focus: str | None) -> None:
+        match focus:
+            case "configuration":
+                self.configuration_combo.setFocus(
+                    QtCore.Qt.FocusReason.OtherFocusReason
+                )
+            case "work_function":
+                self._offset_spins["wf"].setFocus(
+                    QtCore.Qt.FocusReason.OtherFocusReason
+                )
+                self._offset_spins["wf"].selectAll()
+            case "inner_potential":
+                spin = self._offset_spins.get("V0")
+                if spin is not None:
+                    spin.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+                    spin.selectAll()
+            case "normal_emission":
+                self._normal_emission_spins["alpha"].setFocus(
+                    QtCore.Qt.FocusReason.OtherFocusReason
+                )
+                self._normal_emission_spins["alpha"].selectAll()
+            case "bounds_resolution":
+                self.bounds_supergroup.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+
+    def restore_transform_operations(
+        self,
+        operations: typing.Sequence[provenance.ToolProvenanceOperation],
+    ) -> None:
+        group = _kspace_conversion.is_kspace_conversion_group(operations, 0)
+        if group != (0, len(operations)):
+            raise ValueError("Expected a complete kspace conversion operation group")
+
+        normal: tuple[float, float] | None = None
+        delta: float | None = None
+        bounds: dict[str, tuple[float, float]] | None = None
+        resolution: dict[str, float] | None = None
+        for operation in operations:
+            if isinstance(operation, provenance.KspaceConfigurationOperation):
+                self._set_control_configuration(operation.configuration)
+                self._rebuild_kspace_controls()
+                break
+        for operation in operations:
+            if isinstance(operation, provenance.KspaceWorkFunctionOperation):
+                self._offset_spins["wf"].setValue(operation.work_function)
+            elif isinstance(operation, provenance.KspaceInnerPotentialOperation):
+                if "V0" in self._offset_spins:
+                    self._offset_spins["V0"].setValue(operation.inner_potential)
+            elif isinstance(operation, provenance.KspaceSetNormalOperation):
+                normal = (operation.alpha, operation.beta)
+                delta = operation.delta
+            elif isinstance(operation, provenance.KspaceConvertOperation):
+                bounds = operation.bounds
+                resolution = operation.resolution
+
+        if normal is not None:
+            self._normal_delta = delta
+            self._set_normal_emission_spins(normal)
+        self.bounds_supergroup.setChecked(bounds is not None)
+        if bounds is not None:
+            for axis, values in bounds.items():
+                for index, value in enumerate(values):
+                    name = f"{axis}{index}"
+                    if name in self._bound_spins:
+                        self._bound_spins[name].setValue(value)
+        self.resolution_supergroup.setChecked(resolution is not None)
+        if resolution is not None:
+            for axis, value in resolution.items():
+                if axis in self._resolution_spins:
+                    self._resolution_spins[axis].setValue(value)
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        self.restore_transform_operations((operation,))
+
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        if self._compatible:
+            return QtWidgets.QDialog.DialogCode.Accepted
+        QtWidgets.QMessageBox.warning(
+            self,
+            "Momentum Conversion Unavailable",
+            "Momentum conversion is not available for this data.",
+        )
+        return QtWidgets.QDialog.DialogCode.Rejected
 
 
 class RotationDialog(DataTransformDialog):

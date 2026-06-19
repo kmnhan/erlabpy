@@ -17,12 +17,10 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
-import contextlib
 import enum
 import hashlib
 import importlib.resources
 import typing
-import warnings
 
 import numpy as np
 import numpy.typing as npt
@@ -31,12 +29,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
+from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterator
-
     import matplotlib
     import varname
     import xarray as xr
@@ -45,30 +41,6 @@ else:
 
     matplotlib = _lazy.load("matplotlib")
     varname = _lazy.load("varname")
-
-
-_MISSING_WORK_FUNCTION_WARNING_RE = (
-    r"^Work function not found in data attributes, assuming 4\.5 eV$"
-)
-_MISSING_INNER_POTENTIAL_WARNING_RE = (
-    r"^Inner potential not found in data attributes, assuming 10 eV$"
-)
-
-
-@contextlib.contextmanager
-def _ignore_missing_kspace_parameter_warnings() -> Iterator[None]:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=_MISSING_WORK_FUNCTION_WARNING_RE,
-            category=UserWarning,
-        )
-        warnings.filterwarnings(
-            "ignore",
-            message=_MISSING_INNER_POTENTIAL_WARNING_RE,
-            category=UserWarning,
-        )
-        yield
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -397,10 +369,9 @@ class KspaceTool(KspaceToolGUI):
     COPY_PROVENANCE: typing.ClassVar = (
         erlab.interactive.utils.ToolScriptProvenanceDefinition(
             start_label="Start from current ktool input data",
-            label="Convert to momentum space",
-            prelude_method="_copy_prelude",
-            expression_method="_copy_expression",
-            assign_method="_copy_assign_target",
+            operations_method="_copy_operations",
+            active_name_method="_copy_assign_target",
+            seed_code_method="_copy_seed_code",
         )
     )
 
@@ -412,15 +383,22 @@ class KspaceTool(KspaceToolGUI):
             data_method="_converted_output_data",
             provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
                 start_label="Start from current ktool input data",
-                label="Convert current data to momentum space",
-                prelude_method="_copy_prelude",
-                expression_method="_copy_expression",
-                assign_method="_copy_assign_target",
+                operations_method="_copy_operations",
+                active_name_method="_copy_assign_target",
+                seed_code_method="_copy_seed_code",
             ),
         )
     }
     _sigTriggerUpdate = QtCore.Signal()
     _UPDATE_LIMIT_HZ = 10.0
+    data: xr.DataArray
+    _source_configuration: int
+    _offset_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _bound_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _resolution_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _bz_cache_key: typing.Any
+    _bz_cache_value: typing.Any
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -449,6 +427,7 @@ class KspaceTool(KspaceToolGUI):
         preview_symmetry_enabled: bool = False
         preview_symmetry_fold: int | None = None
         show_angle_plot: bool
+        configuration: int | None = None
 
     @property
     def info_text(self) -> str:
@@ -462,7 +441,9 @@ class KspaceTool(KspaceToolGUI):
         info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(
             self.tool_data.T
         )
-        info += "<b>" + self.config_label.text() + "</b><br>"
+        info += (
+            "<b>" + self._configuration_text(self.current_configuration) + "</b><br>"
+        )
         info += "<br><b>Angle Offsets:</b>"
 
         offsets = self.offset_dict.copy()
@@ -507,6 +488,58 @@ class KspaceTool(KspaceToolGUI):
             )
         return info
 
+    @staticmethod
+    def _configuration_text(configuration: AxesConfiguration | int) -> str:
+        return _kspace_conversion.configuration_text(configuration)
+
+    @property
+    def current_configuration(self) -> AxesConfiguration:
+        if not hasattr(self, "configuration_combo"):
+            return self.data.kspace.configuration
+        value = self.configuration_combo.currentData()
+        if value is None:
+            return self.data.kspace.configuration
+        return AxesConfiguration(int(value))
+
+    def _populate_configuration_combo(self) -> None:
+        self.configuration_combo.clear()
+        for configuration in AxesConfiguration:
+            self.configuration_combo.addItem(
+                self._configuration_text(configuration),
+                int(configuration),
+            )
+        self._set_configuration_combo(self.data.kspace.configuration)
+        self.configuration_combo.currentIndexChanged.connect(
+            self._handle_configuration_changed
+        )
+
+    def _set_configuration_combo(self, configuration: AxesConfiguration | int) -> None:
+        index = self.configuration_combo.findData(int(configuration))
+        if index < 0:
+            raise ValueError(f"Invalid kspace configuration: {configuration!r}")
+        with QtCore.QSignalBlocker(self.configuration_combo):
+            self.configuration_combo.setCurrentIndex(index)
+
+    def _sync_aspect_lock(self) -> None:
+        lock_aspect = self.data.kspace._has_beta and not self.data.kspace._has_hv
+        for plot_item in self.plotitems:
+            plot_item.vb.setAspectLocked(lock=lock_aspect, ratio=1)
+
+    @QtCore.Slot(int)
+    def _handle_configuration_changed(self, _index: int = -1) -> None:
+        configuration = self.current_configuration
+        if int(configuration) == int(self.data.kspace.configuration):
+            return
+        self.data = self.data.kspace.as_configuration(configuration)
+        self._bz_cache_key = None
+        self._bz_cache_value = None
+        with self._history_suppressed():
+            self._rebuild_kspace_controls()
+            self._sync_aspect_lock()
+        self.update()
+        self._write_state()
+        self._notify_data_changed()
+
     @property
     def tool_status(self) -> StateModel:
         return self.StateModel(
@@ -535,11 +568,23 @@ class KspaceTool(KspaceToolGUI):
             preview_symmetry_enabled=self.preview_symmetry_group.isChecked(),
             preview_symmetry_fold=self.preview_symmetry_fold_spin.value(),
             show_angle_plot=self.angle_plot_check.isChecked(),
+            configuration=int(self.current_configuration),
         )
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
         self._argnames["data"] = status.data_name
+        configuration = int(
+            self.data.kspace.configuration
+            if status.configuration is None
+            else status.configuration
+        )
+        if int(self.data.kspace.configuration) != configuration:
+            self.data = self.data.kspace.as_configuration(configuration)
+            self._set_configuration_combo(configuration)
+            self._rebuild_kspace_controls()
+        else:
+            self._set_configuration_combo(configuration)
 
         self.center_spin.blockSignals(True)
         self.center_spin.setValue(status.center)
@@ -550,6 +595,8 @@ class KspaceTool(KspaceToolGUI):
         self.width_spin.blockSignals(False)
 
         for k, v in status.offsets.items():
+            if k not in self._offset_spins:
+                continue
             self._offset_spins[k].blockSignals(True)
             self._offset_spins[k].setValue(v)
             self._offset_spins[k].blockSignals(False)
@@ -559,6 +606,8 @@ class KspaceTool(KspaceToolGUI):
         self.bounds_supergroup.setChecked(status.bounds_enabled)
         self.bounds_supergroup.blockSignals(False)
         for k, v in status.bounds.items():
+            if k not in self._bound_spins:
+                continue
             self._bound_spins[k].blockSignals(True)
             self._bound_spins[k].setValue(v)
             self._bound_spins[k].blockSignals(False)
@@ -567,6 +616,8 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.setChecked(status.resolution_enabled)
         self.resolution_supergroup.blockSignals(False)
         for k, v in status.resolution.items():
+            if k not in self._resolution_spins:
+                continue
             self._resolution_spins[k].blockSignals(True)
             self._resolution_spins[k].setValue(v)
             self._resolution_spins[k].blockSignals(False)
@@ -673,15 +724,8 @@ class KspaceTool(KspaceToolGUI):
         self._argnames: dict[str, str] = {}
 
         self._itool: QtWidgets.QWidget | None = None
-        self._bz_cache_key: typing.Any = None
-        self._bz_cache_value: (
-            tuple[
-                list[npt.NDArray[np.floating]],
-                npt.NDArray[np.floating],
-                npt.NDArray[np.floating],
-            ]
-            | None
-        ) = None
+        self._bz_cache_key = None
+        self._bz_cache_value = None
 
         if data_name is None:
             try:
@@ -698,12 +742,9 @@ class KspaceTool(KspaceToolGUI):
         else:
             self._argnames["data"] = data_name
 
-        self.data: xr.DataArray = data.copy(deep=True)
-
-        self.config_label.setText(
-            f"Configuration {int(self.data.kspace.configuration)} "
-            f"({self.data.kspace.configuration.name})"
-        )
+        self._source_configuration = int(data.kspace.configuration)
+        self.data = data.copy(deep=True)
+        self._populate_configuration_combo()
         self._update_proxy = pg.SignalProxy(
             self._sigTriggerUpdate,
             delay=1 / self._UPDATE_LIMIT_HZ,
@@ -735,8 +776,62 @@ class KspaceTool(KspaceToolGUI):
         self.preview_symmetry_group.toggled.connect(self.queue_update)
         self.preview_symmetry_fold_spin.valueChanged.connect(self.queue_update)
 
-        self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        # Temporary customization for beta scaling
+        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
+        # self._beta_scale_spin.setValue(1.0)
+        # self._beta_scale_spin.setDecimals(2)
+        # self._beta_scale_spin.setSingleStep(0.01)
+        # self._beta_scale_spin.setRange(0.01, 10)
+        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
+        # self._beta_scale_spin.valueChanged.connect(self.update)
 
+        self._rebuild_kspace_controls(
+            initial_normal_emission=initial_normal_emission,
+            initial_delta=initial_delta,
+        )
+
+        self.bounds_btn.clicked.connect(self.calculate_bounds)
+        self.res_btn.clicked.connect(self.calculate_resolution)
+        self.res_npts_check.toggled.connect(self.calculate_resolution)
+
+        self._sync_aspect_lock()
+        self.open_btn.clicked.connect(self.show_converted)
+        self.copy_btn.clicked.connect(self.copy_code)
+        self.update()
+
+        if avec is not None and self.bz_group.isEnabled():
+            self.bz_group.setChecked(True)
+        self._reset_history_stack()
+
+    def _ensure_energy_control_connections(self) -> None:
+        if self._energy_controls_connected:
+            return
+        self.center_spin.valueChanged.connect(self.queue_update)
+        self.width_spin.valueChanged.connect(self.queue_update)
+        self._energy_controls_connected = True
+
+    @staticmethod
+    def _clear_layout(layout: QtWidgets.QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _rebuild_kspace_controls(
+        self,
+        *,
+        initial_normal_emission: tuple[float, float] | None = None,
+        initial_delta: float | None = None,
+    ) -> None:
+        self._clear_layout(self.offsets_group.layout())
+        self._clear_layout(self.normal_emission_group.layout())
+        self._clear_layout(self.bounds_group.layout())
+        self._clear_layout(self.resolution_group.layout())
+
+        self._offset_spins = {}
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-360, 360)
@@ -763,8 +858,9 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setDecimals(1)
             self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS["V0"])
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
-            with _ignore_missing_kspace_parameter_warnings():
-                self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
+            self._offset_spins["V0"].setValue(
+                _kspace_conversion.kspace_inner_potential(self.data)
+            )
             self._offset_spins["V0"].valueChanged.connect(self.queue_update)
             self.offsets_group.layout().addRow(
                 self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
@@ -773,23 +869,22 @@ class KspaceTool(KspaceToolGUI):
         else:
             self.bz_form.setRowVisible(7, True)
 
-        # Work function spinbox
         self._offset_spins["wf"] = QtWidgets.QDoubleSpinBox()
         self._offset_spins["wf"].setRange(0.0, 9.999)
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
         self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS["wf"])
         self._offset_spins["wf"].setToolTip("Work function of the system.")
-        with _ignore_missing_kspace_parameter_warnings():
-            self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self._offset_spins["wf"].setValue(
+            _kspace_conversion.kspace_work_function(self.data)
+        )
         self._offset_spins["wf"].valueChanged.connect(self._update_energy_controls)
         self._offset_spins["wf"].valueChanged.connect(self.queue_update)
-
         self.offsets_group.layout().addRow(
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
         )
 
-        self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(-360, 360)
@@ -817,8 +912,8 @@ class KspaceTool(KspaceToolGUI):
                     self._offset_spins[key].setValue(self.data.kspace.offsets[key])
             self._sync_normal_emission_spins()
 
-        self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._bound_spins = {}
+        self._resolution_spins = {}
         for k in self.data.kspace.momentum_axes:
             for j in range(2):
                 name = f"{k}{j}"
@@ -841,52 +936,38 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
-        # Temporary customization for beta scaling
-        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
-        # self._beta_scale_spin.setValue(1.0)
-        # self._beta_scale_spin.setDecimals(2)
-        # self._beta_scale_spin.setSingleStep(0.01)
-        # self._beta_scale_spin.setRange(0.01, 10)
-        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
-        # self._beta_scale_spin.valueChanged.connect(self.update)
-
-        # Populate bounds and resolution
+        self._memory_estimate_label = QtWidgets.QLabel()
+        self._memory_estimate_label.setObjectName("ktoolMemoryEstimate")
+        self._memory_estimate_label.setMinimumWidth(0)
+        self._memory_estimate_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._memory_estimate_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        self._memory_estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._memory_estimate_label.setWordWrap(True)
+        self._memory_estimate_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.resolution_group.layout().addRow(self._memory_estimate_label)
         self.calculate_bounds()
         self.calculate_resolution()
 
-        self.bounds_btn.clicked.connect(self.calculate_bounds)
-        self.res_btn.clicked.connect(self.calculate_resolution)
-        self.res_npts_check.toggled.connect(self.calculate_resolution)
-
-        if self.data.kspace._has_beta and not self.data.kspace._has_hv:
-            for pi in self.plotitems:
-                pi.vb.setAspectLocked(lock=True, ratio=1)
-        self.open_btn.clicked.connect(self.show_converted)
-        self.copy_btn.clicked.connect(self.copy_code)
-        self.update()
-
-        if avec is not None and self.bz_group.isEnabled():
-            self.bz_group.setChecked(True)
-        self._reset_history_stack()
-
-    def _ensure_energy_control_connections(self) -> None:
-        if self._energy_controls_connected:
-            return
-        self.center_spin.valueChanged.connect(self.queue_update)
-        self.width_spin.valueChanged.connect(self.queue_update)
-        self._energy_controls_connected = True
-
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
-        new_data = self.validate_update_data(new_data)
+        parsed_new_data = erlab.interactive.utils.parse_data(new_data)
+        source_configuration = int(parsed_new_data.kspace.configuration)
+        new_data = self.validate_update_data(parsed_new_data)
 
         self.data = new_data.copy(deep=True)
+        self._source_configuration = source_configuration
         self._bz_cache_key = None
         self._bz_cache_value = None
-        self.config_label.setText(
-            f"Configuration {int(self.data.kspace.configuration)} "
-            f"({self.data.kspace.configuration.name})"
-        )
+        self._set_configuration_combo(self.data.kspace.configuration)
+        with self._history_suppressed():
+            self._rebuild_kspace_controls()
 
         if (
             self.data.kspace._has_eV
@@ -913,19 +994,23 @@ class KspaceTool(KspaceToolGUI):
         data = erlab.interactive.utils.parse_data(new_data)
         current_offset_keys = tuple(self.data.kspace._valid_offset_keys)
         current_momentum_axes = tuple(self.data.kspace.momentum_axes)
-        current_configuration = int(self.data.kspace.configuration)
         current_has_hv = self.data.kspace._has_hv
 
         if not data.kspace._interactive_compatible:
             raise ValueError(
                 "Updated data is not compatible with the interactive tool."
             )
+        if int(data.kspace.configuration) != int(self.current_configuration):
+            try:
+                data = data.kspace.as_configuration(self.current_configuration)
+            except Exception as exc:
+                raise ValueError(
+                    "Updated data has incompatible analyzer configuration."
+                ) from exc
         if tuple(data.kspace._valid_offset_keys) != current_offset_keys:
             raise ValueError("Updated data has incompatible offset coordinates.")
         if tuple(data.kspace.momentum_axes) != current_momentum_axes:
             raise ValueError("Updated data has incompatible momentum axes.")
-        if int(data.kspace.configuration) != current_configuration:
-            raise ValueError("Updated data has incompatible analyzer configuration.")
         if data.kspace._has_hv != current_has_hv:
             raise ValueError("Updated data has incompatible photon-energy dimensions.")
         return data
@@ -934,8 +1019,7 @@ class KspaceTool(KspaceToolGUI):
         if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:
             work_function = self._work_function
         else:
-            with _ignore_missing_kspace_parameter_warnings():
-                work_function = self.data.kspace.work_function
+            work_function = _kspace_conversion.kspace_work_function(self.data)
 
         if self.data.kspace._is_energy_kinetic:
             if self.data.kspace._has_hv:
@@ -1018,15 +1102,96 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-    def _converted_output(self) -> xr.DataArray:
+    def _set_memory_estimate(
+        self,
+        estimate: _kspace_conversion.KspaceConversionEstimate,
+        *,
+        preview: bool = False,
+    ) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(
+            _kspace_conversion.kspace_conversion_estimate_text(
+                estimate,
+                preview=preview,
+            )
+        )
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty(
+            "kspaceMemoryUnsafe",
+            not estimate.is_safe,
+        )
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    def _conversion_estimate(
+        self,
+        data: xr.DataArray,
+        *,
+        preview: bool = False,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        estimate = _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds=self.bounds,
+            resolution=self.resolution,
+        )
+        self._set_memory_estimate(estimate, preview=preview)
+        return estimate
+
+    def _validate_conversion_memory(
+        self,
+        data: xr.DataArray,
+        *,
+        preview: bool = False,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        estimate = self._conversion_estimate(data, preview=preview)
+        if not estimate.is_safe:
+            raise _kspace_conversion.KspaceConversionMemoryError(estimate)
+        return estimate
+
+    def _show_conversion_memory_error(
+        self,
+        error: _kspace_conversion.KspaceConversionMemoryError,
+    ) -> None:
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            _kspace_conversion.kspace_conversion_memory_dialog_title(),
+            _kspace_conversion.kspace_conversion_memory_dialog_text(),
+            informative_text=_kspace_conversion.kspace_conversion_memory_dialog_info(
+                error.estimate
+            ),
+            detailed_text=_kspace_conversion.kspace_conversion_memory_dialog_details(
+                error.estimate
+            ),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+
+    def _prepared_output_data(self) -> xr.DataArray:
         data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(data, context="opening converted data from ktool")
+        return data
+
+    def _converted_output(self) -> xr.DataArray:
+        data = self._prepared_output_data()
+        self._validate_conversion_memory(data)
         return data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
 
     @QtCore.Slot()
     def show_converted(self) -> None:
+        try:
+            data = self._prepared_output_data()
+            self._validate_conversion_memory(data)
+        except _kspace_conversion.KspaceConversionMemoryError as exc:
+            self._show_conversion_memory_error(exc)
+            return
+
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = self._converted_output()
+            data_kconv = data.kspace.convert(
+                bounds=self.bounds,
+                resolution=self.resolution,
+            )
 
         tool = self._launch_output_imagetool(
             data_kconv,
@@ -1044,60 +1209,35 @@ class KspaceTool(KspaceToolGUI):
                 input_name = "data"
         return input_name
 
-    def _copy_data_name(self, input_name: str | None = None) -> str:
-        input_ref = self._copy_input_reference(input_name)
-        if erlab.interactive.utils._is_kwarg_name(input_ref):
-            return input_ref
-        return "input_data"
-
-    def _copy_prelude(
+    def _copy_seed_code(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        input_ref = self._copy_input_reference(input_name)
-        input_name = self._copy_data_name(input_name)
-        out_lines: list[str] = []
-        if input_ref != input_name:
-            out_lines.append(f"{input_name} = {input_ref}")
-
-        if self.data.kspace._has_hv:
-            v0: float = self._inner_potential
-            with _ignore_missing_kspace_parameter_warnings():
-                if not np.isclose(v0, self.data.kspace.inner_potential):
-                    out_lines.append(f"{input_name}.kspace.inner_potential = {v0}")
-
-        wf: float = self._work_function
-        with _ignore_missing_kspace_parameter_warnings():
-            if not np.isclose(wf, self.data.kspace.work_function):
-                out_lines.append(f"{input_name}.kspace.work_function = {wf}")
-
-        alpha_normal, beta_normal = self._current_normal_emission_angles()
-        delta_offset = self.offset_dict["delta"]
-        out_lines.append(
-            f"{input_name}.kspace.set_normal("
-            f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r})"
+        return (
+            f"{self._copy_assign_target(input_name)} = "
+            f"{self._copy_input_reference(input_name)}"
         )
-        return "\n".join(out_lines)
 
-    def _copy_expression(
+    def _copy_operations(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> str:
-        arg_dict: dict[str, typing.Any] = {}
-        if self.bounds is not None:
-            arg_dict["bounds"] = self.bounds
-        if self.resolution is not None:
-            arg_dict["resolution"] = self.resolution
-
-        return erlab.interactive.utils.generate_code(
-            MomentumAccessor.convert,
-            [],
-            arg_dict,
-            module=f"{self._copy_data_name(input_name)}.kspace",
+    ) -> tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...]:
+        alpha_normal, beta_normal = self._current_normal_emission_angles()
+        return _kspace_conversion.kspace_conversion_operations(
+            self.data,
+            target_configuration=self.data.kspace.configuration,
+            source_configuration=self._source_configuration,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
+            normal_emission=(alpha_normal, beta_normal),
+            delta=self.offset_dict["delta"],
+            bounds=self.bounds,
+            resolution=self.resolution,
+            force_scalars=False,
         )
 
     def _copy_assign_target(
@@ -1106,7 +1246,13 @@ class KspaceTool(KspaceToolGUI):
         *,
         data: xr.DataArray | None = None,
     ) -> str:
-        return f"{self._copy_data_name(input_name)}_kconv"
+        input_ref = self._copy_input_reference(input_name)
+        input_data_name = (
+            input_ref
+            if erlab.interactive.utils._is_kwarg_name(input_ref)
+            else "input_data"
+        )
+        return f"{input_data_name}_kconv"
 
     def _converted_output_data(self) -> xr.DataArray:
         return self._converted_output()
@@ -1140,29 +1286,10 @@ class KspaceTool(KspaceToolGUI):
         }
 
     def _current_normal_emission_angles(self) -> tuple[float, float]:
-        if "xi" not in self.data.coords:
-            raise IncompleteDataError("coord", "xi")
-
-        offsets = self.offset_dict
-        angle_params = {
-            "delta": offsets["delta"],
-            "xi": float(self.data["xi"].values),
-            "xi0": offsets["xi"],
-        }
-
-        match self.data.kspace.configuration:
-            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
-                angle_params["beta0"] = offsets["beta"]
-            case _:
-                if "chi" not in self.data.coords:
-                    raise IncompleteDataError("coord", "chi")
-                angle_params["chi"] = float(self.data["chi"].values)
-                angle_params["chi0"] = offsets["chi"]
-
-        alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
-            self.data.kspace.configuration, angle_params
+        return _kspace_conversion.normal_emission_angles(
+            self.data,
+            self.offset_dict,
         )
-        return float(np.round(alpha, 5)), float(np.round(beta, 5))
 
     @QtCore.Slot()
     def _sync_normal_emission_spins(self) -> None:
@@ -1220,25 +1347,13 @@ class KspaceTool(KspaceToolGUI):
         return self.data.copy(deep=False)
 
     def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
-        data.kspace.offsets = self.offset_dict
-
-        if self.data.kspace._has_hv:
-            v0: float = self._inner_potential
-            with _ignore_missing_kspace_parameter_warnings():
-                current_v0 = self.data.kspace.inner_potential
-            if "inner_potential" not in self.data.attrs or not np.isclose(
-                v0, current_v0
-            ):
-                data.kspace.inner_potential = v0
-
-        wf: float = self._work_function
-        with _ignore_missing_kspace_parameter_warnings():
-            current_wf = self.data.kspace.work_function
-        if "sample_workfunction" not in self.data.attrs or not np.isclose(
-            wf, current_wf
-        ):
-            data.kspace.work_function = wf
-        return data
+        return _kspace_conversion.apply_kspace_parameters(
+            data,
+            source_data=self.data,
+            work_function=self._work_function,
+            inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
+            offsets=self.offset_dict,
+        )
 
     def _validate_kinetic_energy(self, data: xr.DataArray, *, context: str) -> None:
         data.kspace._check_kinetic_energy(context=context)
@@ -1282,7 +1397,7 @@ class KspaceTool(KspaceToolGUI):
             prefilter=False,
         )
 
-    def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
+    def _preview_angle_data(self) -> xr.DataArray:
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
         self._validate_kinetic_energy(data_ang, context="updating ktool preview")
@@ -1290,16 +1405,33 @@ class KspaceTool(KspaceToolGUI):
         #     data_ang = data_ang.assign_coords(
         #         beta=data_ang.beta * self._beta_scale_spin.value()
         #     )
+        return data_ang
 
-        # Convert to kspace
-        data_k = data_ang.kspace.convert(
+    def _preview_kspace_data(self, data_ang: xr.DataArray) -> xr.DataArray:
+        self._validate_conversion_memory(self._prepared_output_data(), preview=True)
+        return data_ang.kspace.convert(
             bounds=self.bounds, resolution=self.resolution, silent=True
         )
+
+    def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
+        data_ang = self._preview_angle_data()
+        data_k = self._preview_kspace_data(data_ang)
         return data_ang, data_k
 
     @QtCore.Slot()
     def update(self) -> None:
-        ang, k = self.get_data()
+        try:
+            ang, k = self.get_data()
+        except _kspace_conversion.KspaceConversionMemoryError:
+            ang = self._preview_angle_data()
+            self.images[0].setDataArray(ang.T)
+            self.images[1].clear()
+            self.images[1].data_array = None
+            self._set_preview_symmetry_available(False)
+            self._set_bz_available(False)
+            self._notify_data_changed()
+            self._write_state()
+            return
         k_preview = k.T
         preview_symmetry_available = self._preview_supports_symmetry(k_preview)
         self._set_preview_symmetry_available(preview_symmetry_available)

@@ -16,7 +16,12 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
-from erlab.interactive.imagetool import _provenance_framework, itool, provenance
+from erlab.interactive.imagetool import (
+    _kspace_conversion,
+    _provenance_framework,
+    itool,
+    provenance,
+)
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -399,6 +404,94 @@ def test_manager_console_handles_use_filtered_display_data(
             {"data": data.copy(deep=True), "data_0": data.copy(deep=True)},
         )
         xr.testing.assert_identical(namespace["derived"], expected + 1.0)
+
+
+def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
+    data = xr.DataArray(
+        np.arange(27.0).reshape(3, 3, 3),
+        dims=("alpha", "beta", "eV"),
+        coords={
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+            "eV": [-0.2, 0.0, 0.2],
+            "xi": 0.0,
+            "hv": 21.2,
+        },
+        attrs={
+            "configuration": int(erlab.constants.AxesConfiguration.Type1),
+            "sample_workfunction": 4.5,
+        },
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (
+            provenance.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=provenance.script(
+                    start_label="Use input data",
+                    seed_code="data_0 = data",
+                    active_name="data_0",
+                ).model_dump(mode="json"),
+            ),
+        ),
+        copyable=True,
+    )
+
+    original_offsets = dict(data.kspace.offsets.items())
+
+    derived = handle.kspace.set_normal(1.5, -0.5, delta=2.0)
+
+    assert isinstance(derived, manager_console._DerivedDataNamespace)
+    assert derived.data.kspace.offsets["delta"] == pytest.approx(2.0)
+    for key, value in original_offsets.items():
+        assert data.kspace.offsets[key] == pytest.approx(value)
+    spec = derived._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert spec is not None
+    assert [operation.op for operation in spec.operations] == ["kspace_set_normal"]
+    assert spec.operations[0].group is None
+    code = spec.display_code()
+    assert code is not None
+    assert "derived = data.copy(deep=False)" in code
+    assert "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    assert "sample_workfunction" not in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["derived"].kspace.offsets["delta"] == pytest.approx(2.0)
+    for key, value in original_offsets.items():
+        assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
+
+    converted = derived.kspace.convert()
+    grouped_spec = converted._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert grouped_spec is not None
+    assert [operation.op for operation in grouped_spec.operations] == [
+        "kspace_set_normal",
+        "kspace_convert",
+    ]
+    assert provenance.operation_group_range(
+        grouped_spec.operations,
+        0,
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    ) == (0, 2)
+
+    derived._set_console_name("intermediate")
+    separately_converted = derived.kspace.convert()
+    separate_spec = separately_converted._console_provenance_spec(
+        active_name="derived",
+        label="Assign kspace result",
+    )
+    assert separate_spec is not None
+    assert [operation.op for operation in separate_spec.operations] == [
+        "kspace_convert",
+    ]
+    assert separate_spec.operations[0].group is None
 
 
 def test_macos_matplotlib_cursor_patch_applies_once(monkeypatch) -> None:

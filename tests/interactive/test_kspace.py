@@ -8,8 +8,11 @@ import scipy.optimize
 import xarray as xr
 
 import erlab
+from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool import dialogs as imagetool_dialogs
+from erlab.interactive.imagetool.dialogs import KspaceConversionDialog
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
 
@@ -17,6 +20,7 @@ _MISSING_KSPACE_PARAMETER_WARNINGS = {
     "Work function not found in data attributes, assuming 4.5 eV",
     "Inner potential not found in data attributes, assuming 10 eV",
 }
+_GIB = 1024**3
 
 _NORMAL_EMISSION_CASES = [
     pytest.param(
@@ -70,6 +74,53 @@ def _make_ktool_data(
     return data.assign_coords(**coords)
 
 
+def _make_da_ktool_data(anglemap) -> xr.DataArray:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 3)).copy(
+        deep=True
+    )
+    data.attrs["configuration"] = int(AxesConfiguration.Type1DA)
+    data.kspace.work_function = 4.5
+    return data.assign_coords(xi=0.0, chi=0.0)
+
+
+def _memory_budget(
+    *,
+    total: int = 64 * _GIB,
+    available: int = 48 * _GIB,
+) -> _kspace_conversion.KspaceMemoryBudget:
+    reserve = min(max(2 * _GIB, int(0.2 * total)), int(0.5 * available))
+    return _kspace_conversion.KspaceMemoryBudget(
+        total_bytes=total,
+        available_bytes=available,
+        reserve_bytes=reserve,
+        safe_budget_bytes=max(0, available - reserve),
+    )
+
+
+def _conversion_estimate_stub(
+    *,
+    safe: bool = True,
+) -> _kspace_conversion.KspaceConversionEstimate:
+    budget = _kspace_conversion.KspaceMemoryBudget(
+        total_bytes=4,
+        available_bytes=2,
+        reserve_bytes=1,
+        safe_budget_bytes=10 if safe else 1,
+    )
+    return _kspace_conversion.KspaceConversionEstimate(
+        input_dims=(),
+        output_dims=(),
+        axis_sizes={},
+        output_sizes={},
+        bounds={},
+        resolution={},
+        total_points=1,
+        final_bytes=8,
+        peak_bytes=8,
+        memory=budget,
+    )
+
+
 def _solve_normal_emission_angles(
     configuration: AxesConfiguration,
     coords: dict[str, float],
@@ -112,6 +163,8 @@ def test_ktool_compatible(anglemap) -> None:
     cut_with_beta_coord = cut_without_beta.assign_coords(
         beta=("alpha", np.linspace(-1.0, 1.0, cut.sizes["alpha"]))
     )
+    cut_without_configuration = cut.copy(deep=True)
+    del cut_without_configuration.attrs["configuration"]
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
 
@@ -121,6 +174,7 @@ def test_ktool_compatible(anglemap) -> None:
     for data in (
         cut_without_beta,
         cut_with_beta_coord,
+        cut_without_configuration,
         data_4d,
         data_3d_without_alpha,
     ):
@@ -128,6 +182,250 @@ def test_ktool_compatible(anglemap) -> None:
             ValueError, match=r"Data is not compatible with the interactive tool."
         ):
             data.kspace.interactive()
+
+
+def test_kspace_conversion_dialog_requires_configuration(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    del data.attrs["configuration"]
+
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._compatible is False
+    assert not hasattr(dialog, "configuration_combo")
+    dialog._handle_configuration_changed()
+    dialog._update_memory_estimate()
+    dialog._set_memory_estimate(_conversion_estimate_stub())
+    monkeypatch.setattr(
+        imagetool_dialogs.QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: None,
+    )
+    assert dialog._validate() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_kspace_conversion_seed_helpers_cover_nonuniform_guidelines() -> None:
+    data = xr.DataArray(
+        np.zeros((3, 3)),
+        dims=("alpha", "beta"),
+        coords={"alpha": [-1.0, 0.0, 1.0], "beta": [10.0, 20.0, 40.0]},
+    )
+    slicer_area = SimpleNamespace(
+        data=data,
+        current_values=(0.0, 20.0),
+        main_image=SimpleNamespace(
+            display_axis=(0, 1),
+            is_guidelines_visible=True,
+            _guideline_offset=(0.5, 1.5),
+            _guideline_angle=12.0,
+        ),
+        array_slicer=SimpleNamespace(
+            _nonuniform_axes_set={1},
+            coords_uniform={1: np.array([0.0, 1.0, 2.0])},
+            coords={1: np.array([10.0, 20.0, 40.0])},
+        ),
+    )
+
+    normal_emission, delta = (
+        _kspace_conversion.initial_normal_emission_from_slicer_area(slicer_area)
+    )
+
+    assert normal_emission == pytest.approx((0.5, 30.0))
+    assert delta == pytest.approx(-12.0)
+
+
+def test_kspace_normal_emission_reports_missing_required_coords() -> None:
+    offsets = {"delta": 0.0, "xi": 0.0, "beta": 0.0, "chi": 0.0}
+    missing_xi = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("alpha", "beta"),
+        attrs={"configuration": int(AxesConfiguration.Type1)},
+    )
+    missing_chi = missing_xi.assign_coords(xi=0.0)
+    missing_chi.attrs["configuration"] = int(AxesConfiguration.Type1DA)
+
+    with pytest.raises(IncompleteDataError, match="xi"):
+        _kspace_conversion.normal_emission_angles(missing_xi, offsets)
+    with pytest.raises(IncompleteDataError, match="chi"):
+        _kspace_conversion.normal_emission_angles(missing_chi, offsets)
+
+
+def test_kspace_conversion_operations_default_source_configuration(anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+
+    operations = _kspace_conversion.kspace_conversion_operations(
+        data,
+        target_configuration=AxesConfiguration.Type1,
+        source_configuration=None,
+        work_function=4.5,
+        inner_potential=None,
+        normal_emission=(1.0, 2.0),
+        delta=None,
+        bounds=None,
+        resolution=None,
+        force_scalars=False,
+    )
+
+    assert [operation.op for operation in operations] == [
+        "kspace_set_normal",
+        "kspace_convert",
+    ]
+    assert operations[0].group is not None
+    assert operations[0].group.focus == "normal_emission"
+    assert operations[1].group is not None
+    assert operations[1].group.focus == "bounds_resolution"
+
+
+@pytest.mark.parametrize("kind", ["cut", "map", "hv"])
+def test_kspace_conversion_estimate_matches_safe_output(
+    monkeypatch,
+    anglemap,
+    kind: str,
+) -> None:
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(),
+    )
+    if kind == "cut":
+        data = anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3)
+        data = data.copy(deep=True)
+    elif kind == "map":
+        data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    else:
+        data = generate_hvdep_cuts(
+            shape=(3, 3, 3),
+            configuration=AxesConfiguration.Type1,
+        )
+        data.kspace.inner_potential = 10.0
+    data.kspace.work_function = 4.5
+
+    estimate = _kspace_conversion.estimate_kspace_conversion(data)
+    converted = data.kspace.convert()
+
+    assert estimate.output_sizes == dict(converted.sizes)
+    assert estimate.total_points == converted.size
+    assert estimate.final_bytes == converted.size * 8
+
+
+def test_kspace_conversion_memory_budget_uses_available_physical_memory(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        _kspace_conversion.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=64 * _GIB, available=10 * _GIB),
+    )
+
+    budget = _kspace_conversion.system_memory_budget()
+
+    assert budget.reserve_bytes == 5 * _GIB
+    assert budget.safe_budget_bytes == 5 * _GIB
+
+
+def test_kspace_conversion_estimate_blocks_unsafe_peak(monkeypatch, anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+
+    with pytest.raises(_kspace_conversion.KspaceConversionMemoryError) as exc_info:
+        _kspace_conversion.validate_kspace_conversion_memory(
+            data,
+            bounds={"kx": (-1.0, 1.0), "ky": (-1.0, 1.0)},
+            resolution={"kx": 0.0001, "ky": 0.0001},
+        )
+
+    assert not exc_info.value.estimate.is_safe
+
+
+def test_kspace_conversion_estimate_validates_bounds_and_resolution(
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(),
+    )
+
+    assert _kspace_conversion.validate_kspace_conversion_memory(
+        data,
+        bounds={"kx": (-1.0, 1.0), "ky": (-1.0, 1.0)},
+        resolution={"kx": 1.0, "ky": 1.0},
+    ).is_safe
+    estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
+        _conversion_estimate_stub()
+    )
+    assert estimate_text.startswith("Output: scalar\n")
+    assert "Estimated size:" in estimate_text
+    with pytest.raises(ValueError, match="finite"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds={"kx": (np.nan, 1.0)},
+        )
+    with pytest.raises(ValueError, match="increasing"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds={"kx": (1.0, -1.0)},
+        )
+    with pytest.raises(ValueError, match="positive"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            resolution={"kx": 0.0},
+        )
+
+
+def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
+    operations = (
+        provenance.KspaceConfigurationOperation(configuration=AxesConfiguration.Type2),
+        provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+        provenance.KspaceWorkFunctionOperation(work_function=4.2),
+        provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+        provenance.KspaceConvertOperation(bounds=None, resolution=None),
+    )
+
+    stamped = _kspace_conversion.stamp_kspace_conversion_groups(operations)
+
+    assert [
+        None if operation.group is None else operation.group.focus
+        for operation in stamped
+    ] == [
+        "configuration",
+        "inner_potential",
+        "work_function",
+        "normal_emission",
+        "bounds_resolution",
+    ]
+    assert (
+        _kspace_conversion._focus_for_operation(
+            provenance.AverageOperation(dims=("x",))
+        )
+        is None
+    )
+    assert (
+        _kspace_conversion.stamp_kspace_conversion_groups(
+            (
+                provenance.KspaceWorkFunctionOperation(work_function=4.2),
+                provenance.KspaceWorkFunctionOperation(work_function=4.3),
+                provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+                provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            )
+        )[0].group
+        is None
+    )
 
 
 @pytest.mark.parametrize("wf", ["wf_auto", "wf_manual"])
@@ -181,6 +479,8 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         code = w.copy_code()
         assert ".kspace.set_normal(" in code
         assert ".kspace.offsets =" not in code
+        assert "psutil" not in code
+        assert "KspaceConversionMemory" not in code
         namespace = {"anglemap": anglemap}
         exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
         xr.testing.assert_identical(anglemap_kconv, namespace["anglemap_kconv"])
@@ -264,6 +564,163 @@ def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
     assert win.bz_group.isEnabled() is False
     assert win.images[1].data_array is not None
     assert win.images[1].data_array.dims == ("eV", cut.kspace.slit_axis)
+
+
+def test_ktool_unsafe_preview_clears_kspace_image(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    assert win.images[1].data_array is not None
+
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+
+    def _convert_must_not_run(*args, **kwargs):
+        raise AssertionError("preview conversion should be preflighted first")
+
+    monkeypatch.setattr(
+        "erlab.accessors.kspace.MomentumAccessor.convert",
+        _convert_must_not_run,
+    )
+    win.resolution_supergroup.setChecked(True)
+    for spin in win._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    win.update()
+
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is None
+    assert not win.preview_symmetry_group.isEnabled()
+    assert not win.bz_group.isEnabled()
+    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+
+
+def test_ktool_preview_guard_estimates_full_output_data(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    win.resolution_supergroup.setChecked(True)
+
+    preview_data = win._preview_angle_data()
+    output_data = win._prepared_output_data()
+    large_budget = _memory_budget()
+    preview_estimate = _kspace_conversion.estimate_kspace_conversion(
+        preview_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    output_estimate = _kspace_conversion.estimate_kspace_conversion(
+        output_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    assert output_estimate.total_points > preview_estimate.total_points
+
+    safe_budget = (preview_estimate.peak_bytes + output_estimate.peak_bytes) // 2
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _kspace_conversion.KspaceMemoryBudget(
+            total_bytes=large_budget.total_bytes,
+            available_bytes=large_budget.available_bytes,
+            reserve_bytes=large_budget.reserve_bytes,
+            safe_budget_bytes=safe_budget,
+        ),
+    )
+
+    def _convert_must_not_run(*args, **kwargs):
+        raise AssertionError(
+            "full-output preflight should run before preview conversion"
+        )
+
+    monkeypatch.setattr(
+        "erlab.accessors.kspace.MomentumAccessor.convert",
+        _convert_must_not_run,
+    )
+
+    win.update()
+
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is None
+    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+    assert "Preview unavailable" in win._memory_estimate_label.text()
+    assert "Increase resolution or reduce bounds" in win._memory_estimate_label.text()
+    assert erlab.utils.formatting.format_nbytes(output_estimate.peak_bytes) in (
+        win._memory_estimate_label.text()
+    )
+    assert "safe budget" not in win._memory_estimate_label.text()
+
+
+def test_kspace_memory_estimate_labels_wrap(qtbot, anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog_host = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(dialog_host)
+    dialog = KspaceConversionDialog(dialog_host.slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+
+    for label in (win._memory_estimate_label, dialog._memory_estimate_label):
+        assert label.wordWrap()
+        assert label.textFormat() == imagetool_dialogs.QtCore.Qt.TextFormat.PlainText
+        assert label.alignment() & imagetool_dialogs.QtCore.Qt.AlignmentFlag.AlignTop
+        assert label.minimumWidth() == 0
+        assert (
+            label.sizePolicy().horizontalPolicy()
+            == imagetool_dialogs.QtWidgets.QSizePolicy.Policy.Expanding
+        )
+
+
+def test_ktool_unsafe_output_shows_blocking_error(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    messages: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args, **kwargs: messages.append((args, kwargs)) or 0),
+    )
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4 * _GIB, available=2 * _GIB),
+    )
+
+    win.resolution_supergroup.setChecked(True)
+    for spin in win._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    win.show_converted()
+
+    assert messages
+    assert (
+        messages[-1][1]["buttons"]
+        == imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert getattr(win, "_itool", None) is None
 
 
 @pytest.mark.parametrize(
@@ -453,6 +910,352 @@ def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
         )
 
 
+@pytest.mark.parametrize("kind", ["cut", "map", "hv"])
+def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None:
+    if kind == "cut":
+        data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    elif kind == "map":
+        data = anglemap.isel(alpha=slice(0, 5), beta=slice(0, 5), eV=slice(0, 5)).copy(
+            deep=True
+        )
+    else:
+        data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
+
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert not {"delta", "xi", "beta", "chi"} & set(dialog._offset_spins)
+    assert ("V0" in dialog._offset_spins) is data.kspace._has_hv
+
+    operations = dialog.source_operations()
+    assert isinstance(operations[-1], provenance.KspaceConvertOperation)
+    assert any(isinstance(op, provenance.KspaceSetNormalOperation) for op in operations)
+    assert all(
+        operation.group is not None
+        and operation.group.kind == _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
+        for operation in operations
+    )
+    assert {operation.group.id for operation in operations if operation.group} == {
+        operations[0].group.id
+    }
+    for index in range(len(operations)):
+        assert provenance.operation_group_range(
+            operations,
+            index,
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        ) == (0, len(operations))
+    assert (
+        any(
+            isinstance(op, provenance.KspaceInnerPotentialOperation)
+            for op in operations
+        )
+        is data.kspace._has_hv
+    )
+
+    code = dialog.make_code()
+    assert ".copy(deep=False)" not in code
+    assert "psutil" not in code
+    assert "KspaceConversionMemory" not in code
+    if not data.kspace._has_hv:
+        assert ".kspace.inner_potential =" not in code
+
+    namespace = {"data": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        dialog.process_data(data.copy(deep=True)),
+        namespace["data_kconv"],
+    )
+
+
+def test_kspace_conversion_dialog_unsafe_accept_shows_error(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    messages: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args, **kwargs: messages.append((args, kwargs)) or 0),
+    )
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+    dialog.resolution_supergroup.setChecked(True)
+    for spin in dialog._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    with pytest.raises(_kspace_conversion.KspaceConversionMemoryError) as exc_info:
+        dialog.preflight_data(data)
+
+    assert dialog._handle_process_error(exc_info.value)
+
+    assert messages
+    assert (
+        messages[-1][1]["buttons"]
+        == imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert dialog._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+
+
+def test_kspace_conversion_dialog_estimate_defensive_paths(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+    dialog._set_control_configuration(int(AxesConfiguration.Type2DA))
+
+    estimate = dialog.conversion_estimate_for_data(data)
+
+    assert estimate.is_safe
+    dialog.preflight_data(data)
+    assert not dialog._handle_process_error(RuntimeError("not a memory guard"))
+
+    def _raise_estimate(_data):
+        raise RuntimeError("estimate failed")
+
+    monkeypatch.setattr(dialog, "conversion_estimate_for_data", _raise_estimate)
+    dialog._update_memory_estimate()
+
+    assert dialog._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+
+
+def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    first = ktool(data, execute=False)
+    second = ktool(data, execute=False)
+    qtbot.addWidget(first)
+    qtbot.addWidget(second)
+    first._offset_spins["wf"].setValue(3.25)
+    second._offset_spins["wf"].setValue(4.75)
+    second._offset_spins["delta"].setValue(12.5)
+    second._sync_normal_emission_spins()
+    second.bounds_supergroup.setChecked(True)
+    for value, spin in zip(
+        (-0.12345, 0.23456),
+        second._bound_spins.values(),
+        strict=False,
+    ):
+        spin.setValue(value)
+    second.resolution_supergroup.setChecked(True)
+    second.res_npts_check.setChecked(True)
+    for value, spin in zip(
+        (0.12345, 0.23456),
+        second._resolution_spins.values(),
+        strict=False,
+    ):
+        spin.setValue(value)
+    win.slicer_area.add_tool_window(first)
+    win.slicer_area.add_tool_window(second)
+
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._offset_spins["wf"].value() == pytest.approx(4.75)
+    assert dialog._normal_delta == pytest.approx(12.5)
+    assert dialog.normal_emission == pytest.approx(
+        second._current_normal_emission_angles()
+    )
+    assert dialog.res_npts_check.isChecked() is True
+    assert list(dialog._resolution_spins) == list(second._resolution_spins)
+    assert dialog.bounds_supergroup.isChecked() is True
+    assert [spin.value() for spin in dialog._bound_spins.values()] == pytest.approx(
+        [spin.value() for spin in second._bound_spins.values()]
+    )
+    assert [
+        spin.value() for spin in dialog._resolution_spins.values()
+    ] == pytest.approx([spin.value() for spin in second._resolution_spins.values()])
+
+
+def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    child = ktool(data, execute=False)
+    qtbot.addWidget(child)
+    child._offset_spins["V0"].setValue(14.0)
+    win.slicer_area.add_tool_window(child)
+
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._offset_spins["V0"].value() == pytest.approx(14.0)
+
+    manager = SimpleNamespace(
+        target_from_slicer_area=lambda slicer_area: "target",
+        _node_for_target=lambda target: SimpleNamespace(
+            _childtool_indices=("missing", "child")
+        ),
+        get_childtool=lambda uid: (
+            child if uid == "child" else (_ for _ in ()).throw(RuntimeError)
+        ),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    assert dialog._newest_child_ktool() is child
+    dialog.focus_operation_group_control("inner_potential")
+
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.KspaceInnerPotentialOperation(inner_potential=13.0),
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    dialog.restore_transform_operations(operations)
+    assert dialog._offset_spins["V0"].value() == pytest.approx(13.0)
+    with pytest.raises(ValueError, match="complete kspace conversion"):
+        dialog.restore_transform_operation(operations[0])
+
+
+def test_kspace_conversion_dialog_restores_unordered_setup_group(
+    qtbot, monkeypatch, anglemap
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+    axes = tuple(dialog._control_data.kspace.momentum_axes)
+    bounds = dict.fromkeys(axes, (-0.03, 0.04))
+    resolution = dict.fromkeys(axes, 0.02)
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            provenance.KspaceConfigurationOperation(
+                configuration=AxesConfiguration.Type1
+            ),
+            provenance.KspaceConvertOperation(bounds=bounds, resolution=resolution),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    unmarked = provenance.strip_operation_groups(operations)
+
+    with pytest.raises(ValueError, match="can only restore one"):
+        imagetool_dialogs.DataTransformDialog.restore_transform_operations(
+            SimpleNamespace(restore_transform_operation=lambda operation: None),
+            operations[:2],
+        )
+    with pytest.raises(ValueError, match="Invalid kspace configuration"):
+        dialog._set_configuration_combo(999)
+    with imagetool_dialogs.QtCore.QSignalBlocker(dialog.configuration_combo):
+        dialog.configuration_combo.setCurrentIndex(-1)
+    assert dialog.current_configuration == dialog._control_data.kspace.configuration
+    dialog._set_configuration_combo(int(AxesConfiguration.Type1))
+    dialog._handle_configuration_changed()
+    assert dialog.current_configuration == AxesConfiguration.Type1
+
+    assert KspaceConversionDialog.operation_group_for_edit(unmarked, 0) is None
+    duplicate_normal = provenance.stamp_operation_group(
+        (
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            provenance.KspaceSetNormalOperation(alpha=3.0, beta=4.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert KspaceConversionDialog.operation_group_for_edit(duplicate_normal, 0) is None
+    extra_convert = provenance.stamp_operation_group(
+        (
+            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert KspaceConversionDialog.operation_group_for_edit(extra_convert, 0) is None
+
+    for index in range(len(operations)):
+        assert KspaceConversionDialog.operation_group_for_edit(
+            operations,
+            index,
+        ) == (0, len(operations))
+
+    with pytest.raises(ValueError, match="complete kspace conversion"):
+        dialog.restore_transform_operations(unmarked)
+    dialog.restore_transform_operations(operations)
+
+    assert dialog.current_configuration == AxesConfiguration.Type1
+    assert dialog._offset_spins["wf"].value() == pytest.approx(4.2)
+    assert dialog.normal_emission == pytest.approx((1.0, 2.0))
+    assert dialog._normal_delta == pytest.approx(3.0)
+    assert dialog.bounds is not None
+    for axis, values in bounds.items():
+        assert dialog.bounds[axis] == pytest.approx(values)
+    assert dialog.resolution is not None
+    for axis, value in resolution.items():
+        assert dialog.resolution[axis] == pytest.approx(value)
+    assert dialog._validate() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Accepted
+    for focus in (
+        "configuration",
+        "work_function",
+        "inner_potential",
+        "normal_emission",
+        "bounds_resolution",
+        None,
+    ):
+        dialog.focus_operation_group_control(focus)
+
+    monkeypatch.setattr(dialog, "_copy_data_name", lambda: "not a valid name")
+    namespace = {"data": data.copy(deep=True)}
+    code = dialog.make_code()
+    assert code.splitlines()[-1].startswith("data_kconv = data.kspace.convert(")
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        namespace["data_kconv"],
+        dialog.process_data(data.copy(deep=True)),
+    )
+
+    spec = provenance.full_data(*operations)
+    display_code = spec.display_code(parent_data=data)
+    assert display_code is not None
+    namespace = {"data": data.copy(deep=True)}
+    exec(display_code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(
+        namespace["derived"],
+        spec.apply(data.copy(deep=True)),
+    )
+
+    class LayoutReturningNone:
+        def __init__(self) -> None:
+            self._count = 1
+
+        def count(self) -> int:
+            return self._count
+
+        def takeAt(self, _index: int) -> None:
+            self._count = 0
+            return
+
+    KspaceConversionDialog._clear_layout(LayoutReturningNone())
+
+
 @pytest.mark.parametrize(
     ("configuration", "coords", "reference_offsets"),
     [
@@ -491,19 +1294,161 @@ def test_ktool_copy_code_uses_set_normal(
     input_name = str(win._argnames["data"])
     if not erlab.interactive.utils._is_kwarg_name(input_name):
         input_name = "data"
+    assert ".copy(deep=False)" not in code
+    assert code.splitlines()[0].startswith(f"{input_name}.kspace.set_normal(")
+    assert f"{input_name}_kconv = {input_name}.kspace.convert(" in code
 
     namespace = {input_name: data.copy(deep=True)}
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
 
-    expected = win._assign_params(data.copy(deep=True)).kspace.convert(
-        bounds=win.bounds, resolution=win.resolution
+    expected_setup = win._assign_params(data.copy(deep=True))
+    expected = expected_setup.kspace.convert(
+        bounds=win.bounds,
+        resolution=win.resolution,
     )
-    for key, value in reference_offsets.items():
-        assert np.round(namespace[input_name].kspace.offsets[key], 5) == pytest.approx(
-            value
-        )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
+    for key, value in expected_setup.kspace.offsets.items():
+        assert namespace[input_name].kspace.offsets[key] == pytest.approx(
+            value,
+            abs=1e-5,
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_configuration", "expected_offsets", "expected_axes"),
+    [
+        (
+            AxesConfiguration.Type2,
+            {"delta", "xi", "beta", "wf"},
+            {"ky"},
+        ),
+        (
+            AxesConfiguration.Type2DA,
+            {"delta", "chi", "xi", "wf"},
+            {"kx", "ky"},
+        ),
+    ],
+)
+def test_ktool_configuration_combo_rebuilds_controls_and_code(
+    qtbot,
+    anglemap,
+    target_configuration: AxesConfiguration,
+    expected_offsets: set[str],
+    expected_axes: set[str],
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    qtbot.addWidget(win)
+
+    assert win.configuration_combo.count() == len(AxesConfiguration)
+    index = win.configuration_combo.findData(int(target_configuration))
+    assert index >= 0
+    win.configuration_combo.setCurrentIndex(index)
+
+    assert win.data.kspace.configuration == target_configuration
+    assert set(win._offset_spins) == expected_offsets
+    assert set(win._resolution_spins) == expected_axes
+    assert win.tool_status.configuration == int(target_configuration)
+
+    code = win.copy_code()
+    assert f".kspace.as_configuration({int(target_configuration)})" in code
+    assert code.count(".copy(deep=False)") == 0
+    assert ".kspace.set_normal(" in code
+    assert ".kspace.convert(" in code
+    assert code.splitlines()[0] == (
+        f"scan_kconv = scan.kspace.as_configuration({int(target_configuration)})"
+    )
+    namespace = {"scan": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], win._converted_output())
+    assert namespace["scan"].kspace.configuration == AxesConfiguration.Type1DA
+
+
+def test_ktool_configuration_state_edges(qtbot, anglemap) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    qtbot.addWidget(win)
+
+    with imagetool_dialogs.QtCore.QSignalBlocker(win.configuration_combo):
+        win.configuration_combo.setCurrentIndex(-1)
+    assert win.current_configuration == win.data.kspace.configuration
+    win._set_configuration_combo(win.data.kspace.configuration)
+    with pytest.raises(ValueError, match="Invalid kspace configuration"):
+        win._set_configuration_combo(999)
+    win._handle_configuration_changed()
+
+    status = win.tool_status
+    win.tool_status = status.model_copy(
+        update={
+            "configuration": int(AxesConfiguration.Type2DA),
+            "offsets": {**status.offsets, "unused": 1.0},
+            "bounds": {**status.bounds, "unused": 1.0},
+            "resolution": {**status.resolution, "unused": 1.0},
+        }
+    )
+
+    assert win.data.kspace.configuration == AxesConfiguration.Type2DA
+
+    class LayoutReturningNone:
+        def __init__(self) -> None:
+            self._count = 1
+
+        def count(self) -> int:
+            return self._count
+
+        def takeAt(self, _index: int) -> None:
+            self._count = 0
+            return
+
+    KspaceTool._clear_layout(LayoutReturningNone())
+
+
+def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
+    qtbot, anglemap
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    qtbot.addWidget(win)
+    target_configuration = AxesConfiguration.Type2DA
+    win.configuration_combo.setCurrentIndex(
+        win.configuration_combo.findData(int(target_configuration))
+    )
+
+    converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
+    assert converted is not None
+    spec = win.output_imagetool_provenance(KspaceTool.Output.CONVERTED, converted)
+    assert spec is not None
+    assert [operation.op for operation in spec.operations] == [
+        "kspace_configuration",
+        "kspace_set_normal",
+        "kspace_convert",
+    ]
+    code = spec.display_code()
+    assert code is not None
+    assert ".kspace.as_configuration(4)" in code
+    namespace = {"scan": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], converted)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, KspaceTool)
+        assert win_restored.data.kspace.configuration == target_configuration
+        assert win_restored.tool_status.configuration == int(target_configuration)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) + 1.0
+    win.update_data(updated)
+    assert win._source_configuration == int(AxesConfiguration.Type1DA)
+    assert win.data.kspace.configuration == target_configuration
+    xr.testing.assert_allclose(
+        win.tool_data,
+        updated.kspace.as_configuration(target_configuration),
+    )
 
 
 def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
@@ -542,9 +1487,10 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
 
     code = win.copy_code()
 
-    assert "input_data = my_data.astype(np.float64)" in code
-    assert "input_data.kspace.set_normal(" in code
-    assert "input_data_kconv = input_data.kspace.convert(" in code
+    assert "input_data_kconv = my_data.astype(np.float64)" in code
+    assert ".copy(deep=False)" not in code
+    assert "input_data_kconv.kspace.set_normal(" in code
+    assert "input_data_kconv = input_data_kconv.kspace.convert(" in code
     assert "astype(np.float64)_kconv" not in code
     namespace = {"my_data": data.copy(deep=True), "np": np}
     exec(code, {"__builtins__": {}, "np": np}, namespace)  # noqa: S102
@@ -714,6 +1660,9 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     assert not _missing_kspace_parameter_warnings(caught)
     assert win._offset_spins["wf"].value() == pytest.approx(4.5)
     assert win._offset_spins["V0"].value() == pytest.approx(10.0)
+    code = win.copy_code()
+    assert ".kspace.work_function =" not in code
+    assert ".kspace.inner_potential =" not in code
 
     original_attrs = win.data.attrs.copy()
     updated = data.copy(deep=True)

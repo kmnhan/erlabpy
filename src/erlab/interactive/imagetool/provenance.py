@@ -22,9 +22,15 @@ __all__ = [
     "ImageToolSelectionSourceBinding",
     "InterpolationOperation",
     "IselOperation",
+    "KspaceConfigurationOperation",
+    "KspaceConvertOperation",
+    "KspaceInnerPotentialOperation",
+    "KspaceSetNormalOperation",
+    "KspaceWorkFunctionOperation",
     "LeadingEdgeOperation",
     "MaskWithPolygonOperation",
     "NormalizeOperation",
+    "OperationGroupMarker",
     "QSelAggregationOperation",
     "QSelOperation",
     "RenameDimsCoordsOperation",
@@ -57,6 +63,7 @@ __all__ = [
     "full_data",
     "mark_promoted_1d_source",
     "operation_from_console_call",
+    "operation_group_range",
     "operations_expression_code",
     "parse_tool_provenance_operation",
     "parse_tool_provenance_spec",
@@ -67,10 +74,14 @@ __all__ = [
     "replay_input_name",
     "replay_script_provenance",
     "require_live_source_spec",
+    "restamp_operation_groups",
     "script",
     "script_input_dependency_refs",
     "script_provenance_replayable",
     "selection",
+    "stamp_operation_group",
+    "strip_operation_groups",
+    "strip_partial_operation_groups",
     "to_replay_provenance_spec",
     "uses_default_replay_input",
 ]
@@ -101,6 +112,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     FileLoadSource,
     FileReplayCall,
     NullableProvenanceHashableTuple,
+    OperationGroupMarker,
     ProvenanceFloatMapping,
     ProvenanceFloatSequenceMapping,
     ProvenanceHashable,
@@ -154,6 +166,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     full_data,
     mark_promoted_1d_source,
     operation_from_console_call,
+    operation_group_range,
     operations_expression_code,
     parse_tool_provenance_operation,
     parse_tool_provenance_spec,
@@ -164,10 +177,14 @@ from erlab.interactive.imagetool._provenance_framework import (
     replay_input_name,
     replay_script_provenance,
     require_live_source_spec,
+    restamp_operation_groups,
     script,
     script_input_dependency_refs,
     script_provenance_replayable,
     selection,
+    stamp_operation_group,
+    strip_operation_groups,
+    strip_partial_operation_groups,
     to_replay_provenance_spec,
     uses_default_replay_input,
 )
@@ -1751,6 +1768,180 @@ class AssignAttrsOperation(ToolProvenanceOperation):
     ) -> str:
         attrs_code = _provenance_value_code(self.attrs)
         return f"{input_name}.assign_attrs({attrs_code})"
+
+
+class KspaceConfigurationOperation(ToolProvenanceOperation):
+    op: typing.Literal["kspace_configuration"] = "kspace_configuration"
+    batch_available: typing.ClassVar[bool] = True
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            accessor_path=("kspace", "as_configuration"),
+            fields=("configuration",),
+        ),
+    )
+    configuration: int
+
+    @pydantic.field_validator("configuration")
+    @classmethod
+    def _validate_configuration(cls, value: int) -> int:
+        return int(erlab.constants.AxesConfiguration(int(value)))
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.kspace.as_configuration(self.configuration)
+
+    def derivation_label(self) -> str:
+        configuration = erlab.constants.AxesConfiguration(self.configuration)
+        return f"Set kspace configuration({int(configuration)} {configuration.name})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return f"{input_name}.kspace.as_configuration({self.configuration})"
+
+
+class _MutatingKspaceOperation(ToolProvenanceOperation):
+    batch_available: typing.ClassVar[bool] = True
+    console_applies_to_receiver: typing.ClassVar[bool] = True
+    statement_mutates_input: typing.ClassVar[bool] = True
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        out = data.copy(deep=False)
+        self._apply_kspace_statement(out)
+        return out
+
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        if input_name == output_name:
+            return self._kspace_statement_code(output_name)
+        return "\n".join(
+            (
+                f"{output_name} = {input_name}.copy(deep=False)",
+                self._kspace_statement_code(output_name),
+            )
+        )
+
+    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
+        raise NotImplementedError
+
+    def _kspace_statement_code(self, output_name: str) -> str:
+        raise NotImplementedError
+
+
+class KspaceWorkFunctionOperation(_MutatingKspaceOperation):
+    op: typing.Literal["kspace_work_function"] = "kspace_work_function"
+    work_function: float
+
+    def derivation_label(self) -> str:
+        return f"Set work function({self.work_function:g} eV)"
+
+    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
+        data.kspace.work_function = self.work_function
+
+    def _kspace_statement_code(self, output_name: str) -> str:
+        return f"{output_name}.kspace.work_function = {self.work_function!r}"
+
+
+class KspaceInnerPotentialOperation(_MutatingKspaceOperation):
+    op: typing.Literal["kspace_inner_potential"] = "kspace_inner_potential"
+    inner_potential: float
+
+    def derivation_label(self) -> str:
+        return f"Set inner potential({self.inner_potential:g} eV)"
+
+    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
+        data.kspace.inner_potential = self.inner_potential
+
+    def _kspace_statement_code(self, output_name: str) -> str:
+        return f"{output_name}.kspace.inner_potential = {self.inner_potential!r}"
+
+
+class KspaceSetNormalOperation(_MutatingKspaceOperation):
+    op: typing.Literal["kspace_set_normal"] = "kspace_set_normal"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            accessor_path=("kspace", "set_normal"),
+            fields=("alpha", "beta"),
+            defaults={"delta": None},
+        ),
+    )
+    alpha: float
+    beta: float
+    delta: float | None = None
+
+    @property
+    def kwargs(self) -> dict[str, float]:
+        kwargs = {"alpha": self.alpha, "beta": self.beta}
+        if self.delta is not None:
+            kwargs["delta"] = self.delta
+        return kwargs
+
+    def derivation_label(self) -> str:
+        return f"Set normal emission({_format_derivation_value(self.kwargs)})"
+
+    def _apply_kspace_statement(self, data: xr.DataArray) -> None:
+        data.kspace.set_normal(**self.kwargs)
+
+    def _kspace_statement_code(self, output_name: str) -> str:
+        return (
+            f"{output_name}.kspace.set_normal("
+            f"{erlab.interactive.utils.format_call_kwargs(self.kwargs)})"
+        )
+
+
+class KspaceConvertOperation(ToolProvenanceOperation):
+    op: typing.Literal["kspace_convert"] = "kspace_convert"
+    batch_available: typing.ClassVar[bool] = True
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            accessor_path=("kspace", "convert"),
+            fields=("bounds", "resolution"),
+            defaults={
+                "bounds": None,
+                "resolution": None,
+                "method": "linear",
+                "silent": True,
+            },
+        ),
+    )
+    bounds: dict[str, tuple[float, float]] | None = None
+    resolution: dict[str, float] | None = None
+    method: str = "linear"
+    silent: bool = True
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {}
+        if self.bounds is not None:
+            kwargs["bounds"] = self.bounds
+        if self.resolution is not None:
+            kwargs["resolution"] = self.resolution
+        if self.method != "linear":
+            kwargs["method"] = self.method
+        if not self.silent:
+            kwargs["silent"] = self.silent
+        return kwargs
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.kspace.convert(
+            bounds=self.bounds,
+            resolution=self.resolution,
+            method=self.method,
+            silent=self.silent,
+        )
+
+    def derivation_label(self) -> str:
+        return f"Convert to momentum({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        kwargs_code = erlab.interactive.utils.format_call_kwargs(self.kwargs)
+        return f"{input_name}.kspace.convert({kwargs_code})"
 
 
 class SliceAlongPathOperation(ToolProvenanceOperation):

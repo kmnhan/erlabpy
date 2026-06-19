@@ -36,6 +36,7 @@ dependencies = [
     "numpy>=1.26.0",
     "packaging>=24.0",
     "pickleshare>=0.7.5",
+    "psutil>=7.2.2",
     "pydantic>=2.11.7",
     "pyperclip>=1.8.2",
     "pyqtgraph>=0.13.1",
