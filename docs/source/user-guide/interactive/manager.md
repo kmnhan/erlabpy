@@ -266,6 +266,12 @@ and right-click context menus:
 
   :::
 
+- {guilabel}`Edit Note` / {guilabel}`Copy Note`
+
+  Add plain-text notes to the selected row from the right-side inspector or the
+  right-click context menu. Notes are saved with the manager workspace for ImageTool
+  rows, analysis tools, child ImageTool outputs, and Figure Composer windows.
+
 Icons next to each entry indicate special states: linked windows share a colored badge,
 chunked Dask arrays show the dask icon, watched variables display their variable name,
 rows opened from another row can show the state badges described in
@@ -294,6 +300,9 @@ See {ref}`Figure Composer <figure-composer>` for details.
 Windows in an ImageTool Manager instance can be saved to a workspace file (`.itws`),
 similar to Igor Pro experiment files. Pressing {kbd}`Ctrl+S` in any child window saves
 the entire manager workspace, including all windows and their state.
+
+Manager row notes are workspace metadata. They are saved with the row they describe and
+do not modify the data attributes of the underlying `DataArray`.
 
 {guilabel}`File → Add Windows From Workspace…` lets you choose windows from another
 workspace file to import into the current one.

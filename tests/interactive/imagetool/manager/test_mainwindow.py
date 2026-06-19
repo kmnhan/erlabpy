@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive._figurecomposer import FigureComposerTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
@@ -2014,6 +2015,228 @@ def test_workspace_properties_dialog_file_detail_branches(
     )
 
 
+def test_manager_notes_editor_actions(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda content: copied.append(str(content)) or str(content),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager.resize(640, 700)
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        manager._mark_workspace_clean()
+
+        select_tools(manager, [0])
+        manager._update_info()
+        assert manager.inspector_tabs.count() == 3
+        assert manager.metadata_group.parentWidget() is manager.right_splitter
+        assert (
+            manager.metadata_details_widget.parentWidget()
+            is manager.metadata_details_page
+        )
+        assert (
+            manager.metadata_derivation_list.parentWidget()
+            is manager.metadata_provenance_page
+        )
+        assert manager.metadata_details_page.layout().contentsMargins().left() > 0
+
+        manager.edit_note_action.trigger()
+        assert manager.inspector_tabs.currentWidget() is manager.notes_page
+        assert isinstance(manager.notes_title_label, manager_widgets._ElidedValueLabel)
+        assert manager.notes_title_label.minimumSizeHint().width() == 0
+        assert manager.notes_title_label.full_text == wrapper.display_text
+        manager.notes_editor.setPlainText("root intent\nsecond line")
+
+        qtbot.wait_until(
+            lambda: wrapper.note == "root intent\nsecond line",
+            timeout=1500,
+        )
+        assert manager._workspace_state.dirty_state == {wrapper.uid}
+        assert manager._workspace_state.dirty_data == set()
+
+        manager.copy_note_action.trigger()
+        assert copied == ["root intent\nsecond line"]
+
+        manager.clear_note_action.trigger()
+        assert wrapper.note == ""
+
+        compact_notes: list[str] = []
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "compact_workspace",
+            lambda: compact_notes.append(wrapper.note) or True,
+        )
+        manager.notes_editor.setPlainText("pending compact note")
+        manager._note_commit_timer.stop()
+        assert manager.compact_workspace()
+        assert compact_notes == ["pending compact note"]
+
+        load_notes: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "load",
+            lambda *, native=True: load_notes.append((wrapper.note, native)) or True,
+        )
+        manager.notes_editor.setPlainText("pending load note")
+        manager._note_commit_timer.stop()
+        assert manager.load(native=False)
+        assert load_notes == [("pending load note", False)]
+
+        manager.tree_view.clearSelection()
+        manager._update_info()
+        assert manager.notes_title_label.full_text == ""
+        assert manager.notes_title_label.toolTip() == ""
+        assert manager.notes_title_label.accessibleName() == ""
+
+
+def test_manager_notes_controller_guard_branches(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda content: copied.append(str(content)) or str(content),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._tool_graph.root_wrappers[0]
+
+        select_tools(manager, [0])
+        manager.edit_note_action.trigger()
+        manager.notes_editor.setPlainText(wrapper.note)
+        manager._updating_note_editor = True
+        try:
+            manager._commit_note_editor()
+        finally:
+            manager._updating_note_editor = False
+
+        manager.tree_view.clearSelection()
+        manager._update_info()
+        manager.edit_selected_note()
+        manager.copy_selected_note()
+        manager.clear_selected_note()
+        assert copied == []
+
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_notes_ui_available",
+            lambda: False,
+        )
+        manager._details_panel._update_note_actions()
+        manager._schedule_note_commit()
+        manager._commit_note_editor()
+        manager.edit_selected_note()
+        manager.copy_selected_note()
+        manager.clear_selected_note()
+
+
+def test_manager_inspector_tabs_fallback_between_pages(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        def enable_inspector_tabs() -> None:
+            for page in (
+                manager.metadata_details_page,
+                manager.metadata_provenance_page,
+                manager.notes_page,
+            ):
+                manager.inspector_tabs.setTabEnabled(
+                    manager.inspector_tabs.indexOf(page), True
+                )
+
+        manager._set_metadata_fields([])
+        manager.metadata_derivation_list.clear()
+        manager.metadata_derivation_list.addTopLevelItem(QtWidgets.QTreeWidgetItem())
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+        manager._update_metadata_pane()
+        assert (
+            manager.inspector_tabs.currentWidget() is manager.metadata_provenance_page
+        )
+
+        manager.metadata_derivation_list.clear()
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager.metadata_derivation_list.clear()
+        manager._notes_node_uid = "note-target"
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.notes_page
+
+        manager._set_metadata_fields(
+            [manager_wrapper._MetadataField("Kind", "ImageTool")]
+        )
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager._set_metadata_fields([])
+        manager._notes_node_uid = "note-target"
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.notes_page
+
+        manager._set_metadata_fields(
+            [manager_wrapper._MetadataField("Kind", "ImageTool")]
+        )
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert manager.inspector_tabs.currentWidget() is manager.metadata_details_page
+
+        manager._set_metadata_fields([])
+        manager.metadata_derivation_list.clear()
+        manager.metadata_derivation_list.addTopLevelItem(QtWidgets.QTreeWidgetItem())
+        manager._notes_node_uid = None
+        enable_inspector_tabs()
+        manager.inspector_tabs.setCurrentWidget(manager.notes_page)
+        manager._update_metadata_pane()
+        assert (
+            manager.inspector_tabs.currentWidget() is manager.metadata_provenance_page
+        )
+
+
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
 def test_manager(
     qtbot,
@@ -3199,6 +3422,126 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         xr.testing.assert_identical(
             fetch(loaded_child_uid), updated.rename("saved manual child")
         )
+
+
+def test_manager_notes_persist_workspace_roundtrip(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(source, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        root.note = "root note"
+
+        child_tool = itool(source.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=provenance.full_data(),
+            note="child note",
+        )
+        figure_uid = manager.add_figuretool(
+            FigureComposerTool(source),
+            show=False,
+            note="figure note",
+        )
+
+        workspace_path = tmp_path / "notes.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        loaded_root = manager._tool_graph.root_wrappers[0]
+        loaded_child_uid = loaded_root._childtool_indices[0]
+        assert loaded_root.note == "root note"
+        assert manager._child_node(loaded_child_uid).note == "child note"
+        assert loaded_child_uid == child_uid
+        assert manager._tool_graph.figure_uids == [figure_uid]
+        assert manager._child_node(figure_uid).note == "figure note"
+
+
+def test_manager_notes_preserved_by_duplicate_and_promote(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        manager._tool_graph.root_wrappers[0].note = "root note"
+
+        child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=provenance.full_data(),
+            note="child note",
+        )
+
+        select_tools(manager, [0])
+        manager.edit_note_action.trigger()
+        manager.notes_editor.setPlainText("pending duplicate root note")
+        manager._note_commit_timer.stop()
+        duplicated_target = manager.duplicate_imagetool(0)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        duplicated = manager._node_for_target(duplicated_target)
+        assert duplicated.note == "pending duplicate root note"
+        duplicated_child_uid = duplicated._childtool_indices[0]
+        assert manager._child_node(duplicated_child_uid).note == "child note"
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager.edit_note_action.trigger()
+        manager.notes_editor.setPlainText("pending promoted child note")
+        manager._note_commit_timer.stop()
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "exec",
+            lambda _: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        manager.promote_selected()
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        assert (
+            manager._tool_graph.nodes[child_uid].note == "pending promoted child note"
+        )
+
+        figure_uid = manager.add_figuretool(
+            FigureComposerTool(test_data),
+            show=False,
+            note="figure note",
+        )
+        duplicated_figure_uid = manager.duplicate_childtool(figure_uid)
+        assert manager._child_node(duplicated_figure_uid).note == "figure note"
 
 
 @pytest.mark.parametrize("auto_update", [False, True], ids=["manual", "auto"])

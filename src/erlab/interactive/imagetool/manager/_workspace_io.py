@@ -763,6 +763,10 @@ class _WorkspaceIOController:
         ds.attrs["manager_node_kind"] = kind
         ds.attrs["manager_node_snapshot_token"] = node.snapshot_token
         ds.attrs["manager_node_added_at"] = node.added_time_iso
+        if node.note:
+            ds.attrs["manager_node_note"] = node.note
+        else:
+            ds.attrs.pop("manager_node_note", None)
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
         if provenance_spec is not None:
@@ -943,6 +947,7 @@ class _WorkspaceIOController:
             "uid": uid,
             "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
             "created_time": ds.attrs.get("manager_node_added_at"),
+            "note": ds.attrs.get("manager_node_note"),
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
             "source_binding": (
@@ -1068,6 +1073,7 @@ class _WorkspaceIOController:
                 uid=ds.attrs.get("manager_node_uid"),
                 snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                 created_time=ds.attrs.get("manager_node_added_at"),
+                note=ds.attrs.get("manager_node_note"),
             )
         else:
             target = self._manager.add_childtool(
@@ -1077,6 +1083,7 @@ class _WorkspaceIOController:
                 uid=ds.attrs.get("manager_node_uid"),
                 snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                 created_time=ds.attrs.get("manager_node_added_at"),
+                note=ds.attrs.get("manager_node_note"),
             )
         self._manager._record_workspace_loaded_tool_target(
             ds, target, loaded_targets_by_uid

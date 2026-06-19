@@ -37,6 +37,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _SHM_NAME,
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _ApplicationQuitFilter,
+    _ElidedValueLabel,
     _HeightForWidthFrame,
     _manager_settings,
     _MetadataDerivationListWidget,
@@ -102,6 +103,15 @@ _FIGURE_GALLERY_THUMBNAIL_SIZES = {
     _FIGURE_GALLERY_SIZE_MEDIUM: (152, 114),
     "large": (216, 162),
 }
+_NOTE_COMMIT_DELAY_MS = 400
+
+
+class _NotesPlainTextEdit(QtWidgets.QPlainTextEdit):
+    focus_lost = QtCore.Signal()
+
+    def focusOutEvent(self, event: QtGui.QFocusEvent | None) -> None:
+        super().focusOutEvent(event)
+        self.focus_lost.emit()
 
 
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
@@ -894,6 +904,24 @@ class ImageToolManager(_ImageToolManagerBase):
         self.source_update_action.setIcon(QtGui.QIcon.fromTheme("sync-synchronizing"))
         self.source_update_action.setVisible(False)
 
+        self.edit_note_action = QtWidgets.QAction("Edit Note", self)
+        self.edit_note_action.setObjectName("manager_edit_note_action")
+        self.edit_note_action.triggered.connect(self.edit_selected_note)
+        self.edit_note_action.setToolTip("Edit the note for the selected window")
+        self.edit_note_action.setIcon(QtGui.QIcon.fromTheme("accessories-text-editor"))
+
+        self.copy_note_action = QtWidgets.QAction("Copy Note", self)
+        self.copy_note_action.setObjectName("manager_copy_note_action")
+        self.copy_note_action.triggered.connect(self.copy_selected_note)
+        self.copy_note_action.setToolTip("Copy the selected window note")
+        self.copy_note_action.setIcon(QtGui.QIcon.fromTheme("edit-copy"))
+
+        self.clear_note_action = QtWidgets.QAction("Clear Note", self)
+        self.clear_note_action.setObjectName("manager_clear_note_action")
+        self.clear_note_action.triggered.connect(self.clear_selected_note)
+        self.clear_note_action.setToolTip("Clear the selected window note")
+        self.clear_note_action.setIcon(QtGui.QIcon.fromTheme("edit-clear"))
+
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
         self.about_action.triggered.connect(self.about)
@@ -964,6 +992,10 @@ class ImageToolManager(_ImageToolManagerBase):
         self.edit_menu.addAction(self.rename_action)
         self.edit_menu.addAction(self.link_action)
         self.edit_menu.addAction(self.unlink_action)
+        self.edit_menu.addSeparator()
+        self.edit_menu.addAction(self.edit_note_action)
+        self.edit_menu.addAction(self.copy_note_action)
+        self.edit_menu.addAction(self.clear_note_action)
 
         self.view_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&View")
@@ -1101,7 +1133,33 @@ class ImageToolManager(_ImageToolManagerBase):
         metadata_layout.setSpacing(4)
         self.metadata_group.setLayout(metadata_layout)
 
-        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_group)
+        self.inspector_tabs = QtWidgets.QTabWidget(self.metadata_group)
+        self.inspector_tabs.setObjectName("manager_inspector_tabs")
+        self.inspector_tabs.setDocumentMode(True)
+        metadata_layout.addWidget(self.inspector_tabs, 1)
+
+        inspector_margin = max(
+            6,
+            self._style_pixel_metric(QtWidgets.QStyle.PixelMetric.PM_LayoutTopMargin),
+        )
+        inspector_spacing = max(
+            4,
+            self._style_pixel_metric(
+                QtWidgets.QStyle.PixelMetric.PM_LayoutVerticalSpacing
+            ),
+        )
+
+        self.metadata_details_page = QtWidgets.QWidget(self.inspector_tabs)
+        metadata_details_page_layout = QtWidgets.QVBoxLayout(self.metadata_details_page)
+        metadata_details_page_layout.setContentsMargins(
+            inspector_margin,
+            inspector_spacing,
+            inspector_margin,
+            inspector_spacing,
+        )
+        metadata_details_page_layout.setSpacing(inspector_spacing)
+
+        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_details_page)
         self.metadata_details_layout = QtWidgets.QGridLayout(
             self.metadata_details_widget
         )
@@ -1115,14 +1173,22 @@ class ImageToolManager(_ImageToolManagerBase):
             QtWidgets.QSizePolicy.Policy.Maximum,
         )
         self.metadata_details_widget.setVisible(False)
-        metadata_layout.addWidget(self.metadata_details_widget, 0)
+        metadata_details_page_layout.addWidget(self.metadata_details_widget, 0)
+        metadata_details_page_layout.addStretch(1)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
         self._metadata_monospace_font = QtGui.QFontDatabase.systemFont(
             QtGui.QFontDatabase.SystemFont.FixedFont
         )
 
+        self.metadata_provenance_page = QtWidgets.QWidget(self.inspector_tabs)
+        metadata_provenance_page_layout = QtWidgets.QVBoxLayout(
+            self.metadata_provenance_page
+        )
+        metadata_provenance_page_layout.setContentsMargins(0, 0, 0, 0)
+        metadata_provenance_page_layout.setSpacing(0)
+
         self.metadata_derivation_list = _MetadataDerivationListWidget(
-            self.metadata_group
+            self.metadata_provenance_page
         )
         self.metadata_derivation_list.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -1156,7 +1222,55 @@ class ImageToolManager(_ImageToolManagerBase):
             lambda _item, _column: self._activate_selected_derivation_step()
         )
         self.metadata_derivation_list.setVisible(False)
-        metadata_layout.addWidget(self.metadata_derivation_list, 1)
+        metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
+
+        self.notes_page = QtWidgets.QWidget(self.inspector_tabs)
+        notes_page_layout = QtWidgets.QVBoxLayout(self.notes_page)
+        notes_page_layout.setContentsMargins(0, 0, 0, 0)
+        notes_page_layout.setSpacing(4)
+        notes_header_layout = QtWidgets.QHBoxLayout()
+        notes_header_layout.setContentsMargins(0, 0, 0, 0)
+        notes_header_layout.setSpacing(4)
+        self.notes_title_label = _ElidedValueLabel(
+            "",
+            self.notes_page,
+            elide_mode=QtCore.Qt.TextElideMode.ElideMiddle,
+        )
+        self.notes_title_label.setObjectName("manager_notes_title_label")
+        self.notes_title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self.notes_kind_label = QtWidgets.QLabel(self.notes_page)
+        self.notes_kind_label.setObjectName("manager_notes_kind_label")
+        self.notes_kind_label.setEnabled(False)
+        self.notes_kind_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.notes_copy_button = QtWidgets.QToolButton(self.notes_page)
+        self.notes_copy_button.setObjectName("manager_notes_copy_button")
+        self.notes_copy_button.setDefaultAction(self.copy_note_action)
+        self.notes_copy_button.setAutoRaise(True)
+        self.notes_clear_button = QtWidgets.QToolButton(self.notes_page)
+        self.notes_clear_button.setObjectName("manager_notes_clear_button")
+        self.notes_clear_button.setDefaultAction(self.clear_note_action)
+        self.notes_clear_button.setAutoRaise(True)
+        notes_header_layout.addWidget(self.notes_title_label, 1)
+        notes_header_layout.addWidget(self.notes_kind_label, 0)
+        notes_header_layout.addWidget(self.notes_copy_button, 0)
+        notes_header_layout.addWidget(self.notes_clear_button, 0)
+        notes_page_layout.addLayout(notes_header_layout)
+        self.notes_editor = _NotesPlainTextEdit(self.notes_page)
+        self.notes_editor.setObjectName("manager_notes_editor")
+        self.notes_editor.setPlaceholderText("Notes")
+        self.notes_editor.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
+        self.notes_editor.textChanged.connect(self._schedule_note_commit)
+        self.notes_editor.focus_lost.connect(self._commit_note_editor)
+        notes_page_layout.addWidget(self.notes_editor, 1)
+
+        self.inspector_tabs.addTab(self.metadata_details_page, "Details")
+        self.inspector_tabs.addTab(self.metadata_provenance_page, "Provenance")
+        self.inspector_tabs.addTab(self.notes_page, "Notes")
         self.right_splitter.addWidget(self.metadata_group)
         self.right_splitter.setStretchFactor(0, 2)
         self.right_splitter.setStretchFactor(1, 1)
@@ -1173,6 +1287,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
         self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
+        self._notes_node_uid: str | None = None
+        self._updating_note_editor = False
+        self._note_commit_timer = QtCore.QTimer(self)
+        self._note_commit_timer.setSingleShot(True)
+        self._note_commit_timer.setInterval(_NOTE_COMMIT_DELAY_MS)
+        self._note_commit_timer.timeout.connect(self._commit_note_editor)
         self._refreshing_figure_list = False
         self._figure_menu: QtWidgets.QMenu | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy", self)
@@ -1232,6 +1352,7 @@ class ImageToolManager(_ImageToolManagerBase):
         for widget in (
             self.text_box,
             self.metadata_derivation_list,
+            self.notes_editor,
         ):
             widget.installEventFilter(self._kb_filter)
 
@@ -1255,6 +1376,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         logger.debug("Closing ImageTool Manager...")
+        self._commit_note_editor()
         previous_closing_workspace_document = self._workspace_state.closing_document
         self._workspace_state.closing_document = True
         try:
@@ -1300,6 +1422,7 @@ class ImageToolManager(_ImageToolManagerBase):
             for widget in (
                 self.text_box,
                 self.metadata_derivation_list,
+                self.notes_editor,
             ):
                 widget.removeEventFilter(self._kb_filter)
             self.tree_view._delegate._cleanup_filter()
@@ -1943,6 +2066,9 @@ class ImageToolManager(_ImageToolManagerBase):
         menu.addAction(self.duplicate_action)
         menu.addAction(self.remove_action)
         menu.addAction(self.rename_action)
+        menu.addSeparator()
+        menu.addAction(self.edit_note_action)
+        menu.addAction(self.copy_note_action)
         viewport = self.figure_list.viewport()
         if viewport is None:  # pragma: no cover
             self._release_figure_menu(menu)
@@ -2885,6 +3011,21 @@ class ImageToolManager(_ImageToolManagerBase):
     def _delete_selected_derivation_step(self) -> None:
         self._details_panel._delete_selected_derivation_step()
 
+    def edit_selected_note(self) -> None:
+        self._details_panel._edit_selected_note()
+
+    def copy_selected_note(self) -> None:
+        self._details_panel._copy_selected_note()
+
+    def clear_selected_note(self) -> None:
+        self._details_panel._clear_selected_note()
+
+    def _schedule_note_commit(self) -> None:
+        self._details_panel._schedule_note_commit()
+
+    def _commit_note_editor(self) -> None:
+        self._details_panel._commit_note_editor()
+
     def _update_info(self, *, uid: str | None = None) -> None:
         self._details_panel._update_info(uid=uid)
 
@@ -3553,15 +3694,18 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def save(self, *, native: bool = True) -> bool:
+        self._commit_note_editor()
         return self._workspace_controller.save(native=native)
 
     def save_as(self, *, native: bool = True) -> bool:
+        self._commit_note_editor()
         return self._workspace_controller.save_as(native=native)
 
     def _compact_workspace_before_shutdown(self) -> None:
         self._workspace_controller._compact_workspace_before_shutdown()
 
     def compact_workspace(self) -> bool:
+        self._commit_note_editor()
         return self._workspace_controller.compact_workspace()
 
     def _save_to_file(self, fname: str) -> None:
@@ -3587,6 +3731,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def load(self, *, native: bool = True) -> bool:
+        self._commit_note_editor()
         return self._workspace_controller.load(native=native)
 
     def import_workspace(self, *, native: bool = True) -> bool:
@@ -4059,6 +4204,7 @@ class ImageToolManager(_ImageToolManagerBase):
         uid: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> str:
         return self._actions_controller.add_childtool(
             tool,
@@ -4067,6 +4213,7 @@ class ImageToolManager(_ImageToolManagerBase):
             uid=uid,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
 
     def add_figuretool(
@@ -4077,6 +4224,7 @@ class ImageToolManager(_ImageToolManagerBase):
         uid: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> str:
         from erlab.interactive._figurecomposer import FigureComposerTool
 
@@ -4087,6 +4235,7 @@ class ImageToolManager(_ImageToolManagerBase):
             tool,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = self._next_figure_display_name()
@@ -4115,6 +4264,7 @@ class ImageToolManager(_ImageToolManagerBase):
         output_id: str | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> str:
         return self._actions_controller.add_imagetool_child(
             tool,
@@ -4130,6 +4280,7 @@ class ImageToolManager(_ImageToolManagerBase):
             output_id=output_id,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
 
     def index_from_slicer_area(self, slicer_area: ImageSlicerArea) -> int | None:
@@ -4198,6 +4349,7 @@ class ImageToolManager(_ImageToolManagerBase):
         index: int | None = None,
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -4246,6 +4398,7 @@ class ImageToolManager(_ImageToolManagerBase):
             source_state=source_state,
             snapshot_token=snapshot_token,
             created_time=created_time,
+            note=note,
         )
         self._register_root_wrapper(wrapper)
         wrapper.update_title()

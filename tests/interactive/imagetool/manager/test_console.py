@@ -14,6 +14,7 @@ import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
 from erlab.interactive.imagetool import _provenance_framework, itool, provenance
 from erlab.interactive.imagetool.manager import fetch
@@ -3014,23 +3015,32 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             == QtWidgets.QSizePolicy.Policy.Preferred
         )
         assert manager.metadata_group.parentWidget() is manager.right_splitter
-        assert manager.metadata_details_widget.parentWidget() is manager.metadata_group
-        assert manager.metadata_derivation_list.parentWidget() is manager.metadata_group
+        assert (
+            manager.metadata_details_widget.parentWidget()
+            is manager.metadata_details_page
+        )
+        assert (
+            manager.metadata_derivation_list.parentWidget()
+            is manager.metadata_provenance_page
+        )
         assert not isinstance(
             manager.metadata_details_widget.parentWidget(), QtWidgets.QSplitter
         )
         handle = manager.right_splitter.handle(2)
         assert handle is not None
         qtbot.wait_until(handle.isVisible, timeout=5000)
-        assert manager.metadata_group.maximumHeight() == QtWidgets.QWIDGETSIZE_MAX
         assert (
-            manager.metadata_details_widget.maximumHeight() == QtWidgets.QWIDGETSIZE_MAX
+            manager.metadata_group.maximumHeight() == manager_widgets._QWIDGETSIZE_MAX
+        )
+        assert (
+            manager.metadata_details_widget.maximumHeight()
+            == manager_widgets._QWIDGETSIZE_MAX
         )
         manager.resize(640, 700)
         manager.right_splitter.setSizes([180, 120, 280])
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
         QtWidgets.QApplication.processEvents()
         before_right_sizes = manager.right_splitter.sizes()
-        before_details_height = manager.metadata_details_widget.height()
         before_list_height = manager.metadata_derivation_list.height()
         manager.right_splitter.moveSplitter(
             before_right_sizes[0] + before_right_sizes[1] - 40, 2
@@ -3038,7 +3048,6 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         QtWidgets.QApplication.processEvents()
         after_right_sizes = manager.right_splitter.sizes()
         assert after_right_sizes[2] > before_right_sizes[2]
-        assert manager.metadata_details_widget.height() == before_details_height
         assert manager.metadata_derivation_list.height() > before_list_height
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]

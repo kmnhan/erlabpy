@@ -154,6 +154,11 @@ kept and the source is marked missing until it can be restored or replaced.
 Use {guilabel}`Copy Code` in the composer for recipe code that assumes the figure
 sources already exist as Python variables.
 
+To record the intent for the whole figure, select the Figure Composer row in the
+manager's {guilabel}`Figures` tab and use the inspector's {guilabel}`Notes` tab. The
+note is saved with the manager workspace as figure metadata and is separate from the
+generated Python recipe code.
+
 Use the manager side panel's {guilabel}`Copy Full Code` action when you want recursive
 replay code that includes all analysis steps.
 

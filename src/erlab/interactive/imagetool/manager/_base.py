@@ -100,6 +100,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     compact_workspace_action: QtGui.QAction
     create_figure_action: QtGui.QAction
     duplicate_action: QtGui.QAction
+    edit_note_action: QtGui.QAction
+    copy_note_action: QtGui.QAction
+    clear_note_action: QtGui.QAction
     figure_list: QtWidgets.QListWidget
     figure_tab: QtWidgets.QWidget
     figure_view_button_group: QtWidgets.QButtonGroup
@@ -115,7 +118,16 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     metadata_derivation_list: _MetadataDerivationListWidget
     metadata_details_layout: QtWidgets.QGridLayout
     metadata_details_widget: _HeightForWidthFrame
+    metadata_details_page: QtWidgets.QWidget
     metadata_group: QtWidgets.QFrame
+    metadata_provenance_page: QtWidgets.QWidget
+    inspector_tabs: QtWidgets.QTabWidget
+    notes_page: QtWidgets.QWidget
+    notes_title_label: QtWidgets.QLabel
+    notes_kind_label: QtWidgets.QLabel
+    notes_editor: QtWidgets.QPlainTextEdit
+    notes_copy_button: QtWidgets.QToolButton
+    notes_clear_button: QtWidgets.QToolButton
     offload_action: QtGui.QAction
     open_recent_menu: QtWidgets.QMenu
     preview_widget: _SingleImagePreview
@@ -165,6 +177,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_full_code_available: bool
     _metadata_monospace_font: QtGui.QFont
     _metadata_node_uid: str | None
+    _notes_node_uid: str | None
+    _note_commit_timer: QtCore.QTimer
+    _updating_note_editor: bool
     _previous_excepthook: Callable[
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any
     ]
