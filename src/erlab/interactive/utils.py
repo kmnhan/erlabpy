@@ -3489,13 +3489,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             )
         return normalized_id, definition
 
+    def _output_imagetool_target_map(self) -> dict[str, str | QtWidgets.QWidget]:
+        targets = getattr(self, "_output_imagetool_targets", None)
+        if targets is None:
+            targets = {}
+            self._output_imagetool_targets = targets
+        return targets
+
     def _clear_output_imagetool_target(self, key: str) -> None:
-        self._output_imagetool_targets.pop(key, None)
+        self._output_imagetool_target_map().pop(key, None)
 
     def _clear_output_imagetool_target_if_matches(
         self, key: str, expected: str | QtWidgets.QWidget
     ) -> None:
-        current = self._output_imagetool_targets.get(key)
+        current = self._output_imagetool_target_map().get(key)
         if isinstance(expected, str):
             if current == expected:
                 self._clear_output_imagetool_target(key)
@@ -3506,7 +3513,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _register_output_imagetool_target(
         self, key: str, target: str | QtWidgets.QWidget
     ) -> None:
-        self._output_imagetool_targets[key] = target
+        self._output_imagetool_target_map()[key] = target
         if isinstance(target, QtWidgets.QWidget):
             target.destroyed.connect(
                 lambda _=None, target_key=key, widget=target: (
@@ -3515,7 +3522,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             )
 
     def _output_imagetool_target(self, key: str) -> str | QtWidgets.QWidget | None:
-        target = self._output_imagetool_targets.get(key)
+        target = self._output_imagetool_target_map().get(key)
         if target is None:
             return None
 
@@ -4658,11 +4665,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self._save_tool_data_references = previous_enabled
             self._save_tool_data_reference_node_uids = previous_uids
 
+    @staticmethod
+    def _reference_resolves_current_tool_data(
+        resolved: xr.DataArray, data: xr.DataArray
+    ) -> bool:
+        if resolved.ndim != data.ndim:
+            return False
+        if resolved.sizes != data.sizes:
+            return False
+        return tuple(resolved.dims) == tuple(data.dims)
+
     def _tool_data_reference_payload(
         self, variable_name: str, data: xr.DataArray
     ) -> dict[str, typing.Any] | None:
         """Return a saved reference payload for a persistence data item."""
-        del data
         if (
             not self._save_tool_data_references
             or variable_name != _SAVED_TOOL_DATA_NAME
@@ -4673,8 +4689,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             return None
         try:
             parent_data = self._source_parent_fetcher()
-            self._materialized_source_spec(parent_data)
+            resolved = self._materialized_source_spec(parent_data).apply(parent_data)
+            resolved = self.validate_update_data(resolved)
         except Exception:
+            return None
+        if not self._reference_resolves_current_tool_data(resolved, data):
             return None
         return {"kind": "parent_source"}
 

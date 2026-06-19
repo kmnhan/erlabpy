@@ -1828,6 +1828,10 @@ def test_tool_window_output_target_cleanup_branches(qtbot, monkeypatch) -> None:
     tool._output_imagetool_targets["out"] = "child"
     assert tool._output_imagetool_target("out") == "child"
 
+    del tool._output_imagetool_targets
+    tool._clear_output_imagetool_target_if_matches("out", "child")
+    assert tool._output_imagetool_targets == {}
+
 
 def test_tool_window_prompt_existing_output_choices(qtbot, monkeypatch) -> None:
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))

@@ -3161,8 +3161,8 @@ class ImageToolManager(_ImageToolManagerBase):
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> None:
-        self._workspace_controller._load_workspace_figures(
+    ) -> int:
+        return self._workspace_controller._load_workspace_figures(
             tree,
             manifest=manifest,
             workspace_file_path=workspace_file_path,
@@ -3251,6 +3251,27 @@ class ImageToolManager(_ImageToolManagerBase):
             loaded_targets_by_uid=loaded_targets_by_uid,
         )
 
+    def _load_workspace_node_or_warn(
+        self,
+        node_tree: xr.DataTree,
+        *,
+        parent_target: int | str | None = None,
+        selection_item: QtWidgets.QTreeWidgetItem | None = None,
+        manifest: dict[str, typing.Any] | None = None,
+        node_path: str | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> int | str | None:
+        return self._workspace_controller._load_workspace_node_or_warn(
+            node_tree,
+            parent_target=parent_target,
+            selection_item=selection_item,
+            manifest=manifest,
+            node_path=node_path,
+            workspace_file_path=workspace_file_path,
+            loaded_targets_by_uid=loaded_targets_by_uid,
+        )
+
     def _load_workspace_roots(
         self,
         tree: xr.DataTree,
@@ -3260,8 +3281,8 @@ class ImageToolManager(_ImageToolManagerBase):
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> None:
-        self._workspace_controller._load_workspace_roots(
+    ) -> int:
+        return self._workspace_controller._load_workspace_roots(
             tree,
             root_keys,
             root_item=root_item,
@@ -3269,6 +3290,9 @@ class ImageToolManager(_ImageToolManagerBase):
             workspace_file_path=workspace_file_path,
             loaded_targets_by_uid=loaded_targets_by_uid,
         )
+
+    def _finish_workspace_file_load(self, loaded: bool) -> bool:
+        return self._workspace_controller._finish_workspace_file_load(loaded)
 
     def _from_h5py_workspace_file(
         self,

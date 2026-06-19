@@ -1151,6 +1151,11 @@ class _ActionsController:
                                         workspace_file_path=access.path,
                                     )
                                     workspace_dt_owned = False
+                                    loaded_workspace = (
+                                        self._manager._finish_workspace_file_load(
+                                            loaded_workspace
+                                        )
+                                    )
                                     if loaded_workspace:
                                         self._manager._associate_loaded_workspace_file(
                                             access.path,

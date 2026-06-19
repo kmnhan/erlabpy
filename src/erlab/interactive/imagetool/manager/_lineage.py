@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import traceback
 import typing
 
 import numpy as np
@@ -416,6 +417,11 @@ class _LineageController:
             raise _ScriptRebuildError(
                 "Could not reload data.",
                 details=str(exc),
+            ) from exc
+        except Exception as exc:
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details=traceback.format_exc(),
             ) from exc
         return _ScriptRebuildResult(
             data=data,

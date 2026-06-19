@@ -1877,6 +1877,66 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
     assert captured_dirs[-1] == os.path.join(os.getcwd(), "cwdname.h5")
 
 
+def test_fit2d_param_plot_save_dataarray_as_hdf5_handles_write_error(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _DialogStub:
+        AcceptMode = QtWidgets.QFileDialog.AcceptMode
+        FileMode = QtWidgets.QFileDialog.FileMode
+        Option = QtWidgets.QFileDialog.Option
+
+        def __init__(self, *args, **kwargs) -> None:
+            self._init_args = (args, kwargs)
+
+        def setAcceptMode(self, mode) -> None:
+            self._accept_mode = mode
+
+        def setFileMode(self, mode) -> None:
+            self._file_mode = mode
+
+        def setNameFilters(self, name_filters) -> None:
+            self._name_filters = name_filters
+
+        def setDefaultSuffix(self, suffix) -> None:
+            self._suffix = suffix
+
+        def setOption(self, *args, **kwargs) -> None:
+            self._option = (args, kwargs)
+
+        def setDirectory(self, directory: str) -> None:
+            self._directory = directory
+
+        def exec(self) -> bool:
+            return True
+
+        def selectedFiles(self) -> list[str]:
+            return [str(tmp_path / "locked.h5")]
+
+    def _raise_write_error(self, *args, **kwargs) -> None:
+        raise BlockingIOError("locked")
+
+    critical_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _DialogStub)
+    monkeypatch.setattr(xr.DataArray, "to_netcdf", _raise_write_error)
+    monkeypatch.setattr(pg.PlotItem, "lastFileDir", str(tmp_path / "previous"))
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **kwargs: critical_calls.append((args, kwargs)) or 0,
+    )
+
+    win.param_plot._save_dataarray_as_hdf5(xr.DataArray([1.0], name="data"))
+
+    assert len(critical_calls) == 1
+    assert pg.PlotItem.lastFileDir == str(tmp_path / "previous")
+
+
 def test_fit2d_is_in_manager_false_when_no_manager(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

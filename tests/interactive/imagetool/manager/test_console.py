@@ -2632,6 +2632,51 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
         assert manager._tool_graph.root_wrappers[1].snapshot_token != before_token
 
 
+def test_manager_reload_script_derived_target_reports_runtime_error(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(3.0)},
+    )
+    critical_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def _critical(*args: object, **kwargs: object) -> int:
+        critical_calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_critical),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data.copy(deep=True),
+                (0,),
+                operation_label="Runtime failure",
+                operation_code="derived = data_0.isel(not_a_dim=0)",
+            )
+            == 1
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        assert not manager._reload_script_derived_target(1)
+
+    assert len(critical_calls) == 1
+    assert "ValueError" in str(critical_calls[0][1].get("detailed_text", ""))
+
+
 def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,

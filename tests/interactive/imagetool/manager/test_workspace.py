@@ -4056,6 +4056,127 @@ def test_manager_workspace_tool_data_reference_roundtrip(
         xr.testing.assert_identical(loaded_child.tool_data, data)
 
 
+def test_manager_workspace_tool_data_reference_falls_back_on_shape_mismatch(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    parent_data = xr.DataArray(
+        np.arange(50.0).reshape(2, 5, 5),
+        dims=("z", "y", "x"),
+        name="source",
+    )
+    child_data = parent_data.isel(z=0, drop=True).rename("source")
+
+    with manager_context() as manager:
+        root = itool(parent_data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = DerivativeTool(child_data)
+        child.set_source_binding(provenance.full_data())
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        tree = manager._to_datatree()
+        try:
+            ds = typing.cast(
+                "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
+            ).to_dataset(inherit=False)
+            assert erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in ds.attrs
+            xr.testing.assert_identical(
+                ds[imagetool_serialization.SAVED_TOOL_DATA_NAME].rename(
+                    child.tool_data.name
+                ),
+                child.tool_data,
+            )
+        finally:
+            tree.close()
+
+
+def test_manager_workspace_partially_loads_corrupted_child_with_warning(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dialogs: list[typing.Any] = []
+
+    class _RecordingMessageDialog(QtWidgets.QDialog):
+        def __init__(self, parent=None, **kwargs) -> None:
+            super().__init__(parent)
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self):
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="source",
+    )
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = DerivativeTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        tree = manager._to_datatree()
+        try:
+            root_ds = typing.cast("xr.DataTree", tree["0/imagetool"]).to_dataset(
+                inherit=False
+            )
+            child_ds = typing.cast(
+                "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
+            ).to_dataset(inherit=False)
+            child_ds = child_ds.copy(deep=True)
+            saved_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+            child_ds[saved_data_name] = xr.DataArray(
+                np.arange(50.0).reshape(2, 5, 5),
+                dims=("z", "y", "x"),
+                name=saved_data_name,
+            )
+            corrupted_tree = xr.DataTree.from_dict(
+                {
+                    "0/imagetool": root_ds,
+                    f"0/childtools/{child_uid}/tool": child_ds,
+                }
+            )
+            corrupted_tree.attrs.update(tree.attrs)
+        finally:
+            tree.close()
+
+        assert manager._from_datatree(
+            corrupted_tree,
+            replace=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+
+        assert manager._finish_workspace_file_load(True)
+
+        partial_dialogs = [
+            dialog
+            for dialog in dialogs
+            if dialog.kwargs.get("title") == "Workspace Partially Loaded"
+        ]
+        assert len(partial_dialogs) == 1
+        dialog = partial_dialogs[0]
+        assert dialog.parent is manager
+        assert f"0/childtools/{child_uid}" in dialog.kwargs["informative_text"]
+        assert "Input DataArray must be 2D" in dialog.kwargs["detailed_text"]
+
+
 def test_manager_from_h5py_workspace_manifest_validation(
     tmp_path,
     manager_context: Callable[
