@@ -80,8 +80,15 @@ def test_conftest_import_defaults_pyside6_to_offscreen() -> None:
 
 
 def test_is_deleted_qt_wrapper_error_matches_deleted_wrapper_message() -> None:
-    exc = RuntimeError("wrapped C/C++ object of type InfiniteLine has been deleted")
-    assert _CONFTEST._is_deleted_qt_wrapper_error(exc)
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("wrapped C/C++ object of type InfiniteLine has been deleted")
+    )
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("wrapped C/C++ object has been deleted")
+    )
+    assert _CONFTEST._is_deleted_qt_wrapper_error(
+        RuntimeError("Internal C++ object (PySide6.QtWidgets.QWidget) already deleted.")
+    )
     assert not _CONFTEST._is_deleted_qt_wrapper_error(RuntimeError("different error"))
 
 

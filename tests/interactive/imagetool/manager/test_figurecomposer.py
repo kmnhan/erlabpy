@@ -1447,10 +1447,7 @@ def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
 
 
 def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
-    tool = erlab.interactive.itool(
-        _unsupported_plot_slices_data(), manager=False, execute=False
-    )
-    assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+    tool = erlab.interactive.imagetool.ImageTool(_unsupported_plot_slices_data())
     qtbot.addWidget(tool)
 
     _set_unsupported_plot_slices_cursor_state(tool)
@@ -1467,6 +1464,7 @@ def test_imagetool_plot_slices_selection_warning_shows_error_detail(
 ) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
+
     messages: list[tuple[QtWidgets.QWidget | None, str, str]] = []
 
     def warning(

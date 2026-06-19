@@ -41,6 +41,7 @@ from erlab.interactive.utils import (
     load_ui,
     qt_is_valid,
     save_fit_ui,
+    single_shot,
     xImageItem,
 )
 
@@ -574,6 +575,23 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     QtWidgets.QApplication.processEvents()
 
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
+
+
+def test_single_shot_ignores_pyside_deleted_wrapper_error(qtbot) -> None:
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    called = False
+
+    def callback() -> None:
+        nonlocal called
+        called = True
+        raise RuntimeError(
+            "Internal C++ object (PySide6.QtWidgets.QWidget) already deleted."
+        )
+
+    single_shot(widget, 0, callback)
+
+    qtbot.wait_until(lambda: called, timeout=1000)
 
 
 def test_better_axis_item_paint_ignores_deleted_axis(qtbot) -> None:

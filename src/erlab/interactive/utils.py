@@ -176,7 +176,9 @@ def qt_is_valid(*objects: object) -> bool:
 
 def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
     message = str(exc)
-    return "wrapped C/C++ object" in message and "has been deleted" in message
+    return ("wrapped C/C++ object" in message and "has been deleted" in message) or (
+        "Internal C++ object" in message and "already deleted" in message
+    )
 
 
 _ERLAB_CURSOR_SHAPE_PROPERTY = "_erlab_cursor_shape"
@@ -274,7 +276,7 @@ def single_shot(
         try:
             callback()
         except RuntimeError as exc:  # pragma: no cover
-            if "has been deleted" in str(exc):
+            if _is_deleted_qt_wrapper_error(exc):
                 return
             raise
 
