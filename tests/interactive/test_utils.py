@@ -1828,6 +1828,10 @@ def test_tool_window_output_target_cleanup_branches(qtbot, monkeypatch) -> None:
     tool._output_imagetool_targets["out"] = "child"
     assert tool._output_imagetool_target("out") == "child"
 
+    del tool._output_imagetool_targets
+    tool._clear_output_imagetool_target_if_matches("out", "child")
+    assert tool._output_imagetool_targets == {}
+
 
 def test_tool_window_prompt_existing_output_choices(qtbot, monkeypatch) -> None:
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
@@ -1968,6 +1972,49 @@ def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> N
     assert isinstance(legacy_restored, _PersistentTool)
     assert legacy_restored.source_spec is None
     assert legacy_restored.source_binding == source_binding
+
+
+def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:
+    parent_data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": range(4)})
+    tool_data = parent_data.isel(x=slice(0, 2))
+    tool = _PersistentTool(tool_data)
+    qtbot.addWidget(tool)
+
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data.expand_dims("z"), tool_data
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            parent_data, tool_data
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data.rename({"x": "y"}), tool_data
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data, tool_data
+        )
+        is True
+    )
+
+    tool.set_source_parent_fetcher(lambda: parent_data)
+    tool.set_source_binding(provenance.full_data(), state="fresh")
+    with tool._save_tool_data_reference_context(available_node_uids=frozenset()):
+        assert (
+            tool._tool_data_reference_payload(
+                erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+                tool_data,
+            )
+            is None
+        )
 
 
 def test_tool_window_dataset_ignores_invalid_saved_provenance(

@@ -4056,6 +4056,178 @@ def test_manager_workspace_tool_data_reference_roundtrip(
         xr.testing.assert_identical(loaded_child.tool_data, data)
 
 
+def test_manager_workspace_tool_data_reference_falls_back_on_shape_mismatch(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    parent_data = xr.DataArray(
+        np.arange(50.0).reshape(2, 5, 5),
+        dims=("z", "y", "x"),
+        name="source",
+    )
+    child_data = parent_data.isel(z=0, drop=True).rename("source")
+
+    with manager_context() as manager:
+        root = itool(parent_data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = DerivativeTool(child_data)
+        child.set_source_binding(provenance.full_data())
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        tree = manager._to_datatree()
+        try:
+            ds = typing.cast(
+                "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
+            ).to_dataset(inherit=False)
+            assert erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in ds.attrs
+            xr.testing.assert_identical(
+                ds[imagetool_serialization.SAVED_TOOL_DATA_NAME].rename(
+                    child.tool_data.name
+                ),
+                child.tool_data,
+            )
+        finally:
+            tree.close()
+
+
+def test_manager_workspace_partially_loads_corrupted_child_with_warning(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dialogs: list[typing.Any] = []
+
+    class _RecordingMessageDialog(QtWidgets.QDialog):
+        def __init__(self, parent=None, **kwargs) -> None:
+            super().__init__(parent)
+            self.parent = parent
+            self.kwargs = kwargs
+            dialogs.append(self)
+
+        def exec(self):
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="source",
+    )
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = DerivativeTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        tree = manager._to_datatree()
+        try:
+            root_ds = typing.cast("xr.DataTree", tree["0/imagetool"]).to_dataset(
+                inherit=False
+            )
+            child_ds = typing.cast(
+                "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
+            ).to_dataset(inherit=False)
+            child_ds = child_ds.copy(deep=True)
+            saved_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+            child_ds[saved_data_name] = xr.DataArray(
+                np.arange(50.0).reshape(2, 5, 5),
+                dims=("z", "y", "x"),
+                name=saved_data_name,
+            )
+            corrupted_tree = xr.DataTree.from_dict(
+                {
+                    "0/imagetool": root_ds,
+                    f"0/childtools/{child_uid}/tool": child_ds,
+                }
+            )
+            corrupted_tree.attrs.update(tree.attrs)
+        finally:
+            tree.close()
+
+        assert manager._from_datatree(
+            corrupted_tree,
+            replace=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+
+        assert manager._finish_workspace_file_load(True)
+
+        partial_dialogs = [
+            dialog
+            for dialog in dialogs
+            if dialog.kwargs.get("title") == "Workspace Partially Loaded"
+        ]
+        assert len(partial_dialogs) == 1
+        dialog = partial_dialogs[0]
+        assert dialog.parent is manager
+        assert f"0/childtools/{child_uid}" in dialog.kwargs["informative_text"]
+        assert "Input DataArray must be 2D" in dialog.kwargs["detailed_text"]
+
+
+def test_manager_workspace_no_loaded_windows_error_without_skipped_nodes(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        controller._skipped_workspace_nodes = []
+        with pytest.raises(ValueError, match="No workspace windows") as exc_info:
+            controller._raise_no_workspace_windows_loaded()
+        assert exc_info.value.__cause__ is None
+
+
+def test_manager_load_workspace_figures_counts_loaded_and_skipped(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    tree = xr.DataTree.from_dict(
+        {
+            "figures/loaded": xr.Dataset(),
+            "figures/skipped": xr.Dataset(),
+        }
+    )
+    manifest = {
+        "nodes": [
+            {"path": "figures/missing"},
+            {"path": "figures/loaded"},
+            {"path": "figures/skipped"},
+        ]
+    }
+    calls: list[str | None] = []
+
+    def _fake_load_workspace_node_or_warn(*_args, **kwargs):
+        calls.append(kwargs.get("node_path"))
+        if kwargs.get("node_path") == "figures/skipped":
+            return None
+        return "figure-target"
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager,
+            "_load_workspace_node_or_warn",
+            _fake_load_workspace_node_or_warn,
+        )
+        assert manager._load_workspace_figures(tree, manifest=manifest) == 1
+
+    assert calls == ["figures/loaded", "figures/skipped"]
+
+
 def test_manager_from_h5py_workspace_manifest_validation(
     tmp_path,
     manager_context: Callable[
@@ -4136,6 +4308,7 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
 
 def test_manager_from_h5py_workspace_logs_restore_failure(
     qtbot,
+    caplog,
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -4164,10 +4337,17 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
         monkeypatch.setattr(manager, "_load_workspace_imagetool_dataset", _raise_load)
         monkeypatch.setattr(manager, "_restore_replaced_workspace", _raise_restore)
 
-        with pytest.raises(RuntimeError, match="load failed"):
+        with (
+            caplog.at_level(logging.ERROR, logger=manager_workspace_io.logger.name),
+            pytest.raises(ValueError, match="No workspace windows") as exc_info,
+        ):
             manager._from_h5py_workspace_file(
                 fname, manifest, replace=True, mark_dirty=False
             )
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "load failed"
+        assert "Failed to restore previous workspace" in caplog.text
+        assert "restore failed" in caplog.text
 
 
 def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
@@ -9488,7 +9668,7 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
             h5_file.attrs["imagetool_workspace_schema_version"] = 4
             h5_file.create_group("0")
 
-        with pytest.raises(ValueError, match="Workspace node"):
+        with pytest.raises(ValueError, match="No workspace windows") as exc_info:
             manager._load_workspace_file(
                 broken_fname,
                 replace=True,
@@ -9496,6 +9676,8 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
                 mark_dirty=False,
                 select=False,
             )
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "Workspace node" in str(exc_info.value.__cause__)
 
         assert manager.workspace_path == str(current_fname.resolve())
         assert manager.ntools == 1

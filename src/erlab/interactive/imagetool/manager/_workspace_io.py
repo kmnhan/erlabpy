@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pathlib
+import traceback
 import typing
 import uuid
 from collections.abc import Mapping
@@ -133,6 +134,7 @@ class _WorkspaceIOController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
+        self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
 
     def _record_missing_workspace_colormap(
@@ -193,9 +195,62 @@ class _WorkspaceIOController:
         )
         dialog.exec()
 
+    def _record_skipped_workspace_node(
+        self, node_path: str | None, exc: Exception
+    ) -> None:
+        node_label = node_path if node_path is not None else "unknown workspace node"
+        exc_summary = f"{type(exc).__name__}: {exc}"
+        exc_text = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+        logger.warning(
+            "Skipping workspace node %s during workspace load",
+            node_label,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={"suppress_ui_alert": True},
+        )
+        self._skipped_workspace_nodes.append((node_label, exc_summary, exc_text, exc))
+
+    def _raise_no_workspace_windows_loaded(self) -> typing.NoReturn:
+        skipped_nodes = self._skipped_workspace_nodes
+        details = "\n".join(
+            f"- {node_label}: {exc_summary}"
+            for node_label, exc_summary, _exc_text, _exc in skipped_nodes
+        )
+        exc = ValueError(f"No workspace windows could be loaded:\n{details}")
+        if skipped_nodes:
+            raise exc from skipped_nodes[0][3]
+        raise exc
+
+    def _show_skipped_workspace_node_warning(self) -> None:
+        if not self._skipped_workspace_nodes:
+            return
+        skipped_nodes = self._skipped_workspace_nodes
+        affected = "\n".join(
+            f"- {node_label}: {exc_summary}"
+            for node_label, exc_summary, _exc_text, _exc in skipped_nodes
+        )
+        tracebacks = "\n\n".join(
+            f"Workspace node {node_label}\n{exc_text}"
+            for node_label, _exc_summary, exc_text, _exc in skipped_nodes
+        )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title="Workspace Partially Loaded",
+            text="Some workspace windows could not be loaded.",
+            informative_text=(
+                f"The rest of the workspace was loaded. Skipped nodes:\n{affected}"
+            ),
+            detailed_text=erlab.interactive.utils._format_traceback(tracebacks),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        dialog.exec()
+
     def _finish_workspace_file_load(self, loaded: bool) -> bool:
         if loaded:
             self._show_missing_workspace_colormap_warning()
+            self._show_skipped_workspace_node_warning()
         return loaded
 
     @staticmethod
@@ -1220,7 +1275,7 @@ class _WorkspaceIOController:
                     and child_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
                 ):
                     continue
-                self._manager._load_workspace_node(
+                self._manager._load_workspace_node_or_warn(
                     child_node,
                     parent_target=target,
                     selection_item=child_item,
@@ -1235,6 +1290,31 @@ class _WorkspaceIOController:
                 )
         return target
 
+    def _load_workspace_node_or_warn(
+        self,
+        node_tree: xr.DataTree,
+        *,
+        parent_target: int | str | None = None,
+        selection_item: QtWidgets.QTreeWidgetItem | None = None,
+        manifest: dict[str, typing.Any] | None = None,
+        node_path: str | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> int | str | None:
+        try:
+            return self._manager._load_workspace_node(
+                node_tree,
+                parent_target=parent_target,
+                selection_item=selection_item,
+                manifest=manifest,
+                node_path=node_path,
+                workspace_file_path=workspace_file_path,
+                loaded_targets_by_uid=loaded_targets_by_uid,
+            )
+        except Exception as exc:
+            self._record_skipped_workspace_node(node_path, exc)
+            return None
+
     def _load_workspace_roots(
         self,
         tree: xr.DataTree,
@@ -1244,14 +1324,15 @@ class _WorkspaceIOController:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> None:
+    ) -> int:
+        loaded_count = 0
         for key in root_keys:
             if key not in tree:
                 continue
             node = typing.cast("xr.DataTree", tree[key])
             item = self._manager._tree_item_child_by_key(root_item, key)
             if item is None or item.checkState(0) != QtCore.Qt.CheckState.Unchecked:
-                self._manager._load_workspace_node(
+                target = self._manager._load_workspace_node_or_warn(
                     node,
                     selection_item=item,
                     manifest=manifest,
@@ -1259,6 +1340,9 @@ class _WorkspaceIOController:
                     node_path=key,
                     loaded_targets_by_uid=loaded_targets_by_uid,
                 )
+                if target is not None:
+                    loaded_count += 1
+        return loaded_count
 
     def _load_workspace_figures(
         self,
@@ -1267,9 +1351,9 @@ class _WorkspaceIOController:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> None:
+    ) -> int:
         if "figures" not in tree:
-            return
+            return 0
         figures = typing.cast("xr.DataTree", tree["figures"])
         figure_keys: list[str] = []
         if manifest is not None:
@@ -1286,10 +1370,11 @@ class _WorkspaceIOController:
                         figure_keys.append(figure_key)
         figure_keys.extend(str(key) for key in figures if str(key) not in figure_keys)
 
+        loaded_count = 0
         for figure_key in figure_keys:
             if figure_key not in figures:
                 continue
-            self._manager._load_workspace_node(
+            target = self._manager._load_workspace_node_or_warn(
                 typing.cast("xr.DataTree", figures[figure_key]),
                 parent_target=None,
                 manifest=manifest,
@@ -1297,6 +1382,9 @@ class _WorkspaceIOController:
                 node_path=f"figures/{figure_key}",
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
+            if target is not None:
+                loaded_count += 1
+        return loaded_count
 
     def _from_h5py_workspace_file(
         self,
@@ -1306,6 +1394,7 @@ class _WorkspaceIOController:
         replace: bool,
         mark_dirty: bool,
     ) -> bool:
+        self._skipped_workspace_nodes = []
         nodes = manifest.get("nodes", ())
         root_order = manifest.get("root_order", ())
         if not isinstance(nodes, list) or not isinstance(root_order, list):
@@ -1415,8 +1504,17 @@ class _WorkspaceIOController:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                 )
             for child_path in child_paths[path]:
-                _load_path(child_path, target)
+                _load_path_or_warn(child_path, target)
             return target
+
+        def _load_path_or_warn(
+            path: str, parent_target: int | str | None = None
+        ) -> int | str | None:
+            try:
+                return _load_path(path, parent_target)
+            except Exception as exc:
+                self._record_skipped_workspace_node(path, exc)
+                return None
 
         if replace:
             manifest_workspace_link_id = manifest.get("workspace_link_id")
@@ -1443,10 +1541,15 @@ class _WorkspaceIOController:
                     backup_tree = self._manager._to_datatree()
                     self._manager.remove_all_tools()
                     self._manager._drain_workspace_restore_events()
+                loaded_count = 0
                 for root_path in root_paths:
-                    _load_path(root_path)
+                    if _load_path_or_warn(root_path) is not None:
+                        loaded_count += 1
                 for figure_path in figure_paths:
-                    _load_path(figure_path)
+                    if _load_path_or_warn(figure_path) is not None:
+                        loaded_count += 1
+                if loaded_count == 0 and self._skipped_workspace_nodes:
+                    self._raise_no_workspace_windows_loaded()
                 self._manager._rebase_loaded_workspace_dependency_refs(
                     loaded_targets_by_uid
                 )
@@ -1498,6 +1601,7 @@ class _WorkspaceIOController:
         workspace_file_path: str | os.PathLike[str] | None = None,
     ) -> bool:
         """Restore the state of the manager from a DataTree object."""
+        self._skipped_workspace_nodes = []
         opened_tree = tree
         try:
             if not self._manager._is_datatree_workspace(tree):
@@ -1568,7 +1672,7 @@ class _WorkspaceIOController:
                         if dialog is None
                         else dialog._tree_widget.invisibleRootItem()
                     )
-                    self._manager._load_workspace_roots(
+                    loaded_count = self._manager._load_workspace_roots(
                         tree,
                         root_keys,
                         root_item=root_item,
@@ -1576,12 +1680,14 @@ class _WorkspaceIOController:
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
-                    self._manager._load_workspace_figures(
+                    loaded_count += self._manager._load_workspace_figures(
                         tree,
                         manifest=manifest,
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
+                    if loaded_count == 0 and self._skipped_workspace_nodes:
+                        self._raise_no_workspace_windows_loaded()
                     self._manager._rebase_loaded_workspace_dependency_refs(
                         loaded_targets_by_uid
                     )
@@ -2955,7 +3061,9 @@ class _WorkspaceIOController:
         native: bool = True,
     ) -> bool:
         previous_missing_colormaps = self._missing_workspace_colormaps
+        previous_skipped_nodes = self._skipped_workspace_nodes
         self._missing_workspace_colormaps = []
+        self._skipped_workspace_nodes = []
         try:
             with self._manager._workspace_document_access_context(fname) as access:
                 _manager_workspace._recover_workspace_transactions(access.path)
@@ -3026,6 +3134,7 @@ class _WorkspaceIOController:
                 return self._finish_workspace_file_load(loaded)
         finally:
             self._missing_workspace_colormaps = previous_missing_colormaps
+            self._skipped_workspace_nodes = previous_skipped_nodes
 
     def load(self, *, native: bool = True) -> bool:
         """Replace this manager with a workspace file."""

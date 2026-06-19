@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import functools
+import logging
 import os
 import typing
 import urllib.parse
@@ -38,6 +39,8 @@ else:
 
     varname = _lazy.load("varname")
     lmfit = _lazy.load("lmfit")
+
+logger = logging.getLogger(__name__)
 
 _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
@@ -174,7 +177,19 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
 
         if dialog.exec():
             filename = dialog.selectedFiles()[0]
-            data.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+            try:
+                data.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+            except Exception:
+                logger.exception(
+                    "Error while saving Fit2D parameter data",
+                    extra={"suppress_ui_alert": True},
+                )
+                erlab.interactive.utils.MessageDialog.critical(
+                    self._tool,
+                    "Error",
+                    "An error occurred while saving the parameter data.",
+                )
+                return
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()
