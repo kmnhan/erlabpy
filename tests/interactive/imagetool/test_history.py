@@ -8,6 +8,7 @@ import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
+import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.utils
 from erlab.interactive.imagetool import ImageTool, _history
 from erlab.interactive.imagetool.controls import (
@@ -740,6 +741,153 @@ def test_history_finalize_removes_committed_noop_entry_and_suppressed_write(qtbo
 
     assert entry not in area._prev_states
     assert area._pending_history_entry is None
+    win.close()
+
+
+def test_history_finalize_discards_when_area_invalid(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.begin_history_entry(None)
+
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+    def qt_is_valid(*objects: object) -> bool:
+        if area in objects:
+            return False
+        return original_qt_is_valid(*objects)
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+        area.finalize_history_entry()
+
+    assert area._pending_history_entry is None
+    assert not area._pending_history_committed
+    win.close()
+
+
+def test_history_finalize_discards_deleted_lock_action_wrapper(monkeypatch) -> None:
+    class Area:
+        _pending_history_entry = object()
+        _pending_history_committed = True
+        discarded = False
+
+        @property
+        def lock_levels_act(self):
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+        def _discard_pending_history_entry(self) -> None:
+            self.discarded = True
+            self._pending_history_entry = None
+            self._pending_history_committed = False
+
+    area = Area()
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: True)
+        imagetool_viewer.ImageSlicerArea.finalize_history_entry(area)
+
+    assert area.discarded
+    assert area._pending_history_entry is None
+    assert not area._pending_history_committed
+
+
+def test_history_finalize_reraises_unexpected_lock_action_error(monkeypatch) -> None:
+    class Area:
+        _pending_history_entry = object()
+
+        @property
+        def lock_levels_act(self):
+            raise RuntimeError("unrelated failure")
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: True)
+        with pytest.raises(RuntimeError, match="unrelated failure"):
+            imagetool_viewer.ImageSlicerArea.finalize_history_entry(Area())
+
+
+def test_history_finalize_discards_invalid_lock_action(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.begin_history_entry(None)
+    lock_levels_act = area.lock_levels_act
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+    def qt_is_valid(*objects: object) -> bool:
+        if lock_levels_act in objects:
+            return False
+        return original_qt_is_valid(*objects)
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+        area.finalize_history_entry()
+
+    assert area._pending_history_entry is None
+    assert not area._pending_history_committed
+    win.close()
+
+
+def test_history_finalize_noop_skips_signal_when_invalid_before_emit(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.begin_history_entry(None)
+    emissions: list[None] = []
+    area.sigHistoryChanged.connect(lambda: emissions.append(None))
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    area_valid_calls = 0
+
+    def qt_is_valid(*objects: object) -> bool:
+        nonlocal area_valid_calls
+        if objects == (area,):
+            area_valid_calls += 1
+            return area_valid_calls == 1
+        return original_qt_is_valid(*objects)
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+        area.finalize_history_entry()
+
+    assert emissions == []
+    assert area._pending_history_entry is None
+    assert not area._pending_history_committed
+    win.close()
+
+
+def test_history_finalize_changed_skips_signal_when_invalid_before_emit(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.begin_history_entry(None)
+    area.set_manual_limits({"x": [0.0, 1.0]})
+    emissions: list[None] = []
+    area.sigHistoryChanged.connect(lambda: emissions.append(None))
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+    area_valid_calls = 0
+
+    def qt_is_valid(*objects: object) -> bool:
+        nonlocal area_valid_calls
+        if objects == (area,):
+            area_valid_calls += 1
+            return area_valid_calls == 1
+        return original_qt_is_valid(*objects)
+
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", qt_is_valid)
+        area.finalize_history_entry()
+
+    assert emissions == []
+    assert area._pending_history_entry is None
+    assert not area._pending_history_committed
+    assert len(area._prev_states) == 1
     win.close()
 
 

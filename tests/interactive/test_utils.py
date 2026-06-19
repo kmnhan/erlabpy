@@ -608,6 +608,35 @@ def test_better_axis_item_paint_ignores_deleted_axis(qtbot) -> None:
         painter.end()
 
 
+def test_better_axis_item_paint_ignores_deleted_wrapper_error(
+    qtbot, monkeypatch
+) -> None:
+    import pyqtgraph as pg
+
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+
+    def paint(self, painter, option, widget=None):
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    monkeypatch.setattr(pg.AxisItem, "paint", paint)
+
+    assert axis.paint(None, None, None) is None
+
+
+def test_better_axis_item_paint_reraises_unexpected_error(qtbot, monkeypatch) -> None:
+    import pyqtgraph as pg
+
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+
+    def paint(self, painter, option, widget=None):
+        raise RuntimeError("unrelated failure")
+
+    monkeypatch.setattr(pg.AxisItem, "paint", paint)
+
+    with pytest.raises(RuntimeError, match="unrelated failure"):
+        axis.paint(None, None, None)
+
+
 def test_tool_window_reload_refresh_ignores_deleted_file_menu(qtbot) -> None:
     tool = erlab.interactive.utils.ToolWindow()
     qtbot.addWidget(tool)
