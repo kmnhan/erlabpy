@@ -793,14 +793,13 @@ def serialize_hdf5_loads():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def patch_pyqtgraph_teardown_callbacks():
-    """Guard pyqtgraph callbacks during Qt teardown."""
+def patch_pyqtgraph_boundingrect():
+    """Guard pyqtgraph InfiniteLine boundingRect during Qt teardown."""
     mp = pytest.MonkeyPatch()
     import pyqtgraph as pg
     from qtpy import QtCore
 
     original_br = pg.InfiniteLine.boundingRect
-    original_graphics_view_close = pg.GraphicsView.closeEvent
 
     def safe_br(self):
         if not qt_is_valid(self):
@@ -820,36 +819,7 @@ def patch_pyqtgraph_teardown_callbacks():
                 return QtCore.QRectF()
             raise
 
-    def safe_graphics_view_close(self, event):
-        self.setProperty("_erlab_test_closing", True)
-        return original_graphics_view_close(self, event)
-
-    def safe_graphics_view_paint(self, event):
-        if (
-            self.property("_erlab_test_closing")
-            or not qt_is_valid(self)
-            or not self.isVisible()
-        ):
-            return
-        try:
-            scene = self.scene()
-        except RuntimeError as exc:
-            if _is_deleted_qt_wrapper_error(exc):
-                return
-            raise
-        if not qt_is_valid(scene):
-            return
-        try:
-            scene.prepareForPaint()
-        except RuntimeError as exc:
-            if _is_deleted_qt_wrapper_error(exc):
-                return
-            raise
-        return
-
     mp.setattr(pg.InfiniteLine, "boundingRect", safe_br, raising=False)
-    mp.setattr(pg.GraphicsView, "closeEvent", safe_graphics_view_close, raising=False)
-    mp.setattr(pg.GraphicsView, "paintEvent", safe_graphics_view_paint, raising=False)
     try:
         yield
     finally:

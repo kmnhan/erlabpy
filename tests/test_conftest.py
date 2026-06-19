@@ -138,16 +138,3 @@ def test_pyqtgraph_boundingrect_ignores_deleted_infinite_line(qtbot) -> None:
     qtbot.waitUntil(lambda: not qt_is_valid(line), timeout=1000)
 
     assert line.boundingRect() == QtCore.QRectF()
-
-
-def test_pyqtgraph_graphics_view_skips_paint_after_close(qtbot) -> None:
-    import pyqtgraph as pg
-    from qtpy import QtCore, QtGui
-
-    view = pg.GraphicsView()
-    qtbot.addWidget(view)
-
-    view.close()
-    event = QtGui.QPaintEvent(QtCore.QRect(0, 0, 1, 1))
-
-    assert view.paintEvent(event) is None

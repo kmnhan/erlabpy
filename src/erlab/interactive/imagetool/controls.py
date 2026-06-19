@@ -800,8 +800,12 @@ class ItoolColormapControls(ItoolControlsBase):
             return
         try:
             lock_levels_act = slicer_area.lock_levels_act
-        except (AttributeError, RuntimeError):  # pragma: no cover - teardown edge
+        except AttributeError:  # pragma: no cover - teardown edge
             return
+        except RuntimeError as exc:  # pragma: no cover - teardown edge
+            if erlab.interactive.utils._is_deleted_qt_wrapper_error(exc):
+                return
+            raise
         if not erlab.interactive.utils.qt_is_valid(lock_levels_act):  # pragma: no cover
             return
         super().update_content()
@@ -812,14 +816,15 @@ class ItoolColormapControls(ItoolControlsBase):
         try:
             colormap = slicer_area.colormap
             gamma = slicer_area.colormap_properties["gamma"]
-        except RuntimeError:  # pragma: no cover - teardown edge
-            return
+        except RuntimeError as exc:  # pragma: no cover - teardown edge
+            if erlab.interactive.utils._is_deleted_qt_wrapper_error(exc):
+                return
+            raise
         if isinstance(colormap, str):  # pragma: no branch
             with QtCore.QSignalBlocker(self.cb_colormap):
                 self.cb_colormap.setDefaultCmap(colormap)
-        self.gamma_widget.blockSignals(True)
-        self.gamma_widget.setValue(gamma)
-        self.gamma_widget.blockSignals(False)
+        with QtCore.QSignalBlocker(self.gamma_widget):
+            self.gamma_widget.setValue(gamma)
 
     def connect_signals(self) -> None:
         super().connect_signals()

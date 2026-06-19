@@ -1121,9 +1121,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
         try:
             lock_levels_act = self.lock_levels_act
-        except RuntimeError:
-            self._discard_pending_history_entry()
-            return
+        except RuntimeError as exc:
+            if erlab.interactive.utils._is_deleted_qt_wrapper_error(exc):
+                self._discard_pending_history_entry()
+                return
+            raise
         if not erlab.interactive.utils.qt_is_valid(lock_levels_act):
             self._discard_pending_history_entry()
             return
