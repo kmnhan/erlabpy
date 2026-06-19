@@ -4177,6 +4177,57 @@ def test_manager_workspace_partially_loads_corrupted_child_with_warning(
         assert "Input DataArray must be 2D" in dialog.kwargs["detailed_text"]
 
 
+def test_manager_workspace_no_loaded_windows_error_without_skipped_nodes(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        controller._skipped_workspace_nodes = []
+        with pytest.raises(ValueError, match="No workspace windows") as exc_info:
+            controller._raise_no_workspace_windows_loaded()
+        assert exc_info.value.__cause__ is None
+
+
+def test_manager_load_workspace_figures_counts_loaded_and_skipped(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    tree = xr.DataTree.from_dict(
+        {
+            "figures/loaded": xr.Dataset(),
+            "figures/skipped": xr.Dataset(),
+        }
+    )
+    manifest = {
+        "nodes": [
+            {"path": "figures/missing"},
+            {"path": "figures/loaded"},
+            {"path": "figures/skipped"},
+        ]
+    }
+    calls: list[str | None] = []
+
+    def _fake_load_workspace_node_or_warn(*_args, **kwargs):
+        calls.append(kwargs.get("node_path"))
+        if kwargs.get("node_path") == "figures/skipped":
+            return None
+        return "figure-target"
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager,
+            "_load_workspace_node_or_warn",
+            _fake_load_workspace_node_or_warn,
+        )
+        assert manager._load_workspace_figures(tree, manifest=manifest) == 1
+
+    assert calls == ["figures/loaded", "figures/skipped"]
+
+
 def test_manager_from_h5py_workspace_manifest_validation(
     tmp_path,
     manager_context: Callable[
