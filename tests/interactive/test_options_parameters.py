@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -71,6 +73,47 @@ def test_colorlistparameter_save_state() -> None:
     assert state["value"][0][:3] == (1, 2, 3)
 
 
+def test_style_library_paths_falls_back_to_matplotlib_core(monkeypatch) -> None:
+    paths = ["stylelib"]
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The matplotlib.style.core module was deprecated",
+            category=DeprecationWarning,
+        )
+        from matplotlib.style import core as mpl_style_core
+
+    monkeypatch.delattr(
+        erlab.interactive._stylesheets.mpl_style,
+        "USER_LIBRARY_PATHS",
+        raising=False,
+    )
+    monkeypatch.setattr(mpl_style_core, "USER_LIBRARY_PATHS", paths)
+
+    assert erlab.interactive._stylesheets._style_library_paths() is paths
+
+
+def test_generic_data_directory_uses_qstandardpaths(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: "",
+    )
+
+    assert erlab.interactive._stylesheets._generic_data_directory() is None
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(tmp_path),
+    )
+
+    assert (
+        erlab.interactive._stylesheets._generic_data_directory()
+        == tmp_path / "erlabpy" / "ImageTool Manager"
+    )
+
+
 def test_user_stylesheet_directory_uses_generic_data_fallback(
     tmp_path, monkeypatch
 ) -> None:
@@ -102,6 +145,76 @@ def test_user_stylesheet_directory_raises_without_qt_data_path(monkeypatch) -> N
 
     with pytest.raises(RuntimeError, match="custom Matplotlib stylesheets"):
         erlab.interactive._stylesheets.user_stylesheet_directory()
+
+
+def test_user_stylesheet_directory_reports_create_failure(
+    tmp_path, monkeypatch
+) -> None:
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("")
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_app_data_directory",
+        lambda: file_path,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_generic_data_directory",
+        lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="Could not create"):
+        erlab.interactive._stylesheets.user_stylesheet_directory()
+
+
+def test_user_stylesheet_directory_can_skip_creation(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "app-data"
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_app_data_directory",
+        lambda: data_dir,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_generic_data_directory",
+        lambda: None,
+    )
+
+    style_dir = erlab.interactive._stylesheets.user_stylesheet_directory(create=False)
+
+    assert style_dir == data_dir / "stylelib"
+    assert not style_dir.exists()
+
+
+def test_stylesheet_names_in_directory_handles_missing_directory(tmp_path) -> None:
+    assert (
+        erlab.interactive._stylesheets._stylesheet_names_in_directory(
+            tmp_path / "missing"
+        )
+        == frozenset()
+    )
+
+
+def test_reload_stylesheets_loads_bundled_and_user_styles(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: calls.append("erlab"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *, reload=False: calls.append(reload),
+    )
+
+    erlab.interactive._stylesheets.reload_stylesheets()
+
+    assert calls == ["erlab", True]
+
+
+def test_stylesheets_require_user_stylesheets_ignores_empty_values() -> None:
+    assert not erlab.interactive._stylesheets.stylesheets_require_user_stylesheets([])
 
 
 def test_load_user_stylesheets_tracks_added_and_removed_files(
@@ -378,6 +491,44 @@ def test_stylesheetlistwidget_open_folder_uses_custom_style_directory(
     widget.open_folder_button.click()
 
     assert opened_urls[0].toLocalFile() == str(tmp_path)
+
+
+def test_stylesheetlistwidget_open_folder_reports_unavailable_directory(
+    qtbot, monkeypatch
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    opened_urls: list[QtCore.QUrl] = []
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+
+    def raise_no_style_directory():
+        raise RuntimeError("no stylesheet directory")
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "user_stylesheet_directory",
+        raise_no_style_directory,
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append((title, text)),
+    )
+    monkeypatch.setattr(
+        QtGui.QDesktopServices,
+        "openUrl",
+        lambda url: opened_urls.append(url) or True,
+    )
+    widget = StylesheetListWidget(stylesheets=[])
+    qtbot.addWidget(widget)
+
+    widget.open_folder_button.click()
+
+    assert warnings == [("Stylesheet folder unavailable", "no stylesheet directory")]
+    assert opened_urls == []
 
 
 def test_stylesheetlistparameter_value_roundtrip() -> None:
