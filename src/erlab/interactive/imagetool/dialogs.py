@@ -717,6 +717,15 @@ class DataTransformDialog(_DataManipulationDialog):
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
 
+    def preflight_data(self, data: xr.DataArray) -> None:
+        """Validate a target before processing it."""
+        del data
+
+    def _handle_process_error(self, exc: BaseException) -> bool:
+        """Handle a transform error before the generic error dialog is shown."""
+        del exc
+        return False
+
     def make_code(self) -> str:
         try:
             operations = self.source_operations()
@@ -825,12 +834,13 @@ class DataTransformDialog(_DataManipulationDialog):
 
         try:
             if self.apply_on_nonuniform_data:
-                processed = self.process_data(
-                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                        self.slicer_area.data
-                    )
+                input_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                    self.slicer_area.data
                 )
+                self.preflight_data(input_data)
+                processed = self.process_data(input_data)
             else:
+                self.preflight_data(self.slicer_area.data)
                 processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
                     self.process_data(self.slicer_area.data)
                 )
@@ -906,7 +916,9 @@ class DataTransformDialog(_DataManipulationDialog):
 
             del processed
 
-        except Exception:
+        except Exception as exc:
+            if self._handle_process_error(exc):
+                return
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
@@ -1152,6 +1164,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self.bounds_supergroup.setCheckable(True)
         self.bounds_supergroup.setChecked(False)
         self.bounds_supergroup.setLayout(QtWidgets.QFormLayout())
+        self.bounds_supergroup.toggled.connect(self._update_memory_estimate)
         self.bounds_group = self.bounds_supergroup
         self.layout_.addRow(self.bounds_supergroup)
 
@@ -1159,6 +1172,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self.resolution_supergroup.setCheckable(True)
         self.resolution_supergroup.setChecked(False)
         self.resolution_supergroup.setLayout(QtWidgets.QFormLayout())
+        self.resolution_supergroup.toggled.connect(self._update_memory_estimate)
         self.resolution_group = self.resolution_supergroup
         self.layout_.addRow(self.resolution_supergroup)
 
@@ -1238,6 +1252,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check = QtWidgets.QCheckBox("From number of points")
         self.res_npts_check.toggled.connect(self.calculate_resolution)
+        self.res_npts_check.toggled.connect(self._update_memory_estimate)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         if self._control_data.kspace._has_hv:
@@ -1250,6 +1265,7 @@ class KspaceConversionDialog(DataTransformDialog):
             v0_spin.setValue(
                 _kspace_conversion.kspace_inner_potential(self._control_data)
             )
+            v0_spin.valueChanged.connect(self._update_memory_estimate)
             self._offset_spins["V0"] = v0_spin
             parameters_layout.addRow(self._OFFSET_LABELS["V0"], v0_spin)
 
@@ -1260,6 +1276,7 @@ class KspaceConversionDialog(DataTransformDialog):
         wf_spin.setSuffix(self._OFFSET_UNITS["wf"])
         wf_spin.setToolTip("Work function of the system.")
         wf_spin.setValue(_kspace_conversion.kspace_work_function(self._control_data))
+        wf_spin.valueChanged.connect(self._update_memory_estimate)
         self._offset_spins["wf"] = wf_spin
         parameters_layout.addRow(self._OFFSET_LABELS["wf"], wf_spin)
 
@@ -1272,6 +1289,7 @@ class KspaceConversionDialog(DataTransformDialog):
             spin.setSuffix("°")
             spin.setKeyboardTracking(False)
             spin.setToolTip("Angle corresponding to sample normal emission.")
+            spin.valueChanged.connect(self._update_memory_estimate)
             self._normal_emission_spins[axis] = spin
             normal_emission_layout.addRow(label, spin)
 
@@ -1297,6 +1315,7 @@ class KspaceConversionDialog(DataTransformDialog):
                 spin.setSingleStep(0.01)
                 spin.setDecimals(4)
                 spin.setSuffix(" Å⁻¹")
+                spin.valueChanged.connect(self._update_memory_estimate)
                 self._bound_spins[name] = spin
                 bounds_layout.addRow(name, spin)
 
@@ -1305,14 +1324,32 @@ class KspaceConversionDialog(DataTransformDialog):
             spin.setSingleStep(0.001)
             spin.setDecimals(5)
             spin.setSuffix(" Å⁻¹")
+            spin.valueChanged.connect(self._update_memory_estimate)
             self._resolution_spins[axis] = spin
             resolution_layout.addRow(axis, spin)
 
         bounds_layout.addRow(self.bounds_btn)
         resolution_layout.addRow(self.res_npts_check)
         resolution_layout.addRow(self.res_btn)
+        self._memory_estimate_label = QtWidgets.QLabel()
+        self._memory_estimate_label.setObjectName("kspaceConversionMemoryEstimate")
+        self._memory_estimate_label.setMinimumWidth(0)
+        self._memory_estimate_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._memory_estimate_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        self._memory_estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._memory_estimate_label.setWordWrap(True)
+        self._memory_estimate_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        resolution_layout.addRow(self._memory_estimate_label)
         self.calculate_bounds()
         self.calculate_resolution()
+        self._update_memory_estimate()
 
     def _normal_emission_from_data(self, data: xr.DataArray) -> tuple[float, float]:
         return _kspace_conversion.normal_emission_angles(data, data.kspace.offsets)
@@ -1426,10 +1463,15 @@ class KspaceConversionDialog(DataTransformDialog):
             }
         return None
 
-    def _parameterized_data(self, data: xr.DataArray) -> xr.DataArray:
+    def _parameterized_data(
+        self,
+        data: xr.DataArray,
+        *,
+        source_data: xr.DataArray | None = None,
+    ) -> xr.DataArray:
         return _kspace_conversion.apply_kspace_parameters(
             data,
-            source_data=self._control_data,
+            source_data=self._control_data if source_data is None else source_data,
             work_function=self._work_function,
             inner_potential=self._inner_potential,
             force_work_function=True,
@@ -1437,6 +1479,85 @@ class KspaceConversionDialog(DataTransformDialog):
             normal_emission=self.normal_emission,
             delta=self._normal_delta,
         )
+
+    def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
+        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        if int(source_data.kspace.configuration) != int(self.current_configuration):
+            source_data = source_data.kspace.as_configuration(
+                self.current_configuration
+            )
+        return self._parameterized_data(
+            source_data.copy(deep=False),
+            source_data=source_data,
+        )
+
+    def conversion_estimate_for_data(
+        self,
+        data: xr.DataArray,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        return _kspace_conversion.estimate_kspace_conversion(
+            self._conversion_input_for_data(data),
+            bounds=self.bounds,
+            resolution=self.resolution,
+        )
+
+    def _set_memory_estimate(
+        self,
+        estimate: _kspace_conversion.KspaceConversionEstimate,
+    ) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(
+            _kspace_conversion.kspace_conversion_estimate_text(estimate)
+        )
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty(
+            "kspaceMemoryUnsafe",
+            not estimate.is_safe,
+        )
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    @QtCore.Slot(bool)
+    @QtCore.Slot(float)
+    def _update_memory_estimate(self, *args: object) -> None:
+        del args
+        if not self._compatible or not hasattr(self, "_memory_estimate_label"):
+            return
+        try:
+            estimate = self.conversion_estimate_for_data(self._source_data)
+        except Exception as exc:
+            self._memory_estimate_label.setText(str(exc))
+            self._memory_estimate_label.setProperty("kspaceMemoryUnsafe", True)
+            return
+        self._set_memory_estimate(estimate)
+
+    def preflight_data(self, data: xr.DataArray) -> None:
+        estimate = self.conversion_estimate_for_data(data)
+        self._set_memory_estimate(estimate)
+        if not estimate.is_safe:
+            raise _kspace_conversion.KspaceConversionMemoryError(estimate)
+
+    def _handle_process_error(self, exc: BaseException) -> bool:
+        if not isinstance(exc, _kspace_conversion.KspaceConversionMemoryError):
+            return False
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            _kspace_conversion.kspace_conversion_memory_dialog_title(),
+            _kspace_conversion.kspace_conversion_memory_dialog_text(),
+            informative_text=_kspace_conversion.kspace_conversion_memory_dialog_info(
+                exc.estimate
+            ),
+            detailed_text=_kspace_conversion.kspace_conversion_memory_dialog_details(
+                exc.estimate
+            ),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+        return True
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
@@ -1450,6 +1571,7 @@ class KspaceConversionDialog(DataTransformDialog):
                 spin = self._bound_spins[f"{axis}{index}"]
                 with QtCore.QSignalBlocker(spin):
                     spin.setValue(value)
+        self._update_memory_estimate()
 
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
@@ -1465,6 +1587,7 @@ class KspaceConversionDialog(DataTransformDialog):
                         from_numpoints=self.res_npts_check.isChecked(),
                     )
                 )
+        self._update_memory_estimate()
 
     def _operations_for_data(
         self,

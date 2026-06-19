@@ -22,7 +22,7 @@ import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -542,6 +542,72 @@ def test_batch_action_transform_error_paths(
             "replace",
         )
         assert len(messages) >= 6
+
+
+def test_batch_transform_memory_preflight_runs_before_processing(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    memory = _kspace_conversion.KspaceMemoryBudget(
+        total_bytes=4,
+        available_bytes=2,
+        reserve_bytes=1,
+        safe_budget_bytes=1,
+    )
+    estimate = _kspace_conversion.KspaceConversionEstimate(
+        input_dims=(),
+        output_dims=("kx",),
+        axis_sizes={"kx": 2},
+        output_sizes={"kx": 2},
+        bounds={"kx": (-1.0, 1.0)},
+        resolution={"kx": 1.0},
+        total_points=2,
+        final_bytes=16,
+        peak_bytes=32,
+        memory=memory,
+    )
+
+    class _PreflightStub(_BatchTransformStub):
+        def __init__(self) -> None:
+            super().__init__(public_source=True)
+            self.source_spec_calls = 0
+            self.preflight_calls = 0
+
+        def source_spec_for_data(
+            self,
+            data: xr.DataArray,
+            new_name: str | None = None,
+        ) -> provenance.ToolProvenanceSpec:
+            self.source_spec_calls += 1
+            return super().source_spec_for_data(data, new_name)
+
+        def preflight_data(self, data: xr.DataArray) -> None:
+            del data
+            self.preflight_calls += 1
+            if self.preflight_calls == 2:
+                raise _kspace_conversion.KspaceConversionMemoryError(estimate)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+        select_tools(manager, [0, 1])
+        dialog = _PreflightStub()
+
+        assert not manager.apply_batch_transform_dialog(dialog, "replace")
+
+    assert dialog.preflight_calls == 2
+    assert dialog.source_spec_calls == 2
+    assert messages
+    assert messages[-1][1]["buttons"] == QtWidgets.QDialogButtonBox.StandardButton.Ok
 
 
 def test_batch_filter_error_paths(

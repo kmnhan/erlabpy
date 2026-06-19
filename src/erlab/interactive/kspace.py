@@ -936,6 +936,22 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
+        self._memory_estimate_label = QtWidgets.QLabel()
+        self._memory_estimate_label.setObjectName("ktoolMemoryEstimate")
+        self._memory_estimate_label.setMinimumWidth(0)
+        self._memory_estimate_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._memory_estimate_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        self._memory_estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._memory_estimate_label.setWordWrap(True)
+        self._memory_estimate_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.resolution_group.layout().addRow(self._memory_estimate_label)
         self.calculate_bounds()
         self.calculate_resolution()
 
@@ -1086,15 +1102,96 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-    def _converted_output(self) -> xr.DataArray:
+    def _set_memory_estimate(
+        self,
+        estimate: _kspace_conversion.KspaceConversionEstimate,
+        *,
+        preview: bool = False,
+    ) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(
+            _kspace_conversion.kspace_conversion_estimate_text(
+                estimate,
+                preview=preview,
+            )
+        )
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty(
+            "kspaceMemoryUnsafe",
+            not estimate.is_safe,
+        )
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    def _conversion_estimate(
+        self,
+        data: xr.DataArray,
+        *,
+        preview: bool = False,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        estimate = _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds=self.bounds,
+            resolution=self.resolution,
+        )
+        self._set_memory_estimate(estimate, preview=preview)
+        return estimate
+
+    def _validate_conversion_memory(
+        self,
+        data: xr.DataArray,
+        *,
+        preview: bool = False,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        estimate = self._conversion_estimate(data, preview=preview)
+        if not estimate.is_safe:
+            raise _kspace_conversion.KspaceConversionMemoryError(estimate)
+        return estimate
+
+    def _show_conversion_memory_error(
+        self,
+        error: _kspace_conversion.KspaceConversionMemoryError,
+    ) -> None:
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            _kspace_conversion.kspace_conversion_memory_dialog_title(),
+            _kspace_conversion.kspace_conversion_memory_dialog_text(),
+            informative_text=_kspace_conversion.kspace_conversion_memory_dialog_info(
+                error.estimate
+            ),
+            detailed_text=_kspace_conversion.kspace_conversion_memory_dialog_details(
+                error.estimate
+            ),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+
+    def _prepared_output_data(self) -> xr.DataArray:
         data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(data, context="opening converted data from ktool")
+        return data
+
+    def _converted_output(self) -> xr.DataArray:
+        data = self._prepared_output_data()
+        self._validate_conversion_memory(data)
         return data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
 
     @QtCore.Slot()
     def show_converted(self) -> None:
+        try:
+            data = self._prepared_output_data()
+            self._validate_conversion_memory(data)
+        except _kspace_conversion.KspaceConversionMemoryError as exc:
+            self._show_conversion_memory_error(exc)
+            return
+
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = self._converted_output()
+            data_kconv = data.kspace.convert(
+                bounds=self.bounds,
+                resolution=self.resolution,
+            )
 
         tool = self._launch_output_imagetool(
             data_kconv,
@@ -1300,7 +1397,7 @@ class KspaceTool(KspaceToolGUI):
             prefilter=False,
         )
 
-    def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
+    def _preview_angle_data(self) -> xr.DataArray:
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
         self._validate_kinetic_energy(data_ang, context="updating ktool preview")
@@ -1308,16 +1405,33 @@ class KspaceTool(KspaceToolGUI):
         #     data_ang = data_ang.assign_coords(
         #         beta=data_ang.beta * self._beta_scale_spin.value()
         #     )
+        return data_ang
 
-        # Convert to kspace
-        data_k = data_ang.kspace.convert(
+    def _preview_kspace_data(self, data_ang: xr.DataArray) -> xr.DataArray:
+        self._validate_conversion_memory(self._prepared_output_data(), preview=True)
+        return data_ang.kspace.convert(
             bounds=self.bounds, resolution=self.resolution, silent=True
         )
+
+    def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
+        data_ang = self._preview_angle_data()
+        data_k = self._preview_kspace_data(data_ang)
         return data_ang, data_k
 
     @QtCore.Slot()
     def update(self) -> None:
-        ang, k = self.get_data()
+        try:
+            ang, k = self.get_data()
+        except _kspace_conversion.KspaceConversionMemoryError:
+            ang = self._preview_angle_data()
+            self.images[0].setDataArray(ang.T)
+            self.images[1].clear()
+            self.images[1].data_array = None
+            self._set_preview_symmetry_available(False)
+            self._set_bz_available(False)
+            self._notify_data_changed()
+            self._write_state()
+            return
         k_preview = k.T
         preview_symmetry_available = self._preview_supports_symmetry(k_preview)
         self._set_preview_symmetry_available(preview_symmetry_available)

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import html
+import math
 import typing
 import warnings
 
 import numpy as np
+import psutil
 
 import erlab
 from erlab.accessors.kspace import IncompleteDataError
@@ -41,6 +45,47 @@ _KSPACE_SETUP_TYPES = (
     provenance.KspaceSetNormalOperation,
 )
 _KSPACE_CONVERSION_TYPES = (*_KSPACE_SETUP_TYPES, provenance.KspaceConvertOperation)
+_GIB = 1024**3
+
+
+@dataclasses.dataclass(frozen=True)
+class KspaceMemoryBudget:
+    """Current physical-memory budget used by interactive conversion guards."""
+
+    total_bytes: int
+    available_bytes: int
+    reserve_bytes: int
+    safe_budget_bytes: int
+
+
+@dataclasses.dataclass(frozen=True)
+class KspaceConversionEstimate:
+    """Estimated destination size and memory use for one momentum conversion."""
+
+    input_dims: tuple[str, ...]
+    output_dims: tuple[str, ...]
+    axis_sizes: dict[str, int]
+    output_sizes: dict[str, int]
+    bounds: dict[str, tuple[float, float]]
+    resolution: dict[str, float]
+    total_points: int
+    final_bytes: int
+    peak_bytes: int
+    memory: KspaceMemoryBudget
+
+    @property
+    def is_safe(self) -> bool:
+        return self.peak_bytes <= self.memory.safe_budget_bytes
+
+
+class KspaceConversionMemoryError(MemoryError):
+    """Raised when an interactive momentum conversion exceeds the memory budget."""
+
+    def __init__(self, estimate: KspaceConversionEstimate) -> None:
+        self.estimate = estimate
+        super().__init__(
+            "The requested momentum grid is too large for the current memory budget."
+        )
 
 
 @contextlib.contextmanager
@@ -127,6 +172,237 @@ def kspace_inner_potential(data: xr.DataArray) -> float:
 
 def rounded_spin_value(spin: QtWidgets.QDoubleSpinBox) -> float:
     return float(np.round(spin.value(), spin.decimals()))
+
+
+def system_memory_budget() -> KspaceMemoryBudget:
+    """Return the adaptive physical-memory budget for interactive conversions."""
+    memory = psutil.virtual_memory()
+    total = int(memory.total)
+    available = int(memory.available)
+    reserve = min(max(2 * _GIB, int(0.2 * total)), int(0.5 * available))
+    return KspaceMemoryBudget(
+        total_bytes=total,
+        available_bytes=available,
+        reserve_bytes=reserve,
+        safe_budget_bytes=max(0, available - reserve),
+    )
+
+
+def _validated_bounds(
+    axis: str,
+    lims: tuple[float, float],
+) -> tuple[float, float]:
+    lower, upper = float(lims[0]), float(lims[1])
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        raise ValueError(f"Momentum bounds for {axis!r} must be finite.")
+    if upper < lower:
+        raise ValueError(f"Momentum bounds for {axis!r} must be increasing.")
+    return lower, upper
+
+
+def _validated_resolution(axis: str, resolution: float) -> float:
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError(f"Momentum resolution for {axis!r} must be positive.")
+    return resolution
+
+
+def _momentum_axis_size(lims: tuple[float, float], resolution: float) -> int:
+    return max(1, round((lims[1] - lims[0]) / resolution + 1))
+
+
+def _conversion_dimension_mapping(
+    data: xr.DataArray,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    output_dims: list[str]
+    if data.kspace._has_hv:
+        output_dims = [data.kspace.slit_axis, "kz"]
+    elif data.kspace._has_beta:
+        output_dims = ["kx", "ky"]
+    else:
+        output_dims = [data.kspace.slit_axis]
+
+    input_dims: list[str] = []
+    for dim in tuple(output_dims):
+        if dim == data.kspace.slit_axis and "alpha" in data.dims:
+            input_dims.append("alpha")
+        elif dim == data.kspace.other_axis and "beta" in data.dims:
+            input_dims.append("beta")
+        elif dim == "kz" and "hv" in data.dims:
+            input_dims.append("hv")
+
+    if data.kspace._has_eV and "eV" in data.dims:
+        input_dims.append("eV")
+        output_dims.append("eV")
+
+    return tuple(input_dims), tuple(output_dims)
+
+
+def estimate_kspace_conversion(
+    data: xr.DataArray,
+    *,
+    bounds: dict[str, tuple[float, float]] | None = None,
+    resolution: dict[str, float] | None = None,
+    memory: KspaceMemoryBudget | None = None,
+) -> KspaceConversionEstimate:
+    """Estimate interactive momentum-conversion allocation size without converting."""
+    if bounds is None:
+        bounds = {}
+    if resolution is None:
+        resolution = {}
+    if memory is None:
+        memory = system_memory_budget()
+
+    effective_bounds: dict[str, tuple[float, float]] = {}
+    effective_resolution: dict[str, float] = {}
+    axis_sizes: dict[str, int] = {}
+    estimated_bounds = data.kspace.estimate_bounds()
+    for axis, estimated_lims in estimated_bounds.items():
+        if axis not in data.kspace.momentum_axes:
+            continue
+
+        lims = _validated_bounds(axis, bounds.get(axis, estimated_lims))
+        res = data.kspace.estimate_resolution(axis, lims, from_numpoints=False)
+        if axis == "kz":
+            res_n = data.kspace.estimate_resolution(axis, lims, from_numpoints=True)
+            res = min(res, res_n)
+        res = _validated_resolution(axis, resolution.get(axis, res))
+
+        effective_bounds[axis] = lims
+        effective_resolution[axis] = res
+        axis_sizes[axis] = _momentum_axis_size(lims, res)
+
+    input_dims, output_dims = _conversion_dimension_mapping(data)
+    output_sizes: dict[str, int] = {}
+    for dim in data.dims:
+        if str(dim) not in input_dims:
+            output_sizes[str(dim)] = int(data.sizes[dim])
+    for dim in output_dims:
+        if dim in axis_sizes:
+            output_sizes[dim] = axis_sizes[dim]
+        elif dim in data.sizes:
+            output_sizes[dim] = int(data.sizes[dim])
+
+    total_points = math.prod(output_sizes.values()) if output_sizes else 1
+    final_bytes = int(total_points * np.dtype(np.float64).itemsize)
+    peak_bytes = int(final_bytes * (len(input_dims) + 3))
+    return KspaceConversionEstimate(
+        input_dims=input_dims,
+        output_dims=output_dims,
+        axis_sizes=axis_sizes,
+        output_sizes=output_sizes,
+        bounds=effective_bounds,
+        resolution=effective_resolution,
+        total_points=total_points,
+        final_bytes=final_bytes,
+        peak_bytes=peak_bytes,
+        memory=memory,
+    )
+
+
+def validate_kspace_conversion_memory(
+    data: xr.DataArray,
+    *,
+    bounds: dict[str, tuple[float, float]] | None,
+    resolution: dict[str, float] | None,
+) -> KspaceConversionEstimate:
+    """Return an estimate or raise if the interactive conversion is unsafe."""
+    estimate = estimate_kspace_conversion(
+        data,
+        bounds=bounds,
+        resolution=resolution,
+    )
+    if not estimate.is_safe:
+        raise KspaceConversionMemoryError(estimate)
+    return estimate
+
+
+def _format_bytes(value: int) -> str:
+    return erlab.utils.formatting.format_nbytes(value)
+
+
+def _format_sizes(sizes: Mapping[str, int]) -> str:
+    if not sizes:
+        return "scalar"
+    return " × ".join(f"{axis}={size}" for axis, size in sizes.items())
+
+
+def _format_numeric_mapping(
+    mapping: Mapping[str, float | tuple[float, float]],
+) -> str:
+    parts: list[str] = []
+    for axis, value in mapping.items():
+        if isinstance(value, tuple):
+            parts.append(f"{axis}=({value[0]:.6g}, {value[1]:.6g})")
+        else:
+            parts.append(f"{axis}={value:.6g}")
+    return ", ".join(parts) if parts else "automatic"
+
+
+def kspace_conversion_estimate_text(
+    estimate: KspaceConversionEstimate,
+    *,
+    preview: bool = False,
+) -> str:
+    """Return concise inline feedback for a conversion estimate."""
+    if estimate.is_safe:
+        return (
+            f"Output: {_format_sizes(estimate.output_sizes)}\n"
+            f"Estimated size: {_format_bytes(estimate.final_bytes)}"
+        )
+    output_summary = (
+        f"Output: {_format_sizes(estimate.output_sizes)}; "
+        f"memory: {_format_bytes(estimate.peak_bytes)}"
+    )
+    if preview:
+        return (
+            "Preview unavailable.\n"
+            f"{output_summary}\n"
+            "Increase resolution or reduce bounds."
+        )
+    return (
+        "Conversion unavailable.\n"
+        f"{output_summary}\n"
+        "Increase resolution or reduce bounds."
+    )
+
+
+def kspace_conversion_memory_dialog_title() -> str:
+    return "Conversion Cannot Be Completed Safely"
+
+
+def kspace_conversion_memory_dialog_text() -> str:
+    return "The requested momentum grid is too large for the current memory budget."
+
+
+def kspace_conversion_memory_dialog_info(
+    estimate: KspaceConversionEstimate,
+) -> str:
+    return (
+        f"Estimated memory required: {_format_bytes(estimate.peak_bytes)}. "
+        "Increase the resolution value or reduce the bounds."
+    )
+
+
+def kspace_conversion_memory_dialog_details(
+    estimate: KspaceConversionEstimate,
+) -> str:
+    lines = [
+        f"Axis sizes: {_format_sizes(estimate.axis_sizes)}",
+        f"Output sizes: {_format_sizes(estimate.output_sizes)}",
+        f"Bounds: {_format_numeric_mapping(estimate.bounds)}",
+        f"Resolution: {_format_numeric_mapping(estimate.resolution)}",
+        f"Final array estimate: {_format_bytes(estimate.final_bytes)}",
+        f"Peak estimate: {_format_bytes(estimate.peak_bytes)}",
+        f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}",
+        f"Reserve: {_format_bytes(estimate.memory.reserve_bytes)}",
+        f"Safe budget: {_format_bytes(estimate.memory.safe_budget_bytes)}",
+        "Swap is intentionally not treated as usable memory.",
+    ]
+    return "<br>".join(html.escape(line) for line in lines)
 
 
 def normal_emission_angles(

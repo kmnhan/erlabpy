@@ -20,6 +20,7 @@ _MISSING_KSPACE_PARAMETER_WARNINGS = {
     "Work function not found in data attributes, assuming 4.5 eV",
     "Inner potential not found in data attributes, assuming 10 eV",
 }
+_GIB = 1024**3
 
 _NORMAL_EMISSION_CASES = [
     pytest.param(
@@ -80,6 +81,44 @@ def _make_da_ktool_data(anglemap) -> xr.DataArray:
     data.attrs["configuration"] = int(AxesConfiguration.Type1DA)
     data.kspace.work_function = 4.5
     return data.assign_coords(xi=0.0, chi=0.0)
+
+
+def _memory_budget(
+    *,
+    total: int = 64 * _GIB,
+    available: int = 48 * _GIB,
+) -> _kspace_conversion.KspaceMemoryBudget:
+    reserve = min(max(2 * _GIB, int(0.2 * total)), int(0.5 * available))
+    return _kspace_conversion.KspaceMemoryBudget(
+        total_bytes=total,
+        available_bytes=available,
+        reserve_bytes=reserve,
+        safe_budget_bytes=max(0, available - reserve),
+    )
+
+
+def _conversion_estimate_stub(
+    *,
+    safe: bool = True,
+) -> _kspace_conversion.KspaceConversionEstimate:
+    budget = _kspace_conversion.KspaceMemoryBudget(
+        total_bytes=4,
+        available_bytes=2,
+        reserve_bytes=1,
+        safe_budget_bytes=10 if safe else 1,
+    )
+    return _kspace_conversion.KspaceConversionEstimate(
+        input_dims=(),
+        output_dims=(),
+        axis_sizes={},
+        output_sizes={},
+        bounds={},
+        resolution={},
+        total_points=1,
+        final_bytes=8,
+        peak_bytes=8,
+        memory=budget,
+    )
 
 
 def _solve_normal_emission_angles(
@@ -161,6 +200,8 @@ def test_kspace_conversion_dialog_requires_configuration(
     assert dialog._compatible is False
     assert not hasattr(dialog, "configuration_combo")
     dialog._handle_configuration_changed()
+    dialog._update_memory_estimate()
+    dialog._set_memory_estimate(_conversion_estimate_stub())
     monkeypatch.setattr(
         imagetool_dialogs.QtWidgets.QMessageBox,
         "warning",
@@ -240,6 +281,111 @@ def test_kspace_conversion_operations_default_source_configuration(anglemap) -> 
     assert operations[0].group.focus == "normal_emission"
     assert operations[1].group is not None
     assert operations[1].group.focus == "bounds_resolution"
+
+
+@pytest.mark.parametrize("kind", ["cut", "map", "hv"])
+def test_kspace_conversion_estimate_matches_safe_output(
+    monkeypatch,
+    anglemap,
+    kind: str,
+) -> None:
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(),
+    )
+    if kind == "cut":
+        data = anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3)
+        data = data.copy(deep=True)
+    elif kind == "map":
+        data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    else:
+        data = generate_hvdep_cuts(
+            shape=(3, 3, 3),
+            configuration=AxesConfiguration.Type1,
+        )
+        data.kspace.inner_potential = 10.0
+    data.kspace.work_function = 4.5
+
+    estimate = _kspace_conversion.estimate_kspace_conversion(data)
+    converted = data.kspace.convert()
+
+    assert estimate.output_sizes == dict(converted.sizes)
+    assert estimate.total_points == converted.size
+    assert estimate.final_bytes == converted.size * 8
+
+
+def test_kspace_conversion_memory_budget_uses_available_physical_memory(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        _kspace_conversion.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=64 * _GIB, available=10 * _GIB),
+    )
+
+    budget = _kspace_conversion.system_memory_budget()
+
+    assert budget.reserve_bytes == 5 * _GIB
+    assert budget.safe_budget_bytes == 5 * _GIB
+
+
+def test_kspace_conversion_estimate_blocks_unsafe_peak(monkeypatch, anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+
+    with pytest.raises(_kspace_conversion.KspaceConversionMemoryError) as exc_info:
+        _kspace_conversion.validate_kspace_conversion_memory(
+            data,
+            bounds={"kx": (-1.0, 1.0), "ky": (-1.0, 1.0)},
+            resolution={"kx": 0.0001, "ky": 0.0001},
+        )
+
+    assert not exc_info.value.estimate.is_safe
+
+
+def test_kspace_conversion_estimate_validates_bounds_and_resolution(
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(),
+    )
+
+    assert _kspace_conversion.validate_kspace_conversion_memory(
+        data,
+        bounds={"kx": (-1.0, 1.0), "ky": (-1.0, 1.0)},
+        resolution={"kx": 1.0, "ky": 1.0},
+    ).is_safe
+    estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
+        _conversion_estimate_stub()
+    )
+    assert estimate_text.startswith("Output: scalar\n")
+    assert "Estimated size:" in estimate_text
+    with pytest.raises(ValueError, match="finite"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds={"kx": (np.nan, 1.0)},
+        )
+    with pytest.raises(ValueError, match="increasing"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds={"kx": (1.0, -1.0)},
+        )
+    with pytest.raises(ValueError, match="positive"):
+        _kspace_conversion.estimate_kspace_conversion(
+            data,
+            resolution={"kx": 0.0},
+        )
 
 
 def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
@@ -333,6 +479,8 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         code = w.copy_code()
         assert ".kspace.set_normal(" in code
         assert ".kspace.offsets =" not in code
+        assert "psutil" not in code
+        assert "KspaceConversionMemory" not in code
         namespace = {"anglemap": anglemap}
         exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
         xr.testing.assert_identical(anglemap_kconv, namespace["anglemap_kconv"])
@@ -416,6 +564,163 @@ def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
     assert win.bz_group.isEnabled() is False
     assert win.images[1].data_array is not None
     assert win.images[1].data_array.dims == ("eV", cut.kspace.slit_axis)
+
+
+def test_ktool_unsafe_preview_clears_kspace_image(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    assert win.images[1].data_array is not None
+
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+
+    def _convert_must_not_run(*args, **kwargs):
+        raise AssertionError("preview conversion should be preflighted first")
+
+    monkeypatch.setattr(
+        "erlab.accessors.kspace.MomentumAccessor.convert",
+        _convert_must_not_run,
+    )
+    win.resolution_supergroup.setChecked(True)
+    for spin in win._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    win.update()
+
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is None
+    assert not win.preview_symmetry_group.isEnabled()
+    assert not win.bz_group.isEnabled()
+    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+
+
+def test_ktool_preview_guard_estimates_full_output_data(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    win.resolution_supergroup.setChecked(True)
+
+    preview_data = win._preview_angle_data()
+    output_data = win._prepared_output_data()
+    large_budget = _memory_budget()
+    preview_estimate = _kspace_conversion.estimate_kspace_conversion(
+        preview_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    output_estimate = _kspace_conversion.estimate_kspace_conversion(
+        output_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    assert output_estimate.total_points > preview_estimate.total_points
+
+    safe_budget = (preview_estimate.peak_bytes + output_estimate.peak_bytes) // 2
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _kspace_conversion.KspaceMemoryBudget(
+            total_bytes=large_budget.total_bytes,
+            available_bytes=large_budget.available_bytes,
+            reserve_bytes=large_budget.reserve_bytes,
+            safe_budget_bytes=safe_budget,
+        ),
+    )
+
+    def _convert_must_not_run(*args, **kwargs):
+        raise AssertionError(
+            "full-output preflight should run before preview conversion"
+        )
+
+    monkeypatch.setattr(
+        "erlab.accessors.kspace.MomentumAccessor.convert",
+        _convert_must_not_run,
+    )
+
+    win.update()
+
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is None
+    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+    assert "Preview unavailable" in win._memory_estimate_label.text()
+    assert "Increase resolution or reduce bounds" in win._memory_estimate_label.text()
+    assert erlab.utils.formatting.format_nbytes(output_estimate.peak_bytes) in (
+        win._memory_estimate_label.text()
+    )
+    assert "safe budget" not in win._memory_estimate_label.text()
+
+
+def test_kspace_memory_estimate_labels_wrap(qtbot, anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog_host = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(dialog_host)
+    dialog = KspaceConversionDialog(dialog_host.slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+
+    for label in (win._memory_estimate_label, dialog._memory_estimate_label):
+        assert label.wordWrap()
+        assert label.textFormat() == imagetool_dialogs.QtCore.Qt.TextFormat.PlainText
+        assert label.alignment() & imagetool_dialogs.QtCore.Qt.AlignmentFlag.AlignTop
+        assert label.minimumWidth() == 0
+        assert (
+            label.sizePolicy().horizontalPolicy()
+            == imagetool_dialogs.QtWidgets.QSizePolicy.Policy.Expanding
+        )
+
+
+def test_ktool_unsafe_output_shows_blocking_error(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    messages: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args, **kwargs: messages.append((args, kwargs)) or 0),
+    )
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4 * _GIB, available=2 * _GIB),
+    )
+
+    win.resolution_supergroup.setChecked(True)
+    for spin in win._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    win.show_converted()
+
+    assert messages
+    assert (
+        messages[-1][1]["buttons"]
+        == imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert getattr(win, "_itool", None) is None
 
 
 @pytest.mark.parametrize(
@@ -651,6 +956,8 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
 
     code = dialog.make_code()
     assert ".copy(deep=False)" not in code
+    assert "psutil" not in code
+    assert "KspaceConversionMemory" not in code
     if not data.kspace._has_hv:
         assert ".kspace.inner_potential =" not in code
 
@@ -660,6 +967,72 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
         dialog.process_data(data.copy(deep=True)),
         namespace["data_kconv"],
     )
+
+
+def test_kspace_conversion_dialog_unsafe_accept_shows_error(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    messages: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args, **kwargs: messages.append((args, kwargs)) or 0),
+    )
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: _memory_budget(total=4, available=2),
+    )
+    dialog.resolution_supergroup.setChecked(True)
+    for spin in dialog._resolution_spins.values():
+        spin.setValue(0.0001)
+
+    with pytest.raises(_kspace_conversion.KspaceConversionMemoryError) as exc_info:
+        dialog.preflight_data(data)
+
+    assert dialog._handle_process_error(exc_info.value)
+
+    assert messages
+    assert (
+        messages[-1][1]["buttons"]
+        == imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert dialog._memory_estimate_label.property("kspaceMemoryUnsafe") is True
+
+
+def test_kspace_conversion_dialog_estimate_defensive_paths(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = erlab.interactive.itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = KspaceConversionDialog(win.slicer_area)
+    dialog.setParent(None)
+    qtbot.addWidget(dialog)
+    dialog._set_control_configuration(int(AxesConfiguration.Type2DA))
+
+    estimate = dialog.conversion_estimate_for_data(data)
+
+    assert estimate.is_safe
+    dialog.preflight_data(data)
+    assert not dialog._handle_process_error(RuntimeError("not a memory guard"))
+
+    def _raise_estimate(_data):
+        raise RuntimeError("estimate failed")
+
+    monkeypatch.setattr(dialog, "conversion_estimate_for_data", _raise_estimate)
+    dialog._update_memory_estimate()
+
+    assert dialog._memory_estimate_label.property("kspaceMemoryUnsafe") is True
 
 
 def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> None:
@@ -726,7 +1099,6 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
     win.slicer_area.add_tool_window(child)
 
     dialog = KspaceConversionDialog(win.slicer_area)
-    dialog.setParent(None)
     qtbot.addWidget(dialog)
 
     assert dialog._offset_spins["V0"].value() == pytest.approx(14.0)
