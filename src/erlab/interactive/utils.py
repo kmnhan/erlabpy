@@ -834,6 +834,22 @@ class MessageDialog(QtWidgets.QDialog):
         return dialog.exec()
 
 
+def _show_reload_unavailable_dialog(
+    parent: QtWidgets.QWidget | None,
+    reason: str,
+) -> int:
+    """Show a non-error dialog explaining why Reload Data cannot run."""
+    dialog = MessageDialog(
+        parent=parent,
+        title="Reload Data",
+        text="This data cannot be reloaded yet.",
+        informative_text=reason,
+        icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation,
+    )
+    dialog.adjustSize()
+    return dialog.exec()
+
+
 def array_rect(data):
     data_coords = tuple(data[dim].values for dim in data.dims)
     data_incs = tuple(
@@ -3232,6 +3248,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_update_dialog: Callable[..., int] | None = None
         self._managed_source_reload: Callable[[], bool] | None = None
         self._managed_source_reload_available: Callable[[], bool] | None = None
+        self._managed_source_reload_unavailable_reason: (
+            Callable[[], str | None] | None
+        ) = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
@@ -4279,11 +4298,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self,
         callback: Callable[[], bool] | None,
         available: Callable[[], bool] | None = None,
+        unavailable_reason: Callable[[], str | None] | None = None,
     ) -> None:
         """Set the manager-owned reload callback for this tool source."""
         self._managed_source_reload = callback
         self._managed_source_reload_available = available
+        self._managed_source_reload_unavailable_reason = unavailable_reason
         self._refresh_reload_data_action()
+
+    def _source_reload_relevant(self) -> bool:
+        return self._managed_source_reload is not None
 
     def _source_reloadable(self) -> bool:
         if self._managed_source_reload is None:
@@ -4295,18 +4319,42 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         except Exception:
             return False
 
+    def _source_reload_unavailable_reason(self) -> str:
+        if self._managed_source_reload is None:
+            return (
+                "This tool does not have a recorded reload source. Reopen or "
+                "recreate it from reloadable ImageTool data to enable reload."
+            )
+        if self._managed_source_reload_unavailable_reason is not None:
+            try:
+                reason = self._managed_source_reload_unavailable_reason()
+            except Exception:
+                reason = None
+            if reason:
+                return reason
+        return (
+            "This tool cannot reload because its source chain has no reloadable "
+            "ImageTool. Restore or reopen the source data, then try again."
+        )
+
     @QtCore.Slot()
     def _refresh_reload_data_action(self) -> None:
         if not qt_is_valid(self.reload_data_action):
             return
+        relevant = self._source_reload_relevant()
         reloadable = self._source_reloadable()
-        self.reload_data_action.setVisible(reloadable)
-        self.reload_data_action.setEnabled(reloadable)
+        self.reload_data_action.setVisible(relevant)
+        self.reload_data_action.setEnabled(relevant)
+        self.reload_data_action.setToolTip(
+            "Reload data from its saved files, parent, or inputs"
+            if reloadable
+            else self._source_reload_unavailable_reason()
+        )
         if not qt_is_valid(self._tool_file_menu):
             return
         menu_action = self._tool_file_menu.menuAction()
         if menu_action is not None and qt_is_valid(menu_action):
-            menu_action.setVisible(reloadable)
+            menu_action.setVisible(relevant)
 
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
@@ -4380,6 +4428,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             or not qt_is_valid(self.reload_data_action)
             or not self.reload_data_action.isEnabled()
         ):
+            return False
+        if not self._source_reloadable():
+            _show_reload_unavailable_dialog(
+                self,
+                self._source_reload_unavailable_reason(),
+            )
             return False
         return self._managed_source_reload()
 

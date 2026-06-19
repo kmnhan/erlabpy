@@ -3883,6 +3883,17 @@ class ImageToolManager(_ImageToolManagerBase):
             target_node_uid=target_node_uid,
         )
 
+    def _script_input_unavailable_reason(
+        self,
+        script_input: provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> str | None:
+        return self._lineage_controller._script_input_unavailable_reason(
+            script_input,
+            target_node_uid=target_node_uid,
+        )
+
     def _rebuild_script_provenance(
         self,
         spec: provenance.ToolProvenanceSpec,
@@ -3927,8 +3938,19 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
         return self._lineage_controller._selected_reload_targets()
 
+    def _selected_reload_candidates(
+        self,
+    ) -> tuple[list[int | str], dict[int | str, list[str]], str | None] | None:
+        return self._lineage_controller._selected_reload_candidates()
+
     def _reload_target_for_child(self, uid: str) -> int | str | None:
         return self._lineage_controller._reload_target_for_child(uid)
+
+    def _reload_unavailable_reason_for_child(self, uid: str) -> str:
+        return self._lineage_controller._reload_unavailable_reason_for_child(uid)
+
+    def _reload_unavailable_reason_for_target(self, target: int | str) -> str | None:
+        return self._lineage_controller._reload_unavailable_reason_for_target(target)
 
     def _reload_source_chain_for_child(self, uid: str) -> bool:
         return self._lineage_controller._reload_source_chain_for_child(uid)

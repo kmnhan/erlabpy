@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer import FigureComposerTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
@@ -65,6 +66,16 @@ if typing.TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    reasons: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_show_reload_unavailable_dialog",
+        lambda _parent, reason: reasons.append(reason),
+    )
+    return reasons
 
 
 def _batch_data(
@@ -3363,6 +3374,60 @@ def test_imagetool_source_chain_reload_target_falls_back_without_managed_source(
         assert child_tool.slicer_area._managed_source_chain_reload_target() is None
 
 
+def test_managed_child_imagetool_file_menu_reload_uses_own_file_source(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.rename("scan")
+    file_path = tmp_path / "child_scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(source, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_tool = itool(
+            source.copy(deep=True),
+            manager=False,
+            execute=False,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
+        assert manager._reload_target_for_child(child_uid) is None
+        assert child_tool.slicer_area._reload_unavailable_reason() is None
+
+        child_menu_bar = typing.cast(
+            "erlab.interactive.imagetool._mainwindow.ItoolMenuBar",
+            child_tool.menuBar(),
+        )
+        child_file_menu = child_menu_bar.menu_dict["fileMenu"]
+        child_file_menu.aboutToShow.emit()
+        assert child_tool.slicer_area.reload_act.isVisible()
+        assert child_tool.slicer_area.reload_act.isEnabled()
+
+        updated = source.copy(deep=True)
+        updated.data = np.asarray(updated.data) + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        with qtbot.wait_signal(child_tool.slicer_area.sigDataChanged, timeout=5000):
+            child_tool.slicer_area.reload_act.trigger()
+
+        assert unavailable_reasons == []
+        xr.testing.assert_identical(fetch(child_uid), updated)
+        xr.testing.assert_identical(child_tool.slicer_area.data, updated)
+
+
 def test_manager_workspace_reload_preserves_manual_root_name(
     qtbot,
     tmp_path: pathlib.Path,
@@ -3797,13 +3862,16 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
         )
 
 
-def test_managed_child_tool_hides_reload_without_reloadable_ancestor(
+def test_managed_child_tool_shows_reload_reason_without_reloadable_ancestor(
     qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -3825,11 +3893,34 @@ def test_managed_child_tool_hides_reload_without_reloadable_ancestor(
         reload_action = child.findChild(QtGui.QAction, "tool_reload_data_action")
         assert reload_action is not None
         child._tool_file_menu.aboutToShow.emit()
-        assert not child._tool_file_menu.menuAction().isVisible()
-        assert not reload_action.isVisible()
-        assert not reload_action.isEnabled()
+        assert child._tool_file_menu.menuAction().isVisible()
+        assert reload_action.isVisible()
+        assert reload_action.isEnabled()
         assert not child.reload_source_data()
+        assert unavailable_reasons
         assert not manager._reload_source_chain_for_child(child_uid)
+
+        updated = test_data.copy(deep=True)
+        updated.data = np.asarray(updated.data) + 100.0
+        file_path = tmp_path / "scan.h5"
+        updated.to_netcdf(file_path, engine="h5netcdf")
+        parent_tool.slicer_area._file_path = file_path
+        parent_tool.slicer_area._load_func = (
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            0,
+        )
+
+        unavailable_reasons.clear()
+        child._tool_file_menu.aboutToShow.emit()
+        assert reload_action.isVisible()
+        assert reload_action.isEnabled()
+        with qtbot.wait_signal(child.sigDataChanged, timeout=5000):
+            reload_action.trigger()
+
+        assert not unavailable_reasons
+        xr.testing.assert_identical(fetch(0), updated)
+        xr.testing.assert_identical(child.tool_data, updated.transpose("eV", "alpha"))
 
 
 def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
@@ -3999,6 +4090,7 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
     source = xr.DataArray(
         np.arange(12, dtype=float).reshape((3, 4)),
         dims=["x", "y"],
@@ -4050,10 +4142,12 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         select_child_tool(manager, eligible_uid)
         select_child_tool(manager, unbound_uid)
         manager._update_actions()
-        assert not manager.reload_action.isVisible()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
 
         manager.reload_selected()
 
+        assert unavailable_reasons
         assert reload_calls == []
         xr.testing.assert_identical(fetch(0), source)
         xr.testing.assert_identical(fetch(eligible_uid), source.isel(x=slice(0, 2)))

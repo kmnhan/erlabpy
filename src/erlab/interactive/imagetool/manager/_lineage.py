@@ -374,9 +374,16 @@ class _LineageController:
         if spec is None:
             return False
         if spec.kind == "file":
+            if spec.file_load_source is None:
+                return False
+            replay_call = spec.file_load_source.replay_call
             return (
-                spec.file_load_source is not None
+                replay_call is not None
                 and pathlib.Path(spec.file_load_source.path).exists()
+                and (
+                    replay_call.kind != "erlab_loader"
+                    or replay_call.target in erlab.io.loaders
+                )
             )
         if spec.kind != "script":
             return False
@@ -387,6 +394,84 @@ class _LineageController:
             )
             for nested_input in spec.script_inputs
         )
+
+    def _script_input_unavailable_reason(
+        self,
+        script_input: provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> str | None:
+        spec = script_input.parsed_provenance_spec()
+        is_target_input = (
+            target_node_uid is not None and script_input.node_uid == target_node_uid
+        )
+        if script_input.node_uid is not None and not is_target_input:
+            node = self._manager._tool_graph.nodes.get(script_input.node_uid)
+            if node is not None and (
+                spec is None
+                or spec.kind != "script"
+                or self._manager._script_provenance_inputs_current(spec)
+            ):
+                return None
+        if spec is None:
+            return (
+                f"{script_input.label} has no recorded reload source. Reopen the "
+                "input or recreate the result from reloadable inputs, then try "
+                "again."
+            )
+        if spec.kind == "file":
+            if spec.file_load_source is None:
+                return (
+                    f"{script_input.label} has no recorded source file. Reopen "
+                    "the input or recreate the result from reloadable inputs, "
+                    "then try again."
+                )
+            file_path = pathlib.Path(spec.file_load_source.path)
+            if not file_path.exists():
+                return (
+                    f"The source file for {script_input.label} is not available:\n"
+                    f"{file_path}\n\n"
+                    "Reconnect the drive or restore the file, then try again."
+                )
+            replay_call = spec.file_load_source.replay_call
+            if replay_call is None:
+                return (
+                    f"{script_input.label} has file provenance, but the loader "
+                    "information needed to read it is missing. Reopen the input "
+                    "or recreate the result from reloadable inputs, then try "
+                    "again."
+                )
+            if (
+                replay_call.kind == "erlab_loader"
+                and replay_call.target not in erlab.io.loaders
+            ):
+                return (
+                    f"The saved loader {replay_call.target!r} for "
+                    f"{script_input.label} is not available in this ImageTool "
+                    "session. Reopen the input from its file with an available "
+                    "loader."
+                )
+            return None
+        if spec.kind != "script":
+            return (
+                f"{script_input.label} has recorded provenance that cannot be "
+                "reloaded. Reopen the input or recreate the result from "
+                "reloadable inputs, then try again."
+            )
+        if not provenance.script_provenance_replayable(spec):
+            return (
+                f"{script_input.label} was created from recorded code that "
+                "cannot be replayed automatically. Recreate the result from "
+                "reloadable inputs to enable reload."
+            )
+        for nested_input in spec.script_inputs:
+            reason = self._manager._script_input_unavailable_reason(
+                nested_input,
+                target_node_uid=target_node_uid,
+            )
+            if reason is not None:
+                return reason
+        return None
 
     def _rebuild_script_provenance(
         self,
@@ -448,6 +533,49 @@ class _LineageController:
             )
         )
 
+    def _node_reload_unavailable_reason(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        if not node.is_imagetool:
+            return (
+                "This tool cannot be reloaded directly. Recreate it from a "
+                "reloadable ImageTool input to enable reload."
+            )
+        if node.imagetool is None:
+            return (
+                "This ImageTool window is not open. Show or reopen the data, "
+                "then try again."
+            )
+        if (
+            node.slicer_area._direct_reloadable()
+            or node.slicer_area._provenance_reloadable()
+        ):
+            return None
+
+        spec = node.provenance_spec
+        if spec is not None and spec.kind == "script":
+            if not spec.script_inputs:
+                return (
+                    "This result has no recorded inputs. Reopen or recreate it "
+                    "from reloadable inputs to enable reload."
+                )
+            if not provenance.script_provenance_replayable(spec):
+                return (
+                    "This result was created from recorded code that cannot be "
+                    "replayed automatically. Recreate it from reloadable inputs "
+                    "to enable reload."
+                )
+            for script_input in spec.script_inputs:
+                reason = self._manager._script_input_unavailable_reason(
+                    script_input,
+                    target_node_uid=node.uid,
+                )
+                if reason is not None:
+                    return reason
+            return None
+
+        return node.slicer_area._local_reload_unavailable_reason()
+
     def _script_reload_from_slicer_area(
         self,
         slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
@@ -503,6 +631,17 @@ class _LineageController:
     def _selected_reload_targets(
         self,
     ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
+        selected_reload_candidates = self._manager._selected_reload_candidates()
+        if selected_reload_candidates is None:
+            return None
+        reload_targets, child_targets, unavailable_reason = selected_reload_candidates
+        if unavailable_reason is not None:
+            return None
+        return reload_targets, child_targets
+
+    def _selected_reload_candidates(
+        self,
+    ) -> tuple[list[int | str], dict[int | str, list[str]], str | None] | None:
         selected_roots = self._manager.tree_view.selected_imagetool_indices
         selected_children = self._manager.tree_view.selected_childtool_uids
         if not selected_roots and not selected_children:
@@ -519,18 +658,21 @@ class _LineageController:
             reload_targets.append(target)
 
         for index in selected_roots:
-            if not self._manager._node_for_target(index).reloadable:
-                return None
+            unavailable_reason = self._manager._reload_unavailable_reason_for_target(
+                index
+            )
+            if unavailable_reason is not None:
+                return [], {}, unavailable_reason
             _add_reload_target(index)
 
         for uid in selected_children:
             reload_target = self._manager._reload_target_for_child(uid)
             if reload_target is None:
-                return None
+                return [], {}, self._manager._reload_unavailable_reason_for_child(uid)
             _add_reload_target(reload_target)
             child_targets.setdefault(reload_target, []).append(uid)
 
-        return reload_targets, child_targets
+        return reload_targets, child_targets, None
 
     def _reload_target_for_child(self, uid: str) -> int | str | None:
         try:
@@ -558,6 +700,32 @@ class _LineageController:
                 break
             current = parent
         return reload_target
+
+    def _reload_unavailable_reason_for_child(self, uid: str) -> str:
+        try:
+            current = self._manager._child_node(uid)
+        except KeyError:
+            return "The selected tool is no longer available. Select an open item."
+        if not current.has_source_binding:
+            return (
+                "This tool does not have a recorded source input. Reopen or "
+                "recreate it from reloadable ImageTool data to enable reload."
+            )
+        return (
+            "This tool cannot reload because its source chain has no reloadable "
+            "ImageTool. Restore or reopen the source data, then try again."
+        )
+
+    def _reload_unavailable_reason_for_target(self, target: int | str) -> str | None:
+        try:
+            node = self._manager._node_for_target(target)
+        except KeyError:
+            return "The selected item is no longer available. Select an open item."
+        if isinstance(target, str):
+            if self._manager._reload_target_for_child(target) is not None:
+                return None
+            return self._manager._reload_unavailable_reason_for_child(target)
+        return self._node_reload_unavailable_reason(node)
 
     def _reload_source_chain_for_child(self, uid: str) -> bool:
         """Reload the nearest reloadable ancestor, then refresh a child node."""
@@ -699,11 +867,18 @@ class _LineageController:
 
     def reload_selected(self) -> None:
         """Reload data in selected ImageTool windows."""
-        selected_reload_targets = self._manager._selected_reload_targets()
-        if selected_reload_targets is None:
+        selected_reload_candidates = self._manager._selected_reload_candidates()
+        if selected_reload_candidates is None:
             return
 
-        reload_targets, child_targets = selected_reload_targets
+        reload_targets, child_targets, unavailable_reason = selected_reload_candidates
+        if unavailable_reason is not None:
+            erlab.interactive.utils._show_reload_unavailable_dialog(
+                self._manager,
+                unavailable_reason,
+            )
+            return
+
         reloaded_targets: set[int | str] = set()
         for target in reload_targets:
             node = self._manager._node_for_target(target)

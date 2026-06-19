@@ -46,6 +46,16 @@ if typing.TYPE_CHECKING:
     )
 
 
+def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    reasons: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_show_reload_unavailable_dialog",
+        lambda _parent, reason: reasons.append(reason),
+    )
+    return reasons
+
+
 def test_manager_console(
     qtbot,
     accept_dialog,
@@ -3291,6 +3301,7 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
     )
     data1 = data0 + 1.0
     errors: list[tuple[str, str, str, str]] = []
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
 
     def _critical(
         parent, title, text, informative_text="", detailed_text=None, buttons=None
@@ -3321,10 +3332,12 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         select_tools(manager, [2])
         manager._update_actions()
 
-        assert not manager.reload_action.isVisible()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
         manager.reload_selected()
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
+        assert unavailable_reasons
         assert not errors
 
 
@@ -3465,6 +3478,35 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             ).model_dump(mode="json"),
         )
         assert not manager._script_input_has_recorded_file(missing_file_input)
+        load_source = file_spec.file_load_source
+        assert load_source is not None
+        replay_call = load_source.replay_call
+        assert replay_call is not None
+        missing_loader = "definitely-missing-erlab-loader"
+        missing_loader_input = provenance.ScriptInput(
+            name="missing_loader",
+            label="Missing loader",
+            provenance_spec=file_spec.model_copy(
+                update={
+                    "file_load_source": load_source.model_copy(
+                        update={
+                            "loader_label": "Loader",
+                            "loader_text": missing_loader,
+                            "replay_call": replay_call.model_copy(
+                                update={
+                                    "kind": "erlab_loader",
+                                    "target": missing_loader,
+                                }
+                            ),
+                        }
+                    )
+                }
+            ).model_dump(mode="json"),
+        )
+        assert not manager._script_input_can_reload(missing_loader_input)
+        reason = manager._script_input_unavailable_reason(missing_loader_input)
+        assert reason is not None
+        assert missing_loader in reason
 
         file_marker = "file-marker"
         child_marker = "child-marker"
@@ -3679,10 +3721,12 @@ def test_manager_reload_self_replacement_uses_recorded_source(
 
 def test_manager_reload_raw_self_replacement_unavailable(
     qtbot,
+    monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -3706,10 +3750,12 @@ def test_manager_reload_raw_self_replacement_unavailable(
         select_tools(manager, [0])
         manager._update_actions()
         assert not manager._node_can_reload_script_inputs(wrapper)
-        assert not manager.reload_action.isVisible()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
 
         manager.reload_selected()
 
+        assert unavailable_reasons
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
 
@@ -3772,7 +3818,7 @@ def test_unavailable_replay_code_traceback_ignores_successful_emit(
     assert calls == [(("graph", spec, True), "derived")]
 
 
-def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
+def test_manager_reload_data_explains_non_replayable_script_provenance(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -3822,7 +3868,8 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         select_tools(manager, [0])
         manager._update_actions()
 
-        assert not manager.reload_action.isVisible()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
         copied: list[str] = []
         monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
         manager._set_metadata_node(wrapper)

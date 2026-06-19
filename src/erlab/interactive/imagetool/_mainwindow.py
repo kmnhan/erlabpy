@@ -878,7 +878,14 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @QtCore.Slot()
     def _file_menu_visibility(self) -> None:
-        self.slicer_area.reload_act.setVisible(self.slicer_area.reloadable)
+        reload_unavailable_reason = self.slicer_area._reload_unavailable_reason()
+        self.slicer_area.reload_act.setVisible(True)
+        self.slicer_area.reload_act.setEnabled(True)
+        self.slicer_area.reload_act.setToolTip(
+            "Reload data from its saved files, parent, or inputs"
+            if reload_unavailable_reason is None
+            else reload_unavailable_reason
+        )
 
         if self.slicer_area._in_manager:
             visible: bool = False

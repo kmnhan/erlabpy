@@ -79,6 +79,16 @@ from erlab.io.dataloader import LoaderBase
 logger = logging.getLogger(__name__)
 
 
+def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    reasons: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_show_reload_unavailable_dialog",
+        lambda _parent, reason: reasons.append(reason),
+    )
+    return reasons
+
+
 @pytest.fixture(autouse=True)
 def isolate_pyperclip(monkeypatch) -> None:
     clipboard_text = ""
@@ -2929,10 +2939,12 @@ def test_itool_file_open_selection_branches(
 
 def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     qtbot,
+    monkeypatch,
     tmp_path: pathlib.Path,
 ) -> None:
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
 
     with pytest.raises(RuntimeError, match="cannot be reloaded"):
         win.slicer_area._fetch_for_provenance_reload()
@@ -2961,6 +2973,8 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         )
     )
     assert not win.slicer_area.reloadable
+    win.slicer_area.reload()
+    assert str(missing_file) in unavailable_reasons[-1]
     with pytest.raises(FileNotFoundError):
         win.slicer_area._fetch_for_provenance_reload()
 
@@ -2969,6 +2983,30 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         source_file,
         engine="h5netcdf",
     )
+    missing_loader = "definitely-missing-erlab-loader"
+    win.set_provenance_spec(
+        provenance.file_load(
+            start_label="Load with missing loader",
+            seed_code="derived = erlab.io.load(source_file)",
+            file_load_source=_file_source(source_file).model_copy(
+                update={
+                    "loader_label": "Loader",
+                    "loader_text": missing_loader,
+                    "replay_call": provenance.FileReplayCall(
+                        kind="erlab_loader",
+                        target=missing_loader,
+                        kwargs={},
+                        selected_index=0,
+                    ),
+                }
+            ),
+        )
+    )
+    assert not win.slicer_area.reloadable
+    unavailable_reasons.clear()
+    win.slicer_area.reload()
+    assert missing_loader in unavailable_reasons[-1]
+
     win.set_provenance_spec(
         provenance.script(
             start_label="Needs external data",
@@ -3026,12 +3064,42 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     win.close()
 
 
-def test_itool_reload_reports_failure_and_nonreloadable_noop(qtbot, monkeypatch):
+def test_itool_reload_reports_failure_and_nonreloadable_noop(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+):
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
+    unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
+    original = win.slicer_area.data.copy()
 
     assert not win.slicer_area.reloadable
     assert not win.slicer_area._reload()
+    menu_bar = typing.cast(
+        "erlab.interactive.imagetool._mainwindow.ItoolMenuBar", win.menuBar()
+    )
+    menu_bar._file_menu_visibility()
+    assert win.slicer_area.reload_act.isVisible()
+    assert win.slicer_area.reload_act.isEnabled()
+    win.slicer_area.reload()
+    assert unavailable_reasons
+    xr.testing.assert_identical(win.slicer_area.data, original)
+
+    missing_file = tmp_path / "missing.h5"
+    win.slicer_area._file_path = missing_file
+    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    unavailable_reasons.clear()
+    win.slicer_area.reload()
+    assert str(missing_file) in unavailable_reasons[-1]
+
+    existing_file = tmp_path / "data.h5"
+    win.slicer_area.data.to_netcdf(existing_file, engine="h5netcdf")
+    win.slicer_area._file_path = existing_file
+    win.slicer_area._load_func = ("missing-loader", {}, 0)
+    unavailable_reasons.clear()
+    win.slicer_area.reload()
+    assert "missing-loader" in unavailable_reasons[-1]
 
     errors: list[tuple[str, str]] = []
     monkeypatch.setattr(

@@ -6136,7 +6136,9 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         file_path.unlink()
         manager._update_actions()
         assert not detached.reloadable
-        assert not manager.reload_action.isVisible()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
+        assert str(file_path) in manager.reload_action.toolTip()
 
 
 def test_manager_workspace_loads_legacy_321_provenance_payload(

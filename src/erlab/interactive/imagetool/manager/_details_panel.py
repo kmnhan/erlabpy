@@ -1029,7 +1029,7 @@ class _DetailsPanelController:
         imagetool_targets = self._manager._selected_imagetool_targets()
         promotable_child_uid = self._manager._selected_promotable_child_imagetool_uid()
         source_update_child_uid = self._manager._selected_source_update_child_uid()
-        reload_targets = self._manager._selected_reload_targets()
+        reload_candidates = self._manager._selected_reload_candidates()
 
         selection_watched: list[int] = []
         selection_offloadable: list[int | str] = []
@@ -1078,9 +1078,13 @@ class _DetailsPanelController:
             bool(self._manager.tree_view.selected_imagetool_indices)
         )
 
-        reload_available = reload_targets is not None
-        self._manager.reload_action.setVisible(reload_available)
-        self._manager.reload_action.setEnabled(reload_available)
+        reload_relevant = reload_candidates is not None
+        self._manager.reload_action.setVisible(reload_relevant)
+        self._manager.reload_action.setEnabled(reload_relevant)
+        reload_tooltip = "Reload selected data from its saved files, parent, or inputs"
+        if reload_candidates is not None and reload_candidates[2] is not None:
+            reload_tooltip = reload_candidates[2]
+        self._manager.reload_action.setToolTip(reload_tooltip)
         self._manager.unwatch_action.setVisible(
             bool(imagetool_targets)
             and len(selection_watched) == len(imagetool_targets)
