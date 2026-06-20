@@ -33,6 +33,7 @@ from erlab.interactive.utils import (
     IconActionButton,
     IdentifierValidator,
     MessageDialog,
+    PythonCodeEditor,
     PythonHighlighter,
     SingleLinePlainTextEdit,
     array_rect,
@@ -1119,6 +1120,241 @@ def test_python_highlighter_formats_operator(qtbot) -> None:
         for start, length, fmt in spans
     )
     assert has_operator_format
+
+
+def test_python_code_editor_has_line_number_area(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("\n".join(f"line_{i}" for i in range(120)))
+    editor.resize(320, 180)
+    editor.show()
+
+    area = editor.findChild(QtWidgets.QWidget, "pythonCodeEditorLineNumberArea")
+    if area is None:
+        raise AssertionError("Missing line number area")
+
+    qtbot.waitUntil(lambda: area.width() > editor.fontMetrics().horizontalAdvance("99"))
+    assert editor.viewport().geometry().left() >= area.width()
+
+
+def test_python_code_editor_alt_z_toggles_line_wrap(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+
+    qtbot.keyClick(editor, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.AltModifier)
+    assert editor.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.WidgetWidth
+
+    qtbot.keyClick(editor, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.AltModifier)
+    assert editor.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
+
+
+def _press_editor_key(
+    editor: PythonCodeEditor,
+    key: QtCore.Qt.Key,
+    text: str = "",
+    modifiers: QtCore.Qt.KeyboardModifier = QtCore.Qt.KeyboardModifier.NoModifier,
+) -> None:
+    event = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, key, modifiers, text)
+    editor.keyPressEvent(event)
+
+
+def _set_editor_cursor(
+    editor: PythonCodeEditor,
+    position: int,
+    anchor: int | None = None,
+) -> None:
+    cursor = editor.textCursor()
+    cursor.setPosition(position)
+    if anchor is not None:
+        cursor.setPosition(anchor, QtGui.QTextCursor.MoveMode.KeepAnchor)
+    editor.setTextCursor(cursor)
+
+
+def test_python_code_editor_auto_pairs_delimiters(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_ParenLeft, "(")
+
+    assert editor.toPlainText() == "()"
+    assert editor.textCursor().position() == 1
+
+
+def test_python_code_editor_surrounds_selection_with_delimiters(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("value")
+    _set_editor_cursor(editor, 0, 5)
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_BracketLeft, "[")
+
+    assert editor.toPlainText() == "[value]"
+    assert editor.textCursor().selectionStart() == 1
+    assert editor.textCursor().selectionEnd() == 6
+    assert editor.textCursor().selectedText() == "value"
+
+    editor.setPlainText("value")
+    _set_editor_cursor(editor, 5, 0)
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_BraceLeft, "{")
+
+    assert editor.toPlainText() == "{value}"
+    assert editor.textCursor().selectionStart() == 1
+    assert editor.textCursor().selectionEnd() == 6
+    assert editor.textCursor().position() == 1
+
+
+def test_python_code_editor_skips_and_deletes_empty_pairs(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_ParenLeft, "(")
+    _press_editor_key(editor, QtCore.Qt.Key.Key_ParenRight, ")")
+
+    assert editor.toPlainText() == "()"
+    assert editor.textCursor().position() == 2
+
+    _set_editor_cursor(editor, 1)
+    _press_editor_key(editor, QtCore.Qt.Key.Key_Backspace)
+
+    assert editor.toPlainText() == ""
+
+
+def test_python_code_editor_quotes_pair_conservatively(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("x = ")
+    _set_editor_cursor(editor, len("x = "))
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_Apostrophe, "'")
+
+    assert editor.toPlainText() == "x = ''"
+    assert editor.textCursor().position() == len("x = '")
+
+    editor.setPlainText("spam eggs")
+    _set_editor_cursor(editor, 4)
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_Apostrophe, "'")
+
+    assert editor.toPlainText() == "spam' eggs"
+
+
+def test_python_code_editor_toggle_comments_current_and_selected_lines(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("alpha\n    beta")
+    _set_editor_cursor(editor, len("alpha\n    be"))
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert editor.toPlainText() == "alpha\n    # beta"
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert editor.toPlainText() == "alpha\n    beta"
+
+    _set_editor_cursor(editor, 0, len(editor.toPlainText()))
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.MetaModifier,
+    )
+
+    assert editor.toPlainText() == "# alpha\n    # beta"
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.MetaModifier,
+    )
+
+    assert editor.toPlainText() == "alpha\n    beta"
+
+
+def test_python_code_editor_moves_lines_with_alt_up_down(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("a\nb\nc")
+    _set_editor_cursor(editor, len("a\nb"))
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Up,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "b\na\nc"
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Up,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "b\na\nc"
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Down,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "a\nb\nc"
+
+    editor.setPlainText("a\nb\nc\nd")
+    _set_editor_cursor(editor, len("a\n"), len("a\nb\nc"))
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Down,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "a\nd\nb\nc"
+    assert editor.textCursor().selectedText().replace("\u2029", "\n") == "b\nc"
+
+
+def test_python_code_editor_duplicates_lines_with_shift_alt_up_down(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("a\nb\nc")
+    _set_editor_cursor(editor, len("a\nb"))
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Down,
+        modifiers=(
+            QtCore.Qt.KeyboardModifier.ShiftModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier
+        ),
+    )
+
+    assert editor.toPlainText() == "a\nb\nb\nc"
+
+    editor.setPlainText("a\nb\nc")
+    _set_editor_cursor(editor, 0, len("a\nb"))
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Up,
+        modifiers=(
+            QtCore.Qt.KeyboardModifier.ShiftModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier
+        ),
+    )
+
+    assert editor.toPlainText() == "a\nb\na\nb\nc"
 
 
 def test_generate_code_multiple_assignment() -> None:
