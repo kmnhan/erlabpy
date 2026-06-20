@@ -530,13 +530,29 @@ class OptionDialog(QtWidgets.QDialog):
             self._workspace_overrides(),
         )
 
+    @staticmethod
+    def _keeps_raw_workspace_value(control: QtWidgets.QWidget) -> bool:
+        if isinstance(control, StylesheetListWidget):
+            return True
+        return isinstance(control, QtWidgets.QComboBox) and not isinstance(
+            control, erlab.interactive.colors.ColorMapComboBox
+        )
+
     def _value_for_row(self, row: _SettingsRow) -> typing.Any:
         if row.scope == "user":
             return option_value(erlab.interactive.options.model, row.path)
         overrides = self._workspace_overrides()
         if row.path in overrides:
-            return overrides[row.path]
+            if self._keeps_raw_workspace_value(row.control):
+                return overrides[row.path]
+            return option_value(self._effective_options(), row.path)
         return option_value(erlab.interactive.options.model, row.path)
+
+    def _fallback_value_for_row(self, row: _SettingsRow) -> typing.Any:
+        for model in (erlab.interactive.options.model, AppOptions()):
+            with contextlib.suppress(Exception):
+                return option_value(model, row.path)
+        return None  # pragma: no cover
 
     def _control_value(self, control: QtWidgets.QWidget, path: str) -> typing.Any:
         if isinstance(control, QtWidgets.QCheckBox):
@@ -603,7 +619,16 @@ class OptionDialog(QtWidgets.QDialog):
             overrides = self._workspace_overrides()
             for row in self._rows.values():
                 value = self._value_for_row(row)
-                self._set_control_value(row.control, row.path, value)
+                try:
+                    self._set_control_value(row.control, row.path, value)
+                except (TypeError, ValueError):
+                    if row.scope != "workspace" or row.path not in overrides:
+                        raise
+                    self._set_control_value(
+                        row.control,
+                        row.path,
+                        self._fallback_value_for_row(row),
+                    )
                 if row.scope == "workspace":
                     active = row.path in overrides
                     if row.override_check is not None:

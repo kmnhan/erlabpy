@@ -13,7 +13,7 @@ from erlab.interactive._options.core import (
     option_paths,
     workspace_overridable_option_paths,
 )
-from erlab.interactive._options.parameters import StylesheetListWidget
+from erlab.interactive._options.parameters import ColorListWidget, StylesheetListWidget
 from erlab.interactive._options.schema import AppOptions
 
 
@@ -262,6 +262,50 @@ def test_workspace_row_action_removes_override(qtbot):
     dlg = OptionDialog(manager)
     qtbot.addWidget(dlg)
     dlg.scope_tabs.setCurrentIndex(1)
+
+    _button(dlg, "workspace", path).click()
+
+    assert path not in manager.overrides
+
+
+def test_workspace_invalid_numeric_override_remains_removable(qtbot):
+    path = "colors/max_rendered_abs_value"
+    manager = _WorkspaceManagerStub({path: "not-a-number"})
+    qtbot.addWidget(manager)
+
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    spin = typing.cast(
+        "QtWidgets.QDoubleSpinBox",
+        _control(dlg, "workspace", path, QtWidgets.QDoubleSpinBox),
+    )
+    assert spin.value() == pytest.approx(options.model.colors.max_rendered_abs_value)
+    assert _override(dlg, path).isChecked()
+    assert manager.overrides[path] == "not-a-number"
+
+    _button(dlg, "workspace", path).click()
+
+    assert path not in manager.overrides
+
+
+def test_workspace_invalid_color_list_override_remains_removable(qtbot):
+    path = "colors/cursors"
+    manager = _WorkspaceManagerStub({path: ["not-a-color"]})
+    qtbot.addWidget(manager)
+
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    control = typing.cast(
+        "ColorListWidget",
+        _control(dlg, "workspace", path, ColorListWidget),
+    )
+    assert control.get_colors() == options.model.colors.cursors
+    assert _override(dlg, path).isChecked()
+    assert manager.overrides[path] == ["not-a-color"]
 
     _button(dlg, "workspace", path).click()
 
