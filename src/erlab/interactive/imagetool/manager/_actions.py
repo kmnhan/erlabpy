@@ -707,8 +707,12 @@ class _ActionsController:
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
             if node.parent_uid is None and self._manager._is_figure_node(node):
+                duplicated_tool = tool.duplicate()
+                duplicated_tool._tool_display_name = (
+                    self._manager._duplicated_figure_display_name(node.display_text)
+                )
                 new_target = self._manager.add_figuretool(
-                    tool.duplicate(), note=node.note
+                    duplicated_tool, note=node.note
                 )
             else:
                 parent_target = (

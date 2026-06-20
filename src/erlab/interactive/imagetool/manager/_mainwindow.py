@@ -1932,6 +1932,22 @@ class ImageToolManager(_ImageToolManagerBase):
                 highest = max(highest, int(match.group(1)))
         return f"Figure {highest + 1}"
 
+    def _duplicated_figure_display_name(self, display_name: str) -> str:
+        if re.fullmatch(r"Figure \d+", display_name):
+            return self._next_figure_display_name()
+
+        existing_names = {
+            self._child_node(uid).display_text for uid in self._figure_uids()
+        }
+        base_name = f"{display_name} copy"
+        if base_name not in existing_names:
+            return base_name
+
+        suffix = 2
+        while f"{base_name} {suffix}" in existing_names:
+            suffix += 1
+        return f"{base_name} {suffix}"
+
     def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
         figure_uids = self._figure_uids()
         selected_uids = (

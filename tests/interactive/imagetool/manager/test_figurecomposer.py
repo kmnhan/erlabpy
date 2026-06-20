@@ -20208,6 +20208,75 @@ def test_manager_auto_names_figures_numerically(
         assert manager._child_node(unnamed_uid).display_text == "Figure 6"
 
 
+def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    def uid_for_name(
+        manager: erlab.interactive.imagetool.manager.ImageToolManager, name: str
+    ) -> str:
+        matches = [
+            uid
+            for uid in manager._tool_graph.figure_uids
+            if manager._child_node(uid).display_text == name
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="map",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        first_uid = manager.create_figure_from_targets((0,), show=False)
+        assert first_uid is not None
+        assert manager._child_node(first_uid).display_text == "Figure 1"
+
+        original_tool = manager._child_node(first_uid).tool_window
+        assert isinstance(original_tool, FigureComposerTool)
+        original_status = original_tool.tool_status
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 2, timeout=5000
+        )
+
+        auto_copy_uid = uid_for_name(manager, "Figure 2")
+        assert manager._selected_figure_uids() == [auto_copy_uid]
+        auto_copy_tool = manager._child_node(auto_copy_uid).tool_window
+        assert isinstance(auto_copy_tool, FigureComposerTool)
+        assert auto_copy_tool.tool_status == original_status
+        assert auto_copy_tool.tool_data.identical(original_tool.tool_data)
+
+        manager._child_node(first_uid).name = "Band map"
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 3, timeout=5000
+        )
+
+        first_custom_copy_uid = uid_for_name(manager, "Band map copy")
+        assert manager._selected_figure_uids() == [first_custom_copy_uid]
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 4, timeout=5000
+        )
+
+        second_custom_copy_uid = uid_for_name(manager, "Band map copy 2")
+        assert manager._selected_figure_uids() == [second_custom_copy_uid]
+
+
 def test_manager_create_figure_uses_first_selected_main_image_state(
     qtbot,
     manager_context: Callable[
