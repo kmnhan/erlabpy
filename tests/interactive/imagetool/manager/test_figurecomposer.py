@@ -2390,6 +2390,138 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
     assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
 
 
+def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+    assert isinstance(code_edit.highlighter, erlab.interactive.utils.PythonHighlighter)
+    assert code_edit.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
+
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    first_code = "ax.set_title('first')"
+    second_code = "ax.set_title('second')\nax.set_xlabel('energy')"
+    code_edit.setPlainText(first_code)
+    code_edit.setPlainText(second_code)
+
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    assert render_calls == []
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == second_code,
+        timeout=1000,
+    )
+    assert render_calls == [(tool,)]
+
+
+def test_figure_composer_custom_code_pending_edit_survives_step_switch(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    first_operation = FigureOperationState.custom(
+        label="first",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    second_operation = FigureOperationState.custom(
+        label="second",
+        code="ax.set_xlabel('other')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(first_operation, second_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    new_code = "ax.set_title('pending')\nax.set_ylabel('counts')"
+    code_edit.setPlainText(new_code)
+    tool.operation_list.setCurrentRow(1)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == new_code,
+        timeout=1000,
+    )
+    assert tool.tool_status.operations[1].code == "ax.set_xlabel('other')"
+
+
+def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    new_code = "ax.set_title('pending close')\nax.set_ylabel('counts')"
+    code_edit.setPlainText(new_code)
+
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    tool.close()
+
+    assert tool.tool_status.operations[0].code == new_code
+
+
 def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
     public = xr.DataArray(
         np.arange(8.0).reshape(4, 2),

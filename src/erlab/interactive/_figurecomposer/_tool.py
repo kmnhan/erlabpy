@@ -124,7 +124,7 @@ from erlab.interactive._figurecomposer._widgets import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -893,7 +893,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if event is not None:
             super().hideEvent(event)
 
+    def _flush_pending_editor_commits(self) -> None:
+        for widget in self.findChildren(QtWidgets.QWidget):
+            flush = getattr(
+                widget,
+                "_figure_composer_custom_code_flush_pending_commit",
+                None,
+            )
+            if callable(flush):
+                with contextlib.suppress(RuntimeError):
+                    flush()
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._flush_pending_editor_commits()
         self._closing = True
         self._cancel_queued_show_figure_window()
         self._figure_resize_render_generation += 1
@@ -2724,10 +2736,39 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         editable = self._editable_operations()
         if not editable:
             return
+        self._update_operations_by_ids(
+            (operation.operation_id for _index, operation in editable),
+            updater,
+            render=render,
+            rebuild_editor=rebuild_editor,
+            defer_editor_rebuild=defer_editor_rebuild,
+            sync_axes=sync_axes,
+        )
+
+    def _update_operations_by_ids(
+        self,
+        operation_ids: Iterable[str],
+        updater: Callable[[int, FigureOperationState], FigureOperationState],
+        *,
+        render: bool = True,
+        rebuild_editor: bool = False,
+        defer_editor_rebuild: bool = False,
+        sync_axes: bool = True,
+    ) -> None:
+        operation_id_set = set(operation_ids)
+        if not operation_id_set:
+            return
         current = self._current_operation()
         operations = list(self._recipe.operations)
-        for index, operation in editable:
-            operations[index] = updater(index, operation)
+        changed = False
+        for index, operation in enumerate(operations):
+            if operation.operation_id not in operation_id_set:
+                continue
+            updated = updater(index, operation)
+            changed = changed or updated != operation
+            operations[index] = updated
+        if not changed:
+            return
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
         if current is not None:
@@ -4911,6 +4952,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return row_widget
 
     def generated_code(self) -> str:
+        self._flush_pending_editor_commits()
         with self._figure_options_context():
             return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
@@ -4938,6 +4980,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def export_figure(self) -> None:
         if self._warn_invalid_operation_targets():
             return
+        self._flush_pending_editor_commits()
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Export Figure",

@@ -7,6 +7,7 @@ import typing
 
 from qtpy import QtCore, QtWidgets
 
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_code_tuple,
@@ -33,6 +34,71 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
+_CUSTOM_CODE_UPDATE_DELAY_MS = 250
+
+
+def _connect_custom_code_editor(
+    tool: FigureComposerTool, code_edit: erlab.interactive.utils.PythonCodeEditor
+) -> None:
+    timer = QtCore.QTimer(tool)
+    timer.setSingleShot(True)
+    timer.setInterval(_CUSTOM_CODE_UPDATE_DELAY_MS)
+    code_edit_any = typing.cast("typing.Any", code_edit)
+    code_edit_any._figure_composer_custom_code_commit_timer = timer
+    pending_code = [code_edit.toPlainText()]
+    pending_operation_ids: list[tuple[str, ...]] = [()]
+    pending_dirty = [False]
+
+    def queue_commit() -> None:
+        if not tool._editor_control_signal_allowed(code_edit):
+            return
+        pending_code[0] = code_edit.toPlainText()
+        pending_operation_ids[0] = tuple(
+            operation.operation_id for _index, operation in tool._editable_operations()
+        )
+        pending_dirty[0] = True
+        timer.start()
+
+    def queue_contents_change(
+        _position: int, chars_removed: int, chars_added: int
+    ) -> None:
+        if chars_removed or chars_added:
+            queue_commit()
+
+    def commit_code() -> None:
+        if not pending_dirty[0]:
+            return
+        if tool._closing or not erlab.interactive.utils.qt_is_valid(tool):
+            return
+        operation_ids = pending_operation_ids[0]
+        if not operation_ids:
+            return
+        pending_dirty[0] = False
+        timer.stop()
+        code = pending_code[0]
+        tool._update_operations_by_ids(
+            operation_ids,
+            lambda _index, target: target.model_copy(update={"code": code}),
+        )
+
+    def flush_pending_commit() -> None:
+        if timer.isActive():
+            timer.stop()
+        commit_code()
+
+    tool._mark_editor_control(code_edit)
+    document = code_edit.document()
+    document.contentsChange.connect(queue_contents_change)
+    timer.timeout.connect(commit_code)
+    code_edit_any._figure_composer_custom_code_commit_handlers = (
+        queue_contents_change,
+        commit_code,
+        flush_pending_commit,
+    )
+    code_edit_any._figure_composer_custom_code_flush_pending_commit = (
+        flush_pending_commit
+    )
+
 
 def _build_custom_code_editor(
     tool: FigureComposerTool, operation: FigureOperationState
@@ -51,15 +117,19 @@ def _build_custom_code_editor(
         "Allow this custom Python step to execute during rendering.",
     )
 
-    code_edit = QtWidgets.QPlainTextEdit(tool.operation_editor)
+    code_edit = erlab.interactive.utils.PythonCodeEditor(tool.operation_editor)
+    code_edit.setObjectName("figureComposerCustomCodeEdit")
     code_edit.setPlainText(operation.code)
-    code_edit.setMinimumHeight(160)
-    code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    tool._connect_plain_text_changed(
-        code_edit,
-        lambda text: tool._update_current_operation(code=text),
+    code_edit.setPlaceholderText("# Write Python code here")
+    code_edit.setMinimumHeight(220)
+    code_edit.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+    code_edit.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Expanding,
     )
+    code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    _connect_custom_code_editor(tool, code_edit)
     tool._add_form_row(
         tool.operation_editor_layout,
         "Code",
