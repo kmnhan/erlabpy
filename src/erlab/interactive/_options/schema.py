@@ -83,6 +83,11 @@ def _str_list(value: typing.Any) -> list[str]:
     return _unique_seq([str(item).strip() for item in value if str(item).strip()])
 
 
+def _workspace_extra(**extra: typing.Any) -> dict[str, typing.Any]:
+    """Return UI metadata for settings that may be saved in workspaces."""
+    return {"workspace_overridable": True, **extra}
+
+
 class KToolBZOptions(BaseModel):
     default_a: float = Field(
         default=3.54,
@@ -90,7 +95,7 @@ class KToolBZOptions(BaseModel):
         description="Default lattice constant a in Ångström.",
         ge=0.01,
         le=99.99,
-        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+        json_schema_extra=_workspace_extra(ui_step=0.01, ui_suffix="Å"),
     )
     default_b: float = Field(
         default=3.54,
@@ -98,7 +103,7 @@ class KToolBZOptions(BaseModel):
         description="Default lattice constant b in Ångström.",
         ge=0.01,
         le=99.99,
-        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+        json_schema_extra=_workspace_extra(ui_step=0.01, ui_suffix="Å"),
     )
     default_c: float = Field(
         default=6.01,
@@ -106,7 +111,7 @@ class KToolBZOptions(BaseModel):
         description="Default lattice constant c in Ångström.",
         ge=0.01,
         le=99.99,
-        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+        json_schema_extra=_workspace_extra(ui_step=0.01, ui_suffix="Å"),
     )
     default_alpha: float = Field(
         default=90.0,
@@ -114,7 +119,7 @@ class KToolBZOptions(BaseModel):
         description="Default lattice angle α in degrees.",
         ge=1.0,
         le=179.0,
-        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+        json_schema_extra=_workspace_extra(ui_step=1.0, ui_suffix="°"),
     )
     default_beta: float = Field(
         default=90.0,
@@ -122,7 +127,7 @@ class KToolBZOptions(BaseModel):
         description="Default lattice angle β in degrees.",
         ge=1.0,
         le=179.0,
-        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+        json_schema_extra=_workspace_extra(ui_step=1.0, ui_suffix="°"),
     )
     default_gamma: float = Field(
         default=120.0,
@@ -130,17 +135,17 @@ class KToolBZOptions(BaseModel):
         description="Default lattice angle γ in degrees.",
         ge=1.0,
         le=179.0,
-        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+        json_schema_extra=_workspace_extra(ui_step=1.0, ui_suffix="°"),
     )
     default_centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] = Field(
         default="P",
         title="Centering",
         description="Default centering used to transform the conventional cell "
         "into a primitive cell.",
-        json_schema_extra={
-            "ui_type": "list",
-            "ui_limits": ["P", "A", "B", "C", "F", "I", "R"],
-        },
+        json_schema_extra=_workspace_extra(
+            ui_type="list",
+            ui_limits=["P", "A", "B", "C", "F", "I", "R"],
+        ),
     )
 
     default_rot: float = Field(
@@ -149,7 +154,7 @@ class KToolBZOptions(BaseModel):
         description="Default rotation of the Brillouin zone about kz in degrees.",
         ge=-360.0,
         le=360.0,
-        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+        json_schema_extra=_workspace_extra(ui_step=1.0, ui_suffix="°"),
     )
 
 
@@ -218,8 +223,10 @@ class IOOptions(BaseModel):
         title="Default loader",
         description="Loader to pre-select in the data explorer.",
         json_schema_extra={
-            "ui_type": "list",
-            "ui_limits": ["None", *list(erlab.io.loaders.keys())],
+            **_workspace_extra(
+                ui_type="list",
+                ui_limits=["None", *list(erlab.io.loaders.keys())],
+            )
         },
     )
 
@@ -249,7 +256,7 @@ class ColorMapOptions(BaseModel):
         default="magma",
         title="Name",
         description="Name of the default colormap.",
-        json_schema_extra={"ui_type": "erlabpy_colormap"},
+        json_schema_extra=_workspace_extra(ui_type="erlabpy_colormap"),
     )
     gamma: float = Field(
         default=0.5,
@@ -257,12 +264,13 @@ class ColorMapOptions(BaseModel):
         le=99.99,
         title="Default γ",
         description="Default gamma exponent.",
-        json_schema_extra={"ui_step": 0.01},
+        json_schema_extra=_workspace_extra(ui_step=0.01),
     )
     reverse: bool = Field(
         default=False,
         title="Reverse",
         description="Display the colormap reversed by default.",
+        json_schema_extra=_workspace_extra(),
     )
     exclude: list[str] = Field(
         default=[
@@ -323,7 +331,7 @@ class ColorOptions(BaseModel):
         ),
         ge=1.0,
         le=1e308,
-        json_schema_extra={"ui_step": 1e30},
+        json_schema_extra=_workspace_extra(ui_step=1e30),
     )
     cursors: list[str] = Field(
         default=[
@@ -337,7 +345,7 @@ class ColorOptions(BaseModel):
         ],
         title="Cursor colors",
         description="Base list of colors used for different cursors in the ImageTool.",
-        json_schema_extra={"ui_type": "colorlist"},
+        json_schema_extra=_workspace_extra(ui_type="colorlist"),
     )
 
     @field_validator("cursors", mode="before")
@@ -358,7 +366,7 @@ class FigureOptions(BaseModel):
             "Ordered Matplotlib stylesheets applied to Figure Composer plots. "
             "Unavailable saved styles are kept and skipped until available again."
         ),
-        json_schema_extra={"ui_type": "matplotlib_stylesheets"},
+        json_schema_extra=_workspace_extra(ui_type="matplotlib_stylesheets"),
     )
 
     @field_validator("stylesheets", mode="before")

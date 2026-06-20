@@ -29,6 +29,7 @@ from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
     _figure_draw_context,
     _figure_style_context,
+    figure_options_context,
 )
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE as _MIXED_VALUE,
@@ -123,10 +124,12 @@ from erlab.interactive._figurecomposer._widgets import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+    from erlab.interactive._options.schema import AppOptions
 
 
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
@@ -307,6 +310,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
         super().__init__()
+        self._options_getter: Callable[[], AppOptions] | None = None
         self._updating_controls = False
         self._rendering = False
         self._operation_editor_update_pending = False
@@ -377,6 +381,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._build_ui()
         self._apply_recipe_to_controls()
         self._write_state()
+
+    def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
+        self._options_getter = getter
+
+    @contextlib.contextmanager
+    def _figure_options_context(self) -> Iterator[None]:
+        options_model = None
+        if self._options_getter is not None:
+            with contextlib.suppress(Exception):
+                options_model = self._options_getter()
+        with figure_options_context(options_model):
+            yield
 
     @staticmethod
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
@@ -4909,7 +4925,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return row_widget
 
     def generated_code(self) -> str:
-        return erlab.interactive._figurecomposer._codegen.generated_code(self)
+        with self._figure_options_context():
+            return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
     @QtCore.Slot()
     def copy_code(self) -> None:
@@ -4943,7 +4960,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if not filename:
             return
-        with _rendered_output_figure(self) as figure, _figure_draw_context():
+        with (
+            self._figure_options_context(),
+            _rendered_output_figure(self) as figure,
+            _figure_draw_context(),
+        ):
             figure.savefig(
                 filename,
                 dpi=self._recipe.export.dpi,
@@ -5161,7 +5182,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             canvas = window.canvas
             if not erlab.interactive.utils.qt_is_valid(canvas):
                 return None
-            with _figure_style_context():
+            with self._figure_options_context(), _figure_style_context():
                 canvas.draw()
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
@@ -5181,7 +5202,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return None
         from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-        with _figure_style_context():
+        with self._figure_options_context(), _figure_style_context():
             figure = Figure(
                 figsize=self._recipe.setup.figsize,
                 dpi=self._recipe.setup.dpi,

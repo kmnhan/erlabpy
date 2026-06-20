@@ -181,12 +181,21 @@ def _make_gridspec_axes(
 
 def _new_offscreen_figure(tool: FigureComposerTool) -> Figure:
     setup = tool._recipe.setup
-    with _figure_style_context():
+    with _tool_figure_options_context(tool), _figure_style_context():
         return Figure(
             figsize=setup.figsize,
             dpi=setup.dpi,
             layout=typing.cast("typing.Any", setup.layout),
         )
+
+
+def _tool_figure_options_context(
+    tool: FigureComposerTool,
+) -> contextlib.AbstractContextManager[None]:
+    options_context = getattr(tool, "_figure_options_context", None)
+    if callable(options_context):
+        return options_context()
+    return contextlib.nullcontext()
 
 
 def _valid_figure_window(tool: FigureComposerTool) -> typing.Any | None:
@@ -311,7 +320,7 @@ def _render_into_figure(
     from erlab.interactive._figurecomposer._operations import _registry
 
     render_errors: dict[str, str] = {}
-    with _figure_style_context():
+    with _tool_figure_options_context(tool), _figure_style_context():
         axs = _make_axes(tool, figure, sync_visible=sync_visible)
         for operation in tool._recipe.operations:
             if not operation.enabled:

@@ -777,9 +777,11 @@ class DataTransformDialog(_DataManipulationDialog):
             "execute": False,
         }
 
+        if slicer_area is None:
+            slicer_area = self.slicer_area
+        itool_kw["options_model"] = getattr(slicer_area, "_options_model", None)
+
         if self.keep_colors:
-            if slicer_area is None:
-                slicer_area = self.slicer_area
             color_props: ColorMapState = slicer_area.colormap_properties
 
             itool_kw["cmap"] = color_props["cmap"]

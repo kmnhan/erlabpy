@@ -16,6 +16,7 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
     _selection_code,
 )
+from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
@@ -336,7 +337,7 @@ def _effective_panel_cmap(
 ) -> str:
     if style.cmap is not None:
         return style.cmap
-    return operation.cmap or erlab.interactive.options.model.colors.cmap.name
+    return operation.cmap or _current_options().colors.cmap.name
 
 
 def _operation_with_panel_norm_style(
@@ -978,9 +979,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
             return
         if check_state == QtCore.Qt.CheckState.Checked:
-            cmap = (
-                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
-            )
+            cmap = self._operation.cmap or _current_options().colors.cmap.name
             self._update_selected_styles({"cmap": cmap})
         else:
             self._update_selected_styles({"cmap": None})
@@ -1009,9 +1008,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
             return
         base = self.cmap_combo.currentText()
         if self.cmap_combo.currentData() is _MISSING:
-            base = (
-                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
-            )
+            base = self._operation.cmap or _current_options().colors.cmap.name
         reverse = check_state == QtCore.Qt.CheckState.Checked
         self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
 

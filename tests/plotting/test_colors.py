@@ -27,6 +27,7 @@ def test_custom_mathtext_styles_use_concrete_calligraphic_font(style) -> None:
     with matplotlib.style.context(style):
         assert plt.rcParams["mathtext.fontset"] == "custom"
         assert plt.rcParams["mathtext.cal"] == "cmsy10"
+        assert plt.rcParams["mathtext.default"] == "normal"
 
 
 def test_firalight_selects_light_face_without_numeric_global_weight() -> None:

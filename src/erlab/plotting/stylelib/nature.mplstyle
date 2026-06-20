@@ -101,7 +101,7 @@ mathtext.rm: Arial:style=normal:variant=normal:weight=normal:stretch=normal,Symb
 mathtext.sf: Arial:style=normal:variant=normal:weight=normal:stretch=normal
 mathtext.tt: monospace
 mathtext.fallback: None
-mathtext.default: it
+mathtext.default: normal
 
 # ***************************************************************************
 # * AXES                                                                    *

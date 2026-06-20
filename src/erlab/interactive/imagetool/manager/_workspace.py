@@ -117,6 +117,13 @@ class StandaloneAppsState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="ignore")
 
 
+class WorkspaceOptionOverridesState(pydantic.BaseModel):
+    schema_version: int = 1
+    overrides: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+
 @dataclass
 class _WorkspaceSaveSnapshot:
     generation: int
@@ -397,6 +404,7 @@ def _workspace_root_attrs_payload(
     manager_layout: Mapping[str, typing.Any] | None = None,
     loader_state: Mapping[str, typing.Any] | None = None,
     standalone_apps: Mapping[str, typing.Any] | None = None,
+    option_overrides: Mapping[str, typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -418,6 +426,9 @@ def _workspace_root_attrs_payload(
     if standalone_apps is not None:
         # Restored on full workspace open; imports intentionally ignore app windows.
         manifest["standalone_apps"] = dict(standalone_apps)
+    if option_overrides is not None:
+        # Sparse interactive settings overrides portable with this workspace.
+        manifest["interactive_option_overrides"] = dict(option_overrides)
     if delta_save_count > 0:
         # Marks files written through the recoverable in-place delta-save protocol.
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL

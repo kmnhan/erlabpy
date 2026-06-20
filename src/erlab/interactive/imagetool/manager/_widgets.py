@@ -1597,8 +1597,19 @@ class _WidgetsController:
 
     def open_settings(self) -> None:
         """Open the settings dialog for the ImageTool manager."""
-        dialog = erlab.interactive._options.OptionDialog(self._manager)
-        dialog.exec()
+        dialog = self._manager._additional_windows.get("settings")
+        if dialog is None or not erlab.interactive.utils.qt_is_valid(dialog):
+            dialog = erlab.interactive._options.OptionDialog(self._manager)
+            self._manager._additional_windows["settings"] = dialog
+
+            def cleanup(_obj: QtCore.QObject | None = None) -> None:
+                if self._manager._additional_windows.get("settings") is dialog:
+                    self._manager._additional_windows.pop("settings", None)
+
+            dialog.destroyed.connect(cleanup)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def open_new_manager_instance(self) -> None:
         """Open another ImageTool Manager window."""

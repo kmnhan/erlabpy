@@ -83,7 +83,7 @@ mathtext.fontset: stix
 # mathtext.sf: "Fira Sans:style=normal:variant=normal:weight=300:stretch=normal"
 # mathtext.tt: monospace
 # mathtext.fallback: stixsans
-# mathtext.default: it
+# mathtext.default: normal
 
 # ***************************************************************************
 # * AXES                                                                    *

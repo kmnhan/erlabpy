@@ -500,8 +500,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self._position_readout_source_indicator()
         self._readout_source_indicator.show()
 
-    @staticmethod
-    def _readout_value_to_float(value: object) -> float | None:
+    def _readout_value_to_float(self, value: object) -> float | None:
         if value is None:
             return None
         compute = getattr(value, "compute", None)
@@ -510,7 +509,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         arr = np.asarray(value)
         if arr.size == 0:
             return None
-        return erlab.interactive.imagetool.slicer._display_safe_float(arr)
+        return self.slicer_area.array_slicer.display_safe_float(arr)
 
     def _set_spin_dat_value(self, value: object) -> None:
         readout_value = self._readout_value_to_float(value)

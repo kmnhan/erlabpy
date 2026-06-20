@@ -9,6 +9,7 @@ import matplotlib.colors as mcolors
 import erlab
 import erlab.interactive.utils
 import erlab.plotting as eplt
+from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._state import (
     _POWER_NORM_NAME,
     FigureOperationState,
@@ -132,7 +133,7 @@ def _norm_updates_from_kwargs(
 
 def _cmap_base_and_reverse(cmap: str | None) -> tuple[str, bool]:
     if cmap is None:
-        return erlab.interactive.options.model.colors.cmap.name, False
+        return _current_options().colors.cmap.name, False
     if cmap.endswith("_r"):
         return cmap[:-2], True
     return cmap, False

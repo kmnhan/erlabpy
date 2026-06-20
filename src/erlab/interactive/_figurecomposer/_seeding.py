@@ -6,7 +6,7 @@ import typing
 
 import numpy as np
 
-import erlab
+from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
     FigureOperationState,
@@ -142,7 +142,7 @@ def plot_slices_operation_with_source_styles(
 
 
 def _default_bz_updates() -> dict[str, typing.Any]:
-    opts = erlab.interactive.options.model.ktool.bz
+    opts = _current_options().ktool.bz
     return {
         "bz_a": opts.default_a,
         "bz_b": opts.default_b,

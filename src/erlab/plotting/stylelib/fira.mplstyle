@@ -77,7 +77,7 @@ mathtext.rm: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=norma
 mathtext.sf: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=normal"
 mathtext.tt: monospace
 mathtext.fallback: stixsans
-mathtext.default: it
+mathtext.default: normal
 
 # ***************************************************************************
 # * AXES                                                                    *

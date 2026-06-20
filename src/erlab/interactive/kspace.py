@@ -36,6 +36,8 @@ if typing.TYPE_CHECKING:
     import matplotlib
     import varname
     import xarray as xr
+
+    from erlab.interactive._options.schema import AppOptions
 else:
     import lazy_loader as _lazy
 
@@ -151,6 +153,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] | None = None,
         cmap: str | None = None,
         gamma: float | None = None,
+        options_model: AppOptions | None = None,
     ) -> None:
         # Initialize UI
         super().__init__()
@@ -172,7 +175,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
-        opts = erlab.interactive.options.model
+        opts = options_model or erlab.interactive.options.model
 
         if cmap is None:
             cmap = opts.colors.cmap.name
@@ -716,9 +719,15 @@ class KspaceTool(KspaceToolGUI):
         data_name: str | None = None,
         initial_normal_emission: tuple[float, float] | None = None,
         initial_delta: float | None = None,
+        options_model: AppOptions | None = None,
     ) -> None:
         super().__init__(
-            avec=avec, rotate_bz=rotate_bz, centering=centering, cmap=cmap, gamma=gamma
+            avec=avec,
+            rotate_bz=rotate_bz,
+            centering=centering,
+            cmap=cmap,
+            gamma=gamma,
+            options_model=options_model,
         )
 
         self._argnames: dict[str, str] = {}
@@ -1613,6 +1622,7 @@ def ktool(
     data_name: str | None = None,
     initial_normal_emission: tuple[float, float] | None = None,
     initial_delta: float | None = None,
+    options_model: AppOptions | None = None,
     execute: bool | None = None,
 ) -> KspaceTool:
     """Interactive momentum conversion tool.
@@ -1668,6 +1678,7 @@ def ktool(
             data_name=data_name,
             initial_normal_emission=initial_normal_emission,
             initial_delta=initial_delta,
+            options_model=options_model,
         )
         win.show()
         win.raise_()

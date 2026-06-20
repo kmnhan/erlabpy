@@ -682,6 +682,51 @@ def test_manager_workspace_load_preserves_added_time(
         assert manager._child_node(tool_uid).created_time == tool_added
 
 
+def test_manager_workspace_option_overrides_roundtrip_and_mark_dirty(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    overrides = {
+        "colors/cmap/name": "viridis",
+        "colors/max_rendered_abs_value": 12.0,
+        "figure/stylesheets": ["classic", "missing-style"],
+    }
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        manager._mark_workspace_clean()
+
+        manager._set_workspace_option_overrides(overrides)
+
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.options_modified
+        assert manager.workspace_option_overrides() == overrides
+
+        fname = tmp_path / "option-overrides.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._set_workspace_option_overrides({})
+        manager._mark_workspace_clean()
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager.workspace_option_overrides() == overrides
+        assert not manager._workspace_state.options_modified
+        assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_load_warns_for_unavailable_colormap(
     qtbot,
     tmp_path: pathlib.Path,
