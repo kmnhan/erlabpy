@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.accessors.general as accessor_general
 import erlab.interactive._figurecomposer._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
@@ -626,6 +627,65 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     }
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert captured_maps == [("second", "first")]
+
+
+def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
+    qtbot, monkeypatch
+) -> None:
+    data = _figure_composer_image_source("data")
+    axes = FigureAxesSelectionState(axes=((0, 0), (0, 1)))
+    first_operation = FigureOperationState.plot_slices(
+        label="first",
+        sources=("data",),
+        axes=axes,
+        slice_dim="eV",
+        slice_values=(0.0, 0.5),
+    ).model_copy(update={"cmap": "viridis"})
+    second_operation = FigureOperationState.plot_slices(
+        label="second",
+        sources=("data",),
+        axes=axes,
+        slice_dim="eV",
+        slice_values=(0.0, 0.5),
+    ).model_copy(update={"cmap": "magma"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(first_operation, second_operation),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    calls: list[dict[str, object]] = []
+    original_qsel = accessor_general.SelectionAccessor.__call__
+
+    def counted_qsel(self, *args, **kwargs):
+        calls.append(dict(kwargs))
+        return original_qsel(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        accessor_general.SelectionAccessor,
+        "__call__",
+        counted_qsel,
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 1
+    assert calls[0]["eV"] == [0.0, 0.5]
+    assert [len(axis.images) for axis in tool.figure.axes] == [2, 2]
+    assert [image.get_cmap().name for image in tool.figure.axes[0].images] == [
+        "viridis",
+        "magma",
+    ]
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 2
 
 
 def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None:

@@ -175,6 +175,46 @@ def test_qsel_collection() -> None:
     )
 
 
+def test_qsel_shallow_copy_preserves_selection_semantics() -> None:
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+
+    scalar = dat.qsel(x=2.0)
+    xr.testing.assert_equal(scalar, dat.isel(x=2))
+    assert "x" not in dat.coords
+
+    xr.testing.assert_identical(
+        dat.qsel(x=2.0, x_width=3.0),
+        xr.DataArray(np.array([10.0, 11.0, 12.0, 13.0, 14.0]), dims=("y",)),
+    )
+    xr.testing.assert_identical(
+        dat.qsel(x=[1.0, 3.0], x_width=[2.0, 2.0]),
+        xr.DataArray(
+            np.array([[5.0, 6.0, 7.0, 8.0, 9.0], [15.0, 16.0, 17.0, 18.0, 19.0]]),
+            dims=("x", "y"),
+        ),
+    )
+
+
+def test_qsel_shallow_copy_preserves_dask_backing() -> None:
+    dask_array = pytest.importorskip("dask.array")
+    dat = xr.DataArray(
+        dask_array.arange(25, chunks=5).reshape((5, 5)),
+        dims=("x", "y"),
+    )
+
+    result = dat.qsel(x=[1.0, 3.0], x_width=[2.0, 2.0])
+
+    assert hasattr(result.data, "compute")
+    assert "x" not in dat.coords
+    xr.testing.assert_equal(
+        result.compute(),
+        xr.DataArray(
+            np.array([[5.0, 6.0, 7.0, 8.0, 9.0], [15.0, 16.0, 17.0, 18.0, 19.0]]),
+            dims=("x", "y"),
+        ),
+    )
+
+
 def test_qsel_slice_with_width() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     with pytest.raises(

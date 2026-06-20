@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import erlab.accessors.general as accessor_general
 from erlab.plotting.general import (
     clean_labels,
     fermiline,
@@ -11,6 +12,63 @@ from erlab.plotting.general import (
     plot_array,
     plot_slices,
 )
+
+
+def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
+    eV = np.array([0.0, 1.0, 2.0])
+    y = np.array([0.0, 1.0, 2.0, 3.0])
+    x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    data0 = xr.DataArray(
+        np.arange(eV.size * y.size * x.size, dtype=float).reshape(
+            eV.size, y.size, x.size
+        ),
+        dims=("eV", "y", "x"),
+        coords={"eV": eV, "y": y, "x": x},
+    )
+    data1 = data0 + 100.0
+    expected0 = data0.qsel(
+        eV=[0.0, 2.0],
+        eV_width=[0.1, 0.1],
+        y=slice(1.0, 3.0),
+        x=slice(1.0, 3.0),
+    )
+    expected1 = data1.qsel(
+        eV=[0.0, 2.0],
+        eV_width=[0.1, 0.1],
+        y=slice(1.0, 3.0),
+        x=slice(1.0, 3.0),
+    )
+    calls: list[dict[str, object]] = []
+    original_qsel = accessor_general.SelectionAccessor.__call__
+
+    def counted_qsel(self, *args, **kwargs):
+        calls.append(dict(kwargs))
+        return original_qsel(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        accessor_general.SelectionAccessor,
+        "__call__",
+        counted_qsel,
+    )
+
+    fig, axes = plot_slices(
+        [data0, data1],
+        eV=[0.0, 2.0],
+        eV_width=[0.1, 0.1],
+        xlim=(1.0, 3.0),
+        ylim=(1.0, 3.0),
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["eV"] == [0.0, 2.0]
+    assert calls[0]["eV_width"] == [0.1, 0.1]
+    assert axes.shape == (2, 2)
+    assert all(len(axis.images) == 1 for axis in axes.ravel())
+    np.testing.assert_allclose(axes[0, 0].images[0].get_array(), expected0[0].values)
+    np.testing.assert_allclose(axes[0, 1].images[0].get_array(), expected0[1].values)
+    np.testing.assert_allclose(axes[1, 0].images[0].get_array(), expected1[0].values)
+    np.testing.assert_allclose(axes[1, 1].images[0].get_array(), expected1[1].values)
+    plt.close(fig)
 
 
 def test_plot_slices_general(monkeypatch) -> None:

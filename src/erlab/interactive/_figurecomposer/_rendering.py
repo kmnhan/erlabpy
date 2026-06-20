@@ -320,20 +320,29 @@ def _render_into_figure(
     from erlab.interactive._figurecomposer._operations import _registry
 
     render_errors: dict[str, str] = {}
-    with _tool_figure_options_context(tool), _figure_style_context():
-        axs = _make_axes(tool, figure, sync_visible=sync_visible)
-        for operation in tool._recipe.operations:
-            if not operation.enabled:
-                continue
-            spec = _registry.spec_for(operation.kind)
-            if spec.has_invalid_target(
-                tool, operation
-            ) or tool._operation_has_invalid_input(operation):
-                continue
-            try:
-                spec.render(tool, operation, figure, axs)
-            except Exception as exc:
-                render_errors[operation.operation_id] = _render_error_text(exc)
+    previous_plot_slices_cache = getattr(tool, "_plot_slices_selection_cache", None)
+    tool._plot_slices_selection_cache = {}
+    try:
+        with _tool_figure_options_context(tool), _figure_style_context():
+            axs = _make_axes(tool, figure, sync_visible=sync_visible)
+            for operation in tool._recipe.operations:
+                if not operation.enabled:
+                    continue
+                spec = _registry.spec_for(operation.kind)
+                if spec.has_invalid_target(
+                    tool, operation
+                ) or tool._operation_has_invalid_input(operation):
+                    continue
+                try:
+                    spec.render(tool, operation, figure, axs)
+                except Exception as exc:
+                    render_errors[operation.operation_id] = _render_error_text(exc)
+    finally:
+        if previous_plot_slices_cache is None:
+            with contextlib.suppress(AttributeError):
+                del tool._plot_slices_selection_cache
+        else:
+            tool._plot_slices_selection_cache = previous_plot_slices_cache
     tool._set_operation_render_errors(render_errors)
 
 

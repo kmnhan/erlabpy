@@ -688,7 +688,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 )
             }
 
-            out = self._obj.copy()
+            out = self._obj.copy(deep=False)
             for dim, slice_list in slice_collections.items():
                 lost_dims_extend: list[Hashable] = [
                     k for k, v in self._obj.coords.items() if dim in v.dims
@@ -714,7 +714,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 )
         else:
             out = self._qsel_scalar(
-                self._obj.copy(), scalars, slices, avg_dims, lost_dims, func
+                self._obj.copy(deep=False), scalars, slices, avg_dims, lost_dims, func
             )
 
         return erlab.utils.array.sort_coord_order(
