@@ -2516,8 +2516,8 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     )
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore",
-            message="In a future version of xarray the default value for coords",
+            "error",
+            message="In a future version of xarray the default value for .*",
             category=FutureWarning,
         )
         transformed_maps = figurecomposer_plot_slices._plot_slices_transformed_maps(
@@ -2543,8 +2543,8 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     }
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore",
-            message="In a future version of xarray the default value for coords",
+            "error",
+            message="In a future version of xarray the default value for .*",
             category=FutureWarning,
         )
         exec(  # noqa: S102
@@ -18194,6 +18194,8 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     assert "plot_maps" not in code
     assert "eplt.plot_slices(\n    xr.concat(" in code
     assert 'dim="eV"' in code
+    assert 'coords="different"' in code
+    assert 'compat="equals"' in code
     assert '.assign_coords({"eV": [0.0, 1.0]})' in code
     assert "eV_width" not in code.split("eplt.plot_slices(", maxsplit=1)[1]
 

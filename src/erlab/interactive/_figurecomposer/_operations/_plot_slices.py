@@ -565,6 +565,8 @@ def _plot_slices_transformed_maps(
             xr.concat(
                 ordered_profiles,
                 dim=operation.slice_dim,
+                coords="different",
+                compat="equals",
             ).assign_coords({operation.slice_dim: slice_values})
         )
     return transformed_maps
@@ -3321,6 +3323,8 @@ def _plot_slices_transformed_maps_code(
                 "xr.concat(",
                 f"    [{profile_items}],",
                 f"    dim={dim_code},",
+                '    coords="different",',
+                '    compat="equals",',
                 f").assign_coords({coords_code})",
             ]
         )
