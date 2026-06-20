@@ -100,11 +100,11 @@ Once the manager is running, you can open ImageTools in several ways:
   %itool -m 1 darr
   ```
 
-- The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool
+- The {menuselection}`File --> Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool
   window opened outside the manager. This action moves the active ImageTool to the
   manager.
 
-- Use the manager’s {guilabel}`File → Add Data Files…` action to load data in a new
+- Use the manager’s {menuselection}`File --> Add Data Files…` action to load data in a new
   ImageTool.
 
 - Drag and drop supported ARPES data into the manager window.
@@ -124,7 +124,7 @@ Once the manager is running, you can open ImageTools in several ways:
 
   :::
 
-- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or
+- Launch the built-in data explorer from {menuselection}`File --> Data Explorer` or
   {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening
   selected files in the manager. Use the loader options button next to the loader
   selector to apply the same `loader_extensions=` settings when opening selected files.
@@ -160,7 +160,7 @@ shows a non-empty 2D, 3D, or 4D result, or cancel to skip opening that data.
 Multiple ImageTool Manager windows can run at the same time. The first live manager is
 manager `#0`, and later managers receive 0-based indexes in the order they start.
 
-To start a new manager instance, choose {guilabel}`File → New Manager Window` from an
+To start a new manager instance, choose {menuselection}`File --> New Manager Window` from an
 existing manager window.
 
 When more than one manager is running, either pass the index like `manager=2` or set a
@@ -197,7 +197,7 @@ list, and a preview of the main image.
 
 :::{note}
 
-Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over
+Enable {menuselection}`View --> Preview on Hover` to see thumbnails while moving the mouse over
 the list.
 
 :::
@@ -238,7 +238,7 @@ and right-click context menus:
 - {guilabel}`Offload to Workspace`
 
   Reloads the data as dask-backed data from the workspace file, freeing up memory but
-  slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it
+  slowing down indexing. Use {menuselection}`Dask --> Load Into Memory` in ImageTool to load it
   back into memory when needed.
 
 - {guilabel}`Concatenate`
@@ -309,20 +309,20 @@ the entire manager workspace, including all windows and their state.
 Manager row notes are workspace metadata. They are saved with the row they describe and
 do not modify the data attributes of the underlying `DataArray`.
 
-{guilabel}`File → Add Windows From Workspace…` lets you choose windows from another
+{menuselection}`File --> Add Windows From Workspace…` lets you choose windows from another
 workspace file to import into the current one.
 
-Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…`
+Saved ImageTool workspaces can be reloaded via {menuselection}`File --> Open Workspace…`
 ({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate your
 windows exactly as they were. A list of recent workspaces is available in
-{guilabel}`File → Open Recent`.
+{menuselection}`File --> Open Recent`.
 
-To check where the open manager is saved, choose {guilabel}`File → Workspace Properties`
+To check where the open manager is saved, choose {menuselection}`File --> Workspace Properties`
 ({kbd}`Alt+Return`).
 
-Use {guilabel}`File → Offload to Workspace` to make the selected data lazy-loaded from
+Use {menuselection}`File --> Offload to Workspace` to make the selected data lazy-loaded from
 the workspace file. This frees up memory but will slow down indexing and slicing. Use
-{guilabel}`Dask → Load Into Memory` in ImageTool to bring it back into memory.
+{menuselection}`Dask --> Load Into Memory` in ImageTool to bring it back into memory.
 
 If the workspace contains watched notebook variables, the watched rows reopen with
 their variable-name badges. The rows stay disconnected until a notebook defines the
@@ -442,7 +442,7 @@ also launch standalone apps that stay outside the tree view and workspace files.
 
 ### Data Explorer
 
-Open the explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`.
+Open the explorer from {menuselection}`File --> Data Explorer` or {kbd}`Ctrl+E`.
 
 Use it when you want to browse folders, preview metadata, queue batch loads, and then
 open selected files into the manager without writing code. For most day-to-day browsing
@@ -458,7 +458,7 @@ For the standalone tool page, see {ref}`guide-data-explorer`.
 
 ### Periodic Table
 
-Open the periodic table from {guilabel}`Apps → Periodic Table` or {kbd}`Ctrl+Shift+P`.
+Open the periodic table from {menuselection}`Apps --> Periodic Table` or {kbd}`Ctrl+Shift+P`.
 
 Use it when you want quick reference for core-level energies photoionization cross
 sections.
@@ -667,7 +667,7 @@ Because `fetch` returns a copy, you can safely modify it without touching the li
 
 ### Sharing data via `%store`
 
-The [%store](https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html) magic can persist variables between notebook sessions. Select tools in the manager and run {guilabel}`File → Store with IPython` (or the matching context-menu command) to push their `DataArray` objects into the `%store` database. Internally, this executes:
+The [%store](https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html) magic can persist variables between notebook sessions. Select tools in the manager and run {menuselection}`File --> Store with IPython` (or the matching context-menu command) to push their `DataArray` objects into the `%store` database. Internally, this executes:
 
 ```python
 my_data = tools[0].data

@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
@@ -633,6 +634,13 @@ def _set_default_loader_option(monkeypatch, loader_name: str) -> None:
     )
 
 
+def _manager_for_loader_preference(recent_filter: str | None = None):
+    return types.SimpleNamespace(
+        _recent_name_filter=recent_filter,
+        effective_interactive_options=erlab.interactive.options.model,
+    )
+
+
 @pytest.mark.parametrize(
     ("default_loader", "recent_filter", "expected_filter"),
     [
@@ -656,7 +664,7 @@ def test_preferred_name_filter_precedence(
         xarray_filter: (xr.load_dataarray, {"engine": "h5netcdf"}),
         example_filter: erlab.io.loaders["example"].file_dialog_methods[example_filter],
     }
-    manager = types.SimpleNamespace(_recent_name_filter=recent_filter)
+    manager = _manager_for_loader_preference(recent_filter)
 
     assert (
         ImageToolManager._preferred_name_filter(manager, valid_loaders)
@@ -673,11 +681,87 @@ def test_preferred_name_filter_uses_default_loader_method_order(monkeypatch) -> 
         second_filter: loader_methods[second_filter],
         first_filter: loader_methods[first_filter],
     }
-    manager = types.SimpleNamespace(_recent_name_filter=None)
+    manager = _manager_for_loader_preference()
 
     assert (
         ImageToolManager._preferred_name_filter(manager, valid_loaders) == first_filter
     )
+
+
+def test_preferred_name_filter_uses_workspace_default_loader(example_loader) -> None:
+    example_filter = "Example Raw Data (*.h5)"
+    valid_loaders = {
+        example_filter: erlab.io.loaders["example"].file_dialog_methods[example_filter],
+    }
+    manager = types.SimpleNamespace(
+        _recent_name_filter=None,
+        effective_interactive_options=(
+            erlab.interactive._options.core.model_with_workspace_overrides(
+                erlab.interactive.options.model,
+                {"io/default_loader": "example"},
+            )
+        ),
+    )
+
+    assert (
+        ImageToolManager._preferred_name_filter(manager, valid_loaders)
+        == example_filter
+    )
+
+
+def test_manager_new_imagetool_uses_workspace_options(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._set_workspace_option_overrides(
+            {
+                "colors/cmap/name": "viridis",
+                "colors/max_rendered_abs_value": 12.0,
+            }
+        )
+        data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+
+        assert manager._data_recv([data], {}, show=False) == [True]
+
+        tool = manager.get_imagetool(0)
+        assert tool.slicer_area._options_model.colors.cmap.name == "viridis"
+        assert tool.slicer_area.colormap_properties["cmap"] == "viridis"
+        assert tool.array_slicer.display_value_abs_limit == 12.0
+
+
+def test_manager_figure_generated_code_uses_workspace_stylesheets(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._set_workspace_option_overrides(
+            {"figure/stylesheets": ["classic", "missing-style"]}
+        )
+        data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            name="data",
+        )
+        assert manager._data_recv([data], {}, show=False) == [True]
+
+        uid = manager.create_figure_from_targets((0,), show=False)
+        if uid is None:
+            raise AssertionError("Figure Composer tool was not created")
+        tool = manager._child_node(uid).tool_window
+        if tool is None:
+            raise AssertionError("Figure Composer tool window is missing")
+
+        code = tool.generated_code()
+
+        assert "plt.style.use(['classic'])" in code
+        assert "# Skipped unavailable stylesheets: 'missing-style'" in code
 
 
 def test_open_multiple_files_preselects_default_loader_filter(
@@ -712,6 +796,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _recent_loader_kwargs_by_filter={},
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
+        effective_interactive_options=erlab.interactive.options.model,
         _add_from_multiple_files=lambda *_args, **_kwargs: None,
         open_multiple_files=lambda *_args, **_kwargs: None,
     )
@@ -776,6 +861,7 @@ def test_manager_open_preselects_default_loader_filter(
             super().__init__()
             self._recent_name_filter = None
             self._recent_directory = None
+            self.effective_interactive_options = erlab.interactive.options.model
 
     manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
@@ -1110,6 +1196,7 @@ def test_manager_open_loader_selection_branches(
             super().__init__()
             self._recent_name_filter = None
             self._recent_directory = None
+            self.effective_interactive_options = erlab.interactive.options.model
             self._select_loader_options = _select_loader_options
             self._add_from_multiple_files = lambda *args, **kwargs: add_calls.append(
                 (args, kwargs)

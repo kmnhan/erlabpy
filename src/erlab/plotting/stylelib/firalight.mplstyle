@@ -54,10 +54,10 @@
 # relative to font.size, using the following values: xx-small, x-small,
 # small, medium, large, x-large, xx-large, larger, or smaller
 
-font.family: Fira Sans, sans-serif
+font.family: Fira Sans Light, Fira Sans, sans-serif
 font.style: normal
 font.variant: normal
-font.weight: 300
+font.weight: normal
 font.stretch: normal
 
 # ***************************************************************************
@@ -71,13 +71,13 @@ text.latex.preamble:
 # The following settings allow you to select the fonts in math mode.
 mathtext.fontset: custom
 mathtext.bf: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=normal"
-mathtext.cal: cursive
+mathtext.cal: cmsy10
 mathtext.it: "Fira Sans:style=italic:variant=normal:weight=300:stretch=normal"
 mathtext.rm: "Fira Sans:style=normal:variant=normal:weight=300:stretch=normal"
 mathtext.sf: "Fira Sans:style=normal:variant=normal:weight=300:stretch=normal"
 mathtext.tt: monospace
 mathtext.fallback: stixsans
-mathtext.default: it
+mathtext.default: normal
 
 # ***************************************************************************
 # * AXES                                                                    *
@@ -85,16 +85,16 @@ mathtext.default: it
 # Following are default face and edge colors, default tick sizes,
 # default font sizes for tick labels, and so on.  See
 # https://matplotlib.org/api/axes_api.html#module-matplotlib.axes
-axes.titleweight: 300
-axes.labelweight: 300
+axes.titleweight: normal
+axes.labelweight: normal
 axes.unicode_minus: True
 
 # ***************************************************************************
 # * FIGURE                                                                  *
 # ***************************************************************************
 # See https://matplotlib.org/api/figure_api.html#matplotlib.figure.Figure
-figure.titleweight: 300
-figure.labelweight: 300
+figure.titleweight: normal
+figure.labelweight: normal
 
 # ***************************************************************************
 # * SAVING FIGURES                                                          *

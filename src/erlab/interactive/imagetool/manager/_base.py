@@ -11,6 +11,7 @@ import weakref
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._options.core
 from erlab.interactive import _qt_state
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
@@ -20,6 +21,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
     from erlab.interactive._dask import DaskMenu
+    from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._actions import _ActionsController
@@ -227,6 +229,51 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     def _mark_workspace_layout_dirty(self) -> None:
         self._workspace_controller._mark_workspace_layout_dirty()
 
+    def _mark_workspace_options_dirty(self) -> None:
+        self._workspace_controller._mark_workspace_options_dirty()
+
+    def workspace_option_overrides(self) -> dict[str, typing.Any]:
+        """Return manager-local workspace option overrides."""
+        return dict(self._workspace_state.option_overrides)
+
+    def _set_workspace_option_overrides(
+        self,
+        overrides: typing.Mapping[str, typing.Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        normalized = (
+            erlab.interactive._options.core.normalize_workspace_option_overrides(
+                overrides
+            )
+        )
+        if self._workspace_state.option_overrides == normalized:
+            return
+        self._workspace_state.option_overrides = normalized
+        if mark_dirty:
+            self._mark_workspace_options_dirty()
+
+    def set_workspace_option_override(self, path: str, value: typing.Any) -> None:
+        overrides = self.workspace_option_overrides()
+        overrides[str(path)] = value
+        self._set_workspace_option_overrides(overrides)
+
+    def clear_workspace_option_override(self, path: str) -> None:
+        overrides = self.workspace_option_overrides()
+        try:
+            del overrides[str(path)]
+        except KeyError:
+            return
+        self._set_workspace_option_overrides(overrides)
+
+    @property
+    def effective_interactive_options(self) -> AppOptions:
+        """Return user settings with this manager's workspace overrides applied."""
+        return erlab.interactive._options.core.model_with_workspace_overrides(
+            erlab.interactive.options.model,
+            self._workspace_state.option_overrides,
+        )
+
     def _node_for_target(
         self, target: int | str
     ) -> _ImageToolWrapper | _ManagedWindowNode:
@@ -358,8 +405,12 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     def _create_explorer_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
+        loader_name = self._recent_loader_name
+        if loader_name is None:
+            loader_name = self.effective_interactive_options.io.default_loader
         explorer = _TabbedExplorer(
-            root_path=self._recent_directory, loader_name=self._recent_loader_name
+            root_path=self._recent_directory,
+            loader_name=loader_name,
         )
         loader_kwargs, loader_extensions = (
             self._workspace_controller._explorer_loader_state()
@@ -392,7 +443,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if self._recent_name_filter in valid_loaders:
             return self._recent_name_filter
 
-        default_loader = erlab.interactive.options.model.io.default_loader
+        default_loader = self.effective_interactive_options.io.default_loader
         if default_loader == "None" or default_loader not in erlab.io.loaders:
             return None
 

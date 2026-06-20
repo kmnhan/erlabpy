@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
+_PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 
 _fit_worker_gc_lock = threading.Lock()
 _fit_worker_gc_depth = 0
@@ -174,106 +175,6 @@ def _suspend_gc_in_fit_worker():
                 _fit_worker_gc_restore_enabled = False
             if should_enable:
                 gc.enable()
-
-
-class _PythonCodeEditor(QtWidgets.QTextEdit):
-    TAB_SPACES = 4
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.setFont(
-            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
-        )
-        self.highlighter = erlab.interactive.utils.PythonHighlighter(self.document())
-
-    def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
-        if e is not None:
-            key = e.key()
-            mods = e.modifiers()
-
-            is_tab = key == QtCore.Qt.Key.Key_Tab
-            is_backtab = key == QtCore.Qt.Key.Key_Backtab
-            shift = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
-
-            if (is_tab or is_backtab) and not (
-                mods & QtCore.Qt.KeyboardModifier.ControlModifier
-            ):
-                cursor = self.textCursor()
-                if is_backtab or (is_tab and shift):
-                    self._unindent(cursor, self.TAB_SPACES)
-                else:
-                    self._indent(cursor, self.TAB_SPACES)
-                e.accept()
-                return
-
-        super().keyPressEvent(e)
-
-    def _indent(self, cursor: QtGui.QTextCursor, n: int) -> None:
-        text = " " * n
-        cursor.beginEditBlock()
-        if cursor.hasSelection():
-            self._for_each_selected_block(cursor, lambda c: c.insertText(text))
-        else:
-            cursor.insertText(text)
-        cursor.endEditBlock()
-
-    def _unindent(self, cursor: QtGui.QTextCursor, n: int) -> None:
-        cursor.beginEditBlock()
-
-        def unindent_block(c: QtGui.QTextCursor):
-            c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
-
-            # Remove one literal tab if present
-            c.movePosition(
-                QtGui.QTextCursor.MoveOperation.Right,
-                QtGui.QTextCursor.MoveMode.KeepAnchor,
-                1,
-            )
-            if c.selectedText() == "\t":
-                c.removeSelectedText()
-                return
-            c.clearSelection()
-
-            # Otherwise remove up to n leading spaces
-            removed = 0
-            while removed < n:
-                c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
-                c.movePosition(
-                    QtGui.QTextCursor.MoveOperation.Right,
-                    QtGui.QTextCursor.MoveMode.KeepAnchor,
-                    1,
-                )
-                if c.selectedText() == " ":
-                    c.removeSelectedText()
-                    removed += 1
-                else:
-                    c.clearSelection()
-                    break
-
-        if cursor.hasSelection():
-            self._for_each_selected_block(cursor, unindent_block)
-        else:
-            unindent_block(cursor)
-
-        cursor.endEditBlock()
-
-    def _for_each_selected_block(self, cursor: QtGui.QTextCursor, fn):
-        start = cursor.selectionStart()
-        end = cursor.selectionEnd()
-
-        c = QtGui.QTextCursor(cursor.document())
-        c.setPosition(start)
-        start_block = c.blockNumber()
-
-        c.setPosition(end)
-        end_block = c.blockNumber()
-
-        c.setPosition(start)
-        c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
-
-        for _ in range(start_block, end_block + 1):
-            fn(c)
-            c.movePosition(QtGui.QTextCursor.MoveOperation.NextBlock)
 
 
 class _ExpressionInitScriptDialog(QtWidgets.QDialog):

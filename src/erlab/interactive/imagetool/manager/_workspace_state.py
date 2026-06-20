@@ -29,6 +29,8 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_removed: tuple[str, ...]
     structure_reasons: tuple[str, ...]
     layout_modified: bool
+    options_modified: bool
+    option_overrides: dict[str, typing.Any]
     dirty_generation: int
     dirty_events: tuple[_manager_workspace._WorkspaceDirtyEvent, ...]
     delta_save_count: int
@@ -50,6 +52,8 @@ class _ManagerWorkspaceState:
         self.dirty_removed: list[str] = []
         self.structure_reasons: list[str] = []
         self.layout_modified: bool = False
+        self.options_modified: bool = False
+        self.option_overrides: dict[str, typing.Any] = {}
         self.needs_full_save: bool = False
         self.dirty_generation: int = 0
         self.dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
@@ -71,6 +75,7 @@ class _ManagerWorkspaceState:
             or bool(self.dirty_data)
             or bool(self.dirty_state)
             or bool(self.dirty_removed)
+            or self.options_modified
         )
 
     def apply_dirty_event(self, event: _manager_workspace._WorkspaceDirtyEvent) -> bool:
@@ -108,9 +113,17 @@ class _ManagerWorkspaceState:
         self.dirty_generation += 1
         return True
 
+    def mark_options_dirty(self) -> bool:
+        if self.options_modified:
+            return False
+        self.options_modified = True
+        self.dirty_generation += 1
+        return True
+
     def mark_clean(self) -> None:
         self.structure_modified = False
         self.layout_modified = False
+        self.options_modified = False
         self.dirty_added.clear()
         self.dirty_data.clear()
         self.dirty_state.clear()
@@ -147,6 +160,8 @@ class _ManagerWorkspaceState:
             "dirty_removed": tuple(self.dirty_removed),
             "structure_reasons": tuple(self.structure_reasons),
             "layout_modified": self.layout_modified,
+            "options_modified": self.options_modified,
+            "option_overrides": dict(self.option_overrides),
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "delta_save_count": self.delta_save_count,
@@ -164,6 +179,8 @@ class _ManagerWorkspaceState:
         self.dirty_removed = list(snapshot["dirty_removed"])
         self.structure_reasons = list(snapshot["structure_reasons"])
         self.layout_modified = snapshot["layout_modified"]
+        self.options_modified = snapshot["options_modified"]
+        self.option_overrides = dict(snapshot["option_overrides"])
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.delta_save_count = snapshot["delta_save_count"]

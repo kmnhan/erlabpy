@@ -16,6 +16,7 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
     _selection_code,
 )
+from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
@@ -336,7 +337,7 @@ def _effective_panel_cmap(
 ) -> str:
     if style.cmap is not None:
         return style.cmap
-    return operation.cmap or erlab.interactive.options.model.colors.cmap.name
+    return operation.cmap or _current_options().colors.cmap.name
 
 
 def _operation_with_panel_norm_style(
@@ -564,6 +565,8 @@ def _plot_slices_transformed_maps(
             xr.concat(
                 ordered_profiles,
                 dim=operation.slice_dim,
+                coords="different",
+                compat="equals",
             ).assign_coords({operation.slice_dim: slice_values})
         )
     return transformed_maps
@@ -978,9 +981,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
             return
         if check_state == QtCore.Qt.CheckState.Checked:
-            cmap = (
-                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
-            )
+            cmap = self._operation.cmap or _current_options().colors.cmap.name
             self._update_selected_styles({"cmap": cmap})
         else:
             self._update_selected_styles({"cmap": None})
@@ -1009,9 +1010,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
             return
         base = self.cmap_combo.currentText()
         if self.cmap_combo.currentData() is _MISSING:
-            base = (
-                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
-            )
+            base = self._operation.cmap or _current_options().colors.cmap.name
         reverse = check_state == QtCore.Qt.CheckState.Checked
         self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
 
@@ -3164,6 +3163,12 @@ def _render_plot_slices(
     if _plot_slices_uses_transformed_line_maps(tool, operation):
         maps = _plot_slices_transformed_maps(tool, operation, maps)
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
+    selection_cache = getattr(tool, "_plot_slices_selection_cache", None)
+    if selection_cache is not None:
+        kwargs["_selection_cache"] = selection_cache
+        kwargs["_selection_cache_key"] = _plot_slices_selection_cache_key(
+            operation, maps
+        )
     axes = _plot_slices_axes(
         operation,
         maps,
@@ -3233,6 +3238,26 @@ def _plot_slices_axes(
     if axes.size != math.prod(shape):
         return axes
     return axes.reshape(shape)
+
+
+def _plot_slices_selection_cache_key(
+    operation: FigureOperationState, maps: Sequence[xr.DataArray]
+) -> tuple[object, ...]:
+    source_key = tuple(
+        (
+            selection.source,
+            repr(selection.isel),
+            repr(selection.qsel),
+            tuple(selection.mean_dims),
+        )
+        for selection in operation.map_selections
+    )
+    if not source_key:
+        source_key = tuple((source,) for source in operation.sources)
+    map_key = tuple(
+        (id(data.data), tuple(data.dims), tuple(data.shape)) for data in maps
+    )
+    return (source_key, map_key)
 
 
 def _operation_maps(
@@ -3324,6 +3349,8 @@ def _plot_slices_transformed_maps_code(
                 "xr.concat(",
                 f"    [{profile_items}],",
                 f"    dim={dim_code},",
+                '    coords="different",',
+                '    compat="equals",',
                 f").assign_coords({coords_code})",
             ]
         )

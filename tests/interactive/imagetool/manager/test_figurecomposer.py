@@ -3,6 +3,8 @@ import contextlib
 import functools
 import gc
 import json
+import sys
+import types
 import typing
 import warnings
 from collections.abc import Callable, Sequence
@@ -22,6 +24,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.accessors.general as accessor_general
 import erlab.interactive._figurecomposer._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
@@ -38,6 +41,7 @@ import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
@@ -628,6 +632,65 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert captured_maps == [("second", "first")]
 
 
+def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
+    qtbot, monkeypatch
+) -> None:
+    data = _figure_composer_image_source("data")
+    axes = FigureAxesSelectionState(axes=((0, 0), (0, 1)))
+    first_operation = FigureOperationState.plot_slices(
+        label="first",
+        sources=("data",),
+        axes=axes,
+        slice_dim="eV",
+        slice_values=(0.0, 0.5),
+    ).model_copy(update={"cmap": "viridis"})
+    second_operation = FigureOperationState.plot_slices(
+        label="second",
+        sources=("data",),
+        axes=axes,
+        slice_dim="eV",
+        slice_values=(0.0, 0.5),
+    ).model_copy(update={"cmap": "magma"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(first_operation, second_operation),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    calls: list[dict[str, object]] = []
+    original_qsel = accessor_general.SelectionAccessor.__call__
+
+    def counted_qsel(self, *args, **kwargs):
+        calls.append(dict(kwargs))
+        return original_qsel(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        accessor_general.SelectionAccessor,
+        "__call__",
+        counted_qsel,
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 1
+    assert calls[0]["eV"] == [0.0, 0.5]
+    assert [len(axis.images) for axis in tool.figure.axes] == [2, 2]
+    assert [image.get_cmap().name for image in tool.figure.axes[0].images] == [
+        "viridis",
+        "magma",
+    ]
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 2
+
+
 def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None:
     first = _figure_composer_image_source("first")
     second = _figure_composer_image_source("second")
@@ -658,9 +721,11 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
     assert first_item.font(0).bold()
+    assert first_item.text(1) == "data_0"
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
+    assert second_item.text(1) == "data_1"
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -690,11 +755,14 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
 
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
-    shape_widget = tool.source_list.itemWidget(first_item, 1)
+    shape_widget = tool.source_list.itemWidget(first_item, 2)
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert shape_widget.text() == "<p>formatted shape</p>"
-    assert shape_widget.toolTip() == first_item.toolTip(0)
-    assert first_item.toolTip(1) == first_item.toolTip(0)
+    assert tool.source_list.toolTip() == ""
+    assert first_item.toolTip(0) == ""
+    assert first_item.toolTip(1) == ""
+    assert first_item.toolTip(2) == ""
+    assert shape_widget.toolTip() == ""
     assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
@@ -843,11 +911,11 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     )
     assert tool._source_refresh_label("data_0") is None
 
-    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", ""])
+    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", "", ""])
     tool.source_list.addTopLevelItem(direct_item)
     direct_button = QtWidgets.QToolButton(tool.source_list)
     direct_button.setObjectName("figureComposerRefreshSourceButton")
-    tool.source_list.setItemWidget(direct_item, 2, direct_button)
+    tool.source_list.setItemWidget(direct_item, 3, direct_button)
     assert (
         tool._source_list_row_button(direct_item, "figureComposerRefreshSourceButton")
         is direct_button
@@ -1520,7 +1588,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     assert "sample_temp_idx" not in shape.source_text
     shape_item = tool.source_list.topLevelItem(0)
     assert shape_item is not None
-    shape_label = tool.source_list.itemWidget(shape_item, 1)
+    shape_label = tool.source_list.itemWidget(shape_item, 2)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert "sample_temp_idx" not in shape_label.text()
 
@@ -2385,6 +2453,201 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
     assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
 
 
+def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+    assert isinstance(code_edit.highlighter, erlab.interactive.utils.PythonHighlighter)
+    assert code_edit.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
+
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    first_code = "ax.set_title('first')"
+    second_code = "ax.set_title('second')\nax.set_xlabel('energy')"
+    code_edit.setPlainText(first_code)
+    qtbot.wait(300)
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    assert render_calls == []
+
+    code_edit.setPlainText(second_code)
+
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    assert render_calls == []
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == second_code,
+        timeout=1000,
+    )
+    assert render_calls == [(tool,)]
+
+
+def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    render_calls: list[tuple[object, ...]] = []
+    info_changed: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    invalid_code = "ax.set_title("
+    code_edit.setPlainText(invalid_code)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == invalid_code,
+        timeout=2000,
+    )
+    assert render_calls == []
+    assert info_changed == [None]
+
+    valid_code = "ax.set_title('valid')"
+    code_edit.setPlainText(valid_code)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == valid_code,
+        timeout=2000,
+    )
+    assert render_calls == [(tool,)]
+    assert info_changed == [None, None]
+
+
+def test_figure_composer_custom_code_pending_edit_survives_step_switch(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    first_operation = FigureOperationState.custom(
+        label="first",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    second_operation = FigureOperationState.custom(
+        label="second",
+        code="ax.set_xlabel('other')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(first_operation, second_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    new_code = "ax.set_title('pending')\nax.set_ylabel('counts')"
+    code_edit.setPlainText(new_code)
+    tool.operation_list.setCurrentRow(1)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == new_code,
+        timeout=1000,
+    )
+    assert tool.tool_status.operations[1].code == "ax.set_xlabel('other')"
+
+
+def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    new_code = "ax.set_title('pending close')\nax.set_ylabel('counts')"
+    code_edit.setPlainText(new_code)
+
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    tool.close()
+
+    assert tool.tool_status.operations[0].code == new_code
+
+
 def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
     public = xr.DataArray(
         np.arange(8.0).reshape(4, 2),
@@ -2516,8 +2779,8 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     )
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore",
-            message="In a future version of xarray the default value for coords",
+            "error",
+            message="In a future version of xarray the default value for .*",
             category=FutureWarning,
         )
         transformed_maps = figurecomposer_plot_slices._plot_slices_transformed_maps(
@@ -2543,8 +2806,8 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     }
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore",
-            message="In a future version of xarray the default value for coords",
+            "error",
+            message="In a future version of xarray the default value for .*",
             category=FutureWarning,
         )
         exec(  # noqa: S102
@@ -4613,6 +4876,69 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
+def test_figure_composer_managed_display_window_configures_save_shortcut(
+    qtbot, monkeypatch
+) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *_args, **_kwargs: None,
+    )
+    save_calls: list[bool] = []
+    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller._manager = types.SimpleNamespace(
+        save=lambda *, native=True: save_calls.append(native) or True
+    )
+    tool._set_managed_secondary_window_callback(
+        controller._install_workspace_save_shortcut
+    )
+
+    tool.show_figure_window(activate=False)
+    figure_window = tool.figure_window
+
+    save_shortcuts = [
+        shortcut
+        for shortcut in figure_window.findChildren(QtWidgets.QShortcut)
+        if shortcut.objectName() == "managerWorkspaceSaveShortcut"
+    ]
+    assert len(save_shortcuts) == 1
+    save_shortcuts[0].activated.emit()
+    assert save_calls == [True]
+
+
+def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
+    primary_window = QtWidgets.QMainWindow()
+    secondary_window = QtWidgets.QMainWindow()
+    qtbot.addWidget(primary_window)
+    qtbot.addWidget(secondary_window)
+    tool = types.SimpleNamespace(
+        tool_name="Figure Composer",
+        _tool_display_name="Figure 1",
+        _managed_secondary_windows=lambda: (
+            (secondary_window, "Figure Composer: Figure 1"),
+        ),
+    )
+    node = types.SimpleNamespace(window=primary_window, tool_window=tool)
+    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller._manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"figure_uid": node})
+    )
+
+    controller._set_node_window_modified("figure_uid", True)
+
+    assert primary_window.isWindowModified()
+    assert secondary_window.isWindowModified()
+    if sys.platform != "darwin":
+        assert "[*]" in secondary_window.windowTitle()
+
+    controller._set_node_window_modified("figure_uid", False)
+
+    assert not primary_window.isWindowModified()
+    assert not secondary_window.isWindowModified()
+
+
 def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(
         xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
@@ -5826,6 +6152,32 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert export.bbox_inches == expected_bbox
 
 
+def test_figure_composer_defaults_skip_unavailable_stylesheets(
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic", "missing-style"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "available_stylesheets",
+        lambda names=(): frozenset({"classic"}),
+    )
+    with mpl_style.context(["classic"]):
+        expected_figsize = tuple(
+            float(value) for value in mpl.rcParams["figure.figsize"]
+        )
+
+    assert figurecomposer_defaults._available_configured_stylesheets() == ("classic",)
+    assert figurecomposer_defaults._unavailable_configured_stylesheets() == (
+        "missing-style",
+    )
+    assert figurecomposer_defaults._default_figsize() == expected_figsize
+
+
 @pytest.mark.parametrize("dpi", [0, -1])
 def test_figure_composer_export_dpi_must_be_positive(dpi: int) -> None:
     with pytest.raises(ValueError, match="export dpi must be positive"):
@@ -5878,6 +6230,57 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
     finally:
         mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
         mpl_style.reload_library()
+
+
+def test_figure_composer_generated_code_loads_user_stylesheets(
+    qtbot,
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    @contextlib.contextmanager
+    def style_context(_stylesheets):
+        yield
+
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("user-style", "missing-style"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "available_stylesheets",
+        lambda names=(): frozenset({"user-style"}),
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_erlab_plotting",
+        lambda names: False,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: "user-style" in names,
+    )
+    monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    user_import = "import erlab.interactive._stylesheets as _erlab_stylesheets"
+    user_load = "_erlab_stylesheets.load_user_stylesheets()"
+    style_use = "plt.style.use(['user-style'])"
+    assert user_import in code
+    assert user_load in code
+    assert style_use in code
+    assert code.index(user_import) < code.index(user_load) < code.index(style_use)
+    assert "# Skipped unavailable stylesheets: 'missing-style'" in code
 
 
 def test_figure_composer_preview_uses_live_canvas_without_rerender(
@@ -6053,6 +6456,11 @@ def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
     monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
     monkeypatch.setattr(
         erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
         "load_erlab_plotting_stylesheets",
         lambda: available.append("classic"),
     )
@@ -6107,6 +6515,16 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
         "load_erlab_plotting_stylesheets",
         load_stylesheets,
     )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_user_stylesheets",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: False,
+    )
     erlab.interactive._stylesheets._ERLAB_REGISTERED_STYLESHEETS.clear()
     monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
     monkeypatch.setattr(
@@ -6145,6 +6563,11 @@ def test_figure_composer_generated_code_imports_erlab_for_preloaded_erlab_style(
     monkeypatch,
     restore_interactive_options,
 ) -> None:
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "stylesheets_require_user_stylesheets",
+        lambda names: False,
+    )
     monkeypatch.setattr(
         figurecomposer_defaults,
         "_configured_stylesheets",
@@ -9016,7 +9439,6 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.width_ratios_edit,
             tool.height_ratios_edit,
             tool.operation_list,
-            tool.source_list,
             tool.use_all_axes_button,
             tool.keep_valid_axes_button,
             tool.axes_expression_edit,
@@ -18097,6 +18519,8 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     assert "plot_maps" not in code
     assert "eplt.plot_slices(\n    xr.concat(" in code
     assert 'dim="eV"' in code
+    assert 'coords="different"' in code
+    assert 'compat="equals"' in code
     assert '.assign_coords({"eV": [0.0, 1.0]})' in code
     assert "eV_width" not in code.split("eplt.plot_slices(", maxsplit=1)[1]
 
@@ -19602,6 +20026,29 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
         fallback = QtGui.QPixmap(40, 20)
         fallback.fill(QtGui.QColor("red"))
 
+        high_dpi_preview = QtGui.QPixmap(400, 100)
+        high_dpi_preview.setDevicePixelRatio(2.0)
+        high_dpi_preview.fill(QtGui.QColor("red"))
+        high_dpi_thumbnail = manager._figure_gallery_thumbnail_pixmap(high_dpi_preview)
+        high_dpi_image = high_dpi_thumbnail.toImage().convertToFormat(
+            QtGui.QImage.Format.Format_ARGB32
+        )
+        red_pixels: list[tuple[int, int]] = []
+        for y_pos in range(high_dpi_image.height()):
+            for x_pos in range(high_dpi_image.width()):
+                color = high_dpi_image.pixelColor(x_pos, y_pos)
+                if color.red() > 220 and color.green() < 40 and color.blue() < 40:
+                    red_pixels.append((x_pos, y_pos))
+        assert red_pixels
+        min_x = min(x_pos for x_pos, _y_pos in red_pixels)
+        max_x = max(x_pos for x_pos, _y_pos in red_pixels)
+        min_y = min(y_pos for _x_pos, y_pos in red_pixels)
+        max_y = max(y_pos for _x_pos, y_pos in red_pixels)
+        assert high_dpi_thumbnail.size() == manager._figure_gallery_thumbnail_size()
+        assert max_x - min_x + 1 == high_dpi_thumbnail.width()
+        assert abs((max_y - min_y + 1) - round(high_dpi_thumbnail.width() / 4)) <= 1
+        assert abs(((min_y + max_y) / 2) - ((high_dpi_thumbnail.height() - 1) / 2)) <= 1
+
         class NullThumbnailProvider:
             preview_pixmap = fallback
 
@@ -20109,6 +20556,75 @@ def test_manager_auto_names_figures_numerically(
         unnamed_tool = FigureComposerTool(data)
         unnamed_uid = manager.add_figuretool(unnamed_tool, show=False)
         assert manager._child_node(unnamed_uid).display_text == "Figure 6"
+
+
+def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    def uid_for_name(
+        manager: erlab.interactive.imagetool.manager.ImageToolManager, name: str
+    ) -> str:
+        matches = [
+            uid
+            for uid in manager._tool_graph.figure_uids
+            if manager._child_node(uid).display_text == name
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="map",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        first_uid = manager.create_figure_from_targets((0,), show=False)
+        assert first_uid is not None
+        assert manager._child_node(first_uid).display_text == "Figure 1"
+
+        original_tool = manager._child_node(first_uid).tool_window
+        assert isinstance(original_tool, FigureComposerTool)
+        original_status = original_tool.tool_status
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 2, timeout=5000
+        )
+
+        auto_copy_uid = uid_for_name(manager, "Figure 2")
+        assert manager._selected_figure_uids() == [auto_copy_uid]
+        auto_copy_tool = manager._child_node(auto_copy_uid).tool_window
+        assert isinstance(auto_copy_tool, FigureComposerTool)
+        assert auto_copy_tool.tool_status == original_status
+        assert auto_copy_tool.tool_data.identical(original_tool.tool_data)
+
+        manager._child_node(first_uid).name = "Band map"
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 3, timeout=5000
+        )
+
+        first_custom_copy_uid = uid_for_name(manager, "Band map copy")
+        assert manager._selected_figure_uids() == [first_custom_copy_uid]
+
+        manager._select_figure_uid(first_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 4, timeout=5000
+        )
+
+        second_custom_copy_uid = uid_for_name(manager, "Band map copy 2")
+        assert manager._selected_figure_uids() == [second_custom_copy_uid]
 
 
 def test_manager_create_figure_uses_first_selected_main_image_state(

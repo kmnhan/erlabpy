@@ -208,28 +208,33 @@ def _display_safe_values(values, limit: float | None = None):
         return np.where(np.isfinite(arr) & (np.abs(arr) <= limit), arr, np.nan)
 
 
-def _display_safe_float(value) -> float:
+def _display_safe_float(value, limit: float | None = None) -> float:
     """Return a scalar display value after applying ImageTool display masking."""
     arr = np.asarray(value)
     if arr.size == 0:
         return np.nan
+    if limit is None:
+        limit = _display_value_abs_limit()
     if arr.size == 1:
         out = float(arr.reshape(()))
-        if np.isfinite(out) and abs(out) <= _display_value_abs_limit():
+        if np.isfinite(out) and abs(out) <= limit:
             return out
         return np.nan
 
-    arr = np.asarray(_display_safe_values(arr))
+    arr = np.asarray(_display_safe_values(arr, limit))
     if np.isnan(arr).all():
         return np.nan
     return float(np.nanmean(arr))
 
 
 def _display_safe_minmax(
-    data: xr.DataArray, raw_limits: tuple[float, float] | None = None
+    data: xr.DataArray,
+    raw_limits: tuple[float, float] | None = None,
+    limit: float | None = None,
 ) -> tuple[float, float]:
     """Return display-safe finite limits for an ImageTool DataArray."""
-    limit = _display_value_abs_limit()
+    if limit is None:
+        limit = _display_value_abs_limit()
     mn, mx = raw_limits if raw_limits is not None else _minmax_darr_quiet(data)
     if _limits_require_display_mask(mn, mx, limit):
         if data.chunks is None:
@@ -382,8 +387,19 @@ class ArraySlicer(QtCore.QObject):
     sigShapeChanged = QtCore.Signal()  #: :meta private:
     sigTwinChanged = QtCore.Signal()  #: :meta private:
 
-    def __init__(self, xarray_obj: xr.DataArray, parent: QtCore.QObject) -> None:
+    def __init__(
+        self,
+        xarray_obj: xr.DataArray,
+        parent: QtCore.QObject,
+        *,
+        display_value_abs_limit: float | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.display_value_abs_limit = float(
+            display_value_abs_limit
+            if display_value_abs_limit is not None
+            else _display_value_abs_limit()
+        )
         self.snap_act = QtWidgets.QAction("&Snap to Pixels", self)
         self.snap_act.setShortcut("S")
         self.snap_act.setCheckable(True)
@@ -696,19 +712,33 @@ class ArraySlicer(QtCore.QObject):
     def _raw_limits(self) -> tuple[float, float]:
         return _minmax_darr_quiet(self._obj)
 
+    def display_safe_values(self, values):
+        """Return values safe for Qt rendering for this slicer instance."""
+        return _display_safe_values(values, self.display_value_abs_limit)
+
+    def display_safe_float(self, value) -> float:
+        """Return a scalar display value for this slicer instance."""
+        return _display_safe_float(value, self.display_value_abs_limit)
+
+    def display_safe_minmax(
+        self, data: xr.DataArray, raw_limits: tuple[float, float] | None = None
+    ) -> tuple[float, float]:
+        """Return display-safe finite limits for this slicer instance."""
+        return _display_safe_minmax(data, raw_limits, self.display_value_abs_limit)
+
     @property
     def display_values_known_safe(self) -> bool:
         if self._obj.chunks is not None:
             return False
         raw_limits = self.__dict__.get("_raw_limits")
         return raw_limits is not None and not _limits_require_display_mask(
-            raw_limits[0], raw_limits[1], _display_value_abs_limit()
+            raw_limits[0], raw_limits[1], self.display_value_abs_limit
         )
 
     @functools.cached_property
     def limits(self) -> tuple[float, float]:
         """Return the display-safe global minimum and maximum of the data."""
-        return _display_safe_minmax(self._obj, self._raw_limits)
+        return self.display_safe_minmax(self._obj, self._raw_limits)
 
     @property
     def n_cursors(self) -> int:

@@ -70,6 +70,7 @@ __all__ = [
     "KeyboardEventFilter",
     "MessageDialog",
     "ParameterGroup",
+    "PythonCodeEditor",
     "PythonHighlighter",
     "ResizingLineEdit",
     "RotatableLine",
@@ -3268,6 +3269,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_reload_unavailable_reason: (
             Callable[[], str | None] | None
         ) = None
+        self._managed_secondary_window_callback: (
+            Callable[[QtWidgets.QWidget], None] | None
+        ) = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
@@ -4322,6 +4326,23 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_reload_available = available
         self._managed_source_reload_unavailable_reason = unavailable_reason
         self._refresh_reload_data_action()
+
+    def _set_managed_secondary_window_callback(
+        self, callback: Callable[[QtWidgets.QWidget], None] | None
+    ) -> None:
+        """Set the manager-owned callback for secondary tool windows."""
+        self._managed_secondary_window_callback = callback
+
+    def _configure_managed_secondary_window(self, window: QtWidgets.QWidget) -> None:
+        """Apply manager-owned behavior to a secondary tool window."""
+        if self._managed_secondary_window_callback is not None:
+            self._managed_secondary_window_callback(window)
+
+    def _managed_secondary_windows(
+        self,
+    ) -> tuple[tuple[QtWidgets.QWidget, str], ...]:
+        """Return secondary managed windows with their base titles."""
+        return ()
 
     def _source_reload_relevant(self) -> bool:
         return self._managed_source_reload is not None
@@ -6358,3 +6379,687 @@ class PythonHighlighter(QtGui.QSyntaxHighlighter):
         bi = self.currentBlock().blockNumber()
         for start, length, f in self._block_spans.get(bi, ()):
             self.setFormat(start, length, f)
+
+
+class _PythonCodeLineNumberArea(QtWidgets.QWidget):
+    def __init__(self, editor: PythonCodeEditor) -> None:
+        super().__init__(editor)
+        self._editor = editor
+        self.setObjectName("pythonCodeEditorLineNumberArea")
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(self._editor._line_number_area_width(), 0)
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        if event is not None:
+            self._editor._paint_line_number_area(event)
+
+
+class PythonCodeEditor(QtWidgets.QTextEdit):
+    """Python code editor with syntax highlighting and block indentation."""
+
+    sigTextEditingStarted = QtCore.Signal()  #: :meta private:
+    sigTextEditingSettled = QtCore.Signal(str)  #: :meta private:
+
+    TAB_SPACES = 4
+    TEXT_EDITING_SETTLE_DELAY_MS = 800
+    _PAIR_DELIMITERS: typing.ClassVar[dict[str, str]] = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        '"': '"',
+        "'": "'",
+    }
+    _CLOSING_DELIMITERS: typing.ClassVar[set[str]] = {")", "]", "}", '"', "'"}
+    _QUOTE_DELIMITERS: typing.ClassVar[set[str]] = {'"', "'"}
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._line_number_area = _PythonCodeLineNumberArea(self)
+        self._text_editing_active = False
+        self._text_editing_settle_timer = QtCore.QTimer(self)
+        self._text_editing_settle_timer.setSingleShot(True)
+        self._text_editing_settle_timer.setInterval(self.TEXT_EDITING_SETTLE_DELAY_MS)
+        self._text_editing_settle_timer.timeout.connect(
+            self._finish_text_editing_activity
+        )
+        self.setAcceptRichText(False)
+        self.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
+        document = self._text_document()
+        self.highlighter = PythonHighlighter(document)
+        document.contentsChange.connect(self._mark_text_editing_activity)
+        document.blockCountChanged.connect(
+            lambda _count: self._update_line_number_area_width()
+        )
+        document.contentsChanged.connect(self._line_number_area.update)
+        self.cursorPositionChanged.connect(self._line_number_area.update)
+        scroll_bar = self.verticalScrollBar()
+        if scroll_bar is None:
+            raise RuntimeError("PythonCodeEditor has no vertical scroll bar")
+        scroll_bar.valueChanged.connect(lambda _value: self._line_number_area.update())
+        self._update_line_number_area_width()
+
+    def _text_document(self) -> QtGui.QTextDocument:
+        document = self.document()
+        if document is None:
+            raise RuntimeError("PythonCodeEditor has no text document")
+        return document
+
+    def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
+        if e is not None:
+            key = e.key()
+            mods = e.modifiers()
+
+            is_tab = key == QtCore.Qt.Key.Key_Tab
+            is_backtab = key == QtCore.Qt.Key.Key_Backtab
+            shift = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
+
+            if self._handle_line_shortcut(key, mods):
+                e.accept()
+                return
+
+            if (
+                key == QtCore.Qt.Key.Key_Z
+                and bool(mods & QtCore.Qt.KeyboardModifier.AltModifier)
+                and not bool(
+                    mods
+                    & (
+                        QtCore.Qt.KeyboardModifier.ControlModifier
+                        | QtCore.Qt.KeyboardModifier.MetaModifier
+                    )
+                )
+            ):
+                self.toggle_line_wrap()
+                e.accept()
+                return
+
+            if (
+                key == QtCore.Qt.Key.Key_Backspace
+                and self._plain_edit_modifiers(mods)
+                and self._delete_empty_pair()
+            ):
+                e.accept()
+                return
+
+            if self._text_input_modifiers(mods) and self._handle_pair_text(e.text()):
+                e.accept()
+                return
+
+            if (is_tab or is_backtab) and not (
+                mods & QtCore.Qt.KeyboardModifier.ControlModifier
+            ):
+                cursor = self.textCursor()
+                if is_backtab or (is_tab and shift):
+                    self._unindent(cursor, self.TAB_SPACES)
+                else:
+                    self._indent(cursor, self.TAB_SPACES)
+                e.accept()
+                return
+
+        super().keyPressEvent(e)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._update_line_number_area_geometry()
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        super().changeEvent(event)
+        if not hasattr(self, "_line_number_area"):
+            return
+        if event is not None and event.type() in {
+            QtCore.QEvent.Type.FontChange,
+            QtCore.QEvent.Type.PaletteChange,
+            QtCore.QEvent.Type.StyleChange,
+        }:
+            self._update_line_number_area_width()
+
+    def setLineWrapMode(self, mode: QtWidgets.QTextEdit.LineWrapMode) -> None:
+        super().setLineWrapMode(mode)
+        if hasattr(self, "_line_number_area"):
+            self._line_number_area.update()
+
+    def toggle_line_wrap(self) -> None:
+        """Toggle editor line wrapping."""
+        mode = (
+            QtWidgets.QTextEdit.LineWrapMode.WidgetWidth
+            if self.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
+            else QtWidgets.QTextEdit.LineWrapMode.NoWrap
+        )
+        self.setLineWrapMode(mode)
+
+    def set_text_editing_settle_delay(self, delay_ms: int) -> None:
+        """Set the quiet interval used to mark text editing as settled."""
+        self._text_editing_settle_timer.setInterval(max(0, delay_ms))
+
+    def text_editing_settle_delay(self) -> int:
+        """Return the quiet interval used to mark text editing as settled."""
+        return self._text_editing_settle_timer.interval()
+
+    def text_editing_active(self) -> bool:
+        """Return whether the document is in an active editing burst."""
+        return self._text_editing_active
+
+    def reset_text_editing_activity(self) -> None:
+        """Clear pending editing activity without emitting settled-text signals."""
+        self._text_editing_settle_timer.stop()
+        self._text_editing_active = False
+
+    @staticmethod
+    def python_syntax_error_for_text(code: str) -> SyntaxError | None:
+        """Return the Python syntax error for *code*, or ``None`` if it parses."""
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            return exc
+        return None
+
+    def python_syntax_error(self, code: str | None = None) -> SyntaxError | None:
+        """Return the Python syntax error for *code* or the editor contents."""
+        return self.python_syntax_error_for_text(
+            self.toPlainText() if code is None else code
+        )
+
+    def has_valid_python_syntax(self, code: str | None = None) -> bool:
+        """Return whether *code* or the editor contents parse as Python."""
+        return self.python_syntax_error(code) is None
+
+    def _mark_text_editing_activity(
+        self, _position: int, chars_removed: int, chars_added: int
+    ) -> None:
+        if not chars_removed and not chars_added:
+            return
+        if not self._text_editing_active:
+            self._text_editing_active = True
+            self.sigTextEditingStarted.emit()
+        self._text_editing_settle_timer.start()
+
+    def _finish_text_editing_activity(self) -> None:
+        if not self._text_editing_active:
+            return
+        self._text_editing_active = False
+        self.sigTextEditingSettled.emit(self.toPlainText())
+
+    @staticmethod
+    def _plain_edit_modifiers(mods: QtCore.Qt.KeyboardModifier) -> bool:
+        return not bool(
+            mods
+            & (
+                QtCore.Qt.KeyboardModifier.ControlModifier
+                | QtCore.Qt.KeyboardModifier.AltModifier
+                | QtCore.Qt.KeyboardModifier.MetaModifier
+            )
+        )
+
+    @staticmethod
+    def _text_input_modifiers(mods: QtCore.Qt.KeyboardModifier) -> bool:
+        return not bool(
+            mods
+            & (
+                QtCore.Qt.KeyboardModifier.ControlModifier
+                | QtCore.Qt.KeyboardModifier.AltModifier
+                | QtCore.Qt.KeyboardModifier.MetaModifier
+            )
+        )
+
+    def _handle_line_shortcut(self, key: int, mods: QtCore.Qt.KeyboardModifier) -> bool:
+        ctrl_or_meta = bool(
+            mods
+            & (
+                QtCore.Qt.KeyboardModifier.ControlModifier
+                | QtCore.Qt.KeyboardModifier.MetaModifier
+            )
+        )
+        alt = bool(mods & QtCore.Qt.KeyboardModifier.AltModifier)
+        shift = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
+        if (
+            key == QtCore.Qt.Key.Key_Slash
+            and ctrl_or_meta
+            and not alt
+            and self._toggle_line_comments()
+        ):
+            return True
+        if (
+            key in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down)
+            and alt
+            and not ctrl_or_meta
+        ):
+            offset = -1 if key == QtCore.Qt.Key.Key_Up else 1
+            if shift:
+                return self._duplicate_selected_lines(offset)
+            return self._move_selected_lines(offset)
+        return False
+
+    def _handle_pair_text(self, text: str) -> bool:
+        if len(text) != 1:
+            return False
+        if text in self._CLOSING_DELIMITERS and self._skip_closing_delimiter(text):
+            return True
+        close = self._PAIR_DELIMITERS.get(text)
+        if close is None:
+            return False
+        cursor = self.textCursor()
+        if (
+            text in self._QUOTE_DELIMITERS
+            and not cursor.hasSelection()
+            and not self._should_auto_pair_quote(cursor)
+        ):
+            return False
+        if cursor.hasSelection():
+            self._surround_selection(text, close)
+        else:
+            self._insert_pair(text, close)
+        return True
+
+    def _insert_pair(self, open_text: str, close_text: str) -> None:
+        cursor = self.textCursor()
+        position = cursor.position()
+        cursor.beginEditBlock()
+        cursor.insertText(open_text + close_text)
+        cursor.setPosition(position + len(open_text))
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+
+    def _surround_selection(self, open_text: str, close_text: str) -> None:
+        cursor = self.textCursor()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        cursor_at_start = cursor.position() == start
+        cursor.beginEditBlock()
+        cursor.setPosition(start)
+        cursor.insertText(open_text)
+        cursor.setPosition(end + len(open_text))
+        cursor.insertText(close_text)
+        if cursor_at_start:
+            cursor.setPosition(end + len(open_text))
+            cursor.setPosition(
+                start + len(open_text), QtGui.QTextCursor.MoveMode.KeepAnchor
+            )
+        else:
+            cursor.setPosition(start + len(open_text))
+            cursor.setPosition(
+                end + len(open_text), QtGui.QTextCursor.MoveMode.KeepAnchor
+            )
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+
+    def _skip_closing_delimiter(self, text: str) -> bool:
+        cursor = self.textCursor()
+        if cursor.hasSelection() or self._next_character(cursor) != text:
+            return False
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.NextCharacter)
+        self.setTextCursor(cursor)
+        return True
+
+    def _delete_empty_pair(self) -> bool:
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return False
+        previous = self._previous_character(cursor)
+        next_character = self._next_character(cursor)
+        if not previous or self._PAIR_DELIMITERS.get(previous) != next_character:
+            return False
+        position = cursor.position()
+        cursor.beginEditBlock()
+        cursor.setPosition(position - 1)
+        cursor.setPosition(position + 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        return True
+
+    def _previous_character(self, cursor: QtGui.QTextCursor) -> str:
+        position = cursor.position()
+        if position <= 0:
+            return ""
+        return self.toPlainText()[position - 1]
+
+    def _next_character(self, cursor: QtGui.QTextCursor) -> str:
+        position = cursor.position()
+        text = self.toPlainText()
+        if position >= len(text):
+            return ""
+        return text[position]
+
+    def _should_auto_pair_quote(self, cursor: QtGui.QTextCursor) -> bool:
+        previous = self._previous_character(cursor)
+        next_character = self._next_character(cursor)
+        if previous == "\\":
+            return False
+        return not (
+            self._identifier_character(previous)
+            or self._identifier_character(next_character)
+        )
+
+    @staticmethod
+    def _identifier_character(text: str) -> bool:
+        return bool(text) and (text.isalnum() or text == "_")
+
+    def _toggle_line_comments(self) -> bool:
+        cursor = self.textCursor()
+        cursor_at_start = cursor.hasSelection() and (
+            cursor.position() == cursor.selectionStart()
+        )
+        lines, offsets = self._document_lines_and_offsets()
+        start_line, end_line, start_col, end_col, has_selection = (
+            self._selected_line_range(cursor, lines, offsets)
+        )
+        selected_lines = lines[start_line : end_line + 1]
+        non_empty = [line for line in selected_lines if line.strip()]
+        uncomment = bool(non_empty) and all(
+            self._line_comment_column(line) is not None for line in non_empty
+        )
+        new_lines = list(lines)
+        deltas: dict[int, tuple[int, int]] = {}
+        for line_number in range(start_line, end_line + 1):
+            line = new_lines[line_number]
+            indent = len(line) - len(line.lstrip(" \t"))
+            if uncomment:
+                comment_column = self._line_comment_column(line)
+                if comment_column is None:
+                    continue
+                remove_count = 2 if line[comment_column:].startswith("# ") else 1
+                new_lines[line_number] = (
+                    line[:comment_column] + line[comment_column + remove_count :]
+                )
+                deltas[line_number] = (comment_column, -remove_count)
+            else:
+                new_lines[line_number] = line[:indent] + "# " + line[indent:]
+                deltas[line_number] = (indent, 2)
+
+        self._replace_document_text("\n".join(new_lines))
+        self._restore_line_cursor(
+            start_line,
+            end_line,
+            self._adjust_line_column(start_line, start_col, deltas),
+            self._adjust_line_column(end_line, end_col, deltas),
+            has_selection,
+            cursor_at_start,
+        )
+        return True
+
+    @staticmethod
+    def _line_comment_column(line: str) -> int | None:
+        indent = len(line) - len(line.lstrip(" \t"))
+        return indent if line[indent:].startswith("#") else None
+
+    @staticmethod
+    def _adjust_line_column(
+        line_number: int,
+        column: int,
+        deltas: dict[int, tuple[int, int]],
+    ) -> int:
+        edit = deltas.get(line_number)
+        if edit is None:
+            return column
+        edit_column, delta = edit
+        if column < edit_column:
+            return column
+        return max(edit_column, column + delta)
+
+    def _move_selected_lines(self, offset: int) -> bool:
+        cursor = self.textCursor()
+        cursor_at_start = cursor.hasSelection() and (
+            cursor.position() == cursor.selectionStart()
+        )
+        lines, offsets = self._document_lines_and_offsets()
+        start_line, end_line, start_col, end_col, has_selection = (
+            self._selected_line_range(cursor, lines, offsets)
+        )
+        if offset < 0:
+            if start_line == 0:
+                return True
+            block = lines[start_line : end_line + 1]
+            new_lines = [
+                *lines[: start_line - 1],
+                *block,
+                lines[start_line - 1],
+                *lines[end_line + 1 :],
+            ]
+            new_start = start_line - 1
+            new_end = end_line - 1
+        else:
+            if end_line >= len(lines) - 1:
+                return True
+            block = lines[start_line : end_line + 1]
+            new_lines = [
+                *lines[:start_line],
+                lines[end_line + 1],
+                *block,
+                *lines[end_line + 2 :],
+            ]
+            new_start = start_line + 1
+            new_end = end_line + 1
+        self._replace_document_text("\n".join(new_lines))
+        self._restore_line_cursor(
+            new_start,
+            new_end,
+            start_col,
+            end_col,
+            has_selection,
+            cursor_at_start,
+        )
+        return True
+
+    def _duplicate_selected_lines(self, offset: int) -> bool:
+        cursor = self.textCursor()
+        cursor_at_start = cursor.hasSelection() and (
+            cursor.position() == cursor.selectionStart()
+        )
+        lines, offsets = self._document_lines_and_offsets()
+        start_line, end_line, start_col, end_col, has_selection = (
+            self._selected_line_range(cursor, lines, offsets)
+        )
+        block = lines[start_line : end_line + 1]
+        if offset < 0:
+            new_lines = [*lines[:start_line], *block, *lines[start_line:]]
+            new_start = start_line
+            new_end = start_line + len(block) - 1
+        else:
+            new_lines = [*lines[: end_line + 1], *block, *lines[end_line + 1 :]]
+            new_start = end_line + 1
+            new_end = end_line + len(block)
+        self._replace_document_text("\n".join(new_lines))
+        self._restore_line_cursor(
+            new_start,
+            new_end,
+            start_col,
+            end_col,
+            has_selection,
+            cursor_at_start,
+        )
+        return True
+
+    def _document_lines_and_offsets(self) -> tuple[list[str], list[int]]:
+        lines = self.toPlainText().split("\n")
+        offsets: list[int] = []
+        position = 0
+        for index, line in enumerate(lines):
+            offsets.append(position)
+            position += len(line)
+            if index < len(lines) - 1:
+                position += 1
+        return lines, offsets
+
+    @staticmethod
+    def _line_column_for_position(
+        position: int, lines: list[str], offsets: list[int]
+    ) -> tuple[int, int]:
+        line_number = bisect.bisect_right(offsets, position) - 1
+        line_number = max(0, min(line_number, len(lines) - 1))
+        return line_number, min(
+            position - offsets[line_number], len(lines[line_number])
+        )
+
+    def _selected_line_range(
+        self,
+        cursor: QtGui.QTextCursor,
+        lines: list[str],
+        offsets: list[int],
+    ) -> tuple[int, int, int, int, bool]:
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        start_line, start_col = self._line_column_for_position(start, lines, offsets)
+        end_line, end_col = self._line_column_for_position(end, lines, offsets)
+        has_selection = cursor.hasSelection()
+        if has_selection and end > start and end_col == 0 and end_line > start_line:
+            end_line -= 1
+            end_col = len(lines[end_line])
+        return start_line, end_line, start_col, end_col, has_selection
+
+    def _replace_document_text(self, text: str) -> None:
+        cursor = QtGui.QTextCursor(self.document())
+        cursor.beginEditBlock()
+        cursor.select(QtGui.QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        cursor.endEditBlock()
+
+    def _restore_line_cursor(
+        self,
+        start_line: int,
+        end_line: int,
+        start_col: int,
+        end_col: int,
+        has_selection: bool,
+        cursor_at_start: bool,
+    ) -> None:
+        lines, offsets = self._document_lines_and_offsets()
+        start_line = max(0, min(start_line, len(lines) - 1))
+        end_line = max(0, min(end_line, len(lines) - 1))
+        start_position = offsets[start_line] + min(start_col, len(lines[start_line]))
+        end_position = offsets[end_line] + min(end_col, len(lines[end_line]))
+        cursor = self.textCursor()
+        if has_selection and cursor_at_start:
+            cursor.setPosition(end_position)
+            cursor.setPosition(start_position, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        else:
+            cursor.setPosition(start_position)
+        if has_selection and not cursor_at_start:
+            cursor.setPosition(end_position, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
+
+    def _line_number_area_width(self) -> int:
+        digits = len(str(max(1, self._text_document().blockCount())))
+        font_width = self.fontMetrics().horizontalAdvance("9")
+        style = self.style()
+        frame_width = (
+            style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_DefaultFrameWidth)
+            if style is not None
+            else 0
+        )
+        return frame_width + 8 + font_width * digits
+
+    def _update_line_number_area_width(self) -> None:
+        self.setViewportMargins(self._line_number_area_width(), 0, 0, 0)
+        self._update_line_number_area_geometry()
+        self._line_number_area.update()
+
+    def _update_line_number_area_geometry(self) -> None:
+        contents = self.contentsRect()
+        self._line_number_area.setGeometry(
+            QtCore.QRect(
+                contents.left(),
+                contents.top(),
+                self._line_number_area_width(),
+                contents.height(),
+            )
+        )
+
+    def _paint_line_number_area(self, event: QtGui.QPaintEvent) -> None:
+        painter = QtGui.QPainter(self._line_number_area)
+        palette = self.palette()
+        painter.fillRect(event.rect(), palette.color(QtGui.QPalette.ColorRole.Window))
+        painter.setPen(
+            palette.color(
+                QtGui.QPalette.ColorGroup.Disabled, QtGui.QPalette.ColorRole.Text
+            )
+        )
+
+        block = self.cursorForPosition(QtCore.QPoint(0, 0)).block()
+        bottom = event.rect().bottom()
+        width = self._line_number_area.width() - 4
+        height = self.fontMetrics().height()
+        while block.isValid():
+            cursor = QtGui.QTextCursor(block)
+            rect = self.cursorRect(cursor)
+            if rect.top() > bottom:
+                break
+            if block.isVisible() and rect.bottom() >= event.rect().top():
+                painter.drawText(
+                    0,
+                    rect.top(),
+                    width,
+                    height,
+                    QtCore.Qt.AlignmentFlag.AlignRight,
+                    str(block.blockNumber() + 1),
+                )
+            block = block.next()
+        painter.end()
+
+    def _indent(self, cursor: QtGui.QTextCursor, n: int) -> None:
+        text = " " * n
+        cursor.beginEditBlock()
+        if cursor.hasSelection():
+            self._for_each_selected_block(cursor, lambda c: c.insertText(text))
+        else:
+            cursor.insertText(text)
+        cursor.endEditBlock()
+
+    def _unindent(self, cursor: QtGui.QTextCursor, n: int) -> None:
+        cursor.beginEditBlock()
+
+        def unindent_block(c: QtGui.QTextCursor) -> None:
+            c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+
+            c.movePosition(
+                QtGui.QTextCursor.MoveOperation.Right,
+                QtGui.QTextCursor.MoveMode.KeepAnchor,
+                1,
+            )
+            if c.selectedText() == "\t":
+                c.removeSelectedText()
+                return
+            c.clearSelection()
+
+            removed = 0
+            while removed < n:
+                c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+                c.movePosition(
+                    QtGui.QTextCursor.MoveOperation.Right,
+                    QtGui.QTextCursor.MoveMode.KeepAnchor,
+                    1,
+                )
+                if c.selectedText() == " ":
+                    c.removeSelectedText()
+                    removed += 1
+                else:
+                    c.clearSelection()
+                    break
+
+        if cursor.hasSelection():
+            self._for_each_selected_block(cursor, unindent_block)
+        else:
+            unindent_block(cursor)
+
+        cursor.endEditBlock()
+
+    def _for_each_selected_block(
+        self, cursor: QtGui.QTextCursor, fn: Callable[[QtGui.QTextCursor], None]
+    ) -> None:
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+
+        c = QtGui.QTextCursor(cursor.document())
+        c.setPosition(start)
+        start_block = c.blockNumber()
+
+        c.setPosition(end)
+        end_block = c.blockNumber()
+
+        c.setPosition(start)
+        c.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+
+        for _ in range(start_block, end_block + 1):
+            fn(c)
+            c.movePosition(QtGui.QTextCursor.MoveOperation.NextBlock)

@@ -1895,18 +1895,35 @@ class ImageToolManager(_ImageToolManagerBase):
         thumbnail_size = self._figure_gallery_thumbnail_size()
         canvas = QtGui.QPixmap(thumbnail_size)
         canvas.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
-        scaled = source_pixmap
-        if source_pixmap.size() != thumbnail_size:
-            scaled = source_pixmap.scaled(
-                thumbnail_size,
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
+        dpr = source_pixmap.devicePixelRatioF()
+        if dpr <= 0.0:
+            dpr = 1.0
+        source_size = QtCore.QSizeF(
+            source_pixmap.width() / dpr,
+            source_pixmap.height() / dpr,
+        )
+        if source_size.isEmpty():
+            return canvas
+        target_size = QtCore.QSizeF(source_size)
+        target_size.scale(
+            QtCore.QSizeF(thumbnail_size),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        target_rect = QtCore.QRectF(
+            QtCore.QPointF(
+                (thumbnail_size.width() - target_size.width()) / 2.0,
+                (thumbnail_size.height() - target_size.height()) / 2.0,
+            ),
+            target_size,
+        )
         painter = QtGui.QPainter(canvas)
         try:
-            x_pos = (thumbnail_size.width() - scaled.width()) // 2
-            y_pos = (thumbnail_size.height() - scaled.height()) // 2
-            painter.drawPixmap(x_pos, y_pos, scaled)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(
+                target_rect,
+                source_pixmap,
+                QtCore.QRectF(QtCore.QPointF(0.0, 0.0), source_size),
+            )
         finally:
             painter.end()
         return canvas
@@ -1931,6 +1948,22 @@ class ImageToolManager(_ImageToolManagerBase):
             if match is not None:
                 highest = max(highest, int(match.group(1)))
         return f"Figure {highest + 1}"
+
+    def _duplicated_figure_display_name(self, display_name: str) -> str:
+        if re.fullmatch(r"Figure \d+", display_name):
+            return self._next_figure_display_name()
+
+        existing_names = {
+            self._child_node(uid).display_text for uid in self._figure_uids()
+        }
+        base_name = f"{display_name} copy"
+        if base_name not in existing_names:
+            return base_name
+
+        suffix = 2
+        while f"{base_name} {suffix}" in existing_names:
+            suffix += 1
+        return f"{base_name} {suffix}"
 
     def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
         figure_uids = self._figure_uids()
@@ -2488,6 +2521,7 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationState,
             FigureSourceState,
         )
+        from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
 
         resolved_targets = tuple(dict.fromkeys(targets))
@@ -2527,60 +2561,63 @@ class ImageToolManager(_ImageToolManagerBase):
             except FigureComposerPlotSlicesSelectionError as exc:
                 self._show_figure_plot_slices_selection_error(exc)
                 return None
-        setup = self._figure_setup_for_operation(
-            None if custom_code is not None else operation or auto_operation,
-            source_data,
-        )
-        all_axes = FigureAxesSelectionState(
-            axes=self._figure_all_axes(setup.nrows, setup.ncols)
-        )
-        bz_operation = (
-            None
-            if operation is not None or custom_code is not None
-            else self._figure_bz_overlay_operation_from_targets(
-                resolved_targets,
+        with figure_options_context(self.effective_interactive_options):
+            setup = self._figure_setup_for_operation(
+                None if custom_code is not None else operation or auto_operation,
                 source_data,
-                axes=all_axes,
             )
-        )
-        operations: tuple[FigureOperationState, ...]
-        if operation is not None:
-            if (
-                operation.kind == FigureOperationKind.PLOT_SLICES
-                and not operation.axes.expression
-            ):
-                operation = operation.model_copy(update={"axes": all_axes})
-            operations = (operation,)
-        elif custom_code is not None:
-            operations = (
-                FigureOperationState.custom(
-                    label=title or "custom code",
-                    code=custom_code,
-                    trusted=True,
-                ),
+            all_axes = FigureAxesSelectionState(
+                axes=self._figure_all_axes(setup.nrows, setup.ncols)
             )
-        elif auto_operation is not None:
-            if not auto_operation.axes.expression:
-                auto_operation = auto_operation.model_copy(update={"axes": all_axes})
-            operations = (auto_operation,)
-        else:
-            operations = typing.cast(
-                "tuple[FigureOperationState, ...]",
-                self._make_figure_operations_for_sources(
+            bz_operation = (
+                None
+                if operation is not None or custom_code is not None
+                else self._figure_bz_overlay_operation_from_targets(
+                    resolved_targets,
                     source_data,
-                    setup=setup,
-                ),
+                    axes=all_axes,
+                )
             )
-        if bz_operation is not None:
-            operations = (*operations, bz_operation)
+            operations: tuple[FigureOperationState, ...]
+            if operation is not None:
+                if (
+                    operation.kind == FigureOperationKind.PLOT_SLICES
+                    and not operation.axes.expression
+                ):
+                    operation = operation.model_copy(update={"axes": all_axes})
+                operations = (operation,)
+            elif custom_code is not None:
+                operations = (
+                    FigureOperationState.custom(
+                        label=title or "custom code",
+                        code=custom_code,
+                        trusted=True,
+                    ),
+                )
+            elif auto_operation is not None:
+                if not auto_operation.axes.expression:
+                    auto_operation = auto_operation.model_copy(
+                        update={"axes": all_axes}
+                    )
+                operations = (auto_operation,)
+            else:
+                operations = typing.cast(
+                    "tuple[FigureOperationState, ...]",
+                    self._make_figure_operations_for_sources(
+                        source_data,
+                        setup=setup,
+                    ),
+                )
+            if bz_operation is not None:
+                operations = (*operations, bz_operation)
 
-        tool = FigureComposerTool.from_sources(
-            source_data,
-            sources=tuple(sources),
-            operations=operations,
-            setup=setup,
-            primary_source=primary_source,
-        )
+            tool = FigureComposerTool.from_sources(
+                source_data,
+                sources=tuple(sources),
+                operations=operations,
+                setup=setup,
+                primary_source=primary_source,
+            )
         tool._tool_display_name = (
             title if title is not None else self._next_figure_display_name()
         )
@@ -2718,6 +2755,7 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureComposerTool,
             FigureSourceState,
         )
+        from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
 
         resolved_targets = tuple(dict.fromkeys(targets))
@@ -2771,23 +2809,24 @@ class ImageToolManager(_ImageToolManagerBase):
             return False
 
         tool.add_sources(tuple(sources), source_data)
-        operations = (
-            (operation,)
-            if operation is not None
-            else (auto_operation,)
-            if auto_operation is not None
-            else self._make_figure_operations_for_sources(
-                source_data, setup=tool.tool_status.setup
+        with figure_options_context(self.effective_interactive_options):
+            operations = (
+                (operation,)
+                if operation is not None
+                else (auto_operation,)
+                if auto_operation is not None
+                else self._make_figure_operations_for_sources(
+                    source_data, setup=tool.tool_status.setup
+                )
             )
-        )
-        if operation is None:
-            bz_operation = self._figure_bz_overlay_operation_from_targets(
-                resolved_targets,
-                source_data,
-                axes=axes_selection,
-            )
-            if bz_operation is not None:
-                operations = (*operations, bz_operation)
+            if operation is None:
+                bz_operation = self._figure_bz_overlay_operation_from_targets(
+                    resolved_targets,
+                    source_data,
+                    axes=axes_selection,
+                )
+                if bz_operation is not None:
+                    operations = (*operations, bz_operation)
         for appended in operations:
             tool.add_operation(appended.model_copy(update={"axes": axes_selection}))
 
@@ -4263,6 +4302,7 @@ class ImageToolManager(_ImageToolManagerBase):
             tool._tool_display_name = self._next_figure_display_name()
         self._register_figure_node(node)
         if isinstance(tool, FigureComposerTool):
+            tool.set_options_getter(lambda: self.effective_interactive_options)
             self._install_figure_source_refresh_callbacks(node.uid, tool)
         self._mark_node_added(node.uid)
         self._sync_figures_ui(select_uid=node.uid if show else None)

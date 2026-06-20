@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._options.core
 import erlab.interactive.imagetool.slicer
 from erlab.interactive import _qt_state
 from erlab.interactive.imagetool import provenance
@@ -594,6 +595,12 @@ class _WorkspaceIOController:
                 if self._manager._workspace_state.layout_modified
                 else (),
             ),
+            (
+                "Settings modified",
+                ("Workspace settings",)
+                if self._manager._workspace_state.options_modified
+                else (),
+            ),
         )
         blocks: list[str] = []
         for label, items in sections:
@@ -606,8 +613,6 @@ class _WorkspaceIOController:
         if node is None:
             return
         window = node.window
-        if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return
         if node.tool_window is not None:
             display_name = node.tool_window._tool_display_name
             base_title = (
@@ -617,10 +622,18 @@ class _WorkspaceIOController:
             )
         else:
             base_title = node.label_text
-        title = _window_title_with_modified_placeholder(base_title)
-        if title != window.windowTitle():
-            window.setWindowTitle(title)
-        window.setWindowModified(modified)
+        windows: list[tuple[QtWidgets.QWidget | None, str]] = [(window, base_title)]
+        if node.tool_window is not None:
+            windows.extend(node.tool_window._managed_secondary_windows())
+        for target_window, target_title in windows:
+            if target_window is None or not erlab.interactive.utils.qt_is_valid(
+                target_window
+            ):
+                continue
+            title = _window_title_with_modified_placeholder(target_title)
+            if title != target_window.windowTitle():
+                target_window.setWindowTitle(title)
+            target_window.setWindowModified(modified)
 
     def _apply_workspace_dirty_event(
         self, event: _manager_workspace._WorkspaceDirtyEvent
@@ -653,10 +666,21 @@ class _WorkspaceIOController:
             removed=removed,
             structure=structure,
         )
-        if event.uid is not None and (event.added or event.data or event.state):
+        was_modified = self._manager.is_workspace_modified
+        node_was_modified = event.uid is not None and event.uid in (
+            self._manager._workspace_state.dirty_added
+            | self._manager._workspace_state.dirty_data
+            | self._manager._workspace_state.dirty_state
+        )
+        if (
+            event.uid is not None
+            and (event.added or event.data or event.state)
+            and not node_was_modified
+        ):
             self._manager._set_node_window_modified(event.uid, True)
         self._manager._workspace_state.mark_dirty(event)
-        self._manager._update_workspace_window_title()
+        if not was_modified and self._manager.is_workspace_modified:
+            self._manager._update_workspace_window_title()
 
     def _mark_node_added(self, uid: str) -> None:
         self._manager._mark_workspace_dirty(
@@ -686,6 +710,16 @@ class _WorkspaceIOController:
         ):
             return
         if self._manager._workspace_state.mark_layout_dirty():
+            self._manager._update_workspace_window_title()
+
+    def _mark_workspace_options_dirty(self) -> None:
+        if (
+            self._manager._workspace_state.loading_depth > 0
+            or self._manager._workspace_state.saving_depth > 0
+            or self._manager._workspace_state.closing_document
+        ):
+            return
+        if self._manager._workspace_state.mark_options_dirty():
             self._manager._update_workspace_window_title()
 
     def _mark_workspace_clean(self) -> None:
@@ -1565,6 +1599,7 @@ class _WorkspaceIOController:
                 )
                 if replace:
                     self._manager._restore_workspace_layout(manifest)
+                    self._restore_workspace_option_overrides(manifest)
                     self._restore_workspace_loader_state(manifest)
                     self._restore_standalone_apps_state(manifest)
                 if not mark_dirty:
@@ -1703,6 +1738,7 @@ class _WorkspaceIOController:
                     )
                     if replace:
                         self._manager._restore_workspace_layout(manifest)
+                        self._restore_workspace_option_overrides(manifest)
                         self._restore_workspace_loader_state(manifest)
                         self._restore_standalone_apps_state(manifest)
                     if not mark_dirty:
@@ -1863,6 +1899,7 @@ class _WorkspaceIOController:
             manager_layout=self._manager._workspace_layout_snapshot(),
             loader_state=self._workspace_loader_state_snapshot(),
             standalone_apps=self._workspace_standalone_apps_snapshot(),
+            option_overrides=self._workspace_option_overrides_snapshot(),
         )
 
     def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
@@ -1899,6 +1936,35 @@ class _WorkspaceIOController:
         )
         if right_splitter is not None:
             self._manager.right_splitter.restoreState(right_splitter)
+
+    def _workspace_option_overrides_snapshot(self) -> dict[str, typing.Any]:
+        return _manager_workspace.WorkspaceOptionOverridesState(
+            overrides=erlab.interactive._options.core.normalize_workspace_option_overrides(
+                self._manager._workspace_state.option_overrides
+            )
+        ).model_dump(mode="json")
+
+    def _restore_workspace_option_overrides(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        if manifest is None:
+            return
+        payload = manifest.get("interactive_option_overrides")
+        if not isinstance(payload, dict):
+            self._manager._set_workspace_option_overrides({}, mark_dirty=False)
+            return
+        try:
+            state = _manager_workspace.WorkspaceOptionOverridesState.model_validate(
+                payload
+            )
+        except Exception:
+            logger.warning(
+                "Ignoring invalid workspace interactive option overrides",
+                exc_info=True,
+            )
+            self._manager._set_workspace_option_overrides({}, mark_dirty=False)
+            return
+        self._manager._set_workspace_option_overrides(state.overrides, mark_dirty=False)
 
     def _workspace_loader_state_snapshot(self) -> dict[str, typing.Any]:
         manager_loader_kwargs = self._manager._recent_loader_kwargs_by_filter
@@ -2514,8 +2580,8 @@ class _WorkspaceIOController:
     def _workspace_layout_only_modified(self) -> bool:
         return (
             self._manager._workspace_state.layout_modified
-            and not self._workspace_has_non_layout_modifications()
-        )
+            or self._manager._workspace_state.options_modified
+        ) and not self._workspace_has_non_layout_modifications()
 
     def _workspace_rewrite_group_snapshot(
         self, uid: str
@@ -3105,6 +3171,7 @@ class _WorkspaceIOController:
                                     rebind_data=False,
                                 )
                                 if replace:
+                                    self._restore_workspace_option_overrides(manifest)
                                     self._restore_workspace_loader_state(
                                         manifest, apply_explorer=False
                                     )
@@ -3135,6 +3202,7 @@ class _WorkspaceIOController:
                         rebind_data=False,
                     )
                     if replace:
+                        self._restore_workspace_option_overrides(manifest)
                         self._restore_workspace_loader_state(
                             manifest, apply_explorer=False
                         )
@@ -3331,7 +3399,12 @@ class _WorkspaceIOController:
             for ds in data:
                 try:
                     self._manager.add_imagetool(
-                        ImageTool.from_dataset(ds, _in_manager=True), activate=True
+                        ImageTool.from_dataset(
+                            ds,
+                            _in_manager=True,
+                            options_model=self._manager.effective_interactive_options,
+                        ),
+                        activate=True,
                     )
                 except Exception:
                     flags.append(False)
@@ -3366,6 +3439,7 @@ class _WorkspaceIOController:
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = []
         kwargs["_in_manager"] = True
+        kwargs.setdefault("options_model", self._manager.effective_interactive_options)
 
         load_func = kwargs.pop("load_func", None)
         load_indices = kwargs.pop("load_indices", None)

@@ -10,6 +10,7 @@ import os
 import threading
 import typing
 
+import pydantic
 from qtpy import QtCore
 
 from erlab.interactive._options.schema import AppOptions
@@ -109,6 +110,99 @@ def write_settings(opts: AppOptions, qsettings: QtCore.QSettings) -> None:
         The QSettings object to write to.
     """
     _dict_to_qsettings(opts.model_dump(), qsettings)
+
+
+def option_value(model: AppOptions, name: str) -> typing.Any:
+    """Return an option value by slash-separated path."""
+    value: typing.Any = model
+    for key in name.split("/"):
+        value = getattr(value, key)
+    return value
+
+
+def option_model_with_value(
+    model: AppOptions, name: str, value: typing.Any
+) -> AppOptions:
+    """Return a copy of *model* with one slash-separated option path changed."""
+    data = model.model_dump()
+    target = data
+    keys = name.split("/")
+    for key in keys[:-1]:
+        child = target[key]
+        if not isinstance(child, dict):
+            raise KeyError(name)
+        target = child
+    target[keys[-1]] = value
+    return AppOptions.model_validate(data)
+
+
+def option_paths(model_cls: type[pydantic.BaseModel] = AppOptions) -> tuple[str, ...]:
+    """Return all leaf option paths in schema order."""
+    paths: list[str] = []
+
+    def collect(cls: type[pydantic.BaseModel], prefix: str = "") -> None:
+        default_instance = cls()
+        for field_name in cls.model_fields:
+            path = f"{prefix}/{field_name}" if prefix else field_name
+            value = getattr(default_instance, field_name)
+            if isinstance(value, pydantic.BaseModel):
+                collect(type(value), path)
+            else:
+                paths.append(path)
+
+    collect(model_cls)
+    return tuple(paths)
+
+
+def workspace_overridable_option_paths() -> tuple[str, ...]:
+    """Return option paths allowed in ImageTool Manager workspace overrides."""
+    paths: list[str] = []
+
+    def collect(cls: type[pydantic.BaseModel], prefix: str = "") -> None:
+        default_instance = cls()
+        for field_name, field_info in cls.model_fields.items():
+            path = f"{prefix}/{field_name}" if prefix else field_name
+            value = getattr(default_instance, field_name)
+            if isinstance(value, pydantic.BaseModel):
+                collect(type(value), path)
+                continue
+            extra = getattr(field_info, "json_schema_extra", None) or {}
+            if isinstance(extra, dict) and extra.get("workspace_overridable"):
+                paths.append(path)
+
+    collect(AppOptions)
+    return tuple(paths)
+
+
+def normalize_workspace_option_overrides(
+    overrides: typing.Mapping[str, typing.Any] | None,
+) -> dict[str, typing.Any]:
+    """Keep only workspace-overridable option paths.
+
+    Values are intentionally not fully validated here. A workspace may contain a loader
+    or stylesheet that is unavailable on this computer; such values must remain in the
+    saved override payload so they can become active again when available.
+    """
+    if not isinstance(overrides, typing.Mapping):
+        return {}
+    allowed = set(workspace_overridable_option_paths())
+    return {
+        str(path): value for path, value in overrides.items() if str(path) in allowed
+    }
+
+
+def model_with_workspace_overrides(
+    user_options: AppOptions,
+    overrides: typing.Mapping[str, typing.Any] | None,
+) -> AppOptions:
+    """Merge valid workspace overrides over user settings."""
+    model = user_options
+    for path, value in normalize_workspace_option_overrides(overrides).items():
+        try:
+            model = option_model_with_value(model, path, value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return model
 
 
 class OptionManager:

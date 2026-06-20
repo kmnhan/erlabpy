@@ -29,6 +29,7 @@ from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
     _figure_draw_context,
     _figure_style_context,
+    figure_options_context,
 )
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE as _MIXED_VALUE,
@@ -123,10 +124,20 @@ from erlab.interactive._figurecomposer._widgets import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import (
+        Callable,
+        Hashable,
+        Iterable,
+        Iterator,
+        Mapping,
+        MutableMapping,
+        Sequence,
+    )
 
     import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+    from erlab.interactive._options.schema import AppOptions
 
 
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
@@ -139,8 +150,9 @@ _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _SOURCE_LIST_SOURCE_COLUMN = 0
-_SOURCE_LIST_SHAPE_COLUMN = 1
-_SOURCE_LIST_ACTION_COLUMN = 2
+_SOURCE_LIST_ALIAS_COLUMN = 1
+_SOURCE_LIST_SHAPE_COLUMN = 2
+_SOURCE_LIST_ACTION_COLUMN = 3
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
@@ -307,6 +319,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
         super().__init__()
+        self._options_getter: Callable[[], AppOptions] | None = None
         self._updating_controls = False
         self._rendering = False
         self._operation_editor_update_pending = False
@@ -322,6 +335,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
         self._operation_input_errors: dict[str, dict[str, str]] = {}
+        self._plot_slices_selection_cache: (
+            MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None
+        ) = None
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
@@ -377,6 +393,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._build_ui()
         self._apply_recipe_to_controls()
         self._write_state()
+
+    def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
+        self._options_getter = getter
+
+    @contextlib.contextmanager
+    def _figure_options_context(self) -> Iterator[None]:
+        options_model = None
+        if self._options_getter is not None:
+            with contextlib.suppress(Exception):
+                options_model = self._options_getter()
+        with figure_options_context(options_model):
+            yield
 
     @staticmethod
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
@@ -464,6 +492,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             self._figure_window.destroyed.connect(figure_window_destroyed)
         self._figure_window.setWindowTitle(self._figure_window_title())
+        self._configure_managed_secondary_window(self._figure_window)
         return self._figure_window
 
     def _figure_window_destroyed(
@@ -492,6 +521,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         title = self.windowTitle()
         return title if title and title != self.tool_name else "Figure"
 
+    def _managed_secondary_windows(
+        self,
+    ) -> tuple[tuple[QtWidgets.QWidget, str], ...]:
+        if self._figure_window is None or not erlab.interactive.utils.qt_is_valid(
+            self._figure_window
+        ):
+            return ()
+        return ((self._figure_window, self._figure_window_title()),)
+
     @QtCore.Slot()
     def _show_figure_window_requested(self) -> None:
         self._request_show_figure_window(activate=True)
@@ -507,9 +545,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.activateWindow()
 
     def show_figure_window(self, *, activate: bool = True) -> None:
-        self.figure_window.show_for_setup(
+        figure_window = self.figure_window
+        figure_window.show_for_setup(
             self._recipe.setup, self._figure_window_title(), activate=activate
         )
+        self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
         _render_preview(self, show_window=True)
 
@@ -876,7 +916,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if event is not None:
             super().hideEvent(event)
 
+    def _flush_pending_editor_commits(self, *, render: bool = False) -> None:
+        for widget in self.findChildren(QtWidgets.QWidget):
+            flush = getattr(
+                widget,
+                "_figure_composer_custom_code_flush_pending_commit",
+                None,
+            )
+            if callable(flush):
+                with contextlib.suppress(RuntimeError):
+                    flush(render=render)
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._flush_pending_editor_commits()
         self._closing = True
         self._cancel_queued_show_figure_window()
         self._figure_resize_render_generation += 1
@@ -1123,8 +1175,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources_layout.addWidget(self.source_actions)
         self.source_list = QtWidgets.QTreeWidget(self.step_sources_page)
         self.source_list.setObjectName("figureComposerSourceList")
-        self.source_list.setColumnCount(3)
-        self.source_list.setHeaderLabels(("Source", "Shape", ""))
+        self.source_list.setColumnCount(4)
+        self.source_list.setHeaderLabels(("Source", "Alias", "Shape", ""))
         self.source_list.setRootIsDecorated(False)
         self.source_list.setIndentation(0)
         self.source_list.setUniformRowHeights(True)
@@ -1138,17 +1190,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.source_list.setToolTip("Data available to the selected step.")
         source_header = self.source_list.header()
         if source_header is not None:
             source_header.setStretchLastSection(False)
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SOURCE_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Stretch,
+            )
+            source_header.setSectionResizeMode(
+                _SOURCE_LIST_ALIAS_COLUMN,
                 QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SHAPE_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.Stretch,
+                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_ACTION_COLUMN,
@@ -1683,7 +1738,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._add_source_list_row(
                 display,
                 name,
-                _source_display_tooltip(source, name),
                 data=data,
                 missing=source is None,
                 used=name in used_sources,
@@ -1703,11 +1757,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._add_source_list_row(
                 display,
                 source.name,
-                _source_display_tooltip(source, source.name),
                 missing=True,
                 used=source.name in used_sources,
             )
-        self.source_list.resizeColumnToContents(_SOURCE_LIST_SOURCE_COLUMN)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_ALIAS_COLUMN)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
         self._refresh_source_controls()
 
@@ -1730,23 +1784,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self,
         display: str,
         name: str,
-        tooltip: str,
         *,
         data: xr.DataArray | None = None,
         missing: bool = False,
         used: bool = False,
     ) -> None:
         item = QtWidgets.QTreeWidgetItem(
-            [display, "missing" if data is None else "", ""]
+            [display, name, "missing" if data is None else "", ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
-        item.setData(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2, tooltip
-        )
         item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
         if missing:
             item.setForeground(
                 _SOURCE_LIST_SOURCE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
+            )
+            item.setForeground(
+                _SOURCE_LIST_ALIAS_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
             )
             item.setForeground(
                 _SOURCE_LIST_SHAPE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
@@ -1773,7 +1826,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.Qt.TextInteractionFlag.NoTextInteraction
         )
         shape_label.setContentsMargins(4, 0, 4, 0)
-        shape_label.setToolTip(item.toolTip(_SOURCE_LIST_SOURCE_COLUMN))
         if missing:
             palette = shape_label.palette()
             palette.setColor(
@@ -1975,16 +2027,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         item.setData(
             _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 1, used
         )
-        base_tooltip = item.data(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2
-        )
-        tooltip = (
-            base_tooltip
-            if isinstance(base_tooltip, str)
-            else item.toolTip(_SOURCE_LIST_SOURCE_COLUMN)
-        )
-        if used:
-            tooltip = f"Used by selected step.\n{tooltip}"
         font = item.font(_SOURCE_LIST_SOURCE_COLUMN)
         font.setBold(used)
         item.setFont(_SOURCE_LIST_SOURCE_COLUMN, font)
@@ -1999,11 +2041,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._set_source_remove_button_state(
                     remove_button, source_name, item.text(_SOURCE_LIST_SOURCE_COLUMN)
                 )
-        for column in (_SOURCE_LIST_SOURCE_COLUMN, _SOURCE_LIST_SHAPE_COLUMN):
-            item.setToolTip(column, tooltip)
-            widget = self.source_list.itemWidget(item, column)
-            if widget is not None:
-                widget.setToolTip(tooltip)
 
     def _sync_source_list_used_state(self) -> None:
         current = self._current_operation()
@@ -2722,10 +2759,39 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         editable = self._editable_operations()
         if not editable:
             return
+        self._update_operations_by_ids(
+            (operation.operation_id for _index, operation in editable),
+            updater,
+            render=render,
+            rebuild_editor=rebuild_editor,
+            defer_editor_rebuild=defer_editor_rebuild,
+            sync_axes=sync_axes,
+        )
+
+    def _update_operations_by_ids(
+        self,
+        operation_ids: Iterable[str],
+        updater: Callable[[int, FigureOperationState], FigureOperationState],
+        *,
+        render: bool = True,
+        rebuild_editor: bool = False,
+        defer_editor_rebuild: bool = False,
+        sync_axes: bool = True,
+    ) -> bool:
+        operation_id_set = set(operation_ids)
+        if not operation_id_set:
+            return False
         current = self._current_operation()
         operations = list(self._recipe.operations)
-        for index, operation in editable:
-            operations[index] = updater(index, operation)
+        changed = False
+        for index, operation in enumerate(operations):
+            if operation.operation_id not in operation_id_set:
+                continue
+            updated = updater(index, operation)
+            changed = changed or updated != operation
+            operations[index] = updated
+        if not changed:
+            return False
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
         if current is not None:
@@ -2745,6 +2811,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _render_preview(self)
             self.sigInfoChanged.emit()
         self._write_state()
+        return True
 
     def _replace_operation(
         self,
@@ -4279,6 +4346,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._retire_editor_widget(widget)
 
     def _clear_operation_editor(self) -> None:
+        self._flush_pending_editor_commits()
         for page in self._operation_editor_pages:
             self.step_editor_stack.removeWidget(page)
             self._retire_editor_widget(page)
@@ -4909,7 +4977,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return row_widget
 
     def generated_code(self) -> str:
-        return erlab.interactive._figurecomposer._codegen.generated_code(self)
+        self._flush_pending_editor_commits()
+        with self._figure_options_context():
+            return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
     @QtCore.Slot()
     def copy_code(self) -> None:
@@ -4935,6 +5005,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def export_figure(self) -> None:
         if self._warn_invalid_operation_targets():
             return
+        self._flush_pending_editor_commits()
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Export Figure",
@@ -4943,7 +5014,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if not filename:
             return
-        with _rendered_output_figure(self) as figure, _figure_draw_context():
+        with (
+            self._figure_options_context(),
+            _rendered_output_figure(self) as figure,
+            _figure_draw_context(),
+        ):
             figure.savefig(
                 filename,
                 dpi=self._recipe.export.dpi,
@@ -5161,7 +5236,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             canvas = window.canvas
             if not erlab.interactive.utils.qt_is_valid(canvas):
                 return None
-            with _figure_style_context():
+            with self._figure_options_context(), _figure_style_context():
                 canvas.draw()
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
@@ -5181,7 +5256,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return None
         from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-        with _figure_style_context():
+        with self._figure_options_context(), _figure_style_context():
             figure = Figure(
                 figsize=self._recipe.setup.figsize,
                 dpi=self._recipe.setup.dpi,

@@ -189,6 +189,7 @@ class StylesheetListWidget(QtWidgets.QWidget):
     """Widget for editing an ordered list of Matplotlib stylesheets."""
 
     sigStylesheetsChanged = QtCore.Signal(list)
+    _VISIBLE_LIST_ROWS = 4
 
     def __init__(
         self,
@@ -198,40 +199,64 @@ class StylesheetListWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.stylesheets = _stylesheet_names(stylesheets)
 
-        layout = QtWidgets.QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(4)
-        layout.setVerticalSpacing(3)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        add_layout = QtWidgets.QHBoxLayout()
+        add_layout.setContentsMargins(0, 0, 0, 0)
 
         self.add_combo = _StylesheetComboBox(self)
         self.add_combo.setObjectName("matplotlibStylesheetCombo")
         self.add_combo.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self.add_combo.setMinimumContentsLength(18)
+        self.add_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.add_combo.setToolTip("Available Matplotlib stylesheet to add.")
         self.add_combo.sigPopupAboutToShow.connect(self._load_available_stylesheets)
-        layout.addWidget(self.add_combo, 0, 0)
+        add_layout.addWidget(self.add_combo, 1)
 
         self.add_button = QtWidgets.QToolButton(self)
         self.add_button.setObjectName("matplotlibStylesheetAddButton")
         self.add_button.setText("Add")
         self.add_button.setToolTip("Add the selected stylesheet.")
         self.add_button.clicked.connect(self.add_stylesheet)
-        layout.addWidget(self.add_button, 0, 1)
+        add_layout.addWidget(self.add_button)
+        layout.addLayout(add_layout)
+
+        self.open_folder_button = QtWidgets.QToolButton(self)
+        self.open_folder_button.setObjectName("matplotlibStylesheetOpenFolderButton")
+        self.open_folder_button.setText("Open Folder")
+        self.open_folder_button.setToolTip(
+            "Open the ERLab custom Matplotlib stylesheet folder."
+        )
+        self.open_folder_button.clicked.connect(self.open_stylesheet_directory)
+
+        self.reload_button = QtWidgets.QToolButton(self)
+        self.reload_button.setObjectName("matplotlibStylesheetReloadButton")
+        self.reload_button.setText("Reload")
+        self.reload_button.setToolTip("Reload Matplotlib stylesheets.")
+        self.reload_button.clicked.connect(self.reload_stylesheets)
 
         self.list_widget = QtWidgets.QListWidget(self)
         self.list_widget.setObjectName("matplotlibStylesheetList")
         self.list_widget.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
         )
-        self.list_widget.setFixedHeight(88)
+        self.list_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.list_widget.currentRowChanged.connect(self._update_button_state)
-        layout.addWidget(self.list_widget, 1, 0, 1, 2)
+        layout.addWidget(self.list_widget)
 
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(3)
+        button_layout.addWidget(self.open_folder_button)
+        button_layout.addWidget(self.reload_button)
+        button_layout.addStretch(1)
+
         self.remove_button = QtWidgets.QToolButton(self)
         self.remove_button.setObjectName("matplotlibStylesheetRemoveButton")
         self.remove_button.setText("Remove")
@@ -252,8 +277,7 @@ class StylesheetListWidget(QtWidgets.QWidget):
         self.down_button.setToolTip("Move the selected stylesheet later.")
         self.down_button.clicked.connect(lambda: self.move_selected_stylesheet(1))
         button_layout.addWidget(self.down_button)
-        button_layout.addStretch(1)
-        layout.addLayout(button_layout, 2, 0, 1, 2)
+        layout.addLayout(button_layout)
 
         self._refresh()
 
@@ -287,6 +311,28 @@ class StylesheetListWidget(QtWidgets.QWidget):
                     "This saved stylesheet is unavailable here and will be skipped."
                 )
             self.list_widget.addItem(item)
+        self._update_list_height()
+
+    def _update_list_height(self) -> None:
+        row_height = self.list_widget.sizeHintForRow(0)
+        if row_height <= 0:
+            style = self.list_widget.style()
+            vertical_margin = (
+                style.pixelMetric(
+                    QtWidgets.QStyle.PixelMetric.PM_FocusFrameVMargin,
+                    None,
+                    self.list_widget,
+                )
+                if style is not None
+                else 0
+            )
+            row_height = self.list_widget.fontMetrics().height() + 2 * vertical_margin
+        frame_width = self.list_widget.frameWidth()
+        spacing = self.list_widget.spacing()
+        rows = self._VISIBLE_LIST_ROWS
+        self.list_widget.setFixedHeight(
+            row_height * rows + spacing * max(0, rows - 1) + frame_width * 2
+        )
 
     def _refresh_add_combo(self) -> None:
         current = self.add_combo.currentText()
@@ -309,11 +355,29 @@ class StylesheetListWidget(QtWidgets.QWidget):
     @QtCore.Slot()
     def _load_available_stylesheets(self) -> None:
         current = self.add_combo.currentText()
-        erlab.interactive._stylesheets.load_erlab_plotting_stylesheets()
+        erlab.interactive._stylesheets.reload_stylesheets()
         self._refresh_list()
         self._refresh_add_combo()
         if current:
             self.add_combo.setCurrentText(current)
+
+    @QtCore.Slot()
+    def open_stylesheet_directory(self) -> None:
+        try:
+            style_dir = erlab.interactive._stylesheets.user_stylesheet_directory()
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Stylesheet folder unavailable",
+                str(exc),
+            )
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(style_dir)))
+
+    @QtCore.Slot()
+    def reload_stylesheets(self) -> None:
+        erlab.interactive._stylesheets.reload_stylesheets()
+        self._refresh()
 
     def _update_button_state(self, *_args) -> None:
         row = self.list_widget.currentRow()

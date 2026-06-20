@@ -682,6 +682,76 @@ def test_manager_workspace_load_preserves_added_time(
         assert manager._child_node(tool_uid).created_time == tool_added
 
 
+def test_manager_workspace_option_overrides_roundtrip_and_mark_dirty(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    overrides = {
+        "colors/cmap/name": "viridis",
+        "colors/max_rendered_abs_value": 12.0,
+        "figure/stylesheets": ["classic", "missing-style"],
+    }
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        manager._mark_workspace_clean()
+
+        manager._set_workspace_option_overrides(overrides)
+
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.options_modified
+        assert manager.workspace_option_overrides() == overrides
+
+        fname = tmp_path / "option-overrides.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._set_workspace_option_overrides({})
+        manager._mark_workspace_clean()
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager.workspace_option_overrides() == overrides
+        assert not manager._workspace_state.options_modified
+        assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_option_override_helpers(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._mark_workspace_clean()
+
+        manager.set_workspace_option_override("colors/cmap/name", "viridis")
+
+        assert manager.workspace_option_overrides() == {"colors/cmap/name": "viridis"}
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.options_modified
+
+        manager.clear_workspace_option_override("colors/cmap/name")
+        assert manager.workspace_option_overrides() == {}
+
+        manager.clear_workspace_option_override("colors/cmap/name")
+        assert manager.workspace_option_overrides() == {}
+
+
 def test_manager_workspace_load_warns_for_unavailable_colormap(
     qtbot,
     tmp_path: pathlib.Path,
@@ -5293,6 +5363,44 @@ def test_manager_workspace_window_title_sets_file_path(
         assert file_path_calls == [str(workspace)]
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
+
+
+@pytest.mark.parametrize("dirty_kw", [{"data": True}, {"state": True}])
+def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
+    monkeypatch,
+    tmp_path,
+    dirty_kw: dict[str, bool],
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "normal.itws"
+        manager._workspace_state.path = workspace
+        file_path_calls: list[str] = []
+        node_modified_calls: list[tuple[str, bool]] = []
+
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowFilePath",
+            lambda _manager, path: file_path_calls.append(path),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_set_node_window_modified",
+            lambda uid, modified: node_modified_calls.append((uid, modified)),
+        )
+
+        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+
+        assert file_path_calls == [str(workspace)]
+        assert node_modified_calls == [("n1", True)]
+        assert [event.uid for event in manager._workspace_state.dirty_events] == [
+            "n1",
+            "n1",
+        ]
+        assert manager._workspace_state.dirty_generation == 2
 
 
 def test_manager_workspace_window_title_clears_file_path_without_workspace(

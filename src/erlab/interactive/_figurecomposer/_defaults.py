@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import typing
 import warnings
 
@@ -16,18 +17,44 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
+    from erlab.interactive._options.schema import AppOptions
+
 _MM_PER_INCH = 25.4
 _LAYOUT_COLLAPSED_WARNING = (
     r"constrained_layout not applied because axes sizes collapsed to zero\."
 )
+_OPTIONS_MODEL_CONTEXT: contextvars.ContextVar[AppOptions | None] = (
+    contextvars.ContextVar("figure_composer_options_model", default=None)
+)
 
 
-def _configured_stylesheets() -> tuple[str, ...]:
+def _current_options() -> AppOptions:
+    context_options = _OPTIONS_MODEL_CONTEXT.get()
+    if context_options is not None:
+        return context_options
     with contextlib.suppress(Exception):
         from erlab.interactive._options import options
 
-        return tuple(options.model.figure.stylesheets)
-    return ()
+        return options.model
+    from erlab.interactive._options.schema import AppOptions
+
+    return AppOptions()
+
+
+@contextlib.contextmanager
+def figure_options_context(options_model: AppOptions | None) -> Iterator[None]:
+    if options_model is None:
+        yield
+        return
+    token = _OPTIONS_MODEL_CONTEXT.set(options_model)
+    try:
+        yield
+    finally:
+        _OPTIONS_MODEL_CONTEXT.reset(token)
+
+
+def _configured_stylesheets() -> tuple[str, ...]:
+    return tuple(_current_options().figure.stylesheets)
 
 
 def _available_configured_stylesheets() -> tuple[str, ...]:
@@ -127,8 +154,15 @@ def _style_code_lines() -> list[str]:
 
 
 def _style_required_imports() -> tuple[str, ...]:
-    if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(
-        _configured_stylesheets()
-    ):
-        return ("import erlab.plotting  # registers ERLab matplotlib stylesheets",)
-    return ()
+    configured = _configured_stylesheets()
+    lines: list[str] = []
+    if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(configured):
+        lines.append("import erlab.plotting  # registers ERLab matplotlib stylesheets")
+    if erlab.interactive._stylesheets.stylesheets_require_user_stylesheets(configured):
+        lines.extend(
+            [
+                "import erlab.interactive._stylesheets as _erlab_stylesheets",
+                "_erlab_stylesheets.load_user_stylesheets()",
+            ]
+        )
+    return tuple(lines)

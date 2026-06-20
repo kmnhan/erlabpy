@@ -38,6 +38,7 @@ if typing.TYPE_CHECKING:
 
     import qtawesome
 
+    from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.imagetool.plot_items import (
         ItoolGraphicsLayoutWidget,
         ItoolImageItem,
@@ -169,9 +170,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
-        return tuple(
-            QtGui.QColor(c) for c in erlab.interactive.options.model.colors.cursors
-        )
+        return tuple(QtGui.QColor(c) for c in self._options_model.colors.cursors)
 
     TWIN_COLORS: tuple[QtGui.QColor, ...] = (
         pg.mkColor("#ffa500"),
@@ -244,9 +243,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         auto_compute: bool = True,
         image_cls=None,
         plotdata_cls=None,
+        options_model: AppOptions | None = None,
         _in_manager: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._options_model = options_model or erlab.interactive.options.model
         self.qapp = typing.cast(
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
@@ -256,7 +257,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         # Handle default values
-        opts = erlab.interactive.options.model
+        opts = self._options_model
         if cmap is None:
             cmap = opts.colors.cmap.name
             if opts.colors.cmap.reverse:
@@ -1684,7 +1685,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ax.vb.blockSignals(False)
 
         self.sigPointValueChanged.emit(
-            erlab.interactive.imagetool.slicer._display_safe_float(next(arrays_it))
+            self.array_slicer.display_safe_float(next(arrays_it))
         )
 
     def link(self, proxy: SlicerLinkProxy) -> None:
@@ -1900,7 +1901,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
             else:
                 self._array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
-                    self._data, self
+                    self._data,
+                    self,
+                    display_value_abs_limit=(
+                        self._options_model.colors.max_rendered_abs_value
+                    ),
                 )
                 logger.debug("Initialized ArraySlicer")
         except Exception:
@@ -3150,6 +3155,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             data_name=self.watched_data_name,
             initial_normal_emission=initial_normal_emission,
             initial_delta=initial_delta,
+            options_model=self._options_model,
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):

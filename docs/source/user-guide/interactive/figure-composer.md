@@ -166,8 +166,26 @@ replay code that includes all analysis steps.
 
 ## Stylesheets and export
 
-Figure Composer applies the Matplotlib stylesheets configured in the interactive
-settings dialog in {guilabel}`File → Settings`. These stylesheets affect new figure
-defaults such as size, dpi, and export settings, as well as the styling of all figure
-elements. If a saved stylesheet is unavailable on the current computer, it remains
-visible in settings but is skipped when rendering or generating code.
+[Matplotlib stylesheets](https://matplotlib.org/stable/users/explain/customizing.html)
+are a powerful way to control the styling of all figure elements. Figure Composer
+applies the Matplotlib stylesheets configured in the interactive settings dialog in
+{menuselection}`File --> Settings`. These stylesheets affect new figure defaults such as
+size, dpi, and export settings, as well as the styling of all figure elements.
+
+To add custom Matplotlib stylesheets:
+
+1. Open {menuselection}`File --> Settings`.
+2. In {menuselection}`Figure --> Stylesheets`, select {guilabel}`Open Folder`.
+3. Copy `*.mplstyle` files into that folder.
+4. Select {guilabel}`Reload` to update the stylesheet list.
+5. Add the stylesheet by name. The name shown in settings is the file name without the
+   `.mplstyle` suffix.
+
+Saved stylesheet names are kept even if the corresponding style is not currently
+available. Unavailable styles remain visible in Settings, are skipped while rendering
+and when copying generated code, and become active again after the `.mplstyle` file is
+restored and the list is reloaded.
+
+In addition to the default stylesheets provided with Matplotlib, the list includes some
+stylesheets provided by ERLab, such as `khan`, `times`, and `nature`. Try them out to
+see how they affect the figures.
