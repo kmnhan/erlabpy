@@ -481,6 +481,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             self._figure_window.destroyed.connect(figure_window_destroyed)
         self._figure_window.setWindowTitle(self._figure_window_title())
+        self._configure_managed_secondary_window(self._figure_window)
         return self._figure_window
 
     def _figure_window_destroyed(
@@ -509,6 +510,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         title = self.windowTitle()
         return title if title and title != self.tool_name else "Figure"
 
+    def _managed_secondary_windows(
+        self,
+    ) -> tuple[tuple[QtWidgets.QWidget, str], ...]:
+        if self._figure_window is None or not erlab.interactive.utils.qt_is_valid(
+            self._figure_window
+        ):
+            return ()
+        return ((self._figure_window, self._figure_window_title()),)
+
     @QtCore.Slot()
     def _show_figure_window_requested(self) -> None:
         self._request_show_figure_window(activate=True)
@@ -524,9 +534,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.activateWindow()
 
     def show_figure_window(self, *, activate: bool = True) -> None:
-        self.figure_window.show_for_setup(
+        figure_window = self.figure_window
+        figure_window.show_for_setup(
             self._recipe.setup, self._figure_window_title(), activate=activate
         )
+        self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
         _render_preview(self, show_window=True)
 

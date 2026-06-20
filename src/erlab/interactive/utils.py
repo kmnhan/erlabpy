@@ -3269,6 +3269,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_reload_unavailable_reason: (
             Callable[[], str | None] | None
         ) = None
+        self._managed_secondary_window_callback: (
+            Callable[[QtWidgets.QWidget], None] | None
+        ) = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
@@ -4323,6 +4326,23 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_source_reload_available = available
         self._managed_source_reload_unavailable_reason = unavailable_reason
         self._refresh_reload_data_action()
+
+    def _set_managed_secondary_window_callback(
+        self, callback: Callable[[QtWidgets.QWidget], None] | None
+    ) -> None:
+        """Set the manager-owned callback for secondary tool windows."""
+        self._managed_secondary_window_callback = callback
+
+    def _configure_managed_secondary_window(self, window: QtWidgets.QWidget) -> None:
+        """Apply manager-owned behavior to a secondary tool window."""
+        if self._managed_secondary_window_callback is not None:
+            self._managed_secondary_window_callback(window)
+
+    def _managed_secondary_windows(
+        self,
+    ) -> tuple[tuple[QtWidgets.QWidget, str], ...]:
+        """Return secondary managed windows with their base titles."""
+        return ()
 
     def _source_reload_relevant(self) -> bool:
         return self._managed_source_reload is not None

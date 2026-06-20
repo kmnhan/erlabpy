@@ -3,6 +3,8 @@ import contextlib
 import functools
 import gc
 import json
+import sys
+import types
 import typing
 import warnings
 from collections.abc import Callable, Sequence
@@ -39,6 +41,7 @@ import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
@@ -4871,6 +4874,69 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     assert not app_quit_window.isVisible()
     app_quit_window.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+
+def test_figure_composer_managed_display_window_configures_save_shortcut(
+    qtbot, monkeypatch
+) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *_args, **_kwargs: None,
+    )
+    save_calls: list[bool] = []
+    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller._manager = types.SimpleNamespace(
+        save=lambda *, native=True: save_calls.append(native) or True
+    )
+    tool._set_managed_secondary_window_callback(
+        controller._install_workspace_save_shortcut
+    )
+
+    tool.show_figure_window(activate=False)
+    figure_window = tool.figure_window
+
+    save_shortcuts = [
+        shortcut
+        for shortcut in figure_window.findChildren(QtWidgets.QShortcut)
+        if shortcut.objectName() == "managerWorkspaceSaveShortcut"
+    ]
+    assert len(save_shortcuts) == 1
+    save_shortcuts[0].activated.emit()
+    assert save_calls == [True]
+
+
+def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
+    primary_window = QtWidgets.QMainWindow()
+    secondary_window = QtWidgets.QMainWindow()
+    qtbot.addWidget(primary_window)
+    qtbot.addWidget(secondary_window)
+    tool = types.SimpleNamespace(
+        tool_name="Figure Composer",
+        _tool_display_name="Figure 1",
+        _managed_secondary_windows=lambda: (
+            (secondary_window, "Figure Composer: Figure 1"),
+        ),
+    )
+    node = types.SimpleNamespace(window=primary_window, tool_window=tool)
+    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller._manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"figure_uid": node})
+    )
+
+    controller._set_node_window_modified("figure_uid", True)
+
+    assert primary_window.isWindowModified()
+    assert secondary_window.isWindowModified()
+    if sys.platform != "darwin":
+        assert "[*]" in secondary_window.windowTitle()
+
+    controller._set_node_window_modified("figure_uid", False)
+
+    assert not primary_window.isWindowModified()
+    assert not secondary_window.isWindowModified()
 
 
 def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:

@@ -382,6 +382,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old.removeEventFilter(self)
             old._set_managed_source_update_dialog(None)
             old._set_managed_source_reload(None)
+            old._set_managed_secondary_window_callback(None)
             old.set_source_parent_fetcher(None)
             old.set_input_provenance_parent_fetcher(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -431,6 +432,27 @@ class _ManagedWindowNode(QtCore.QObject):
             self.can_reload_source_data,
             self.reload_unavailable_reason,
         )
+        tool._set_managed_secondary_window_callback(
+            self._configure_tool_secondary_window
+        )
+        for secondary_window, _title in tool._managed_secondary_windows():
+            self._configure_tool_secondary_window(secondary_window)
+
+    def _configure_tool_secondary_window(self, window: QtWidgets.QWidget) -> None:
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        manager._install_workspace_save_shortcut(window)
+        if manager._tool_graph.nodes.get(self.uid) is self:
+            manager._set_node_window_modified(
+                self.uid,
+                self.uid
+                in (
+                    manager._workspace_state.dirty_added
+                    | manager._workspace_state.dirty_data
+                    | manager._workspace_state.dirty_state
+                ),
+            )
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()

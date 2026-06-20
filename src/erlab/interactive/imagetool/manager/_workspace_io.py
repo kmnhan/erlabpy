@@ -613,8 +613,6 @@ class _WorkspaceIOController:
         if node is None:
             return
         window = node.window
-        if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return
         if node.tool_window is not None:
             display_name = node.tool_window._tool_display_name
             base_title = (
@@ -624,10 +622,18 @@ class _WorkspaceIOController:
             )
         else:
             base_title = node.label_text
-        title = _window_title_with_modified_placeholder(base_title)
-        if title != window.windowTitle():
-            window.setWindowTitle(title)
-        window.setWindowModified(modified)
+        windows: list[tuple[QtWidgets.QWidget | None, str]] = [(window, base_title)]
+        if node.tool_window is not None:
+            windows.extend(node.tool_window._managed_secondary_windows())
+        for target_window, target_title in windows:
+            if target_window is None or not erlab.interactive.utils.qt_is_valid(
+                target_window
+            ):
+                continue
+            title = _window_title_with_modified_placeholder(target_title)
+            if title != target_window.windowTitle():
+                target_window.setWindowTitle(title)
+            target_window.setWindowModified(modified)
 
     def _apply_workspace_dirty_event(
         self, event: _manager_workspace._WorkspaceDirtyEvent
