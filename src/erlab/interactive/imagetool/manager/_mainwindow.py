@@ -1895,18 +1895,35 @@ class ImageToolManager(_ImageToolManagerBase):
         thumbnail_size = self._figure_gallery_thumbnail_size()
         canvas = QtGui.QPixmap(thumbnail_size)
         canvas.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
-        scaled = source_pixmap
-        if source_pixmap.size() != thumbnail_size:
-            scaled = source_pixmap.scaled(
-                thumbnail_size,
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
+        dpr = source_pixmap.devicePixelRatioF()
+        if dpr <= 0.0:
+            dpr = 1.0
+        source_size = QtCore.QSizeF(
+            source_pixmap.width() / dpr,
+            source_pixmap.height() / dpr,
+        )
+        if source_size.isEmpty():
+            return canvas
+        target_size = QtCore.QSizeF(source_size)
+        target_size.scale(
+            QtCore.QSizeF(thumbnail_size),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        target_rect = QtCore.QRectF(
+            QtCore.QPointF(
+                (thumbnail_size.width() - target_size.width()) / 2.0,
+                (thumbnail_size.height() - target_size.height()) / 2.0,
+            ),
+            target_size,
+        )
         painter = QtGui.QPainter(canvas)
         try:
-            x_pos = (thumbnail_size.width() - scaled.width()) // 2
-            y_pos = (thumbnail_size.height() - scaled.height()) // 2
-            painter.drawPixmap(x_pos, y_pos, scaled)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(
+                target_rect,
+                source_pixmap,
+                QtCore.QRectF(QtCore.QPointF(0.0, 0.0), source_size),
+            )
         finally:
             painter.end()
         return canvas

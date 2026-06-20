@@ -20027,6 +20027,29 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
         fallback = QtGui.QPixmap(40, 20)
         fallback.fill(QtGui.QColor("red"))
 
+        high_dpi_preview = QtGui.QPixmap(400, 100)
+        high_dpi_preview.setDevicePixelRatio(2.0)
+        high_dpi_preview.fill(QtGui.QColor("red"))
+        high_dpi_thumbnail = manager._figure_gallery_thumbnail_pixmap(high_dpi_preview)
+        high_dpi_image = high_dpi_thumbnail.toImage().convertToFormat(
+            QtGui.QImage.Format.Format_ARGB32
+        )
+        red_pixels: list[tuple[int, int]] = []
+        for y_pos in range(high_dpi_image.height()):
+            for x_pos in range(high_dpi_image.width()):
+                color = high_dpi_image.pixelColor(x_pos, y_pos)
+                if color.red() > 220 and color.green() < 40 and color.blue() < 40:
+                    red_pixels.append((x_pos, y_pos))
+        assert red_pixels
+        min_x = min(x_pos for x_pos, _y_pos in red_pixels)
+        max_x = max(x_pos for x_pos, _y_pos in red_pixels)
+        min_y = min(y_pos for _x_pos, y_pos in red_pixels)
+        max_y = max(y_pos for _x_pos, y_pos in red_pixels)
+        assert high_dpi_thumbnail.size() == manager._figure_gallery_thumbnail_size()
+        assert max_x - min_x + 1 == high_dpi_thumbnail.width()
+        assert abs((max_y - min_y + 1) - round(high_dpi_thumbnail.width() / 4)) <= 1
+        assert abs(((min_y + max_y) / 2) - ((high_dpi_thumbnail.height() - 1) / 2)) <= 1
+
         class NullThumbnailProvider:
             preview_pixmap = fallback
 
