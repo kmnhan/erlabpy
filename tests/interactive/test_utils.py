@@ -1135,6 +1135,7 @@ def test_python_code_editor_has_line_number_area(qtbot) -> None:
 
     qtbot.waitUntil(lambda: area.width() > editor.fontMetrics().horizontalAdvance("99"))
     assert editor.viewport().geometry().left() >= area.width()
+    assert area.sizeHint().width() > 0
 
 
 def test_python_code_editor_alt_z_toggles_line_wrap(qtbot) -> None:
@@ -1172,6 +1173,20 @@ def test_python_code_editor_tracks_settled_text(qtbot) -> None:
     assert editor.text_editing_active()
     assert started == [True]
     qtbot.waitUntil(lambda: settled == ["second"], timeout=1000)
+    assert not editor.text_editing_active()
+
+
+def test_python_code_editor_editing_activity_edges(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.set_text_editing_settle_delay(-10)
+
+    assert editor.text_editing_settle_delay() == 0
+
+    editor._mark_text_editing_activity(0, 0, 0)
+    assert not editor.text_editing_active()
+
+    editor._finish_text_editing_activity()
     assert not editor.text_editing_active()
 
 
@@ -1266,6 +1281,29 @@ def test_python_code_editor_quotes_pair_conservatively(qtbot) -> None:
     assert editor.toPlainText() == "spam' eggs"
 
 
+def test_python_code_editor_pair_helper_edges(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+
+    assert not editor._handle_pair_text("ab")
+    assert not editor._handle_pair_text("x")
+
+    editor.setPlainText("abc")
+    _set_editor_cursor(editor, 0)
+    assert editor._previous_character(editor.textCursor()) == ""
+    assert not editor._delete_empty_pair()
+
+    _set_editor_cursor(editor, 0, 2)
+    assert not editor._delete_empty_pair()
+
+    editor.setPlainText("x = \\")
+    _set_editor_cursor(editor, len(editor.toPlainText()))
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_Apostrophe, "'")
+
+    assert editor.toPlainText() == "x = \\'"
+
+
 def test_python_code_editor_toggle_comments_current_and_selected_lines(qtbot) -> None:
     editor = PythonCodeEditor()
     qtbot.addWidget(editor)
@@ -1310,6 +1348,36 @@ def test_python_code_editor_toggle_comments_current_and_selected_lines(qtbot) ->
     assert editor.toPlainText() == "alpha\n    beta"
 
 
+def test_python_code_editor_toggle_comments_edge_selections(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("# a\n\n# b")
+    _set_editor_cursor(editor, 0, len(editor.toPlainText()))
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert editor.toPlainText() == "a\n\nb"
+
+    editor.setPlainText("a\nb\nc")
+    _set_editor_cursor(editor, 0, len("a\n"))
+
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Slash,
+        "/",
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert editor.toPlainText() == "# a\nb\nc"
+    assert editor._adjust_line_column(0, 3, {}) == 3
+    assert editor._adjust_line_column(0, 1, {0: (2, 2)}) == 1
+
+
 def test_python_code_editor_moves_lines_with_alt_up_down(qtbot) -> None:
     editor = PythonCodeEditor()
     qtbot.addWidget(editor)
@@ -1351,6 +1419,27 @@ def test_python_code_editor_moves_lines_with_alt_up_down(qtbot) -> None:
     assert editor.toPlainText() == "a\nd\nb\nc"
     assert editor.textCursor().selectedText().replace("\u2029", "\n") == "b\nc"
 
+    editor.setPlainText("a\nb")
+    _set_editor_cursor(editor, len("a\nb"))
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Down,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "a\nb"
+
+    editor.setPlainText("a\nb\nc")
+    _set_editor_cursor(editor, len("a\nb"), 0)
+    _press_editor_key(
+        editor,
+        QtCore.Qt.Key.Key_Down,
+        modifiers=QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+    assert editor.toPlainText() == "c\na\nb"
+    assert editor.textCursor().selectedText().replace("\u2029", "\n") == "a\nb"
+
 
 def test_python_code_editor_duplicates_lines_with_shift_alt_up_down(qtbot) -> None:
     editor = PythonCodeEditor()
@@ -1381,6 +1470,17 @@ def test_python_code_editor_duplicates_lines_with_shift_alt_up_down(qtbot) -> No
     )
 
     assert editor.toPlainText() == "a\nb\na\nb\nc"
+
+
+def test_python_code_editor_unindent_handles_tabs_and_plain_lines(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.setPlainText("\tfoo\nbar")
+    _set_editor_cursor(editor, 0, len(editor.toPlainText()))
+
+    _press_editor_key(editor, QtCore.Qt.Key.Key_Backtab)
+
+    assert editor.toPlainText() == "foo\nbar"
 
 
 def test_generate_code_multiple_assignment() -> None:

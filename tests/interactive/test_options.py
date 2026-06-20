@@ -5,6 +5,7 @@ import typing
 import pytest
 from qtpy import QtWidgets
 
+import erlab.interactive._options.ui as options_ui
 from erlab.interactive._options import OptionDialog, options
 from erlab.interactive._options.core import (
     OptionManager,
@@ -15,6 +16,7 @@ from erlab.interactive._options.core import (
 )
 from erlab.interactive._options.parameters import ColorListWidget, StylesheetListWidget
 from erlab.interactive._options.schema import AppOptions
+from erlab.interactive.colors import ColorMapComboBox
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +122,47 @@ def test_dialog_native_structure(dialog: OptionDialog):
     assert container.layout().contentsMargins().right() > 0
 
 
+def test_dialog_rebuild_pages_replaces_existing_pages(dialog: OptionDialog):
+    old_pages = dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count()
+
+    dialog._build_pages()
+
+    assert (
+        dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count()
+        == old_pages
+    )
+    assert ("user", "colors/cmap/name") in dialog._rows
+
+
+def test_dialog_empty_category_page(
+    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog
+):
+    monkeypatch.setattr(
+        options_ui,
+        "_leaf_paths_for_category",
+        lambda _category, *, workspace_only: (),
+    )
+
+    container = dialog._make_category_page("workspace", "empty")
+
+    assert (
+        container.findChild(QtWidgets.QLabel, "settingsEmpty_workspace_empty")
+        is not None
+    )
+
+
+def test_dialog_finds_workspace_manager_through_parent(qtbot):
+    manager = _WorkspaceManagerStub()
+    intermediate = QtWidgets.QWidget(manager)
+    qtbot.addWidget(manager)
+    qtbot.addWidget(intermediate)
+
+    dlg = OptionDialog(intermediate)
+    qtbot.addWidget(dlg)
+
+    assert dlg.findChild(QtWidgets.QTabBar, "settingsScopeTabs").count() == 2
+
+
 def test_dialog_close_button_closes_window(qtbot):
     dlg = OptionDialog()
     qtbot.addWidget(dlg)
@@ -132,6 +175,14 @@ def test_dialog_close_button_closes_window(qtbot):
     close_button.click()
 
     qtbot.waitUntil(lambda: not dlg.isVisible())
+
+
+def test_dialog_update_visible_page_ignores_missing_selection(dialog: OptionDialog):
+    dialog.category_list.setCurrentRow(-1)
+
+    dialog._update_visible_page()
+
+    assert dialog.category_list.currentItem() is None
 
 
 def test_stylesheet_editor_fits_settings_page(dialog: OptionDialog, qtbot):
@@ -153,6 +204,15 @@ def test_stylesheet_editor_fits_settings_page(dialog: OptionDialog, qtbot):
     )
 
     qtbot.waitUntil(lambda: page.horizontalScrollBar().maximum() == 0)
+
+
+def test_stylesheet_names_normalize_saved_values() -> None:
+    assert options_ui._stylesheet_names(None) == []
+    assert options_ui._stylesheet_names("classic, ggplot, classic") == [
+        "classic",
+        "ggplot",
+    ]
+    assert options_ui._stylesheet_names(42) == ["42"]
 
 
 def test_user_edit_saves_immediately(dialog: OptionDialog):
@@ -221,6 +281,96 @@ def test_user_row_reset_restores_default(qtbot):
     assert options.model.colors.cmap.name == AppOptions().colors.cmap.name
 
 
+def test_dialog_control_value_helpers(dialog: OptionDialog):
+    checkbox = QtWidgets.QCheckBox()
+    checkbox.setChecked(True)
+    assert dialog._control_value(checkbox, "colors/cmap/reverse") is True
+
+    spin = QtWidgets.QSpinBox()
+    spin.setValue(42)
+    assert dialog._control_value(spin, "io/dask/compute_threshold") == 42
+
+    color_combo = ColorMapComboBox()
+    color_combo.ensure_populated()
+    color_combo.setCurrentText("bwr")
+    assert dialog._control_value(color_combo, "colors/cmap/name") == "bwr"
+
+    combo = QtWidgets.QComboBox()
+    combo.addItem("Visible text")
+    assert dialog._control_value(combo, "io/default_loader") == "Visible text"
+
+    combo_with_data = QtWidgets.QComboBox()
+    combo_with_data.addItem("Visible text", "stored-value")
+    assert dialog._control_value(combo_with_data, "io/default_loader") == "stored-value"
+
+    colors = ColorListWidget()
+    colors.set_colors(["#ff0000", "#00ff00"])
+    assert colors.get_colors() == ["#ff0000", "#00ff00"]
+    assert dialog._control_value(colors, "colors/cursors") == [
+        "#ff0000",
+        "#00ff00",
+    ]
+
+    stylesheets = StylesheetListWidget(["classic", "ggplot"])
+    assert dialog._control_value(stylesheets, "figure/stylesheets") == [
+        "classic",
+        "ggplot",
+    ]
+
+    list_line = QtWidgets.QLineEdit("one, two,, ")
+    assert dialog._control_value(list_line, "colors/cmap/exclude") == ["one", "two"]
+
+    text_line = QtWidgets.QLineEdit("example")
+    assert dialog._control_value(text_line, "io/default_loader") == "example"
+    assert dialog._control_value(QtWidgets.QWidget(), "io/default_loader") is None
+
+
+def test_dialog_set_control_value_helpers(dialog: OptionDialog):
+    combo = QtWidgets.QComboBox()
+    combo.addItem("Known", "known")
+
+    dialog._set_control_value(combo, "io/default_loader", "missing")
+
+    assert combo.currentData() == "missing"
+    assert combo.currentText() == "missing (unavailable)"
+
+    list_line = QtWidgets.QLineEdit()
+    dialog._set_control_value(list_line, "colors/cmap/exclude", ["one", "two"])
+    assert list_line.text() == "one, two"
+
+    text_line = QtWidgets.QLineEdit()
+    dialog._set_control_value(text_line, "io/default_loader", "example")
+    assert text_line.text() == "example"
+
+
+def test_dialog_spinbox_constraint_variants(
+    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog
+):
+    int_spin = QtWidgets.QSpinBox()
+    monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {"gt": 2})
+    dialog._configure_spinbox(int_spin, "io/dask/compute_threshold")
+    assert int_spin.minimum() == 2
+
+    double_spin = QtWidgets.QDoubleSpinBox()
+    monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {"lt": 3.5})
+    dialog._configure_spinbox(double_spin, "colors/cmap/gamma")
+    assert double_spin.maximum() == pytest.approx(3.5)
+
+    unconstrained_int = QtWidgets.QSpinBox()
+    monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {})
+    dialog._configure_spinbox(unconstrained_int, "io/dask/compute_threshold")
+    assert unconstrained_int.minimum() == -2147483648
+    assert unconstrained_int.maximum() == 2147483647
+
+
+def test_dialog_workspace_helpers_without_manager_are_noops(dialog: OptionDialog):
+    dialog._set_workspace_override("colors/cmap/name", "bwr")
+    dialog._clear_workspace_override("colors/cmap/name")
+
+    assert dialog._workspace_overrides() == {}
+    assert dialog._effective_options().model_dump() == options.model.model_dump()
+
+
 def test_workspace_scope_shows_only_overridable_settings(qtbot):
     manager = _WorkspaceManagerStub()
     qtbot.addWidget(manager)
@@ -232,6 +382,20 @@ def test_workspace_scope_shows_only_overridable_settings(qtbot):
         row.path for (scope, _path), row in dlg._rows.items() if scope == "workspace"
     }
     assert workspace_paths == set(workspace_overridable_option_paths())
+
+
+def test_workspace_stylesheet_override_keeps_raw_saved_names(qtbot):
+    path = "figure/stylesheets"
+    saved = ["classic", "missing-style"]
+    manager = _WorkspaceManagerStub({path: saved})
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+
+    row = dlg._rows[("workspace", path)]
+
+    assert dlg._keeps_raw_workspace_value(row.control)
+    assert dlg._value_for_row(row) == saved
 
 
 def test_workspace_override_switch_saves_sparse_override(qtbot):
@@ -253,6 +417,55 @@ def test_workspace_override_switch_saves_sparse_override(qtbot):
 
     assert manager.overrides[path] == "bwr"
     assert combo.isEnabled()
+
+
+def test_workspace_control_change_without_override_is_ignored(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    row = dlg._rows[("workspace", "colors/cmap/name")]
+    dlg._control_changed(row)
+
+    assert manager.overrides == {}
+
+
+def test_workspace_override_switch_can_clear_existing_override(qtbot):
+    path = "colors/cmap/name"
+    manager = _WorkspaceManagerStub({path: "bwr"})
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    _override(dlg, path).setChecked(False)
+
+    assert path not in manager.overrides
+
+
+def test_workspace_override_changed_ignores_user_rows(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+
+    dlg._override_changed(dlg._rows[("user", "colors/cmap/name")])
+
+    assert manager.overrides == {}
+
+
+def test_refresh_all_reraises_invalid_user_values(
+    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog
+) -> None:
+    def raise_value_error(*_args, **_kwargs) -> None:
+        raise ValueError("invalid user setting")
+
+    monkeypatch.setattr(dialog, "_set_control_value", raise_value_error)
+
+    with pytest.raises(ValueError, match="invalid user setting"):
+        dialog._refresh_all()
 
 
 def test_workspace_row_action_removes_override(qtbot):
@@ -339,6 +552,84 @@ def test_session_revert_restores_user_and_workspace(qtbot):
     assert options.model.colors.cmap.name == AppOptions().colors.cmap.name
     assert manager.overrides == {path: "viridis"}
     assert not dlg.modified
+
+
+def test_reset_current_scope_confirms_user_reset(
+    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog
+):
+    combo = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(dialog, "user", "colors/cmap/name", QtWidgets.QComboBox),
+    )
+    combo.setCurrentText("bwr")
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+    )
+
+    dialog._reset_current_scope()
+
+    assert options.model.colors.cmap.name == "bwr"
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    dialog._reset_current_scope()
+
+    assert options.model.colors.cmap.name == AppOptions().colors.cmap.name
+
+
+def test_reset_current_scope_confirms_workspace_clear(
+    monkeypatch: pytest.MonkeyPatch, qtbot
+):
+    path = "colors/cmap/name"
+    manager = _WorkspaceManagerStub({path: "bwr"})
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    dlg._reset_current_scope()
+
+    assert manager.overrides == {}
+
+
+def test_reset_current_scope_workspace_without_overrides_is_noop(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    dlg._reset_current_scope()
+
+    assert manager.dirty_marks == []
+
+
+def test_dialog_compatibility_slots(dialog: OptionDialog):
+    combo = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(dialog, "user", "colors/cmap/name", QtWidgets.QComboBox),
+    )
+    combo.setCurrentText("bwr")
+
+    dialog.apply()
+    dialog.update()
+    dialog.restore()
+
+    assert options.model.colors.cmap.name == AppOptions().colors.cmap.name
+
+    dialog.accept()
+    dialog.reject()
 
 
 def test_workspace_override_helpers_filter_to_curated_subset() -> None:

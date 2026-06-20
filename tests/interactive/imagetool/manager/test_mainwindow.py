@@ -141,6 +141,31 @@ def _selection_shortcut_sequences(
     }
 
 
+def test_manager_open_settings_reuses_live_dialog(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager.open_settings()
+
+        dialog = manager._additional_windows.get("settings")
+        if dialog is None:
+            raise AssertionError("Settings dialog was not registered")
+        assert isinstance(dialog, erlab.interactive._options.OptionDialog)
+        assert dialog.isVisible()
+
+        manager.open_settings()
+
+        assert manager._additional_windows.get("settings") is dialog
+
+        dialog.deleteLater()
+        qtbot.wait_until(lambda: "settings" not in manager._additional_windows)
+
+
 @pytest.mark.parametrize(
     ("platform", "rename_shortcut", "show_shortcut", "expected_shortcuts"),
     [

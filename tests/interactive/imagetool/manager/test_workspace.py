@@ -727,6 +727,31 @@ def test_manager_workspace_option_overrides_roundtrip_and_mark_dirty(
         assert not manager.is_workspace_modified
 
 
+def test_manager_workspace_option_override_helpers(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._mark_workspace_clean()
+
+        manager.set_workspace_option_override("colors/cmap/name", "viridis")
+
+        assert manager.workspace_option_overrides() == {"colors/cmap/name": "viridis"}
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.options_modified
+
+        manager.clear_workspace_option_override("colors/cmap/name")
+        assert manager.workspace_option_overrides() == {}
+
+        manager.clear_workspace_option_override("colors/cmap/name")
+        assert manager.workspace_option_overrides() == {}
+
+
 def test_manager_workspace_load_warns_for_unavailable_colormap(
     qtbot,
     tmp_path: pathlib.Path,
