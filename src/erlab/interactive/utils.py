@@ -6378,7 +6378,11 @@ class _PythonCodeLineNumberArea(QtWidgets.QWidget):
 class PythonCodeEditor(QtWidgets.QTextEdit):
     """Python code editor with syntax highlighting and block indentation."""
 
+    sigTextEditingStarted = QtCore.Signal()  #: :meta private:
+    sigTextEditingSettled = QtCore.Signal(str)  #: :meta private:
+
     TAB_SPACES = 4
+    TEXT_EDITING_SETTLE_DELAY_MS = 800
     _PAIR_DELIMITERS: typing.ClassVar[dict[str, str]] = {
         "(": ")",
         "[": "]",
@@ -6392,11 +6396,19 @@ class PythonCodeEditor(QtWidgets.QTextEdit):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._line_number_area = _PythonCodeLineNumberArea(self)
+        self._text_editing_active = False
+        self._text_editing_settle_timer = QtCore.QTimer(self)
+        self._text_editing_settle_timer.setSingleShot(True)
+        self._text_editing_settle_timer.setInterval(self.TEXT_EDITING_SETTLE_DELAY_MS)
+        self._text_editing_settle_timer.timeout.connect(
+            self._finish_text_editing_activity
+        )
         self.setAcceptRichText(False)
         self.setFont(
             QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
         )
         self.highlighter = PythonHighlighter(self.document())
+        self.document().contentsChange.connect(self._mark_text_editing_activity)
         self.document().blockCountChanged.connect(
             lambda _count: self._update_line_number_area_width()
         )
@@ -6488,6 +6500,58 @@ class PythonCodeEditor(QtWidgets.QTextEdit):
             else QtWidgets.QTextEdit.LineWrapMode.NoWrap
         )
         self.setLineWrapMode(mode)
+
+    def set_text_editing_settle_delay(self, delay_ms: int) -> None:
+        """Set the quiet interval used to mark text editing as settled."""
+        self._text_editing_settle_timer.setInterval(max(0, delay_ms))
+
+    def text_editing_settle_delay(self) -> int:
+        """Return the quiet interval used to mark text editing as settled."""
+        return self._text_editing_settle_timer.interval()
+
+    def text_editing_active(self) -> bool:
+        """Return whether the document is in an active editing burst."""
+        return self._text_editing_active
+
+    def reset_text_editing_activity(self) -> None:
+        """Clear pending editing activity without emitting settled-text signals."""
+        self._text_editing_settle_timer.stop()
+        self._text_editing_active = False
+
+    @staticmethod
+    def python_syntax_error_for_text(code: str) -> SyntaxError | None:
+        """Return the Python syntax error for *code*, or ``None`` if it parses."""
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            return exc
+        return None
+
+    def python_syntax_error(self, code: str | None = None) -> SyntaxError | None:
+        """Return the Python syntax error for *code* or the editor contents."""
+        return self.python_syntax_error_for_text(
+            self.toPlainText() if code is None else code
+        )
+
+    def has_valid_python_syntax(self, code: str | None = None) -> bool:
+        """Return whether *code* or the editor contents parse as Python."""
+        return self.python_syntax_error(code) is None
+
+    def _mark_text_editing_activity(
+        self, _position: int, chars_removed: int, chars_added: int
+    ) -> None:
+        if not chars_removed and not chars_added:
+            return
+        if not self._text_editing_active:
+            self._text_editing_active = True
+            self.sigTextEditingStarted.emit()
+        self._text_editing_settle_timer.start()
+
+    def _finish_text_editing_activity(self) -> None:
+        if not self._text_editing_active:
+            return
+        self._text_editing_active = False
+        self.sigTextEditingSettled.emit(self.toPlainText())
 
     @staticmethod
     def _plain_edit_modifiers(mods: QtCore.Qt.KeyboardModifier) -> bool:

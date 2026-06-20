@@ -34,30 +34,31 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
-_CUSTOM_CODE_UPDATE_DELAY_MS = 250
+_CUSTOM_CODE_SETTLE_DELAY_MS = 900
 
 
 def _connect_custom_code_editor(
     tool: FigureComposerTool, code_edit: erlab.interactive.utils.PythonCodeEditor
 ) -> None:
-    timer = QtCore.QTimer(tool)
-    timer.setSingleShot(True)
-    timer.setInterval(_CUSTOM_CODE_UPDATE_DELAY_MS)
+    code_edit.set_text_editing_settle_delay(_CUSTOM_CODE_SETTLE_DELAY_MS)
+    code_edit.reset_text_editing_activity()
     code_edit_any = typing.cast("typing.Any", code_edit)
-    code_edit_any._figure_composer_custom_code_commit_timer = timer
     pending_code = [code_edit.toPlainText()]
     pending_operation_ids: list[tuple[str, ...]] = [()]
     pending_dirty = [False]
 
-    def queue_commit() -> None:
-        if not tool._editor_control_signal_allowed(code_edit):
-            return
+    def capture_pending_code(*, refresh_operation_ids: bool) -> None:
         pending_code[0] = code_edit.toPlainText()
-        pending_operation_ids[0] = tuple(
-            operation.operation_id for _index, operation in tool._editable_operations()
-        )
+        if refresh_operation_ids:
+            pending_operation_ids[0] = tuple(
+                operation.operation_id
+                for _index, operation in tool._editable_operations()
+            )
         pending_dirty[0] = True
-        timer.start()
+
+    def queue_commit() -> None:
+        if tool._editor_control_signal_allowed(code_edit):
+            capture_pending_code(refresh_operation_ids=True)
 
     def queue_contents_change(
         _position: int, chars_removed: int, chars_added: int
@@ -65,7 +66,7 @@ def _connect_custom_code_editor(
         if chars_removed or chars_added:
             queue_commit()
 
-    def commit_code() -> None:
+    def commit_code(*, render: bool) -> None:
         if not pending_dirty[0]:
             return
         if tool._closing or not erlab.interactive.utils.qt_is_valid(tool):
@@ -74,25 +75,33 @@ def _connect_custom_code_editor(
         if not operation_ids:
             return
         pending_dirty[0] = False
-        timer.stop()
         code = pending_code[0]
-        tool._update_operations_by_ids(
+        render_valid_code = render and code_edit.has_valid_python_syntax(code)
+        changed = tool._update_operations_by_ids(
             operation_ids,
             lambda _index, target: target.model_copy(update={"code": code}),
+            render=render_valid_code,
         )
+        if changed and not render_valid_code:
+            tool.sigInfoChanged.emit()
 
-    def flush_pending_commit() -> None:
-        if timer.isActive():
-            timer.stop()
-        commit_code()
+    def commit_settled_code(_code: str) -> None:
+        commit_code(render=True)
+
+    def flush_pending_commit(*, render: bool = False) -> None:
+        if code_edit.text_editing_active():
+            code_edit.reset_text_editing_activity()
+            if pending_dirty[0]:
+                pending_code[0] = code_edit.toPlainText()
+        commit_code(render=render)
 
     tool._mark_editor_control(code_edit)
     document = code_edit.document()
     document.contentsChange.connect(queue_contents_change)
-    timer.timeout.connect(commit_code)
+    code_edit.sigTextEditingSettled.connect(commit_settled_code)
     code_edit_any._figure_composer_custom_code_commit_handlers = (
         queue_contents_change,
-        commit_code,
+        commit_settled_code,
         flush_pending_commit,
     )
     code_edit_any._figure_composer_custom_code_flush_pending_commit = (

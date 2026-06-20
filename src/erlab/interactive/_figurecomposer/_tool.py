@@ -893,7 +893,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if event is not None:
             super().hideEvent(event)
 
-    def _flush_pending_editor_commits(self) -> None:
+    def _flush_pending_editor_commits(self, *, render: bool = False) -> None:
         for widget in self.findChildren(QtWidgets.QWidget):
             flush = getattr(
                 widget,
@@ -902,7 +902,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             if callable(flush):
                 with contextlib.suppress(RuntimeError):
-                    flush()
+                    flush(render=render)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._flush_pending_editor_commits()
@@ -2754,10 +2754,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
-    ) -> None:
+    ) -> bool:
         operation_id_set = set(operation_ids)
         if not operation_id_set:
-            return
+            return False
         current = self._current_operation()
         operations = list(self._recipe.operations)
         changed = False
@@ -2768,7 +2768,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             changed = changed or updated != operation
             operations[index] = updated
         if not changed:
-            return
+            return False
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
         if current is not None:
@@ -2788,6 +2788,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _render_preview(self)
             self.sigInfoChanged.emit()
         self._write_state()
+        return True
 
     def _replace_operation(
         self,
@@ -4322,6 +4323,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._retire_editor_widget(widget)
 
     def _clear_operation_editor(self) -> None:
+        self._flush_pending_editor_commits()
         for page in self._operation_editor_pages:
             self.step_editor_stack.removeWidget(page)
             self._retire_editor_widget(page)

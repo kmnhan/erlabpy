@@ -1149,6 +1149,32 @@ def test_python_code_editor_alt_z_toggles_line_wrap(qtbot) -> None:
     assert editor.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
 
 
+def test_python_code_editor_reports_python_syntax(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+
+    assert editor.has_valid_python_syntax("ax.set_title('ok')")
+    assert editor.python_syntax_error("ax.set_title(") is not None
+
+
+def test_python_code_editor_tracks_settled_text(qtbot) -> None:
+    editor = PythonCodeEditor()
+    qtbot.addWidget(editor)
+    editor.set_text_editing_settle_delay(20)
+    started: list[bool] = []
+    settled: list[str] = []
+    editor.sigTextEditingStarted.connect(lambda: started.append(True))
+    editor.sigTextEditingSettled.connect(settled.append)
+
+    editor.setPlainText("first")
+    editor.setPlainText("second")
+
+    assert editor.text_editing_active()
+    assert started == [True]
+    qtbot.waitUntil(lambda: settled == ["second"], timeout=1000)
+    assert not editor.text_editing_active()
+
+
 def _press_editor_key(
     editor: PythonCodeEditor,
     key: QtCore.Qt.Key,

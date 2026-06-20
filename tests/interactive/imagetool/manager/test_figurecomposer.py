@@ -2491,6 +2491,10 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
     first_code = "ax.set_title('first')"
     second_code = "ax.set_title('second')\nax.set_xlabel('energy')"
     code_edit.setPlainText(first_code)
+    qtbot.wait(300)
+    assert tool.tool_status.operations[0].code == "ax.set_title('old')"
+    assert render_calls == []
+
     code_edit.setPlainText(second_code)
 
     assert tool.tool_status.operations[0].code == "ax.set_title('old')"
@@ -2501,6 +2505,65 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
         timeout=1000,
     )
     assert render_calls == [(tool,)]
+
+
+def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="code",
+        code="ax.set_title('old')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+
+    current_page = tool.step_editor_stack.currentWidget()
+    assert current_page is not None
+    code_edit = current_page.findChild(
+        erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
+    )
+    assert code_edit is not None
+
+    render_calls: list[tuple[object, ...]] = []
+    info_changed: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    invalid_code = "ax.set_title("
+    code_edit.setPlainText(invalid_code)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == invalid_code,
+        timeout=2000,
+    )
+    assert render_calls == []
+    assert info_changed == [None]
+
+    valid_code = "ax.set_title('valid')"
+    code_edit.setPlainText(valid_code)
+
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].code == valid_code,
+        timeout=2000,
+    )
+    assert render_calls == [(tool,)]
+    assert info_changed == [None, None]
 
 
 def test_figure_composer_custom_code_pending_edit_survives_step_switch(
