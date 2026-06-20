@@ -660,10 +660,21 @@ class _WorkspaceIOController:
             removed=removed,
             structure=structure,
         )
-        if event.uid is not None and (event.added or event.data or event.state):
+        was_modified = self._manager.is_workspace_modified
+        node_was_modified = event.uid is not None and event.uid in (
+            self._manager._workspace_state.dirty_added
+            | self._manager._workspace_state.dirty_data
+            | self._manager._workspace_state.dirty_state
+        )
+        if (
+            event.uid is not None
+            and (event.added or event.data or event.state)
+            and not node_was_modified
+        ):
             self._manager._set_node_window_modified(event.uid, True)
         self._manager._workspace_state.mark_dirty(event)
-        self._manager._update_workspace_window_title()
+        if not was_modified and self._manager.is_workspace_modified:
+            self._manager._update_workspace_window_title()
 
     def _mark_node_added(self, uid: str) -> None:
         self._manager._mark_workspace_dirty(

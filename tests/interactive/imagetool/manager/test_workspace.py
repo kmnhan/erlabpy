@@ -5340,6 +5340,44 @@ def test_manager_workspace_window_title_sets_file_path(
         assert manager.isWindowModified()
 
 
+@pytest.mark.parametrize("dirty_kw", [{"data": True}, {"state": True}])
+def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
+    monkeypatch,
+    tmp_path,
+    dirty_kw: dict[str, bool],
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "normal.itws"
+        manager._workspace_state.path = workspace
+        file_path_calls: list[str] = []
+        node_modified_calls: list[tuple[str, bool]] = []
+
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowFilePath",
+            lambda _manager, path: file_path_calls.append(path),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_set_node_window_modified",
+            lambda uid, modified: node_modified_calls.append((uid, modified)),
+        )
+
+        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+
+        assert file_path_calls == [str(workspace)]
+        assert node_modified_calls == [("n1", True)]
+        assert [event.uid for event in manager._workspace_state.dirty_events] == [
+            "n1",
+            "n1",
+        ]
+        assert manager._workspace_state.dirty_generation == 2
+
+
 def test_manager_workspace_window_title_clears_file_path_without_workspace(
     monkeypatch,
     manager_context: Callable[
