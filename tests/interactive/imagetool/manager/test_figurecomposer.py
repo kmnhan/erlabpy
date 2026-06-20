@@ -658,9 +658,11 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
     assert first_item.font(0).bold()
+    assert first_item.text(1) == "data_0"
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
+    assert second_item.text(1) == "data_1"
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -690,11 +692,14 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
 
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
-    shape_widget = tool.source_list.itemWidget(first_item, 1)
+    shape_widget = tool.source_list.itemWidget(first_item, 2)
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert shape_widget.text() == "<p>formatted shape</p>"
-    assert shape_widget.toolTip() == first_item.toolTip(0)
-    assert first_item.toolTip(1) == first_item.toolTip(0)
+    assert tool.source_list.toolTip() == ""
+    assert first_item.toolTip(0) == ""
+    assert first_item.toolTip(1) == ""
+    assert first_item.toolTip(2) == ""
+    assert shape_widget.toolTip() == ""
     assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
@@ -843,11 +848,11 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     )
     assert tool._source_refresh_label("data_0") is None
 
-    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", ""])
+    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", "", ""])
     tool.source_list.addTopLevelItem(direct_item)
     direct_button = QtWidgets.QToolButton(tool.source_list)
     direct_button.setObjectName("figureComposerRefreshSourceButton")
-    tool.source_list.setItemWidget(direct_item, 2, direct_button)
+    tool.source_list.setItemWidget(direct_item, 3, direct_button)
     assert (
         tool._source_list_row_button(direct_item, "figureComposerRefreshSourceButton")
         is direct_button
@@ -1520,7 +1525,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     assert "sample_temp_idx" not in shape.source_text
     shape_item = tool.source_list.topLevelItem(0)
     assert shape_item is not None
-    shape_label = tool.source_list.itemWidget(shape_item, 1)
+    shape_label = tool.source_list.itemWidget(shape_item, 2)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert "sample_temp_idx" not in shape_label.text()
 

@@ -142,8 +142,9 @@ _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _SOURCE_LIST_SOURCE_COLUMN = 0
-_SOURCE_LIST_SHAPE_COLUMN = 1
-_SOURCE_LIST_ACTION_COLUMN = 2
+_SOURCE_LIST_ALIAS_COLUMN = 1
+_SOURCE_LIST_SHAPE_COLUMN = 2
+_SOURCE_LIST_ACTION_COLUMN = 3
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
@@ -1139,8 +1140,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources_layout.addWidget(self.source_actions)
         self.source_list = QtWidgets.QTreeWidget(self.step_sources_page)
         self.source_list.setObjectName("figureComposerSourceList")
-        self.source_list.setColumnCount(3)
-        self.source_list.setHeaderLabels(("Source", "Shape", ""))
+        self.source_list.setColumnCount(4)
+        self.source_list.setHeaderLabels(("Source", "Alias", "Shape", ""))
         self.source_list.setRootIsDecorated(False)
         self.source_list.setIndentation(0)
         self.source_list.setUniformRowHeights(True)
@@ -1154,17 +1155,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.source_list.setToolTip("Data available to the selected step.")
         source_header = self.source_list.header()
         if source_header is not None:
             source_header.setStretchLastSection(False)
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SOURCE_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Stretch,
+            )
+            source_header.setSectionResizeMode(
+                _SOURCE_LIST_ALIAS_COLUMN,
                 QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SHAPE_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.Stretch,
+                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_ACTION_COLUMN,
@@ -1699,7 +1703,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._add_source_list_row(
                 display,
                 name,
-                _source_display_tooltip(source, name),
                 data=data,
                 missing=source is None,
                 used=name in used_sources,
@@ -1719,11 +1722,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._add_source_list_row(
                 display,
                 source.name,
-                _source_display_tooltip(source, source.name),
                 missing=True,
                 used=source.name in used_sources,
             )
-        self.source_list.resizeColumnToContents(_SOURCE_LIST_SOURCE_COLUMN)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_ALIAS_COLUMN)
+        self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
         self._refresh_source_controls()
 
@@ -1746,23 +1749,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self,
         display: str,
         name: str,
-        tooltip: str,
         *,
         data: xr.DataArray | None = None,
         missing: bool = False,
         used: bool = False,
     ) -> None:
         item = QtWidgets.QTreeWidgetItem(
-            [display, "missing" if data is None else "", ""]
+            [display, name, "missing" if data is None else "", ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
-        item.setData(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2, tooltip
-        )
         item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
         if missing:
             item.setForeground(
                 _SOURCE_LIST_SOURCE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
+            )
+            item.setForeground(
+                _SOURCE_LIST_ALIAS_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
             )
             item.setForeground(
                 _SOURCE_LIST_SHAPE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
@@ -1789,7 +1791,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.Qt.TextInteractionFlag.NoTextInteraction
         )
         shape_label.setContentsMargins(4, 0, 4, 0)
-        shape_label.setToolTip(item.toolTip(_SOURCE_LIST_SOURCE_COLUMN))
         if missing:
             palette = shape_label.palette()
             palette.setColor(
@@ -1991,16 +1992,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         item.setData(
             _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 1, used
         )
-        base_tooltip = item.data(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 2
-        )
-        tooltip = (
-            base_tooltip
-            if isinstance(base_tooltip, str)
-            else item.toolTip(_SOURCE_LIST_SOURCE_COLUMN)
-        )
-        if used:
-            tooltip = f"Used by selected step.\n{tooltip}"
         font = item.font(_SOURCE_LIST_SOURCE_COLUMN)
         font.setBold(used)
         item.setFont(_SOURCE_LIST_SOURCE_COLUMN, font)
@@ -2015,11 +2006,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._set_source_remove_button_state(
                     remove_button, source_name, item.text(_SOURCE_LIST_SOURCE_COLUMN)
                 )
-        for column in (_SOURCE_LIST_SOURCE_COLUMN, _SOURCE_LIST_SHAPE_COLUMN):
-            item.setToolTip(column, tooltip)
-            widget = self.source_list.itemWidget(item, column)
-            if widget is not None:
-                widget.setToolTip(tooltip)
 
     def _sync_source_list_used_state(self) -> None:
         current = self._current_operation()
