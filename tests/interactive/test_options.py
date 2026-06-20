@@ -281,29 +281,35 @@ def test_user_row_reset_restores_default(qtbot):
     assert options.model.colors.cmap.name == AppOptions().colors.cmap.name
 
 
-def test_dialog_control_value_helpers(dialog: OptionDialog):
+def test_dialog_control_value_helpers(dialog: OptionDialog, qtbot):
     checkbox = QtWidgets.QCheckBox()
+    qtbot.addWidget(checkbox)
     checkbox.setChecked(True)
     assert dialog._control_value(checkbox, "colors/cmap/reverse") is True
 
     spin = QtWidgets.QSpinBox()
+    qtbot.addWidget(spin)
     spin.setValue(42)
     assert dialog._control_value(spin, "io/dask/compute_threshold") == 42
 
     color_combo = ColorMapComboBox()
+    qtbot.addWidget(color_combo)
     color_combo.ensure_populated()
     color_combo.setCurrentText("bwr")
     assert dialog._control_value(color_combo, "colors/cmap/name") == "bwr"
 
     combo = QtWidgets.QComboBox()
+    qtbot.addWidget(combo)
     combo.addItem("Visible text")
     assert dialog._control_value(combo, "io/default_loader") == "Visible text"
 
     combo_with_data = QtWidgets.QComboBox()
+    qtbot.addWidget(combo_with_data)
     combo_with_data.addItem("Visible text", "stored-value")
     assert dialog._control_value(combo_with_data, "io/default_loader") == "stored-value"
 
     colors = ColorListWidget()
+    qtbot.addWidget(colors)
     colors.set_colors(["#ff0000", "#00ff00"])
     assert colors.get_colors() == ["#ff0000", "#00ff00"]
     assert dialog._control_value(colors, "colors/cursors") == [
@@ -312,21 +318,27 @@ def test_dialog_control_value_helpers(dialog: OptionDialog):
     ]
 
     stylesheets = StylesheetListWidget(["classic", "ggplot"])
+    qtbot.addWidget(stylesheets)
     assert dialog._control_value(stylesheets, "figure/stylesheets") == [
         "classic",
         "ggplot",
     ]
 
     list_line = QtWidgets.QLineEdit("one, two,, ")
+    qtbot.addWidget(list_line)
     assert dialog._control_value(list_line, "colors/cmap/exclude") == ["one", "two"]
 
     text_line = QtWidgets.QLineEdit("example")
+    qtbot.addWidget(text_line)
     assert dialog._control_value(text_line, "io/default_loader") == "example"
-    assert dialog._control_value(QtWidgets.QWidget(), "io/default_loader") is None
+    unknown_widget = QtWidgets.QWidget()
+    qtbot.addWidget(unknown_widget)
+    assert dialog._control_value(unknown_widget, "io/default_loader") is None
 
 
-def test_dialog_set_control_value_helpers(dialog: OptionDialog):
+def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     combo = QtWidgets.QComboBox()
+    qtbot.addWidget(combo)
     combo.addItem("Known", "known")
 
     dialog._set_control_value(combo, "io/default_loader", "missing")
@@ -335,28 +347,33 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog):
     assert combo.currentText() == "missing (unavailable)"
 
     list_line = QtWidgets.QLineEdit()
+    qtbot.addWidget(list_line)
     dialog._set_control_value(list_line, "colors/cmap/exclude", ["one", "two"])
     assert list_line.text() == "one, two"
 
     text_line = QtWidgets.QLineEdit()
+    qtbot.addWidget(text_line)
     dialog._set_control_value(text_line, "io/default_loader", "example")
     assert text_line.text() == "example"
 
 
 def test_dialog_spinbox_constraint_variants(
-    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog
+    monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog, qtbot
 ):
     int_spin = QtWidgets.QSpinBox()
+    qtbot.addWidget(int_spin)
     monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {"gt": 2})
     dialog._configure_spinbox(int_spin, "io/dask/compute_threshold")
     assert int_spin.minimum() == 2
 
     double_spin = QtWidgets.QDoubleSpinBox()
+    qtbot.addWidget(double_spin)
     monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {"lt": 3.5})
     dialog._configure_spinbox(double_spin, "colors/cmap/gamma")
     assert double_spin.maximum() == pytest.approx(3.5)
 
     unconstrained_int = QtWidgets.QSpinBox()
+    qtbot.addWidget(unconstrained_int)
     monkeypatch.setattr(options_ui, "_field_constraints", lambda _field: {})
     dialog._configure_spinbox(unconstrained_int, "io/dask/compute_threshold")
     assert unconstrained_int.minimum() == -2147483648
