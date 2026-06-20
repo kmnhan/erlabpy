@@ -97,8 +97,14 @@ def _connect_custom_code_editor(
 
     tool._mark_editor_control(code_edit)
     document = code_edit.document()
-    document.contentsChange.connect(queue_contents_change)
-    code_edit.sigTextEditingSettled.connect(commit_settled_code)
+    if document is None:
+        raise RuntimeError("Custom code editor has no text document")
+    tool._connect_editor_signal(
+        code_edit, document.contentsChange, queue_contents_change
+    )
+    tool._connect_editor_signal(
+        code_edit, code_edit.sigTextEditingSettled, commit_settled_code
+    )
     code_edit_any._figure_composer_custom_code_commit_handlers = (
         queue_contents_change,
         commit_settled_code,

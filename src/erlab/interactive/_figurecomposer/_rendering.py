@@ -320,7 +320,7 @@ def _render_into_figure(
     from erlab.interactive._figurecomposer._operations import _registry
 
     render_errors: dict[str, str] = {}
-    previous_plot_slices_cache = getattr(tool, "_plot_slices_selection_cache", None)
+    previous_plot_slices_cache = tool._plot_slices_selection_cache
     tool._plot_slices_selection_cache = {}
     try:
         with _tool_figure_options_context(tool), _figure_style_context():
@@ -338,11 +338,7 @@ def _render_into_figure(
                 except Exception as exc:
                     render_errors[operation.operation_id] = _render_error_text(exc)
     finally:
-        if previous_plot_slices_cache is None:
-            with contextlib.suppress(AttributeError):
-                del tool._plot_slices_selection_cache
-        else:
-            tool._plot_slices_selection_cache = previous_plot_slices_cache
+        tool._plot_slices_selection_cache = previous_plot_slices_cache
     tool._set_operation_render_errors(render_errors)
 
 

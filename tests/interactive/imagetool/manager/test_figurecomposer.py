@@ -9439,7 +9439,6 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.width_ratios_edit,
             tool.height_ratios_edit,
             tool.operation_list,
-            tool.source_list,
             tool.use_all_axes_button,
             tool.keep_valid_axes_button,
             tool.axes_expression_edit,

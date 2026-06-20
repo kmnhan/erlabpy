@@ -124,7 +124,15 @@ from erlab.interactive._figurecomposer._widgets import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from collections.abc import (
+        Callable,
+        Hashable,
+        Iterable,
+        Iterator,
+        Mapping,
+        MutableMapping,
+        Sequence,
+    )
 
     import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -327,6 +335,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
         self._operation_input_errors: dict[str, dict[str, str]] = {}
+        self._plot_slices_selection_cache: (
+            MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None
+        ) = None
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0

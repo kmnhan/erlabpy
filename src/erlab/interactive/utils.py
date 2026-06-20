@@ -6427,17 +6427,25 @@ class PythonCodeEditor(QtWidgets.QTextEdit):
         self.setFont(
             QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
         )
-        self.highlighter = PythonHighlighter(self.document())
-        self.document().contentsChange.connect(self._mark_text_editing_activity)
-        self.document().blockCountChanged.connect(
+        document = self._text_document()
+        self.highlighter = PythonHighlighter(document)
+        document.contentsChange.connect(self._mark_text_editing_activity)
+        document.blockCountChanged.connect(
             lambda _count: self._update_line_number_area_width()
         )
-        self.document().contentsChanged.connect(self._line_number_area.update)
+        document.contentsChanged.connect(self._line_number_area.update)
         self.cursorPositionChanged.connect(self._line_number_area.update)
-        self.verticalScrollBar().valueChanged.connect(
-            lambda _value: self._line_number_area.update()
-        )
+        scroll_bar = self.verticalScrollBar()
+        if scroll_bar is None:
+            raise RuntimeError("PythonCodeEditor has no vertical scroll bar")
+        scroll_bar.valueChanged.connect(lambda _value: self._line_number_area.update())
         self._update_line_number_area_width()
+
+    def _text_document(self) -> QtGui.QTextDocument:
+        document = self.document()
+        if document is None:
+            raise RuntimeError("PythonCodeEditor has no text document")
+        return document
 
     def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
         if e is not None:
@@ -6932,7 +6940,7 @@ class PythonCodeEditor(QtWidgets.QTextEdit):
         self.setTextCursor(cursor)
 
     def _line_number_area_width(self) -> int:
-        digits = len(str(max(1, self.document().blockCount())))
+        digits = len(str(max(1, self._text_document().blockCount())))
         font_width = self.fontMetrics().horizontalAdvance("9")
         style = self.style()
         frame_width = (
