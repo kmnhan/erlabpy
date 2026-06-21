@@ -1276,10 +1276,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         setup_layout.setVerticalSpacing(6)
         setup_layout.setColumnStretch(2, 1)
         setup_layout.setColumnStretch(4, 1)
-        self.nrows_spin = QtWidgets.QSpinBox(layout_page)
-        self.nrows_spin.setRange(1, 12)
-        self.ncols_spin = QtWidgets.QSpinBox(layout_page)
-        self.ncols_spin.setRange(1, 12)
+        self.nrows_spin = erlab.interactive.utils.BetterSpinBox(
+            layout_page, integer=True, minimum=1
+        )
+        self.ncols_spin = erlab.interactive.utils.BetterSpinBox(
+            layout_page, integer=True, minimum=1
+        )
         self.width_spin = QtWidgets.QDoubleSpinBox(layout_page)
         self.width_spin.setRange(0.25, 100.0)
         self.width_spin.setDecimals(3)
@@ -2981,6 +2983,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     @QtCore.Slot(int)
     @QtCore.Slot(str)
+    @QtCore.Slot(object)
     def _setup_controls_changed(self, _value: object | None = None) -> None:
         if self._updating_controls:
             return

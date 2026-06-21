@@ -5534,6 +5534,39 @@ def test_figure_composer_undo_redo_setup_state(qtbot) -> None:
     assert tool.tool_status.setup.nrows == initial.setup.nrows + 1
 
 
+def test_figure_composer_subplot_controls_accept_more_than_twelve(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+
+    assert np.isinf(tool.nrows_spin.maximum())
+    assert np.isinf(tool.ncols_spin.maximum())
+
+    tool.nrows_spin.setValue(13)
+    assert tool.nrows_spin.value() == 13
+    assert tool.tool_status.setup.nrows == 13
+
+    tool.nrows_spin.setValue(1)
+    tool.ncols_spin.setValue(13)
+    assert tool.ncols_spin.value() == 13
+    assert tool.tool_status.setup.ncols == 13
+
+
+def test_figure_composer_gridspec_controls_accept_more_than_twelve(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+
+    tool.nrows_spin.setValue(13)
+    assert tool.nrows_spin.value() == 13
+    assert tool.tool_status.setup.gridspec.root.nrows == 13
+
+    tool.nrows_spin.setValue(1)
+    tool.ncols_spin.setValue(13)
+    assert tool.ncols_spin.value() == 13
+    assert tool.tool_status.setup.gridspec.root.ncols == 13
+
+
 def test_figure_composer_navigation_updates_recipe_limits(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
