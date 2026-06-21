@@ -13037,6 +13037,102 @@ def test_figure_composer_axes_plot_data_update_helper(qtbot) -> None:
     assert tool.tool_status.operations[0].method_args == ((2, 3),)
 
 
+def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="tick_params",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0,))
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    assert method_page is not None
+    axis_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsAxisCombo"
+    )
+    which_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsWhichCombo"
+    )
+    direction_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsDirectionCombo"
+    )
+    bottom_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsBottomCombo"
+    )
+    length_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"
+    )
+    label_size_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLabelSizeEdit"
+    )
+    colors_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
+    )
+    assert axis_combo is not None
+    assert which_combo is not None
+    assert direction_combo is not None
+    assert bottom_combo is not None
+    assert length_edit is not None
+    assert label_size_edit is not None
+    assert colors_edit is not None
+    assert axis_combo.currentText() == "both"
+    assert which_combo.currentText() == "major"
+    assert direction_combo.currentData() is None
+    assert bottom_combo.currentData() is None
+    assert tool.tool_status.operations[0].method_kwargs == {}
+
+    _activate_combo_text(axis_combo, "x")
+    _activate_combo_text(direction_combo, "inout")
+    _activate_combo_text(bottom_combo, "False")
+    length_edit.setText("4.5")
+    length_edit.setModified(True)
+    length_edit.editingFinished.emit()
+    label_size_edit.setText("9")
+    label_size_edit.setModified(True)
+    label_size_edit.editingFinished.emit()
+    colors_edit.setText("tab:red")
+    colors_edit.setModified(True)
+    colors_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "axis": "x",
+        "direction": "inout",
+        "bottom": False,
+        "length": 4.5,
+        "labelsize": 9,
+        "colors": "tab:red",
+    }
+
+    _activate_combo_index(bottom_combo, 0)
+    length_edit.setText("")
+    length_edit.setModified(True)
+    length_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "axis": "x",
+        "direction": "inout",
+        "labelsize": 9,
+        "colors": "tab:red",
+    }
+
+
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -13167,6 +13263,33 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
                         "method_kwargs": {"share": True},
                     }
                 ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="tick_params",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ).model_copy(
+                    update={
+                        "method_kwargs": {
+                            "axis": "x",
+                            "which": "both",
+                            "direction": "in",
+                            "length": 6.0,
+                            "width": 1.5,
+                            "colors": "red",
+                            "pad": 3.0,
+                            "labelrotation": 45.0,
+                            "labelsize": 8,
+                            "bottom": True,
+                            "top": True,
+                            "labelbottom": True,
+                            "labeltop": False,
+                            "grid_color": "blue",
+                            "grid_alpha": 0.25,
+                            "grid_linewidth": 0.75,
+                            "grid_linestyle": "--",
+                        },
+                    }
+                ),
             ),
             primary_source="data",
         ),
@@ -13291,8 +13414,52 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     aspect_edit.editingFinished.emit()
     assert tool.tool_status.operations[12].method_args == (2.5,)
 
+    tool.operation_list.setCurrentRow(13)
+    tool._select_step_section("method")
+    tick_axis_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsAxisCombo"
+    )
+    tick_which_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsWhichCombo"
+    )
+    tick_direction_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsDirectionCombo"
+    )
+    tick_top_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsTopCombo"
+    )
+    tick_labeltop_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsLabelTopCombo"
+    )
+    tick_length_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"
+    )
+    tick_label_size_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLabelSizeEdit"
+    )
+    tick_colors_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
+    )
+    assert tick_axis_combo is not None
+    assert tick_which_combo is not None
+    assert tick_direction_combo is not None
+    assert tick_top_combo is not None
+    assert tick_labeltop_combo is not None
+    assert tick_length_edit is not None
+    assert tick_label_size_edit is not None
+    assert tick_colors_edit is not None
+    assert tick_axis_combo.currentText() == "x"
+    assert tick_which_combo.currentText() == "both"
+    assert tick_direction_combo.currentData() == "in"
+    assert tick_top_combo.currentData() == "True"
+    assert tick_labeltop_combo.currentData() == "False"
+    assert tick_length_edit.text() == "6"
+    assert tick_label_size_edit.text() == "8"
+    assert tick_colors_edit.text() == "red"
+
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    fig.canvas.draw()
     assert fig.axes[0].texts[0].get_text() == "Panel"
     assert fig.axes[0].texts[0].get_transform() == fig.axes[0].transAxes
     assert fig.axes[0].lines[0].get_color() == "red"
@@ -13310,6 +13477,15 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert fig.axes[1].get_ylabel() == "Energy"
     assert fig.axes[0].margins() == (0.1, 0.2)
     assert fig.axes[1].get_aspect() == 2.5
+    tick = fig.axes[1].xaxis.get_major_ticks()[0]
+    assert tick.tick1line.get_markersize() == 6.0
+    assert tick.tick1line.get_markeredgewidth() == 1.5
+    assert tick.tick1line.get_color() == "red"
+    assert tick.tick2line.get_visible() is True
+    assert tick.label1.get_fontsize() == 8.0
+    assert tick.label1.get_rotation() == 45.0
+    assert tick.label1.get_color() == "red"
+    assert tick.label2.get_visible() is False
 
     code = tool.generated_code()
     assert (
@@ -13330,11 +13506,19 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert 'axs[0, 1].set_ylabel("Energy", loc="top", labelpad=4.0)' in code
     assert "axs[0, 0].margins(x=0.1, y=0.2, tight=False)" in code
     assert "axs[0, 1].set_aspect(2.5, share=True)" in code
+    assert (
+        'axs[0, 1].tick_params(axis="x", which="both", direction="in", '
+        'length=6.0, width=1.5, colors="red", pad=3.0, labelrotation=45.0, '
+        "labelsize=8, bottom=True, top=True, labelbottom=True, "
+        'labeltop=False, grid_color="blue", grid_alpha=0.25, '
+        'grid_linewidth=0.75, grid_linestyle="--")'
+    ) in code
     assert "for ax in (axs[0, 0],):" not in code
     assert "for ax in (axs[0, 1],):" not in code
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
+    namespace["fig"].canvas.draw()
     axs = namespace["axs"]
     assert axs[0, 0].texts[0].get_text() == "Panel"
     assert axs[0, 0].axison is False
@@ -13349,6 +13533,15 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert axs[0, 1].get_ylabel() == "Energy"
     assert axs[0, 0].margins() == (0.1, 0.2)
     assert axs[0, 1].get_aspect() == 2.5
+    tick = axs[0, 1].xaxis.get_major_ticks()[0]
+    assert tick.tick1line.get_markersize() == 6.0
+    assert tick.tick1line.get_markeredgewidth() == 1.5
+    assert tick.tick1line.get_color() == "red"
+    assert tick.tick2line.get_visible() is True
+    assert tick.label1.get_fontsize() == 8.0
+    assert tick.label1.get_rotation() == 45.0
+    assert tick.label1.get_color() == "red"
+    assert tick.label2.get_visible() is False
 
 
 def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:

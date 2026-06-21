@@ -174,6 +174,7 @@ class MethodControlKind(enum.StrEnum):
     BOOL_ARG_COMBO = "bool_arg_combo"
     KWARG_COMBO = "kwarg_combo"
     BOOL_KWARG_COMBO = "bool_kwarg_combo"
+    OPTIONAL_BOOL_KWARG_COMBO = "optional_bool_kwarg_combo"
     INT_KWARG = "int_kwarg"
     FLOAT_KWARG = "float_kwarg"
     SUBPLOTS_ADJUST_KWARG = "subplots_adjust_kwarg"
@@ -458,6 +459,26 @@ def _bool_kwarg_combo(
         tooltip=tooltip,
         options=("True", "False"),
         default=default,
+    )
+
+
+def _optional_bool_kwarg_combo(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    none_label: str = "Default",
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        options=("True", "False"),
+        default=None,
+        none_label=none_label,
     )
 
 
@@ -1393,6 +1414,189 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "both",
                 "figureComposerAxesMethodAxisCombo",
                 "Grid axis direction.",
+            ),
+        ),
+    ),
+    "tick_params": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="tick_params",
+        label="Tick parameters",
+        tooltip="Runs ax.tick_params on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_kwargs={"axis": "both", "which": "major"},
+        controls=(
+            _kwarg_combo(
+                "axis",
+                "axis",
+                ("both", "x", "y"),
+                "both",
+                "figureComposerAxesMethodTickParamsAxisCombo",
+                "Tick axis direction.",
+            ),
+            _kwarg_combo(
+                "which",
+                "which",
+                ("major", "minor", "both"),
+                "major",
+                "figureComposerAxesMethodTickParamsWhichCombo",
+                "Tick group.",
+            ),
+            _kwarg_combo(
+                "Direction",
+                "direction",
+                ("in", "out", "inout"),
+                None,
+                "figureComposerAxesMethodTickParamsDirectionCombo",
+                "Tick direction.",
+                none_label="Default",
+            ),
+            _optional_bool_kwarg_combo(
+                "Reset",
+                "reset",
+                "figureComposerAxesMethodTickParamsResetCombo",
+                "Reset ticks to defaults before updating them.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Bottom ticks",
+                "bottom",
+                "figureComposerAxesMethodTickParamsBottomCombo",
+                "Show or hide bottom ticks.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Top ticks",
+                "top",
+                "figureComposerAxesMethodTickParamsTopCombo",
+                "Show or hide top ticks.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Left ticks",
+                "left",
+                "figureComposerAxesMethodTickParamsLeftCombo",
+                "Show or hide left ticks.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Right ticks",
+                "right",
+                "figureComposerAxesMethodTickParamsRightCombo",
+                "Show or hide right ticks.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Bottom labels",
+                "labelbottom",
+                "figureComposerAxesMethodTickParamsLabelBottomCombo",
+                "Show or hide bottom tick labels.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Top labels",
+                "labeltop",
+                "figureComposerAxesMethodTickParamsLabelTopCombo",
+                "Show or hide top tick labels.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Left labels",
+                "labelleft",
+                "figureComposerAxesMethodTickParamsLabelLeftCombo",
+                "Show or hide left tick labels.",
+            ),
+            _optional_bool_kwarg_combo(
+                "Right labels",
+                "labelright",
+                "figureComposerAxesMethodTickParamsLabelRightCombo",
+                "Show or hide right tick labels.",
+            ),
+            _float_kwarg(
+                "Length",
+                "length",
+                "figureComposerAxesMethodTickParamsLengthEdit",
+                "Tick length in points.",
+                minimum=0.0,
+            ),
+            _float_kwarg(
+                "Width",
+                "width",
+                "figureComposerAxesMethodTickParamsWidthEdit",
+                "Tick width in points.",
+                minimum=0.0,
+            ),
+            _float_kwarg(
+                "Pad",
+                "pad",
+                "figureComposerAxesMethodTickParamsPadEdit",
+                "Distance between ticks and labels in points.",
+                minimum=0.0,
+            ),
+            _float_kwarg(
+                "Label rotation",
+                "labelrotation",
+                "figureComposerAxesMethodTickParamsLabelRotationEdit",
+                "Tick label rotation in degrees.",
+            ),
+            _literal_kwarg(
+                "Label size",
+                "labelsize",
+                "figureComposerAxesMethodTickParamsLabelSizeEdit",
+                "Tick label font size, such as 8 or 'small'.",
+            ),
+            _text_kwarg(
+                "Label font",
+                "labelfontfamily",
+                "figureComposerAxesMethodTickParamsLabelFontEdit",
+                "Tick label font family.",
+            ),
+            _color_kwarg(
+                "Colors",
+                "colors",
+                "figureComposerAxesMethodTickParamsColorsEdit",
+                "Color applied to both ticks and tick labels.",
+            ),
+            _color_kwarg(
+                "Tick color",
+                "color",
+                "figureComposerAxesMethodTickParamsTickColorEdit",
+                "Tick mark color.",
+            ),
+            _color_kwarg(
+                "Label color",
+                "labelcolor",
+                "figureComposerAxesMethodTickParamsLabelColorEdit",
+                "Tick label color.",
+            ),
+            _float_kwarg(
+                "Z order",
+                "zorder",
+                "figureComposerAxesMethodTickParamsZOrderEdit",
+                "Tick and label drawing order.",
+            ),
+            _color_kwarg(
+                "Grid color",
+                "grid_color",
+                "figureComposerAxesMethodTickParamsGridColorEdit",
+                "Grid line color.",
+            ),
+            _float_kwarg(
+                "Grid alpha",
+                "grid_alpha",
+                "figureComposerAxesMethodTickParamsGridAlphaEdit",
+                "Grid line opacity between 0 and 1.",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            _float_kwarg(
+                "Grid width",
+                "grid_linewidth",
+                "figureComposerAxesMethodTickParamsGridLineWidthEdit",
+                "Grid line width.",
+                minimum=0.0,
+            ),
+            _kwarg_combo(
+                "Grid style",
+                "grid_linestyle",
+                LINE_STYLE_OPTIONS,
+                None,
+                "figureComposerAxesMethodTickParamsGridLineStyleCombo",
+                "Grid line style.",
+                none_label=LINE_STYLE_DEFAULT_LABEL,
             ),
         ),
     ),
@@ -2999,6 +3203,28 @@ def _add_method_control_row(
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO:
+            key = _control_key(control)
+
+            def kwarg_value_getter(target: FigureOperationState) -> bool | None:
+                value = _method_kwarg_value(target, key, control.default)
+                return value if isinstance(value, bool) else None
+
+            mixed = tool._batch_is_mixed(
+                operation,
+                kwarg_value_getter,
+            )
+            value = kwarg_value_getter(operation)
+            combo = tool._optional_name_combo(
+                control.options,
+                None if mixed or value is None else str(value),
+                control.none_label or "Default",
+                _method_optional_bool_kwarg_callback(tool, key),
+                parent=layout.parentWidget(),
+                mixed=mixed,
+            )
+            combo.setObjectName(control.object_name)
+            tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.INT_KWARG:
             key = _control_key(control)
             if _control_uses_numeric_spinbox(control):
@@ -3369,6 +3595,7 @@ def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
         in {
             MethodControlKind.KWARG_COMBO,
             MethodControlKind.BOOL_KWARG_COMBO,
+            MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
             MethodControlKind.INT_KWARG,
             MethodControlKind.FLOAT_KWARG,
             MethodControlKind.SUBPLOTS_ADJUST_KWARG,
@@ -3663,6 +3890,16 @@ def _method_bool_kwarg_callback(
 ) -> Callable[[str], None]:
     def update(text: str) -> None:
         _update_current_method_kwarg(tool, key, text == "True")
+
+    return update
+
+
+def _method_optional_bool_kwarg_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[str | None], None]:
+    def update(text: str | None) -> None:
+        value = None if text is None else text == "True"
+        _update_current_method_kwarg(tool, key, value)
 
     return update
 
@@ -4066,6 +4303,8 @@ def _control_accepts_value(control: MethodControlSpec, value: typing.Any) -> boo
         MethodControlKind.BOOL_KWARG_COMBO,
     }:
         return isinstance(value, bool)
+    if control.kind == MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO:
+        return value is None or isinstance(value, bool)
     return True
 
 
