@@ -1881,7 +1881,9 @@ class ItoolPlotItem(pg.PlotItem):
             else ()
         )
 
-        dim_order_plot = list(self.slicer_area._tool_source_parent_data().dims)
+        dim_order_plot = [
+            self._selection_dim_name(axis) for axis in range(self.slicer_area.data.ndim)
+        ]
         for key in selected_dims:
             if key in dim_order_plot:
                 dim_order_plot.remove(key)
@@ -2114,17 +2116,26 @@ class ItoolPlotItem(pg.PlotItem):
         map_selections: tuple[typing.Any, ...] = (),
     ):
         from erlab.interactive._figurecomposer import FigureOperationState
+        from erlab.interactive._figurecomposer._labels import default_label_text
 
         plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
         updates = self._figure_composer_operation_updates(plot_kwargs) or {}
+        is_line_plot = len(dim_order_plot) == 1
+        default_labels_update = {}
 
         if selected_maps is not None:
+            if is_line_plot:
+                default_labels_update["line_label_text"] = default_label_text(
+                    str(variable_dim) if variable_dim is not None else None,
+                    fallback="slice {number}",
+                    source_count=max(len(map_selections), 1),
+                )
             return FigureOperationState.plot_slices(
                 label="plot_slices",
                 sources=(source_name,),
                 map_selections=map_selections,
             ).model_copy(
-                update=updates,
+                update={**updates, **default_labels_update},
             )
         if qsel_kwargs is None or any(not isinstance(key, str) for key in qsel_kwargs):
             if qsel_kwargs is not None:
@@ -2145,11 +2156,17 @@ class ItoolPlotItem(pg.PlotItem):
                         FigureDataSelectionState(source=source_name, qsel=qsel)
                     )
                 map_selections = tuple(selections)
+            if is_line_plot:
+                default_labels_update["line_label_text"] = default_label_text(
+                    str(variable_dim) if variable_dim is not None else None,
+                    fallback="slice {number}",
+                    source_count=max(len(map_selections), 1),
+                )
             return FigureOperationState.plot_slices(
                 label="plot_slices",
                 sources=(source_name,),
                 map_selections=map_selections,
-            ).model_copy(update=updates)
+            ).model_copy(update={**updates, **default_labels_update})
 
         slice_dim = str(variable_dim) if variable_dim is not None else None
         slice_values: tuple[float, ...] = ()
@@ -2205,6 +2222,12 @@ class ItoolPlotItem(pg.PlotItem):
                             slice_kwargs.pop(width_key)
 
         extra_kwargs = dict(updates.pop("extra_kwargs", {}))
+        if is_line_plot:
+            default_labels_update["line_label_text"] = default_label_text(
+                slice_dim,
+                slice_values,
+                fallback="slice {number}",
+            )
         operation = FigureOperationState.plot_slices(
             label="plot_slices",
             sources=(source_name,),
@@ -2217,6 +2240,7 @@ class ItoolPlotItem(pg.PlotItem):
                 "slice_width": slice_width,
                 "slice_kwargs": slice_kwargs,
                 "extra_kwargs": extra_kwargs,
+                **default_labels_update,
             }
         )
 
@@ -2234,6 +2258,7 @@ class ItoolPlotItem(pg.PlotItem):
             FigureDataSelectionState,
             FigureOperationState,
         )
+        from erlab.interactive._figurecomposer._labels import default_label_text
 
         normalize_mode = (
             "mean"
@@ -2253,6 +2278,11 @@ class ItoolPlotItem(pg.PlotItem):
                 update={
                     "line_x": str(x_dim),
                     "map_selections": map_selections,
+                    "line_label_text": default_label_text(
+                        None,
+                        fallback="profile {number}",
+                        source_count=max(len(map_selections), 1),
+                    ),
                     **style_updates,
                 }
             )
@@ -2282,6 +2312,11 @@ class ItoolPlotItem(pg.PlotItem):
                 update={
                     "line_x": str(x_dim),
                     "map_selections": tuple(selections),
+                    "line_label_text": default_label_text(
+                        str(variable_dim) if variable_dim is not None else None,
+                        fallback="profile {number}",
+                        source_count=max(len(selections), 1),
+                    ),
                     **style_updates,
                 }
             )
@@ -2291,6 +2326,17 @@ class ItoolPlotItem(pg.PlotItem):
                 for key, value in qsel_kwargs.items()
             }
             line_iter_dim = str(variable_dim) if variable_dim is not None else None
+        if line_iter_dim is not None:
+            label_values = line_selection.get(line_iter_dim, ())
+            if not isinstance(label_values, list | tuple):
+                label_values = (label_values,)
+            line_label_text = default_label_text(
+                line_iter_dim,
+                label_values,
+                fallback="profile {number}",
+            )
+        else:
+            line_label_text = default_label_text(None, fallback="profile {number}")
 
         return FigureOperationState.line(
             label="line",
@@ -2300,6 +2346,7 @@ class ItoolPlotItem(pg.PlotItem):
                 "line_x": str(x_dim),
                 "line_selection": dict(line_selection),
                 "line_iter_dim": line_iter_dim,
+                "line_label_text": line_label_text,
                 **style_updates,
             }
         )

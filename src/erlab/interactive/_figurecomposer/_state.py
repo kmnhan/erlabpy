@@ -366,7 +366,12 @@ class FigureOperationState(pydantic.BaseModel):
     extra_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
     line_source: str | None = None
+    line_label_text: str = ""
     line_labels: tuple[str, ...] = ()
+    line_color_mode: typing.Literal["manual", "coordinate"] = "manual"
+    line_color_coord: str | None = None
+    line_color_cmap: str | None = None
+    line_color_cmap_reverse: bool = False
     line_colors: tuple[str, ...] = ()
     line_x: str | None = None
     line_y: str | None = None
