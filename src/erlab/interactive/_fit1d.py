@@ -2783,6 +2783,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(None)
         self._mark_fit_stale()
 
+    def _fit_start_errored(self, *, multi: bool) -> None:
+        self._fit_thread = None
+        self._pending_fit_action = None
+        self._fit_cancel_requested = False
+        self._fit_running_multi = False
+        self._fit_start_time = None
+        self._fit_errored(
+            erlab.interactive.utils._format_traceback(traceback.format_exc())
+        )
+        self._set_fit_running(False, multi=multi)
+
     def _start_fit_worker(
         self,
         fit_data: xr.DataArray,
@@ -2799,23 +2810,24 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._show_warning("Fit running", "A fit is already running.")
             return False
 
-        self._fit_start_time = time.perf_counter()
-        self._fit_running_multi = multi
-        self._fit_cancel_requested = False
-        self._set_fit_running(True, multi=multi, step=step, total=total)
-
-        thread = _FitWorker(
-            fit_data,
-            self._coord_name,
-            self._model,
-            params,
-            max_nfev=self.nfev_spin.value(),
-            method=self.method_combo.currentText(),
-            timeout=self.timeout_spin.value(),
-        )
-        if hasattr(thread, "setServiceLevel"):
-            thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
+        try:
+            thread = _FitWorker(
+                fit_data,
+                self._coord_name,
+                self._model,
+                params,
+                max_nfev=self.nfev_spin.value(),
+                method=self.method_combo.currentText(),
+                timeout=self.timeout_spin.value(),
+            )
+            if hasattr(thread, "setServiceLevel"):
+                thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
+            thread.finished.connect(
+                lambda thread=thread: self._finalize_fit_thread(thread)
+            )
+        except Exception:
+            self._fit_start_errored(multi=multi)
+            return False
 
         def _queue_success(
             result_ds: xr.Dataset, *, thread: _FitWorker = thread
@@ -2839,8 +2851,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             )
         )
 
+        self._fit_start_time = time.perf_counter()
+        self._fit_running_multi = multi
+        self._fit_cancel_requested = False
+        self._set_fit_running(True, multi=multi, step=step, total=total)
         self._fit_thread = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._fit_thread = None
+            with contextlib.suppress(Exception):
+                thread.deleteLater()
+            self._fit_start_errored(multi=multi)
+            return False
         return True
 
     def _queue_fit_action(
@@ -2872,9 +2895,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 thread.deleteLater()
             return
         self._fit_cancel_requested = False
-        if action is not None:
-            action()
-        thread.deleteLater()
+        action_failed = False
+        try:
+            if action is not None:
+                action()
+        except Exception:
+            action_failed = True
+            try:
+                self._fit_errored(
+                    erlab.interactive.utils._format_traceback(traceback.format_exc())
+                )
+            finally:
+                self._fit_cancelled()
+        finally:
+            if action_failed:
+                self._pending_fit_action = None
+            thread.deleteLater()
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -2899,8 +2935,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_errored(message)
             self._set_fit_running(False, multi=False)
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=False)
+            return False
+
         return self._start_fit_worker(
-            self._fit_data(),
+            fit_data,
             self._params,
             multi=False,
             on_success=_on_success,
@@ -2913,9 +2955,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._show_warning("Fit running", "A fit is already running.")
             return
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=True)
+            self._finish_multi_fit()
+            return
+
         self._fit_multi_total = count
         self._fit_multi_step = 0
-        self._fit_multi_fit_data = self._fit_data()
+        self._fit_multi_fit_data = fit_data
         self._fit_multi_params = self._params
         self._start_next_multi_fit()
 
@@ -3714,13 +3763,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
         thread = self._fit_thread
+        self._pending_fit_action = None
+        if thread is None:
+            self._fit_cancel_requested = True
+            self._fit_cancelled()
+            self._fit_cancel_requested = False
+            return True
         if thread is not None:
             thread.cancel()
             thread.requestInterruption()
         self._fit_cancel_requested = True
         self.cancel_fit_button.setEnabled(False)
         self.cancel_fit_button.setText("Canceling...")
-        self._pending_fit_action = None
         if wait and thread is not None:
             finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
             if finished:

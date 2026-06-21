@@ -1508,6 +1508,66 @@ def test_fit2d_invalid_bound_edit_warns_without_param_update(
     assert warnings
 
 
+def test_fit2d_start_error_resets_sequence_state(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+    param = win.param_model.param_at(0)
+    param.min = 1.0
+    param.max = 1.0
+
+    win._run_fit_2d("up")
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win._fit_2d_total == 0
+    assert win._fit_2d_indices == []
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit2d_preparation_error_resets_sequence_state(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    def _raise_fit_data() -> xr.DataArray:
+        raise RuntimeError("unexpected preparation failure")
+
+    monkeypatch.setattr(win, "_fit_data", _raise_fit_data)
+
+    win._run_fit_2d("up")
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win._fit_2d_total == 0
+    assert win._fit_2d_indices == []
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
 def test_fit2d_y_values_no_coord(qtbot) -> None:
     y = np.arange(3)
     data = xr.DataArray(np.ones((3, 5)), dims=("y", "x"))

@@ -1620,8 +1620,15 @@ class Fit2DTool(Fit1DTool):
             self._fit_errored(message)
             self._finish_fit_2d_sequence()
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=True)
+            self._finish_fit_2d_sequence()
+            return
+
         started = self._start_fit_worker(
-            self._fit_data(),
+            fit_data,
             self._params,
             multi=True,
             step=step,

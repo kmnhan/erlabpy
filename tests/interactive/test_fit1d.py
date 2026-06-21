@@ -1266,6 +1266,60 @@ def test_fit1d_fit_error_paths(qtbot, monkeypatch) -> None:
     assert errors
 
 
+def test_fit1d_run_fit_start_error_resets_buttons(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+    param = win.param_model.param_at(0)
+    param.min = 1.0
+    param.max = 1.0
+
+    assert win._run_fit() is False
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit1d_run_fit_preparation_error_resets_buttons(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    def _raise_fit_data() -> xr.DataArray:
+        raise RuntimeError("unexpected preparation failure")
+
+    monkeypatch.setattr(win, "_fit_data", _raise_fit_data)
+
+    assert win._run_fit() is False
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
 def test_parameter_table_formatting_helpers() -> None:
     params = lmfit.Parameters()
     params.add("amp", value=1.0)
@@ -1403,6 +1457,23 @@ def test_fit1d_fit_cancelled_single(qtbot) -> None:
     win._fit_running_multi = False
     win._set_fit_running(True, multi=False)
     win._fit_cancelled()
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit1d_cancel_fit_without_thread_restores_idle_state(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win._set_fit_running(True, multi=False)
+    win._pending_fit_action = lambda: None
+    win._fit_cancel_requested = True
+
+    assert win._cancel_fit()
+
+    assert win._pending_fit_action is None
+    assert win._fit_cancel_requested is False
     assert win.fit_button.isEnabled()
     assert not win.cancel_fit_button.isEnabled()
 
@@ -1818,6 +1889,49 @@ def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:
     assert thread.deleted
     assert win._fit_thread is None
     assert not win._fit_cancel_requested
+
+
+def test_fit1d_finalize_fit_thread_action_error_restores_idle(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    def _raise_action() -> None:
+        raise RuntimeError("post-processing failed")
+
+    thread = _DummyThread()
+    win._set_fit_running(True, multi=False)
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._pending_fit_action = _raise_action
+    win._fit_cancel_requested = False
+
+    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+    assert errors
+    assert thread.deleted
+    assert win._fit_thread is None
+    assert win._pending_fit_action is None
+    assert win._fit_cancel_requested is False
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
 
 
 def test_snap_cursor_line_value(qtbot) -> None:
