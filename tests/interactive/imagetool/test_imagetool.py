@@ -207,6 +207,8 @@ def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
 def _clear_selection_dialog(dialog: SelectionDialog) -> None:
     for row in dialog.rows:
         row.use_check.setChecked(False)
+        row.start_none_check.setChecked(False)
+        row.stop_none_check.setChecked(False)
         row.step_check.setChecked(False)
         row.width_check.setChecked(False)
 
@@ -7468,6 +7470,68 @@ def test_selection_dialog_isel_range_step_executes_code(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize(
+    ("start_none", "stop_none", "expected_slice"),
+    [
+        (True, False, slice(None, 3)),
+        (False, True, slice(1, None)),
+        (True, True, slice(None, None, 2)),
+    ],
+)
+@pytest.mark.parametrize(
+    ("method", "row_index", "dim"),
+    [
+        ("isel", 0, "alpha"),
+        ("sel", 1, "eV"),
+        ("qsel", 2, "beta"),
+    ],
+)
+def test_selection_dialog_open_ended_range_executes_code(
+    qtbot,
+    method: str,
+    row_index: int,
+    dim: str,
+    start_none: bool,
+    stop_none: bool,
+    expected_slice: slice,
+) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[row_index]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "range")
+    if method == "isel":
+        row.index_start_spin.setValue(1)
+        row.index_stop_spin.setValue(3)
+    else:
+        row.value_start_spin.setValue(1.0)
+        row.value_stop_spin.setValue(3.0)
+    row.start_none_check.setChecked(start_none)
+    row.stop_none_check.setChecked(stop_none)
+    if expected_slice.step is not None:
+        row.step_check.setChecked(True)
+        row.step_spin.setValue(expected_slice.step)
+
+    expected = getattr(data, method)(**{dim: expected_slice})
+    assert row.start_stack.isEnabled() == (not start_none)
+    assert row.stop_stack.isEnabled() == (not stop_none)
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    assert dialog.buttonBox.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
@@ -7592,10 +7656,42 @@ def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
     assert beta_row.width_spin.value() == 1.5
     assert dialog.source_operations() == [qsel_operation]
 
-    with pytest.raises(ValueError, match="Open-ended selections"):
-        dialog.restore_transform_operation(
-            provenance.IselOperation(kwargs={"alpha": slice(None, 3)})
+    for operation, dim, start_none, stop_none, expected in (
+        (
+            provenance.IselOperation(kwargs={"alpha": slice(None, 3)}),
+            "alpha",
+            True,
+            False,
+            data.isel(alpha=slice(None, 3)),
+        ),
+        (
+            provenance.SelOperation(kwargs={"eV": slice(1.0, None)}),
+            "eV",
+            False,
+            True,
+            data.sel(eV=slice(1.0, None)),
+        ),
+        (
+            provenance.QSelOperation(kwargs={"beta": slice(None, None, 2)}),
+            "beta",
+            True,
+            True,
+            data.qsel(beta=slice(None, None, 2)),
+        ),
+    ):
+        dialog.restore_transform_operation(operation)
+        row = next(row for row in dialog.rows if row.dim == dim)
+        assert row.use_check.isChecked()
+        assert row.kind == "range"
+        assert row.start_none_check.isChecked() is start_none
+        assert row.stop_none_check.isChecked() is stop_none
+        assert row.start_stack.isEnabled() == (not start_none)
+        assert row.stop_stack.isEnabled() == (not stop_none)
+        assert dialog.source_operations() == [operation]
+        xarray.testing.assert_identical(
+            dialog.process_data(dialog.public_data), expected
         )
+
     with pytest.raises(ValueError, match="integer strides"):
         dialog.restore_transform_operation(
             provenance.IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})

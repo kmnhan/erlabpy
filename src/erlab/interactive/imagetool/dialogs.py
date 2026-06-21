@@ -1952,9 +1952,33 @@ class _SelectionRow:
 
         self.start_stack = scalar_controls.stack
 
+        self.start_widget = QtWidgets.QWidget()
+        start_layout = QtWidgets.QHBoxLayout(self.start_widget)
+        start_layout.setContentsMargins(0, 0, 0, 0)
+        start_layout.setSpacing(3)
+        self.start_none_check = QtWidgets.QCheckBox("None")
+        self.start_none_check.setObjectName(f"selection_start_none_{axis}")
+        self.start_none_check.setToolTip(
+            "Leave the range start open, equivalent to slice(None, stop)."
+        )
+        start_layout.addWidget(self.start_none_check)
+        start_layout.addWidget(self.start_stack)
+
         self.stop_stack = QtWidgets.QStackedWidget()
         self.stop_stack.addWidget(self.value_stop_spin)
         self.stop_stack.addWidget(self.index_stop_spin)
+
+        self.stop_widget = QtWidgets.QWidget()
+        stop_layout = QtWidgets.QHBoxLayout(self.stop_widget)
+        stop_layout.setContentsMargins(0, 0, 0, 0)
+        stop_layout.setSpacing(3)
+        self.stop_none_check = QtWidgets.QCheckBox("None")
+        self.stop_none_check.setObjectName(f"selection_stop_none_{axis}")
+        self.stop_none_check.setToolTip(
+            "Leave the range stop open, equivalent to slice(start, None)."
+        )
+        stop_layout.addWidget(self.stop_none_check)
+        stop_layout.addWidget(self.stop_stack)
 
         self.step_widget = QtWidgets.QWidget()
         self.step_widget.setToolTip(
@@ -1986,8 +2010,8 @@ class _SelectionRow:
             self.use_check,
             self.method_combo,
             self.kind_combo,
-            self.start_stack,
-            self.stop_stack,
+            self.start_widget,
+            self.stop_widget,
             self.step_widget,
             self.width_widget,
         )
@@ -2002,6 +2026,8 @@ class _SelectionRow:
             self.index_stop_spin,
             self.value_start_spin,
             self.value_stop_spin,
+            self.start_none_check,
+            self.stop_none_check,
             self.step_check,
             self.step_spin,
             self.width_check,
@@ -2016,6 +2042,8 @@ class _SelectionRow:
 
         self.method_combo.currentIndexChanged.connect(self.sync_widgets)
         self.kind_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.start_none_check.toggled.connect(self.sync_widgets)
+        self.stop_none_check.toggled.connect(self.sync_widgets)
         self.step_check.toggled.connect(self.sync_widgets)
         self.sync_widgets()
 
@@ -2037,10 +2065,17 @@ class _SelectionRow:
         is_index = self.method == "isel"
         is_range = self.kind == "range"
         is_qsel = self.method == "qsel"
+        start_is_open = is_range and self.start_none_check.isChecked()
+        stop_is_open = is_range and self.stop_none_check.isChecked()
 
         self.start_stack.setCurrentIndex(1 if is_index else 0)
         self.stop_stack.setCurrentIndex(1 if is_index else 0)
-        self.stop_stack.setEnabled(is_range)
+        self.start_none_check.setVisible(is_range)
+        self.stop_none_check.setVisible(is_range)
+        self.start_none_check.setEnabled(is_range)
+        self.stop_none_check.setEnabled(is_range)
+        self.start_stack.setEnabled(not start_is_open)
+        self.stop_stack.setEnabled(is_range and not stop_is_open)
         self.step_widget.setEnabled(is_range)
         self.step_spin.setEnabled(is_range and self.step_check.isChecked())
         self.width_widget.setEnabled(is_qsel and not is_range)
@@ -2058,21 +2093,43 @@ class _SelectionRow:
             start = int(self.index_start_spin.value())
             if self.kind == "point":
                 return self.dim, start
-            stop = int(self.index_stop_spin.value())
+            range_start = None if self.start_none_check.isChecked() else start
+            range_stop = (
+                None
+                if self.stop_none_check.isChecked()
+                else int(self.index_stop_spin.value())
+            )
+            if range_start is None or range_stop is None:
+                return self.dim, slice(range_start, range_stop, self._step_value())
             return self.dim, slice(
-                min(start, stop), max(start, stop), self._step_value()
+                min(range_start, range_stop),
+                max(range_start, range_stop),
+                self._step_value(),
             )
 
         start = float(self.value_start_spin.value())
         if self.kind == "point":
             return self.dim, start
 
-        stop = float(self.value_stop_spin.value())
+        range_start = None if self.start_none_check.isChecked() else start
+        range_stop = (
+            None
+            if self.stop_none_check.isChecked()
+            else float(self.value_stop_spin.value())
+        )
+        if range_start is None or range_stop is None:
+            return self.dim, slice(range_start, range_stop, self._step_value())
         if self._coord_ascending:
             return self.dim, slice(
-                min(start, stop), max(start, stop), self._step_value()
+                min(range_start, range_stop),
+                max(range_start, range_stop),
+                self._step_value(),
             )
-        return self.dim, slice(max(start, stop), min(start, stop), self._step_value())
+        return self.dim, slice(
+            max(range_start, range_stop),
+            min(range_start, range_stop),
+            self._step_value(),
+        )
 
     def qsel_width_indexer(self) -> tuple[str, float] | None:
         if (
@@ -2094,10 +2151,6 @@ class _SelectionRow:
         if not _set_combo_data(self.method_combo, method):
             raise ValueError(f"Selection method {method!r} is not available")
         if isinstance(indexer, slice):
-            if indexer.start is None or indexer.stop is None:
-                raise ValueError(
-                    "Open-ended selections cannot be edited in this dialog"
-                )
             if indexer.step is None:
                 self.step_check.setChecked(False)
             else:
@@ -2105,15 +2158,23 @@ class _SelectionRow:
                 self.step_check.setChecked(True)
                 self.step_spin.setValue(step)
             _set_combo_data(self.kind_combo, "range")
+            self.start_none_check.setChecked(indexer.start is None)
+            self.stop_none_check.setChecked(indexer.stop is None)
             if method == "isel":
-                self.index_start_spin.setValue(int(indexer.start))
-                self.index_stop_spin.setValue(int(indexer.stop))
+                if indexer.start is not None:
+                    self.index_start_spin.setValue(int(indexer.start))
+                if indexer.stop is not None:
+                    self.index_stop_spin.setValue(int(indexer.stop))
             else:
-                self.value_start_spin.setValue(float(indexer.start))
-                self.value_stop_spin.setValue(float(indexer.stop))
+                if indexer.start is not None:
+                    self.value_start_spin.setValue(float(indexer.start))
+                if indexer.stop is not None:
+                    self.value_stop_spin.setValue(float(indexer.stop))
         else:
             _set_combo_data(self.kind_combo, "point")
             self.step_check.setChecked(False)
+            self.start_none_check.setChecked(False)
+            self.stop_none_check.setChecked(False)
             if method == "isel":
                 self.index_start_spin.setValue(int(indexer))
             else:
@@ -2269,6 +2330,8 @@ class SelectionDialog(DataTransformDialog):
     ) -> None:
         for row in self.rows:
             row.use_check.setChecked(False)
+            row.start_none_check.setChecked(False)
+            row.stop_none_check.setChecked(False)
             row.step_check.setChecked(False)
             row.width_check.setChecked(False)
 
