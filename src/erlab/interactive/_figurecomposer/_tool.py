@@ -143,6 +143,7 @@ if typing.TYPE_CHECKING:
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
+_EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS = 300
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
@@ -1300,6 +1301,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.dpi_spin.setRange(1.0, 10000.0)
         self.dpi_spin.setDecimals(1)
         self.dpi_spin.setSingleStep(10.0)
+        for spinbox in (
+            self.nrows_spin,
+            self.ncols_spin,
+            self.width_spin,
+            self.height_spin,
+            self.width_mm_spin,
+            self.height_mm_spin,
+            self.dpi_spin,
+        ):
+            spinbox.setKeyboardTracking(False)
         self.layout_combo = QtWidgets.QComboBox(layout_page)
         self.layout_combo.addItems(
             ["default", "constrained", "compressed", "tight", "none"]
@@ -2752,17 +2763,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updater: Callable[[int, FigureOperationState], FigureOperationState],
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
-    ) -> None:
+    ) -> bool:
         editable = self._editable_operations()
         if not editable:
-            return
-        self._update_operations_by_ids(
+            return False
+        return self._update_operations_by_ids(
             (operation.operation_id for _index, operation in editable),
             updater,
             render=render,
+            defer_render=defer_render,
             rebuild_editor=rebuild_editor,
             defer_editor_rebuild=defer_editor_rebuild,
             sync_axes=sync_axes,
@@ -2774,6 +2787,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updater: Callable[[int, FigureOperationState], FigureOperationState],
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
@@ -2784,11 +2798,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         operations = list(self._recipe.operations)
         changed = False
+        preview_affected = False
         for index, operation in enumerate(operations):
             if operation.operation_id not in operation_id_set:
                 continue
             updated = updater(index, operation)
-            changed = changed or updated != operation
+            operation_changed = updated != operation
+            changed = changed or operation_changed
+            if operation_changed and self._operation_change_affects_preview(
+                operation, updated
+            ):
+                preview_affected = True
             operations[index] = updated
         if not changed:
             return False
@@ -2807,9 +2827,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        if render:
-            _render_preview(self)
-            self.sigInfoChanged.emit()
+        self._notify_operation_changed(
+            preview_affected=render and preview_affected,
+            defer_render=defer_render,
+        )
         self._write_state()
         return True
 
@@ -2819,6 +2840,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operation: FigureOperationState,
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
@@ -2842,10 +2864,42 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        if render:
-            _render_preview(self)
-            self.sigInfoChanged.emit()
+        self._notify_operation_changed(
+            preview_affected=render
+            and self._operation_change_affects_preview(previous_operation, operation),
+            defer_render=defer_render,
+        )
         self._write_state()
+
+    @staticmethod
+    def _operation_change_affects_preview(
+        previous: FigureOperationState,
+        updated: FigureOperationState,
+    ) -> bool:
+        return previous.enabled or updated.enabled
+
+    def _notify_operation_changed(
+        self, *, preview_affected: bool, defer_render: bool = False
+    ) -> None:
+        if preview_affected and self._notify_operation_preview_changed(
+            defer=defer_render
+        ):
+            return
+        self.sigInfoChanged.emit()
+
+    def _notify_operation_preview_changed(self, *, defer: bool = False) -> bool:
+        if defer or self._active_editor_signal_widget is not None:
+            delay_ms = (
+                _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS
+                if self._active_editor_signal_widget is not None
+                else _PREVIEW_RENDER_UPDATE_DELAY_MS
+            )
+            self._queue_preview_render_update(delay_ms=delay_ms)
+            return False
+        self._cancel_preview_render_update()
+        _render_preview(self)
+        self.sigInfoChanged.emit()
+        return True
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
         if self._updating_controls:
@@ -2862,7 +2916,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             rebuild_editor=True,
         )
 
-    def _queue_preview_render_update(self) -> None:
+    def _queue_preview_render_update(
+        self, *, delay_ms: int = _PREVIEW_RENDER_UPDATE_DELAY_MS
+    ) -> None:
         if self._closing:
             return
         self._preview_render_update_generation += 1
@@ -2870,7 +2926,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = True
         erlab.interactive.utils.single_shot(
             self,
-            _PREVIEW_RENDER_UPDATE_DELAY_MS,
+            delay_ms,
             functools.partial(self._run_queued_preview_render_update, generation),
         )
 
@@ -3142,11 +3198,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3169,11 +3223,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3207,11 +3259,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3476,8 +3526,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._sync_axes_selector()
                     self._update_source_status(updated)
                 self._refresh_step_section_button_texts()
-                _render_preview(self)
-                self.sigInfoChanged.emit()
+                if self._operation_change_affects_preview(operation, updated):
+                    self._notify_operation_preview_changed()
                 self._write_state()
                 return
 

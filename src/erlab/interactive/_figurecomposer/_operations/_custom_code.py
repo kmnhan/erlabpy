@@ -77,13 +77,11 @@ def _connect_custom_code_editor(
         pending_dirty[0] = False
         code = pending_code[0]
         render_valid_code = render and code_edit.has_valid_python_syntax(code)
-        changed = tool._update_operations_by_ids(
+        tool._update_operations_by_ids(
             operation_ids,
             lambda _index, target: target.model_copy(update={"code": code}),
             render=render_valid_code,
         )
-        if changed and not render_valid_code:
-            tool.sigInfoChanged.emit()
 
     def commit_settled_code(_code: str) -> None:
         commit_code(render=True)

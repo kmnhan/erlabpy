@@ -1843,6 +1843,7 @@ def _build_plot_slices_editor(
             _format_plot_limit,
         )
         edit = tool._line_edit(text)
+        edit.setObjectName(f"figureComposerPlotSlices{label.upper()}LimEdit")
         tool._apply_mixed_line_edit(edit, mixed)
         placeholder = (
             "" if mixed else _plot_slices_limit_placeholder(tool, operation, attr)
@@ -2844,9 +2845,7 @@ def _update_current_norm_gamma(tool: FigureComposerTool, value: float) -> None:
             }
         )
 
-    tool._update_operations(update_operation, render=False)
-    tool.sigInfoChanged.emit()
-    tool._queue_preview_render_update()
+    tool._update_operations(update_operation, defer_render=True)
 
 
 def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
@@ -2922,11 +2921,9 @@ def _update_current_cmap(
             update={"cmap": _cmap_with_reverse(next_base, next_reverse)}
         )
 
-    tool._update_operations(update_operation, render=False)
+    tool._update_operations(update_operation, defer_render=True)
     tool._update_step_action_buttons()
     tool._refresh_step_section_button_texts()
-    tool.sigInfoChanged.emit()
-    tool._queue_preview_render_update()
 
 
 def _update_current_panel_styles_enabled(

@@ -42,7 +42,6 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -828,13 +827,26 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
         tuple[tuple[tuple[int, int], ...], tuple[str, ...], str],
         tuple[int, FigureOperationState],
     ] = {}
+    changed = False
+    preview_affected = False
     for index, operation in enumerate(tuple(operations)):
         if operation.operation_id not in selected_ids:
             continue
         updated = operation.model_copy(update={"line_labels": labels})
+        operation_changed = updated != operation
+        changed = changed or operation_changed
+        if operation_changed and tool._operation_change_affects_preview(
+            operation, updated
+        ):
+            preview_affected = True
         operations[index] = updated
         original_operation = original_operations.get(operation.operation_id)
-        if original_operation is None or not labels or original_operation.line_labels:
+        if (
+            original_operation is None
+            or not labels
+            or original_operation.line_labels
+            or not updated.enabled
+        ):
             continue
         key = _line_axes_key(updated)
         previous = newly_labeled_groups.get(key)
@@ -852,6 +864,10 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
         )
         if not _has_later_legend_step(operations, index, legend_operation):
             operations.insert(index + 1, legend_operation)
+            changed = True
+            preview_affected = True
+    if not changed:
+        return
     tool._recipe = tool._recipe.model_copy(update={"operations": tuple(operations)})
     tool._refresh_operation_list()
     tool._sync_axes_selector()
@@ -859,8 +875,8 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
     tool._refresh_step_section_button_texts()
     current = tool._current_operation()
     tool._update_source_status(current[1] if current is not None else None)
-    _render_preview(tool)
-    tool.sigInfoChanged.emit()
+    tool._notify_operation_changed(preview_affected=preview_affected)
+    tool._write_state()
 
 
 def _line_axes_key(

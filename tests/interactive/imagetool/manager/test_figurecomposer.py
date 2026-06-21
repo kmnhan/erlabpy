@@ -2507,6 +2507,7 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
         lambda: tool.tool_status.operations[0].code == second_code,
         timeout=1000,
     )
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
     assert render_calls == [(tool,)]
 
 
@@ -2565,8 +2566,9 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
         lambda: tool.tool_status.operations[0].code == valid_code,
         timeout=2000,
     )
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
     assert render_calls == [(tool,)]
-    assert info_changed == [None, None]
+    assert info_changed == [None, None, None]
 
 
 def test_figure_composer_custom_code_pending_edit_survives_step_switch(
@@ -6114,6 +6116,110 @@ def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -
     assert tool._operation_input_error_text(operation) == "new error"
 
 
+def test_figure_composer_editor_control_changes_defer_preview_render(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    plain = QtWidgets.QPlainTextEdit(tool)
+    tool._connect_plain_text_changed(
+        plain,
+        lambda text: tool._update_current_operation(label=text),
+    )
+    spin = QtWidgets.QSpinBox(tool)
+    tool._connect_value_signal(
+        spin,
+        spin.valueChanged,
+        int,
+        lambda value: tool._update_current_operation(label=f"value {value}"),
+    )
+
+    plain.setPlainText("typed")
+    spin.setValue(1)
+
+    assert tool.tool_status.operations[0].label == "value 1"
+    assert render_calls == []
+    assert tool._preview_render_update_pending
+
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
+    assert not tool._preview_render_update_pending
+
+
+def test_figure_composer_disabled_step_edits_do_not_render_or_queue(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    render_calls: list[tuple[object, ...]] = []
+    info_changed: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    operation_item = tool.operation_list.item(0)
+    assert operation_item is not None
+    operation_item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert tool.tool_status.operations[0].enabled is False
+    assert render_calls == [(tool,)]
+    assert info_changed == [None]
+
+    render_calls.clear()
+    info_changed.clear()
+    edit = QtWidgets.QLineEdit(tool)
+    tool._connect_line_edit_finished(
+        edit,
+        lambda text: tool._update_current_operation(label=text),
+    )
+    edit.setText("disabled edit")
+    edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].label == "disabled edit"
+    assert render_calls == []
+    assert not tool._preview_render_update_pending
+    assert info_changed == [None]
+
+    tool._update_current_operation(label="programmatic disabled edit")
+
+    assert tool.tool_status.operations[0].label == "programmatic disabled edit"
+    assert render_calls == []
+    assert not tool._preview_render_update_pending
+    assert info_changed == [None, None]
+
+    operation_item = tool.operation_list.item(0)
+    assert operation_item is not None
+    operation_item.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert tool.tool_status.operations[0].enabled is True
+    assert render_calls == [(tool,)]
+    assert info_changed == [None, None, None]
+
+
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
     monkeypatch,
     restore_interactive_options,
@@ -9469,6 +9575,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "fraction": 0.05,
         "pad": 0.02,
     }
+    if tool._preview_render_update_pending:
+        qtbot.waitUntil(lambda: not tool._preview_render_update_pending, timeout=1000)
     tool.dpi_spin.setValue(180.0)
     tool._setup_controls_changed()
     assert tool.tool_status.setup.dpi == 180.0
@@ -9483,6 +9591,18 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert colorbar_kwargs_edit is not None
     assert annotate_kwargs_edit.text() == 'fontsize=8, color="black"'
     assert colorbar_kwargs_edit.text() == "fraction=0.05, pad=0.02"
+    assert not any(
+        spinbox.keyboardTracking()
+        for spinbox in (
+            tool.nrows_spin,
+            tool.ncols_spin,
+            tool.width_spin,
+            tool.height_spin,
+            tool.width_mm_spin,
+            tool.height_mm_spin,
+            tool.dpi_spin,
+        )
+    )
     tool._select_step_section("colors")
     tool._update_current_operation(axis="equal")
     assert tool.findChild(QtWidgets.QToolBox) is None
@@ -9492,20 +9612,26 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         == "figureComposerPlotSlicesColorsPage"
     )
     tool._select_step_section("view")
-    limit_edits = tool.step_editor_stack.currentWidget().findChildren(
-        QtWidgets.QLineEdit
+    view_page = tool.step_editor_stack.currentWidget()
+    xlim_edit = view_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesXLimEdit"
     )
-    assert limit_edits[0].text() == ""
-    assert "," in limit_edits[0].placeholderText()
-    assert limit_edits[1].text() == ""
-    assert "," in limit_edits[1].placeholderText()
-    limit_edits[0].setFocus()
-    limit_edits[0].setText("0, 1")
-    limit_edits[0].editingFinished.emit()
+    ylim_edit = view_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesYLimEdit"
+    )
+    assert xlim_edit is not None
+    assert ylim_edit is not None
+    assert xlim_edit.text() == ""
+    assert "," in xlim_edit.placeholderText()
+    assert ylim_edit.text() == ""
+    assert "," in ylim_edit.placeholderText()
+    xlim_edit.setFocus()
+    xlim_edit.setText("0, 1")
+    xlim_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].xlim == (0.0, 1.0)
-    limit_edits[1].setFocus()
-    limit_edits[1].setText("2.5")
-    limit_edits[1].editingFinished.emit()
+    ylim_edit.setFocus()
+    ylim_edit.setText("2.5")
+    ylim_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].ylim == 2.5
     restored_status = FigureRecipeState.model_validate(tool.tool_status.model_dump())
     assert restored_status.operations[0].ylim == 2.5
@@ -17444,6 +17570,57 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
 
     assert len(tool.tool_status.operations) == 2
     assert tool.tool_status.operations[0].line_labels == ("profile B",)
+
+
+def test_figure_composer_disabled_line_labels_do_not_add_legend_or_render(
+    qtbot,
+    monkeypatch,
+) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(
+                    label="profile",
+                    source="profile",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(update={"enabled": False}),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("style")
+    labels_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
+    )
+    assert labels_edit is not None
+    render_calls: list[tuple[object, ...]] = []
+    info_changed: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    labels_edit.setText("disabled profile")
+    labels_edit.editingFinished.emit()
+
+    assert len(tool.tool_status.operations) == 1
+    assert tool.tool_status.operations[0].line_labels == ("disabled profile",)
+    assert render_calls == []
+    assert not tool._preview_render_update_pending
+    assert info_changed == [None]
 
 
 def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
