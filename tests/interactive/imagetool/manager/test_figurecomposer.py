@@ -7252,11 +7252,14 @@ def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
     qtbot.addWidget(source_tool)
     qtbot.addWidget(destination)
     _clear_clipboard()
+    data_changed: list[None] = []
+    destination.sigDataChanged.connect(lambda: data_changed.append(None))
 
     _select_operation_rows(source_tool, (0,))
     source_tool.copy_operation_button.click()
     destination._paste_operations_from_clipboard()
 
+    assert data_changed == [None]
     assert [source.name for source in destination.tool_status.sources] == [
         "existing",
         "map",

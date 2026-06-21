@@ -4114,6 +4114,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             }
         )
         self._refresh_source_list()
+        if renamed_source_data:
+            self.sigDataChanged.emit()
         self._finish_operation_structure_change(
             {operation.operation_id for operation in pasted_operations},
             pasted_operations[0].operation_id,
