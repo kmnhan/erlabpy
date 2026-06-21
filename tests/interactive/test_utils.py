@@ -925,6 +925,28 @@ def test_format_kwargs_treats_python_keywords_as_mapping_keys() -> None:
     assert erlab.interactive.utils.format_call_kwargs({"for": 1}) == '**{"for": 1}'
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "$\\Delta y$",
+        "line\\nbreak",
+        'double " quote',
+        "single ' quote",
+    ],
+)
+def test_parse_single_arg_emits_warning_free_literal_string(value: str) -> None:
+    code = f"result = {erlab.interactive.utils._parse_single_arg(value)}"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SyntaxWarning)
+        compiled = compile(code, "<generated>", "exec")
+
+    assert not any(isinstance(warning.message, SyntaxWarning) for warning in caught)
+    namespace: dict[str, typing.Any] = {}
+    exec(compiled, {}, namespace)  # noqa: S102
+    assert namespace["result"] == value
+
+
 def test_generate_code_expands_python_keyword_argument_names() -> None:
     def _dummy(**kwargs):
         return kwargs

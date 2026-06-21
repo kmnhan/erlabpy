@@ -15010,6 +15010,40 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     assert namespace["fig"].legends[0].get_title().get_text() == "Figure legend"
 
 
+def test_figure_composer_label_generated_code_escapes_backslashes(qtbot) -> None:
+    label = "$\\Delta y$"
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="supylabel",
+                ).model_copy(update={"method_args": (label,)}),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SyntaxWarning)
+        compiled = compile(code, "<figure-composer-generated>", "exec")
+
+    assert not any(warning.category is SyntaxWarning for warning in caught)
+    namespace: dict[str, typing.Any] = {}
+    exec(compiled, namespace)  # noqa: S102
+    assert namespace["fig"].get_supylabel() == label
+
+
 def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     data = xr.DataArray(
         np.arange(8.0).reshape(2, 2, 2),

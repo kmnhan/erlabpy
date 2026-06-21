@@ -1121,13 +1121,11 @@ def _parse_single_arg(arg: typing.Any) -> str:
 
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
-        # Otherwise, quote the string
+        # Otherwise, emit a Python string literal with escaped backslashes.
         if arg.startswith("|") and arg.endswith("|"):
             arg = arg[1:-1]
-        elif '"' in arg:
-            arg = f"'''{arg}'''" if "\n" in arg else f"'{arg}'"
         else:
-            arg = f'"""{arg}"""' if "\n" in arg else f'"{arg}"'
+            arg = json.dumps(arg, ensure_ascii=False)
     elif isinstance(arg, tuple):
         inner = ", ".join(_parse_single_arg(item) for item in arg)
         if len(arg) == 1:
