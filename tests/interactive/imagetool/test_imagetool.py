@@ -7162,6 +7162,16 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
         return original_apply(self, data_array, parent_data=parent_data)
 
     monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _count_apply)
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "setOverrideCursor",
+        lambda *_args: pytest.fail("accept should not set a global cursor"),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "restoreOverrideCursor",
+        lambda: pytest.fail("accept should not restore a global cursor"),
+    )
 
     row = dialog.rows[-1]
     _set_combo_data(row.action_combo, "aggregate")

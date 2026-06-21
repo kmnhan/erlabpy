@@ -330,9 +330,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             )
             return
 
-        QtWidgets.QApplication.setOverrideCursor(
-            QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
-        )
         try:
             selected = self.process_data(self.data)
         except Exception as exc:
@@ -340,8 +337,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             self.preview_label.setText(f"Invalid reduction: {exc}")
             ok_button.setEnabled(False)
             return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
 
         valid = self._set_preview_from_metadata(
             tuple(selected.dims),
