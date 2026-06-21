@@ -967,15 +967,24 @@ class _DetailsPanelController:
                 image_item = (
                     None if tool_window is None else tool_window.preview_imageitem
                 )
-                if image_item is None:
+                if image_item is None or not erlab.interactive.utils.qt_is_valid(
+                    image_item
+                ):
                     self._manager.preview_widget.setVisible(False)
-                else:
-                    self._manager.preview_widget.setPixmap(
-                        image_item.getPixmap().transformed(
-                            QtGui.QTransform().scale(1.0, -1.0)
-                        )
-                    )
-                    self._manager.preview_widget.setVisible(True)
+                    return
+
+                try:
+                    pixmap = image_item.getPixmap()
+                except RuntimeError:
+                    pixmap = None
+                if pixmap is None or pixmap.isNull():
+                    self._manager.preview_widget.setVisible(False)
+                    return
+
+                self._manager.preview_widget.setPixmap(
+                    pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
+                )
+                self._manager.preview_widget.setVisible(True)
 
             case _:
                 self._manager.text_box.setHtml(

@@ -475,6 +475,60 @@ def test_update_info_handles_legacy_imagetool_preview_attribute(
         assert manager.preview_widget.isVisible()
 
 
+def test_details_panel_update_info_hides_missing_child_preview_pixmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakePreviewWidget:
+        def __init__(self) -> None:
+            self.visible = True
+            self.pixmaps: list[QtGui.QPixmap] = []
+
+        def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+            self.pixmaps.append(pixmap)
+
+        def setVisible(self, visible: bool) -> None:
+            self.visible = visible
+
+    class _FakeImageItem:
+        def getPixmap(self) -> None:
+            return None
+
+    metadata_nodes: list[object] = []
+    preview_widget = _FakePreviewWidget()
+    node = types.SimpleNamespace(
+        uid="child-1",
+        is_imagetool=False,
+        tool_window=types.SimpleNamespace(
+            preview_pixmap=None,
+            preview_pixmap_stale=False,
+            preview_imageitem=_FakeImageItem(),
+        ),
+    )
+    manager = types.SimpleNamespace(
+        text_box=types.SimpleNamespace(setHtml=lambda _html: None),
+        preview_widget=preview_widget,
+        _selected_imagetool_targets=list,
+        _selected_tool_uids=lambda: ["child-1"],
+        _node_for_target=lambda _target: node,
+        _node_info_html=lambda _node: "<p>child</p>",
+        _set_metadata_node=lambda metadata_node: metadata_nodes.append(metadata_node),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda *objects: all(obj is not None for obj in objects),
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._update_info(uid="child-1")
+
+    assert metadata_nodes == [node]
+    assert preview_widget.visible is False
+    assert preview_widget.pixmaps == []
+
+
 def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     preview = manager_widgets._SingleImagePreview()
     qtbot.addWidget(preview)

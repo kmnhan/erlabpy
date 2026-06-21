@@ -23,7 +23,11 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
-from erlab.interactive.imagetool.manager._modelview import _MIME, _RowBadge
+from erlab.interactive.imagetool.manager._modelview import (
+    _MIME,
+    _ImageToolWrapperItemDelegate,
+    _RowBadge,
+)
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
 
@@ -76,6 +80,84 @@ class _InfoRefreshTool(erlab.interactive.utils.ToolWindow[_InfoRefreshToolState]
     def emit_info_text(self, text: str) -> None:
         self._info_text = text
         self.sigInfoChanged.emit()
+
+
+def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeIndex:
+        def internalPointer(self) -> str:
+            return "child-1"
+
+        def data(self, *, role: QtCore.Qt.ItemDataRole) -> str:
+            assert role == QtCore.Qt.ItemDataRole.DisplayRole
+            return "child"
+
+    class _FakePreviewAction:
+        def isChecked(self) -> bool:
+            return True
+
+    class _FakeImageItem:
+        def getViewBox(self) -> object:
+            return types.SimpleNamespace(rect=lambda: QtCore.QRectF(0.0, 0.0, 2.0, 4.0))
+
+        def getPixmap(self) -> None:
+            return None
+
+    child_node = types.SimpleNamespace(
+        uid="child-1",
+        display_text="child",
+        type_badge_text="",
+        source_state="fresh",
+        source_auto_update=False,
+        imagetool=None,
+        tool_window=types.SimpleNamespace(
+            preview_pixmap=None,
+            preview_imageitem=_FakeImageItem(),
+        ),
+    )
+
+    class _FakeManager:
+        preview_action = _FakePreviewAction()
+
+        def _child_node(self, uid: str) -> object:
+            assert uid == "child-1"
+            return child_node
+
+        def dependency_status_for_uid(self, uid: str) -> None:
+            assert uid == "child-1"
+            return
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda *objects: all(obj is not None for obj in objects),
+    )
+    view = QtWidgets.QTreeView()
+    qtbot.addWidget(view)
+    manager = _FakeManager()
+    delegate = _ImageToolWrapperItemDelegate(
+        typing.cast("ImageToolManager", manager),
+        typing.cast("typing.Any", view),
+    )
+    option = QtWidgets.QStyleOptionViewItem()
+    option.rect = QtCore.QRect(0, 0, 160, 28)
+    option.widget = view
+    option.state = QtWidgets.QStyle.StateFlag.State_MouseOver
+    canvas = QtGui.QPixmap(160, 28)
+    canvas.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(canvas)
+    try:
+        delegate._paint_childtool(
+            painter,
+            option,
+            typing.cast("QtCore.QModelIndex", _FakeIndex()),
+        )
+    finally:
+        painter.end()
+
+    assert not delegate.preview_popup.isVisible()
 
 
 def test_drop_mimedata(

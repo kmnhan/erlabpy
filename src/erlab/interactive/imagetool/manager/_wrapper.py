@@ -146,7 +146,7 @@ def _preview_from_imagetool(
     except RuntimeError:
         return fallback_ratio, fallback_pixmap
 
-    if pixmap.isNull():
+    if pixmap is None or pixmap.isNull():
         return fallback_ratio, fallback_pixmap
 
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
