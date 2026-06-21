@@ -4928,11 +4928,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         references = cls._saved_tool_data_references(ds)
         data_items: dict[str, xr.DataArray] = {}
         for variable_name, reference in references.items():
-            if variable_name not in ds:
-                raise ValueError(
-                    f"Saved tool data reference points to missing variable "
-                    f"{variable_name!r}"
-                )
             data_items[variable_name] = cls._resolve_saved_tool_data_reference(
                 reference,
                 ds,

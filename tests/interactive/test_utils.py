@@ -2694,17 +2694,29 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
         )
 
 
-def test_tool_window_rejects_references_to_missing_data_items() -> None:
+def test_tool_window_resolves_references_with_missing_placeholder_variables() -> None:
     ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
     ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
         {"missing": {"kind": "manager_node", "node_uid": "missing"}}
     )
 
-    with pytest.raises(ValueError, match="missing variable"):
+    data_items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda _reference: xr.DataArray(1),
+    )
+
+    xr.testing.assert_identical(data_items["missing"], xr.DataArray(1))
+    xr.testing.assert_identical(
+        data_items[erlab.interactive.utils._SAVED_TOOL_DATA_NAME],
+        xr.DataArray(0, name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME),
+    )
+
+    with pytest.raises(ValueError, match="could not be resolved"):
         erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
             ds,
             source_parent_data=None,
-            reference_resolver=lambda _reference: xr.DataArray(1),
+            reference_resolver=lambda _reference: None,
         )
 
     empty = xr.Dataset()

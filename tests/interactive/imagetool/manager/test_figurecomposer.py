@@ -21274,6 +21274,25 @@ def test_manager_workspace_figure_sources_save_as_references(
             assert ds["data_1"].size == 0
             assert manager_workspace._workspace_dataset_can_write_h5py(ds)
 
+            source_data_by_uid = {
+                references[erlab.interactive.utils._SAVED_TOOL_DATA_NAME][
+                    "node_uid"
+                ]: first,
+                references["data_1"]["node_uid"]: second,
+            }
+            corrupt_ds = ds.drop_vars("data_1")
+            restored_from_reference = erlab.interactive.utils.ToolWindow.from_dataset(
+                corrupt_ds,
+                _tool_data_reference_resolver=lambda reference: source_data_by_uid.get(
+                    reference.get("node_uid")
+                ),
+            )
+            qtbot.addWidget(restored_from_reference)
+            assert isinstance(restored_from_reference, FigureComposerTool)
+            xr.testing.assert_identical(
+                restored_from_reference.source_data()["data_1"], second
+            )
+
             fname = tmp_path / "figure-source-references.itws"
             manager._save_workspace_document(fname, force_full=True)
             saved_ds = manager_workspace._read_workspace_dataset_group_h5py(
