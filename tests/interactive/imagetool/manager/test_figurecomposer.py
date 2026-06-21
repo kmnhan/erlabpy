@@ -3338,6 +3338,98 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert tool.tool_status.operations[1].panel_styles == ()
 
 
+def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(5 * 3 * 2.0).reshape(5, 3, 2),
+        dims=("eV", "kx", "ky"),
+        coords={
+            "eV": np.linspace(-1.0, 1.0, 5),
+            "kx": [0.0, 1.0, 2.0],
+            "ky": [10.0, 20.0],
+        },
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+        axes=FigureAxesSelectionState(expression="axs"),
+    ).model_copy(
+        update={
+            "slice_values_mode": "all",
+            "slice_values_thin": 2,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=3),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    expected_values = data.thin({"eV": 2}).coords["eV"].values
+    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, operation)
+    np.testing.assert_allclose(kwargs["eV"], expected_values)
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, operation)
+    assert shape.panel_count == expected_values.size
+    assert shape.plot_dims == ("kx", "ky")
+
+    code_kwargs = figurecomposer_plot_slices._plot_slices_code_kwargs(tool, operation)
+    assert isinstance(code_kwargs["eV"], figurecomposer_text._RawCode)
+    captured: list[dict[str, typing.Any]] = []
+
+    class PlotSlicesCapture:
+        @staticmethod
+        def plot_slices(_maps, **plot_kwargs):
+            captured.append(plot_kwargs)
+
+    exec(  # noqa: S102
+        "\n".join(figurecomposer_plot_slices._plot_slices_code_lines(tool, operation)),
+        {
+            "data": data,
+            "eplt": PlotSlicesCapture,
+            "axs": object(),
+        },
+    )
+    assert len(captured) == 1
+    np.testing.assert_allclose(captured[0]["eV"], expected_values)
+
+    full_values_operation = operation.model_copy(update={"slice_values_thin": 1})
+    full_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool,
+        full_values_operation,
+    )
+    np.testing.assert_allclose(full_kwargs["eV"], data.coords["eV"].values)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._update_operation_editor()
+    tool._select_step_section("selection")
+    selection_page = tool.step_editor_stack.currentWidget()
+    assert selection_page is not None
+    values_edit = selection_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
+    )
+    assert values_edit is None
+    coordinate_summary = selection_page.findChild(
+        QtWidgets.QLabel, "figureComposerPlotSlicesCoordinateSummary"
+    )
+    assert coordinate_summary is not None
+    thin_spin = selection_page.findChild(
+        QtWidgets.QAbstractSpinBox, "figureComposerPlotSlicesValuesThinSpin"
+    )
+    assert thin_spin is not None
+    assert thin_spin.isEnabled()
+    assert typing.cast("typing.Any", thin_spin).value() == 2
+
+
 def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     qtbot,
     monkeypatch,

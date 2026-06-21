@@ -139,6 +139,13 @@ _PLOT_SLICES_PANEL_IMAGE = "image"
 _PLOT_SLICES_PANEL_MIXED = "mixed"
 _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR = "_figure_composer_operation_id"
 _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR = "_figure_composer_panel_key"
+_SLICE_VALUES_MODE_LABELS = {
+    "manual": "Manual values",
+    "all": "All coordinate values",
+}
+_SLICE_VALUES_LABEL_MODES = {
+    label: mode for mode, label in _SLICE_VALUES_MODE_LABELS.items()
+}
 
 
 class _PlotSlicesPanelKey(typing.NamedTuple):
@@ -160,6 +167,115 @@ def _operation_dim_names(
     if dims:
         return tuple(dims)
     return tuple(_available_source_dims(tool._source_data, operation.sources))
+
+
+def _slice_values_mode_text(mode: str) -> str:
+    return _SLICE_VALUES_MODE_LABELS.get(mode, _SLICE_VALUES_MODE_LABELS["manual"])
+
+
+def _slice_values_mode_from_text(text: str) -> typing.Literal["manual", "all"]:
+    return typing.cast(
+        'typing.Literal["manual", "all"]',
+        _SLICE_VALUES_LABEL_MODES.get(text, "manual"),
+    )
+
+
+def _use_all_coordinate_slice_values(operation: FigureOperationState) -> bool:
+    return operation.slice_values_mode == "all"
+
+
+def _all_coordinate_slice_values(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[float, ...]:
+    if not operation.slice_dim:
+        return ()
+    maps = _operation_maps(tool, operation)
+    if not maps:
+        return ()
+    data = maps[0]
+    if operation.slice_dim not in data.dims:
+        return ()
+    try:
+        values = np.asarray(
+            data.thin({operation.slice_dim: operation.slice_values_thin})
+            .coords[operation.slice_dim]
+            .values
+        ).reshape(-1)
+        return tuple(float(value) for value in values)
+    except (KeyError, TypeError, ValueError):
+        return ()
+
+
+def _effective_slice_values(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[float, ...]:
+    if _use_all_coordinate_slice_values(operation):
+        return _all_coordinate_slice_values(tool, operation)
+    return operation.slice_values
+
+
+def _all_coordinate_slice_values_error(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    dims: Sequence[str],
+) -> str:
+    if not _use_all_coordinate_slice_values(operation):
+        return ""
+    if not operation.slice_dim:
+        return "Choose a dimension before using all coordinate values."
+    if operation.slice_dim not in dims:
+        return f"{operation.slice_dim!r} is not an input dimension."
+    if _effective_slice_values(tool, operation):
+        return ""
+    return f"{operation.slice_dim!r} coordinate values must be numeric and non-empty."
+
+
+def _all_coordinate_slice_values_summary(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> str:
+    if not operation.slice_dim:
+        return "Choose a dimension."
+    maps = _operation_maps(tool, operation)
+    if not maps:
+        return "Select at least one valid source."
+    data = maps[0]
+    if operation.slice_dim not in data.dims:
+        return f"{operation.slice_dim!r} is not an input dimension."
+    slice_values = _effective_slice_values(tool, operation)
+    if not slice_values:
+        return (
+            f"{operation.slice_dim!r} coordinate values must be numeric and non-empty."
+        )
+    total_count = int(data.sizes[operation.slice_dim])
+    plotted_count = len(slice_values)
+    if operation.slice_values_thin == 1 or plotted_count == total_count:
+        return f"{operation.slice_dim}: {plotted_count} values"
+    return f"{operation.slice_dim}: {total_count} values, {plotted_count} plotted"
+
+
+def _first_plot_slices_source_code(operation: FigureOperationState) -> str | None:
+    if operation.map_selections:
+        return _selection_code(operation.map_selections[0])
+    if operation.sources:
+        return _valid_source_variable(operation.sources[0])
+    return None
+
+
+def _all_coordinate_slice_values_code(
+    operation: FigureOperationState,
+) -> str | None:
+    if not _use_all_coordinate_slice_values(operation) or not operation.slice_dim:
+        return None
+    source_code = _first_plot_slices_source_code(operation)
+    if source_code is None:
+        return None
+    dim_code = erlab.interactive.utils._parse_single_arg(operation.slice_dim)
+    if operation.slice_values_thin == 1:
+        return f"{source_code}.coords[{dim_code}].values"
+    return (
+        f"{source_code}.thin({{{dim_code}: {operation.slice_values_thin}}})"
+        f".coords[{dim_code}].values"
+    )
 
 
 def _plot_slices_panel_kind(shape: _PlotSlicesShape) -> str:
@@ -194,9 +310,10 @@ def _plot_slices_slice_count(
     dims = _operation_dim_names(tool, operation)
     selected_dims: set[str] = set()
     slice_count = 1
-    if operation.slice_dim and operation.slice_values:
+    slice_values = _effective_slice_values(tool, operation)
+    if operation.slice_dim and slice_values:
         selected_dims.add(operation.slice_dim)
-        slice_count = len(operation.slice_values)
+        slice_count = len(slice_values)
     for key, value in operation.slice_kwargs.items():
         if key.endswith("_width") or key not in dims:
             continue
@@ -227,7 +344,11 @@ def _plot_slices_panel_keys(
         else f"map {index + 1}"
         for index in range(map_count)
     )
-    slice_labels = _plot_slices_slice_labels(operation, slice_count)
+    slice_labels = _plot_slices_slice_labels(
+        operation,
+        slice_count,
+        _effective_slice_values(tool, operation),
+    )
 
     keys: list[_PlotSlicesPanelKey] = []
     if operation.order == "F":
@@ -251,12 +372,16 @@ def _plot_slices_panel_keys(
 
 
 def _plot_slices_slice_labels(
-    operation: FigureOperationState, slice_count: int
+    operation: FigureOperationState,
+    slice_count: int,
+    slice_values: Sequence[float] | None = None,
 ) -> tuple[str, ...]:
-    if operation.slice_dim and operation.slice_values:
+    if slice_values is None:
+        slice_values = operation.slice_values
+    if operation.slice_dim and slice_values:
         return tuple(
             f"{operation.slice_dim}={value:g}"
-            for value in operation.slice_values[:slice_count]
+            for value in tuple(slice_values)[:slice_count]
         )
     for key, value in operation.slice_kwargs.items():
         if key.endswith("_width"):
@@ -495,20 +620,27 @@ def _plot_slices_uses_transformed_line_maps(
 
 
 def _plot_slices_panel_qsel_kwargs(
-    operation: FigureOperationState, key: _PlotSlicesPanelKey
+    operation: FigureOperationState,
+    key: _PlotSlicesPanelKey,
+    slice_values: Sequence[float] | None = None,
 ) -> dict[str, typing.Any]:
     kwargs = dict(operation.slice_kwargs)
-    if operation.slice_dim and operation.slice_values:
-        kwargs[operation.slice_dim] = operation.slice_values[key.slice_index]
+    if slice_values is None:
+        slice_values = operation.slice_values
+    if operation.slice_dim and slice_values:
+        kwargs[operation.slice_dim] = slice_values[key.slice_index]
         if operation.slice_width is not None:
             kwargs[f"{operation.slice_dim}_width"] = operation.slice_width
     return kwargs
 
 
 def _plot_slices_panel_profile_data(
-    data: xr.DataArray, operation: FigureOperationState, key: _PlotSlicesPanelKey
+    data: xr.DataArray,
+    operation: FigureOperationState,
+    key: _PlotSlicesPanelKey,
+    slice_values: Sequence[float] | None = None,
 ) -> xr.DataArray:
-    kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
+    kwargs = _plot_slices_panel_qsel_kwargs(operation, key, slice_values)
     if kwargs:
         return data.qsel(**kwargs)
     return data
@@ -523,13 +655,14 @@ def _plot_slices_line_profiles(
     if maps is None:
         maps = _operation_maps(tool, operation)
     keys = _plot_slices_panel_keys(tool, operation)
+    slice_values = _effective_slice_values(tool, operation)
     profiles: list[xr.DataArray] = []
     profile_keys: list[_PlotSlicesPanelKey] = []
     for key in keys:
         if key.map_index >= len(maps):
             continue
         profile = _plot_slices_panel_profile_data(
-            maps[key.map_index], operation, key
+            maps[key.map_index], operation, key, slice_values
         ).squeeze(drop=True)
         if profile.ndim != 1:
             continue
@@ -545,7 +678,8 @@ def _plot_slices_transformed_maps(
 ) -> list[xr.DataArray]:
     profiles, keys = _plot_slices_line_profiles(tool, operation, maps)
     transformed = transform_profiles(operation, profiles)
-    if not operation.slice_dim or not operation.slice_values:
+    slice_values = list(_effective_slice_values(tool, operation))
+    if not operation.slice_dim or not slice_values:
         return transformed
 
     map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
@@ -553,7 +687,6 @@ def _plot_slices_transformed_maps(
         map_profiles[key.map_index].append((key.slice_index, profile))
 
     transformed_maps: list[xr.DataArray] = []
-    slice_values = list(operation.slice_values)
     for profiles_for_map in map_profiles:
         if len(profiles_for_map) != len(slice_values):
             continue
@@ -1744,24 +1877,90 @@ def _build_plot_slices_editor(
         "Data dimension passed as the slice keyword to plot_slices.",
     )
 
-    values_text, values_mixed = tool._batch_text(
-        operation, lambda target: target.slice_values, _format_tuple
+    values_mode_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.slice_values_mode
     )
-    values_edit = tool._line_edit(values_text)
-    tool._apply_mixed_line_edit(values_edit, values_mixed)
-    values_edit.setObjectName("figureComposerPlotSlicesValuesEdit")
-    tool._connect_line_edit_finished(
-        values_edit,
+    values_mode_combo = tool._combo(
+        tuple(_SLICE_VALUES_MODE_LABELS.values()),
+        None
+        if values_mode_mixed
+        else _slice_values_mode_text(operation.slice_values_mode),
         lambda text: tool._update_current_operation_rebuild(
-            slice_values=_float_tuple_from_text(text)
+            slice_values_mode=_slice_values_mode_from_text(text)
         ),
+        parent=selection_page,
+        mixed=values_mode_mixed,
+    )
+    values_mode_combo.setObjectName("figureComposerPlotSlicesValuesModeCombo")
+    values_mode_combo.setToolTip(
+        "Choose manual values or all values from the dimension coordinate."
     )
     tool._add_form_row(
         selection_layout,
         "Values",
-        values_edit,
-        "Comma-separated coordinate values to select along the dimension.",
+        values_mode_combo,
+        values_mode_combo.toolTip(),
     )
+    if not values_mode_mixed and _use_all_coordinate_slice_values(operation):
+        coordinate_summary = QtWidgets.QLabel(
+            _all_coordinate_slice_values_summary(tool, operation),
+            selection_page,
+        )
+        coordinate_summary.setObjectName("figureComposerPlotSlicesCoordinateSummary")
+        coordinate_summary.setWordWrap(True)
+        tool._add_form_row(
+            selection_layout,
+            "Coordinate",
+            coordinate_summary,
+            "Shows the coordinate values that will be passed to plot_slices.",
+        )
+
+        thin_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.slice_values_thin
+        )
+        thin_spin = erlab.interactive.utils.BetterSpinBox(
+            selection_page,
+            integer=True,
+            minimum=1,
+            value=operation.slice_values_thin,
+        )
+        thin_spin.setObjectName("figureComposerPlotSlicesValuesThinSpin")
+        thin_spin.setToolTip("Keep every Nth coordinate value.")
+        tool._connect_value_signal(
+            thin_spin,
+            thin_spin.valueChanged,
+            int,
+            lambda value: tool._update_current_operation_rebuild(
+                slice_values_thin=value
+            ),
+        )
+        tool._add_form_row(
+            selection_layout,
+            "Thin",
+            tool._mixed_value_widget(
+                thin_spin, mixed=thin_mixed, parent=selection_page
+            ),
+            thin_spin.toolTip(),
+        )
+    elif not values_mode_mixed:
+        values_text, values_mixed = tool._batch_text(
+            operation, lambda target: target.slice_values, _format_tuple
+        )
+        values_edit = tool._line_edit(values_text, parent=selection_page)
+        tool._apply_mixed_line_edit(values_edit, values_mixed)
+        values_edit.setObjectName("figureComposerPlotSlicesValuesEdit")
+        tool._connect_line_edit_finished(
+            values_edit,
+            lambda text: tool._update_current_operation_rebuild(
+                slice_values=_float_tuple_from_text(text)
+            ),
+        )
+        tool._add_form_row(
+            selection_layout,
+            "Manual",
+            values_edit,
+            "Comma-separated coordinate values to select along the dimension.",
+        )
 
     width_text, width_mixed = tool._batch_text(
         operation,
@@ -2994,12 +3193,18 @@ def _plot_slices_shape(
     selected_dims: set[str] = set()
     selection_error = ""
     slice_count = 1
-    if operation.slice_dim:
-        if operation.slice_dim not in dims and operation.slice_values:
+    slice_values = _effective_slice_values(tool, operation)
+    if _use_all_coordinate_slice_values(operation) and not operation.slice_dim:
+        selection_error = _all_coordinate_slice_values_error(tool, operation, dims)
+    if operation.slice_dim and not selection_error:
+        all_values_error = _all_coordinate_slice_values_error(tool, operation, dims)
+        if all_values_error:
+            selection_error = all_values_error
+        elif operation.slice_dim not in dims and slice_values:
             selection_error = f"{operation.slice_dim!r} is not an input dimension."
-        elif operation.slice_values:
+        elif slice_values:
             selected_dims.add(operation.slice_dim)
-            slice_count = len(operation.slice_values)
+            slice_count = len(slice_values)
 
     for key, value in operation.slice_kwargs.items():
         if key.endswith("_width") or key not in dims:
@@ -3059,8 +3264,9 @@ def _plot_slices_kwargs(
     shape = _plot_slices_shape(tool, operation)
     is_line_plot = shape.plot_ndim == 1
     kwargs.update(dict(operation.slice_kwargs))
-    if operation.slice_dim and operation.slice_values:
-        kwargs[operation.slice_dim] = list(operation.slice_values)
+    slice_values = _effective_slice_values(tool, operation)
+    if operation.slice_dim and slice_values:
+        kwargs[operation.slice_dim] = list(slice_values)
         if operation.slice_width is not None:
             kwargs[f"{operation.slice_dim}_width"] = operation.slice_width
     if operation.transpose:
@@ -3142,8 +3348,9 @@ def _plot_slices_transformed_kwargs(
         kwargs.pop(key, None)
     if operation.slice_dim:
         kwargs.pop(f"{operation.slice_dim}_width", None)
-        if operation.slice_values:
-            kwargs[operation.slice_dim] = list(operation.slice_values)
+        slice_values = _effective_slice_values(tool, operation)
+        if slice_values:
+            kwargs[operation.slice_dim] = list(slice_values)
         else:
             kwargs.pop(operation.slice_dim, None)
     return kwargs
@@ -3170,6 +3377,7 @@ def _render_plot_slices(
         operation,
         maps,
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=True),
+        slice_count=_plot_slices_slice_count(tool, operation),
     )
     axes_tuple = _iter_axes(axes)
     panel_keys = _plot_slices_panel_keys(tool, operation)
@@ -3223,11 +3431,17 @@ def _tag_plot_slices_mappables(
 
 
 def _plot_slices_axes(
-    operation: FigureOperationState, maps: Sequence[xr.DataArray], axes: object
+    operation: FigureOperationState,
+    maps: Sequence[xr.DataArray],
+    axes: object,
+    *,
+    slice_count: int | None = None,
 ) -> object:
     if not isinstance(axes, np.ndarray):
         return axes
-    slice_count = max(len(operation.slice_values), 1)
+    slice_count = max(
+        slice_count if slice_count is not None else len(operation.slice_values), 1
+    )
     if operation.order == "F":
         shape = (slice_count, len(maps))
     else:
@@ -3311,8 +3525,9 @@ def _plot_slices_profile_code(
     operation: FigureOperationState,
     key: _PlotSlicesPanelKey,
     profile_data: xr.DataArray,
+    slice_values: Sequence[float] | None = None,
 ) -> str:
-    kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
+    kwargs = _plot_slices_panel_qsel_kwargs(operation, key, slice_values)
     if not kwargs:
         return _maybe_squeeze_drop_code(source_code, profile_data)
     code = f"{source_code}.qsel({_code_kwargs(kwargs)})"
@@ -3322,17 +3537,24 @@ def _plot_slices_profile_code(
 def _plot_slices_transformed_maps_code(
     operation: FigureOperationState,
     keys: tuple[_PlotSlicesPanelKey, ...],
+    slice_values: Sequence[float] | None = None,
+    slice_values_code: str | None = None,
 ) -> tuple[list[str], str]:
-    if not operation.slice_dim or not operation.slice_values:
+    if slice_values is None:
+        slice_values = operation.slice_values
+    if not operation.slice_dim or not slice_values:
         maps_code = "profiles[0]" if len(keys) == 1 else "profiles"
         return [], maps_code
 
     map_count = max((key.map_index for key in keys), default=-1) + 1
-    slice_values = list(operation.slice_values)
+    slice_values = list(slice_values)
     dim_code = erlab.interactive.utils._parse_single_arg(operation.slice_dim)
-    coords_code = erlab.interactive.utils._parse_single_arg(
-        {operation.slice_dim: slice_values}
-    )
+    if slice_values_code is None:
+        coords_code = erlab.interactive.utils._parse_single_arg(
+            {operation.slice_dim: slice_values}
+        )
+    else:
+        coords_code = f"{{{dim_code}: {slice_values_code}}}"
     map_lines: list[list[str]] = []
     for map_index in range(map_count):
         profile_indices = [
@@ -3391,6 +3613,7 @@ def _plot_slices_transformed_code_lines(
     if not keys:
         return []
 
+    slice_values = _effective_slice_values(tool, operation)
     lines = ["profiles = ["]
     lines.extend(
         "    "
@@ -3398,14 +3621,22 @@ def _plot_slices_transformed_code_lines(
             source_codes[key.map_index],
             operation,
             key,
-            _plot_slices_panel_profile_data(maps[key.map_index], operation, key),
+            _plot_slices_panel_profile_data(
+                maps[key.map_index], operation, key, slice_values
+            ),
+            slice_values,
         )
         + ","
         for key in keys
     )
     lines.append("]")
     lines.extend(profile_transform_code_lines(operation, profiles=profiles))
-    map_lines, maps_code = _plot_slices_transformed_maps_code(operation, keys)
+    map_lines, maps_code = _plot_slices_transformed_maps_code(
+        operation,
+        keys,
+        slice_values,
+        _all_coordinate_slice_values_code(operation),
+    )
     lines.extend(map_lines)
 
     kwargs = _plot_slices_transformed_code_kwargs(tool, operation)
@@ -3441,6 +3672,9 @@ def _plot_slices_code_kwargs(
 ) -> dict[str, typing.Any]:
     kwargs = _plot_slices_kwargs(tool, operation)
     is_line_plot = _plot_slices_shape(tool, operation).plot_ndim == 1
+    slice_values_code = _all_coordinate_slice_values_code(operation)
+    if operation.slice_dim and slice_values_code is not None:
+        kwargs[operation.slice_dim] = _RawCode(slice_values_code)
     panel_norm_code = None if is_line_plot else _panel_norm_code(tool, operation)
     if panel_norm_code is not None:
         kwargs["norm"] = _RawCode(panel_norm_code)
@@ -3481,8 +3715,9 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
         source_text = "missing source"
     shape = _plot_slices_shape(tool, operation)
     plot_kind = "Line slices" if shape.plot_ndim == 1 else "Image slices"
-    if operation.slice_dim and operation.slice_values:
-        selection_text = f"{operation.slice_dim} = {len(operation.slice_values)} values"
+    slice_values = _effective_slice_values(tool, operation)
+    if operation.slice_dim and slice_values:
+        selection_text = f"{operation.slice_dim} = {len(slice_values)} values"
     else:
         selection_text = "current selection"
     return f"{prefix}{plot_kind}: {source_text}, {selection_text}"
@@ -3829,8 +4064,9 @@ def _section_summary(
         case "axes":
             return tool._axes_target_text(operation.axes)
         case "selection":
-            if operation.slice_dim and operation.slice_values:
-                return f"{operation.slice_dim}, {len(operation.slice_values)}"
+            slice_values = _effective_slice_values(tool, operation)
+            if operation.slice_dim and slice_values:
+                return f"{operation.slice_dim}, {len(slice_values)}"
             if operation.slice_kwargs:
                 return "additional"
             return "none"
@@ -3863,7 +4099,7 @@ def _required_imports(
         operation.enabled
         and _plot_slices_uses_transformed_line_maps(tool, operation)
         and operation.slice_dim
-        and operation.slice_values
+        and _effective_slice_values(tool, operation)
     ):
         imports.append("import xarray as xr")
     if (

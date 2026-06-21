@@ -317,7 +317,9 @@ class FigureOperationState(pydantic.BaseModel):
     sources: tuple[str, ...] = ()
     map_selections: tuple[FigureDataSelectionState, ...] = ()
     slice_dim: str | None = None
+    slice_values_mode: typing.Literal["manual", "all"] = "manual"
     slice_values: tuple[float, ...] = ()
+    slice_values_thin: int = pydantic.Field(default=1, ge=1)
     slice_width: float | None = None
     slice_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     transpose: bool = False
