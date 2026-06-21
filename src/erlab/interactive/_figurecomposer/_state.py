@@ -284,6 +284,16 @@ class FigureDataSelectionState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
+class FigureMethodPlotValueState(pydantic.BaseModel):
+    """Source-backed value selected for an ``ax.plot`` method step."""
+
+    source: str
+    kind: typing.Literal["data", "coord"] = "data"
+    name: str | None = None
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
 class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
     """Optional style override for one logical plot_slices panel."""
 
@@ -405,6 +415,9 @@ class FigureOperationState(pydantic.BaseModel):
     method_args: tuple[typing.Any, ...] = ()
     method_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     method_call_policy: str | None = None
+    method_plot_data_mode: typing.Literal["entered", "from_data"] = "entered"
+    method_plot_x: FigureMethodPlotValueState | None = None
+    method_plot_y: FigureMethodPlotValueState | None = None
     text_values: tuple[str, ...] = ()
     method_transform: typing.Literal[
         "data", "axes", "figure", "dpi", "xaxis", "yaxis", "blend", "custom"
