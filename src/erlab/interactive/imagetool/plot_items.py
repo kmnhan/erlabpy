@@ -1084,6 +1084,9 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         data = self._current_data_cropped if alt_pressed else self._current_data
+        data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            data.copy(deep=False)
+        )
 
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()

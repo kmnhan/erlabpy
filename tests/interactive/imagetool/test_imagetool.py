@@ -3811,6 +3811,48 @@ def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None
     win.close()
 
 
+def test_image_open_in_new_window_restores_nonuniform_public_dims(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("sample_temp", "eV", "alpha"),
+        coords={
+            "sample_temp": [10.0, 20.5, 22.0],
+            "eV": np.arange(4.0),
+            "alpha": np.arange(5.0),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    expected = image.make_tool_source_spec().apply(data)
+
+    assert image.current_data.dims == ("sample_temp", "eV")
+    assert "sample_temp_idx" not in image.current_data.dims
+    xarray.testing.assert_identical(
+        image.current_data.rename(None),
+        expected.rename(None),
+    )
+
+    image.open_in_new_window()
+    qtbot.wait_until(
+        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
+        timeout=5000,
+    )
+    child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
+
+    assert child.slicer_area._data.dims == ("sample_temp", "eV")
+    assert child.slicer_area.displayed_data.dims == ("sample_temp", "eV")
+    xarray.testing.assert_identical(
+        child.slicer_area.displayed_data.rename(None),
+        expected.rename(None),
+    )
+
+    child.close()
+    win.close()
+
+
 def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
     qtbot.addWidget(win)

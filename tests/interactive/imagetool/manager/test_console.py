@@ -2,6 +2,7 @@ import pathlib
 import sys
 import types
 import typing
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -953,6 +954,57 @@ def test_manager_console_bare_expression_opens_provenance_root(
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_console_child_window_divide_uses_public_nonuniform_dims(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("sample_temp", "eV", "alpha"),
+        coords={
+            "sample_temp": [10.0, 20.5, 22.0],
+            "eV": np.arange(4.0),
+            "alpha": np.arange(5.0),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent = manager._tool_graph.root_wrappers[0]
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_tool = manager.get_imagetool(child_uid)
+        tools = manager_console.ToolsNamespace(manager)
+
+        assert tools[0].data.dims == ("sample_temp", "eV", "alpha")
+        assert tools[0].children[0].data.dims == ("sample_temp", "eV")
+        assert "sample_temp_idx" not in tools[0].data.dims
+        assert "sample_temp_idx" not in tools[0].children[0].data.dims
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = tools[0] / tools[0].children[0]
+
+        assert isinstance(result, manager_console._DerivedDataNamespace)
+        assert not any(
+            "Duplicate dimension names" in str(warning.message) for warning in caught
+        )
+        assert result.data.dims == ("sample_temp", "eV", "alpha")
+        xr.testing.assert_identical(
+            result.data,
+            data / child_tool.slicer_area.displayed_data,
+        )
 
 
 @pytest.mark.parametrize("reserved_name", ["data", "derived", "tools", "data_0"])

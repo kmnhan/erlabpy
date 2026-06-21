@@ -799,7 +799,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def displayed_data(self) -> xr.DataArray:
         """Return the public data values committed for derived outputs."""
-        return self._accepted_data_for_dims(tuple(self._data.dims))
+        return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self._accepted_data_for_dims(tuple(self._data.dims)).copy(deep=False)
+        )
 
     def _tool_source_parent_data(self) -> xr.DataArray:
         """Return the current slicer view used for source-bound child tools."""
