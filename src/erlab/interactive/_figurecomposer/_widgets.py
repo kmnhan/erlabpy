@@ -80,6 +80,7 @@ _SELECTOR_CORNER_RADIUS = 6.0
 _SELECTOR_BORDER_WIDTH = 1.0
 _SELECTOR_SELECTED_BORDER_WIDTH = 1.6
 _SELECTOR_MUTED_STATUS_COLOR = QtGui.QColor("#59636e")
+_MANAGER_WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME = "managerWorkspaceSaveShortcut"
 
 
 def _blend_qcolors(
@@ -1122,12 +1123,34 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
+        if self._is_workspace_save_shortcut_event(event) and (
+            shortcut := self._workspace_save_shortcut()
+        ):
+            shortcut.activated.emit()
+            if event is not None:
+                event.accept()
+            return True
         if self._is_close_shortcut_event(event):
             self.hide()
             if event is not None:
                 event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def _workspace_save_shortcut(self) -> QtWidgets.QShortcut | None:
+        for shortcut in self.findChildren(QtWidgets.QShortcut):
+            if shortcut.objectName() == _MANAGER_WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME:
+                return shortcut
+        return None
+
+    @staticmethod
+    def _is_workspace_save_shortcut_event(event: QtCore.QEvent | None) -> bool:
+        return (
+            event is not None
+            and event.type() == QtCore.QEvent.Type.ShortcutOverride
+            and isinstance(event, QtGui.QKeyEvent)
+            and event.matches(QtGui.QKeySequence.StandardKey.Save)
+        )
 
     @staticmethod
     def _is_close_shortcut_event(event: QtCore.QEvent | None) -> bool:
