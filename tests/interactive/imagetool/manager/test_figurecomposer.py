@@ -6018,6 +6018,54 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "Render error" not in tool.source_status_label.text()
 
 
+def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    operation = FigureOperationState.custom(
+        label="custom",
+        code="ax.set_title('loaded')",
+        trusted=False,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "(render error)" in item.text()
+    assert "Custom code is not trusted" in item.toolTip()
+    assert "Enable Trusted to render it" in tool.source_status_label.text()
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("code")
+    trusted_check = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QCheckBox, "figureComposerCustomCodeTrustedCheck"
+    )
+    assert trusted_check is not None
+    assert not trusted_check.isChecked()
+
+    trusted_check.setChecked(True)
+
+    assert tool.tool_status.operations[0].trusted is True
+    qtbot.waitUntil(lambda: not tool._operation_render_errors, timeout=1000)
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "(render error)" not in item.text()
+    assert "Custom code is not trusted" not in item.toolTip()
+    assert "Render error" not in tool.source_status_label.text()
+
+
 def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     qtbot,
 ) -> None:

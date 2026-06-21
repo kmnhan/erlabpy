@@ -123,6 +123,7 @@ def _build_custom_code_editor(
         operation.trusted,
         lambda checked: tool._update_current_operation(trusted=checked),
     )
+    trust.setObjectName("figureComposerCustomCodeTrustedCheck")
     tool._add_form_row(
         tool.operation_editor_layout,
         "Trusted",
@@ -159,8 +160,11 @@ def _render_custom(
     fig: Figure,
     axs: typing.Any,
 ) -> None:
-    if not operation.trusted or not operation.code.strip():
+    code = operation.code.strip()
+    if not code:
         return
+    if not operation.trusted:
+        raise ValueError("Custom code is not trusted. Enable Trusted to render it.")
     namespace = _source_namespace(tool, fig, axs)
     # Custom code is the explicit trusted escape hatch in the recipe pipeline.
     exec(operation.code, namespace)  # noqa: S102
