@@ -196,6 +196,61 @@ def test_fit1d_undo_redo(qtbot, exp_decay_model) -> None:
     assert win.param_model.param_at(0).value == pytest.approx(updated_value)
 
 
+def test_fit1d_undo_redo_repairs_equal_bound_params(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 2.0, 11)
+    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    good_status = win.tool_status
+    bad_params = list(good_status.params or [])
+    bad_param_state = list(bad_params[0])
+    param_name = str(bad_param_state[0])
+    bad_param_state[1] = 1.0
+    bad_param_state[2] = True
+    bad_param_state[4] = 1.0
+    bad_param_state[5] = 1.0
+    bad_params[0] = tuple(bad_param_state)
+    bad_status = good_status.model_copy(update={"params": bad_params})
+    current_status = good_status.model_copy(
+        update={"normalize_mean": not good_status.normalize_mean}
+    )
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_warning",
+        lambda title, text: warnings.append((title, text)),
+    )
+
+    win._prev_states.clear()
+    win._prev_states.extend([good_status, bad_status, current_status])
+    win._next_states.clear()
+    win.undo()
+
+    repaired = win._params[param_name]
+    assert repaired.value == pytest.approx(1.0)
+    assert repaired.min < repaired.value < repaired.max
+    assert repaired.vary is False
+    assert warnings
+
+    win._prev_states.clear()
+    win._prev_states.append(good_status)
+    win._next_states.clear()
+    win._next_states.append(bad_status)
+    win.redo()
+
+    repaired = win._params[param_name]
+    assert repaired.value == pytest.approx(1.0)
+    assert repaired.min < repaired.value < repaired.max
+    assert repaired.vary is False
+    assert len(warnings) == 2
+
+
 def test_fit1d_run_fit(qtbot, exp_decay_model) -> None:
     t = np.linspace(0.0, 4.0, 25)
     data = xr.DataArray(
@@ -603,6 +658,64 @@ def test_parameter_table_model_and_delegate(qtbot) -> None:
     editor.setText("2.5")
     delegate.setModelData(editor, model, value_index)
     assert params["amp"].value == pytest.approx(2.5)
+
+
+def test_parameter_table_model_rejects_invalid_bounds() -> None:
+    params = lmfit.Parameters()
+    params.add("amp", value=1.0, min=-1.0, max=2.0, vary=True)
+    model = _ParameterTableModel(params, {})
+
+    changed: list[bool] = []
+    invalid_bounds: list[str] = []
+    model.sigParamsChanged.connect(lambda: changed.append(True))
+    model.sigInvalidBounds.connect(invalid_bounds.append)
+
+    min_index = model.index(0, 3)
+    max_index = model.index(0, 4)
+    original = (params["amp"].value, params["amp"].min, params["amp"].max)
+
+    assert not model.setData(min_index, "2.0", QtCore.Qt.ItemDataRole.EditRole)
+    assert (params["amp"].value, params["amp"].min, params["amp"].max) == original
+    assert changed == []
+    assert invalid_bounds == ["amp"]
+
+    invalid_bounds.clear()
+    assert not model.setData(max_index, "-1.0", QtCore.Qt.ItemDataRole.EditRole)
+    assert (params["amp"].value, params["amp"].min, params["amp"].max) == original
+    assert changed == []
+    assert invalid_bounds == ["amp"]
+
+    assert model.setData(max_index, "0.5", QtCore.Qt.ItemDataRole.EditRole)
+    assert params["amp"].value == pytest.approx(0.5)
+    assert params["amp"].min == pytest.approx(-1.0)
+    assert params["amp"].max == pytest.approx(0.5)
+    assert len(changed) == 1
+
+
+def test_fit1d_invalid_bound_edit_warns_without_history(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    param = win.param_model.param_at(0)
+    param.set(value=0.0, min=-1.0, max=2.0)
+    win._reset_history_stack()
+    history_len = len(win._prev_states)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_warning",
+        lambda title, text: warnings.append((title, text)),
+    )
+
+    min_index = win.param_model.index(0, 3)
+    assert not win.param_model.setData(
+        min_index, "2.0", QtCore.Qt.ItemDataRole.EditRole
+    )
+
+    assert (param.value, param.min, param.max) == (0.0, -1.0, 2.0)
+    assert len(win._prev_states) == history_len
+    assert warnings
 
 
 def test_fit1d_parameter_context_menu_builds_actions(qtbot, monkeypatch) -> None:

@@ -790,48 +790,58 @@ class Fit2DTool(Fit1DTool):
             with self._history_suppressed():
                 self._rebuild_ui_for_full_data(restored_data, self._params.copy())
 
-        super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
-            self, status
-        )
-        self._update_param_plot_options()
-        if state2d is not None:  # pragma: no branch
-            y_size = int(self._data_full.sizes[self._y_dim_name])
-            self._data_name_full = state2d.data_name_full
-            restored_params_full = [
-                self._deserialize_params(params) for params in state2d.params_full
-            ]
-            self._params_full = [None] * y_size
-            for i, params in enumerate(restored_params_full[:y_size]):
-                self._params_full[i] = params
-
-            self._initial_params_full = None
-            if state2d.initial_params_full is not None:
-                self._initial_params_full = [
-                    self._initial_params.copy() for _ in range(y_size)
+        repaired_bounds: list[str] = []
+        previous_repaired_bounds = self._param_bounds_repair_names
+        self._param_bounds_repair_names = repaired_bounds
+        try:
+            super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
+                self, status
+            )
+            self._update_param_plot_options()
+            if state2d is not None:  # pragma: no branch
+                y_size = int(self._data_full.sizes[self._y_dim_name])
+                self._data_name_full = state2d.data_name_full
+                restored_params_full = [
+                    self._deserialize_params(params, repaired_bounds=repaired_bounds)
+                    for params in state2d.params_full
                 ]
-                for i, params in enumerate(state2d.initial_params_full[:y_size]):
-                    restored = self._deserialize_params(params)
-                    if restored is not None:
-                        self._initial_params_full[i] = restored
+                self._params_full = [None] * y_size
+                for i, params in enumerate(restored_params_full[:y_size]):
+                    self._params_full[i] = params
 
-            self._params_from_coord_full = [{} for _ in range(y_size)]
-            for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
-                self._params_from_coord_full[i] = mapping.copy()
+                self._initial_params_full = None
+                if state2d.initial_params_full is not None:
+                    self._initial_params_full = [
+                        self._initial_params.copy() for _ in range(y_size)
+                    ]
+                    for i, params in enumerate(state2d.initial_params_full[:y_size]):
+                        restored = self._deserialize_params(
+                            params, repaired_bounds=repaired_bounds
+                        )
+                        if restored is not None:
+                            self._initial_params_full[i] = restored
 
-            self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
-            self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
-            if state2d.y_limits is not None:  # pragma: no branch
-                max_idx = y_size - 1
-                y_min = min(max(state2d.y_limits[0], 0), max_idx)
-                y_max = min(max(state2d.y_limits[1], 0), max_idx)
-                with (
-                    QtCore.QSignalBlocker(self.y_min_spin),
-                    QtCore.QSignalBlocker(self.y_max_spin),
-                ):
-                    self.y_min_spin.setValue(min(y_min, y_max))
-                    self.y_max_spin.setValue(max(y_min, y_max))
-                self._y_minmax_changed()
-            self._current_idx = min(max(state2d.current_idx, 0), y_size - 1)
+                self._params_from_coord_full = [{} for _ in range(y_size)]
+                for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
+                    self._params_from_coord_full[i] = mapping.copy()
+
+                self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
+                self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
+                if state2d.y_limits is not None:  # pragma: no branch
+                    max_idx = y_size - 1
+                    y_min = min(max(state2d.y_limits[0], 0), max_idx)
+                    y_max = min(max(state2d.y_limits[1], 0), max_idx)
+                    with (
+                        QtCore.QSignalBlocker(self.y_min_spin),
+                        QtCore.QSignalBlocker(self.y_max_spin),
+                    ):
+                        self.y_min_spin.setValue(min(y_min, y_max))
+                        self.y_max_spin.setValue(max(y_min, y_max))
+                    self._y_minmax_changed()
+                self._current_idx = min(max(state2d.current_idx, 0), y_size - 1)
+        finally:
+            self._param_bounds_repair_names = previous_repaired_bounds
+        self._show_repaired_parameter_bounds_warning(repaired_bounds)
         self.y_index_spin.setValue(self._current_idx)
 
     @QtCore.Slot()

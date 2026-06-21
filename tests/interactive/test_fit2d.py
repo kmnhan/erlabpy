@@ -1479,6 +1479,35 @@ def test_fit2d_run_fit_2d_while_running(qtbot, monkeypatch) -> None:
     assert warnings
 
 
+def test_fit2d_invalid_bound_edit_warns_without_param_update(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param = win.param_model.param_at(0)
+    param.set(value=0.0, min=-1.0, max=2.0)
+    changed: list[bool] = []
+    warnings: list[tuple[str, str]] = []
+    win.param_model.sigParamsChanged.connect(lambda: changed.append(True))
+    monkeypatch.setattr(
+        win,
+        "_show_warning",
+        lambda title, text: warnings.append((title, text)),
+    )
+
+    min_index = win.param_model.index(0, 3)
+    assert not win.param_model.setData(
+        min_index, "2.0", QtCore.Qt.ItemDataRole.EditRole
+    )
+
+    assert (param.value, param.min, param.max) == (0.0, -1.0, 2.0)
+    assert changed == []
+    assert warnings
+
+
 def test_fit2d_y_values_no_coord(qtbot) -> None:
     y = np.arange(3)
     data = xr.DataArray(np.ones((3, 5)), dims=("y", "x"))

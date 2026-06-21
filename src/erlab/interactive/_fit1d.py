@@ -327,6 +327,7 @@ class _ParameterEditDelegate(QtWidgets.QStyledItemDelegate):
 
 class _ParameterTableModel(QtCore.QAbstractTableModel):
     sigParamsChanged = QtCore.Signal()
+    sigInvalidBounds = QtCore.Signal(str)
 
     _COLUMN_NAMES = ("Parameter", "Value", "StdErr", "Min", "Max", "Vary")
 
@@ -481,23 +482,27 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
             return False
 
         try:
-            if col == 1:
-                param.value = float(value)
-            elif col == 3:
-                param.min = self._parse_bound(value, default=-np.inf)
+            new_value = float(value) if col == 1 else float(param.value)
+            new_min = float(param.min)
+            new_max = float(param.max)
+            if col == 3:
+                new_min = self._parse_bound(value, default=-np.inf)
             elif col == 4:
-                param.max = self._parse_bound(value, default=np.inf)
-            else:
+                new_max = self._parse_bound(value, default=np.inf)
+            elif col != 1:
                 return False
         except (TypeError, ValueError):
             return False
 
-        if param.min > param.max:
-            param.max = param.min
-        if param.value < param.min:
-            param.value = param.min
-        if param.value > param.max:
-            param.value = param.max
+        if not new_min < new_max:
+            self.sigInvalidBounds.emit(str(param.name))
+            return False
+
+        if new_value < new_min:
+            new_value = new_min
+        if new_value > new_max:
+            new_value = new_max
+        param.set(value=new_value, min=new_min, max=new_max)
 
         top_left = self.index(index.row(), 1)
         bottom_right = self.index(index.row(), 4)
@@ -1001,6 +1006,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step: int = 0
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
+        self._param_bounds_repair_names: list[str] | None = None
         self._write_history = False
 
     def _fit_finished_connection_key(
@@ -1157,6 +1163,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.param_model.sigParamsChanged.connect(self._refresh_slider_from_model)
         self.param_model.sigParamsChanged.connect(self._mark_fit_stale)
         self.param_model.sigParamsChanged.connect(self._write_state)
+        self.param_model.sigInvalidBounds.connect(
+            self._show_invalid_parameter_bounds_warning
+        )
         self._ensure_fit_finished_connections()
 
         self.param_view = QtWidgets.QTableView()
@@ -1933,8 +1942,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         with self._history_suppressed():
             self._data_name = status.data_name
             self._model_name = status.model_name
+            repaired_bounds = self._param_bounds_repair_names
+            warn_repaired_bounds = repaired_bounds is None
+            if repaired_bounds is None:
+                repaired_bounds = []
             restored_params = (
-                self._deserialize_params(status.params) if status.params else None
+                self._deserialize_params(status.params, repaired_bounds=repaired_bounds)
+                if status.params
+                else None
             )
             try:
                 model = lmfit.model.Model(lambda x: x)
@@ -1992,6 +2007,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     self.domain_min_spin.setValue(status.domain[0])
                     self.domain_max_spin.setValue(status.domain[1])
             self._domain_changed()
+            if warn_repaired_bounds:
+                self._show_repaired_parameter_bounds_warning(repaired_bounds)
 
     def _sanitize_params_from_coord(
         self, params_from_coord: Mapping[str, str]
@@ -2263,17 +2280,53 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     @staticmethod
     def _deserialize_params(
         state: None,
+        *,
+        repaired_bounds: list[str] | None = None,
     ) -> None: ...
 
     @typing.overload
     @staticmethod
     def _deserialize_params(
         state: list[tuple[typing.Any, ...]],
+        *,
+        repaired_bounds: list[str] | None = None,
     ) -> lmfit.Parameters: ...
+
+    @staticmethod
+    def _repair_equal_bound_param_state(
+        pstate: tuple[typing.Any, ...],
+        repaired_bounds: list[str] | None,
+    ) -> tuple[typing.Any, ...] | None:
+        if len(pstate) < 6:
+            return None
+        try:
+            lower = float(pstate[4])
+            upper = float(pstate[5])
+        except (TypeError, ValueError):
+            return None
+        if not (np.isfinite(lower) and lower == upper):
+            return None
+
+        repaired = list(pstate)
+        lower_bound = float(np.nextafter(lower, -np.inf))
+        upper_bound = float(np.nextafter(lower, np.inf))
+        if np.isclose(lower_bound, upper_bound, atol=1e-13, rtol=1e-13):
+            padding = max(abs(lower), 1.0) * 1e-12
+            lower_bound = lower - padding
+            upper_bound = lower + padding
+        repaired[1] = lower
+        repaired[2] = False
+        repaired[4] = lower_bound
+        repaired[5] = upper_bound
+        if repaired_bounds is not None:
+            repaired_bounds.append(str(pstate[0]))
+        return tuple(repaired)
 
     @staticmethod
     def _deserialize_params(
         state: list[tuple[typing.Any, ...]] | None,
+        *,
+        repaired_bounds: list[str] | None = None,
     ) -> lmfit.Parameters | None:
         if state is None:
             return None
@@ -2282,7 +2335,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         param_list = []
         for pstate in state:
             param = lmfit.Parameter(name="")
-            param.__setstate__(pstate)
+            try:
+                param.__setstate__(pstate)
+            except ValueError as exc:
+                if "min == max" not in str(exc):
+                    raise
+                repaired_state = Fit1DTool._repair_equal_bound_param_state(
+                    pstate, repaired_bounds
+                )
+                if repaired_state is None:
+                    raise
+                param.__setstate__(repaired_state)
             param_list.append(param)
         params.add_many(*param_list)
         return params
@@ -3615,6 +3678,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)
+
+    def _show_invalid_parameter_bounds_warning(self, param_name: str) -> None:
+        self._show_warning(
+            "Invalid parameter bounds",
+            f"Parameter '{param_name}' requires a lower bound below its upper bound.",
+        )
+
+    def _show_repaired_parameter_bounds_warning(self, param_names: list[str]) -> None:
+        if not param_names:
+            return
+        unique_names = ", ".join(dict.fromkeys(param_names))
+        self._show_warning(
+            "Parameter bounds repaired",
+            "Saved parameters with equal lower and upper bounds were restored as "
+            f"fixed parameters: {unique_names}.",
+        )
 
     def _show_error(
         self, title: str, text: str, detailed_text: str | None = None
