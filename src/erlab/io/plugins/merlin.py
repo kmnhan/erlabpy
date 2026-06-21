@@ -273,7 +273,7 @@ class MERLINLoader(LoaderBase):
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
 
-        if "eV" in data.coords:
+        if "eV" in data.coords and data.attrs.get("Energy Scale") == "Binding":
             data = self._fix_energy_axis(data)
 
         return data
