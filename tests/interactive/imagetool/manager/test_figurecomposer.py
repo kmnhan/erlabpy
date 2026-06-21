@@ -15964,6 +15964,12 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     set_line_edit(page, "figureComposerERLabLabelPropertiesNameEdit", "Energy")
     set_line_edit(page, "figureComposerERLabLabelPropertiesUnitEdit", "eV")
     set_combo(page, "figureComposerERLabLabelPropertiesOrderCombo", "F")
+    set_combo(page, "figureComposerERLabLabelPropertiesLocCombo", "lower left")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesOffsetEdit", "3, 4")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesPrefixEdit", "[")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesSuffixEdit", "]")
+    set_combo(page, "figureComposerERLabLabelPropertiesFontWeightCombo", "bold")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesFontSizeEdit", "9")
     assert operation(2).method_args == ({"eV": [0, 1]},)
     assert operation(2).method_kwargs == {
         "decimals": 2,
@@ -15971,6 +15977,12 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         "name": "Energy",
         "unit": "eV",
         "order": "F",
+        "loc": "lower left",
+        "offset": (3.0, 4.0),
+        "prefix": "[",
+        "suffix": "]",
+        "fontweight": "bold",
+        "fontsize": 9,
     }
 
     page = select_method(3)
@@ -16104,6 +16116,13 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert "ticks=[0, 1]" in code
     assert "eplt.fancy_labels(axs, radians=True)" in code
     assert "eplt.integer_ticks(axs)" in code
+    assert "eplt.label_subplot_properties(" in code
+    assert 'loc="lower left"' in code
+    assert "offset=(3.0, 4.0)" in code
+    assert 'prefix="["' in code
+    assert 'suffix="]"' in code
+    assert 'fontweight="bold"' in code
+    assert "fontsize=9" in code
     assert "eplt.sizebar(" in code
     assert "value=2.0" in code
     assert 'unit="m"' in code

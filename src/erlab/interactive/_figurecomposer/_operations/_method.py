@@ -685,6 +685,83 @@ _FONT_WEIGHT_OPTIONS = (
 )
 
 
+def _label_subplots_text_controls(
+    object_name_prefix: str,
+    *,
+    loc_default: str,
+    include_generated_label_controls: bool,
+) -> tuple[MethodControlSpec, ...]:
+    controls = [
+        _kwarg_combo(
+            "Location",
+            "loc",
+            _LABEL_LOCATION_OPTIONS,
+            loc_default,
+            f"{object_name_prefix}LocCombo",
+            "Location of the anchored subplot label.",
+        ),
+        _float_pair_kwarg(
+            "Offset",
+            "offset",
+            f"{object_name_prefix}OffsetEdit",
+            "Label offset in display points as dx, dy.",
+            default=(0.0, 0.0),
+        ),
+        _text_kwarg(
+            "Prefix",
+            "prefix",
+            f"{object_name_prefix}PrefixEdit",
+            "Text prepended to each subplot label.",
+            default="",
+        ),
+        _text_kwarg(
+            "Suffix",
+            "suffix",
+            f"{object_name_prefix}SuffixEdit",
+            "Text appended to each subplot label.",
+            default="",
+        ),
+    ]
+    if include_generated_label_controls:
+        controls.extend(
+            (
+                _bool_kwarg_combo(
+                    "Numeric labels",
+                    "numeric",
+                    f"{object_name_prefix}NumericCombo",
+                    "Use numbers instead of letters for generated labels.",
+                    default=False,
+                ),
+                _bool_kwarg_combo(
+                    "Capital letters",
+                    "capital",
+                    f"{object_name_prefix}CapitalCombo",
+                    "Use capital letters for generated alphabetic labels.",
+                    default=False,
+                ),
+            )
+        )
+    controls.extend(
+        (
+            _kwarg_combo(
+                "Font weight",
+                "fontweight",
+                _FONT_WEIGHT_OPTIONS,
+                "normal",
+                f"{object_name_prefix}FontWeightCombo",
+                "Font weight for subplot labels.",
+            ),
+            _literal_kwarg(
+                "Font size",
+                "fontsize",
+                f"{object_name_prefix}FontSizeEdit",
+                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+            ),
+        )
+    )
+    return tuple(controls)
+
+
 def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
     return (
         _kwarg_combo(
@@ -1617,62 +1694,10 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabLabelSubplotsOrderCombo",
                 "Flattening order used to match labels to axes.",
             ),
-            _kwarg_combo(
-                "Location",
-                "loc",
-                _LABEL_LOCATION_OPTIONS,
-                "upper left",
-                "figureComposerERLabLabelSubplotsLocCombo",
-                "Location of the anchored subplot label.",
-            ),
-            _float_pair_kwarg(
-                "Offset",
-                "offset",
-                "figureComposerERLabLabelSubplotsOffsetEdit",
-                "Label offset in display points as dx, dy.",
-                default=(0.0, 0.0),
-            ),
-            _text_kwarg(
-                "Prefix",
-                "prefix",
-                "figureComposerERLabLabelSubplotsPrefixEdit",
-                "Text prepended to automatically generated labels.",
-                default="",
-            ),
-            _text_kwarg(
-                "Suffix",
-                "suffix",
-                "figureComposerERLabLabelSubplotsSuffixEdit",
-                "Text appended to automatically generated labels.",
-                default="",
-            ),
-            _bool_kwarg_combo(
-                "Numeric labels",
-                "numeric",
-                "figureComposerERLabLabelSubplotsNumericCombo",
-                "Use numbers instead of letters for generated labels.",
-                default=False,
-            ),
-            _bool_kwarg_combo(
-                "Capital letters",
-                "capital",
-                "figureComposerERLabLabelSubplotsCapitalCombo",
-                "Use capital letters for generated alphabetic labels.",
-                default=False,
-            ),
-            _kwarg_combo(
-                "Font weight",
-                "fontweight",
-                _FONT_WEIGHT_OPTIONS,
-                "normal",
-                "figureComposerERLabLabelSubplotsFontWeightCombo",
-                "Font weight for subplot labels.",
-            ),
-            _literal_kwarg(
-                "Font size",
-                "fontsize",
-                "figureComposerERLabLabelSubplotsFontSizeEdit",
-                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+            *_label_subplots_text_controls(
+                "figureComposerERLabLabelSubplots",
+                loc_default="upper left",
+                include_generated_label_controls=True,
             ),
         ),
     ),
@@ -1726,6 +1751,11 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabLabelPropertiesOrderCombo",
                 "Flattening order used to match property values to axes.",
+            ),
+            *_label_subplots_text_controls(
+                "figureComposerERLabLabelProperties",
+                loc_default="upper right",
+                include_generated_label_controls=False,
             ),
         ),
     ),
