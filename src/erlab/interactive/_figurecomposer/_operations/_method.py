@@ -2670,6 +2670,11 @@ def _build_method_editor(
     tool.operation_editor_layout = layout
     spec = _method_spec(operation)
 
+    tool._add_form_section(
+        layout,
+        "Call",
+        object_name="figureComposerMethodCallSection",
+    )
     family_combo = tool._combo(
         [label for _family, label in _FAMILY_LABELS.items()],
         _FAMILY_LABELS[operation.method_family],
@@ -2747,6 +2752,16 @@ def _build_method_editor(
             ),
         )
 
+    has_value_controls = (
+        bool(spec.controls) or spec.text_values_policy != MethodTextValuesPolicy.NONE
+    )
+    if has_value_controls:
+        tool._add_form_section(
+            layout,
+            "Values",
+            object_name="figureComposerMethodValuesSection",
+        )
+
     if spec.text_values_policy != MethodTextValuesPolicy.NONE:
         text_values_text, text_values_mixed = tool._batch_text(
             operation,
@@ -2790,6 +2805,12 @@ def _build_method_editor(
         )
 
     if spec.allow_extra_kwargs:
+        if has_value_controls:
+            tool._add_form_section(
+                layout,
+                "Advanced",
+                object_name="figureComposerMethodAdvancedSection",
+            )
         kwargs_text, kwargs_mixed = tool._batch_text(
             operation,
             lambda target: _extra_method_kwargs(target, spec),

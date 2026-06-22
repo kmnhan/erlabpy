@@ -5233,6 +5233,39 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return "\n".join(textwrap.wrap(tooltip, width=58, break_long_words=False))
 
     @staticmethod
+    def _add_form_section(
+        layout: QtWidgets.QFormLayout,
+        title: str,
+        *,
+        object_name: str | None = None,
+    ) -> QtWidgets.QWidget:
+        """Add a lightweight native section header to a form layout."""
+        section = QtWidgets.QWidget(layout.parentWidget())
+        if object_name:
+            section.setObjectName(object_name)
+        section.setProperty("figureComposerSectionHeader", True)
+        section_layout = QtWidgets.QHBoxLayout(section)
+        top_margin = 8 if layout.rowCount() else 0
+        section_layout.setContentsMargins(0, top_margin, 0, 2)
+        section_layout.setSpacing(6)
+
+        label = QtWidgets.QLabel(title, section)
+        label.setProperty("figureComposerSectionHeaderLabel", True)
+        label_font = label.font()
+        label_font.setBold(True)
+        label.setFont(label_font)
+        line = QtWidgets.QFrame(section)
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        if object_name:
+            line.setObjectName(f"{object_name}Line")
+
+        section_layout.addWidget(label)
+        section_layout.addWidget(line, 1)
+        layout.addRow(section)
+        return section
+
+    @staticmethod
     def _add_form_row(
         layout: QtWidgets.QFormLayout,
         label: str,

@@ -352,6 +352,35 @@ def _source_remove_buttons(
     }
 
 
+def _assert_step_editor_section(
+    page: QtWidgets.QWidget, object_name: str
+) -> QtWidgets.QWidget:
+    section = page.findChild(QtWidgets.QWidget, object_name)
+    assert section is not None
+    assert section.property("figureComposerSectionHeader") is True
+    assert section.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
+    section.ensurePolished()
+    assert section.sizeHint().height() > 0
+    assert section.sizeHint().width() > 0
+
+    label = next(
+        (
+            child
+            for child in section.findChildren(QtWidgets.QLabel)
+            if child.property("figureComposerSectionHeaderLabel") is True
+        ),
+        None,
+    )
+    assert label is not None
+    assert label.font().bold()
+
+    line = section.findChild(QtWidgets.QFrame, f"{object_name}Line")
+    assert line is not None
+    assert line.frameShape() == QtWidgets.QFrame.Shape.HLine
+    assert line.frameShadow() == QtWidgets.QFrame.Shadow.Sunken
+    return section
+
+
 def _plot_source_move_buttons(
     tool: FigureComposerTool,
 ) -> dict[tuple[str, str], QtWidgets.QToolButton]:
@@ -2001,6 +2030,145 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         "color": "red",
         "zorder": 5,
     }
+
+
+def test_figure_composer_step_editor_section_headers_are_native_subgroups(
+    qtbot,
+) -> None:
+    image = _figure_composer_image_source("image")
+    line_map = _figure_composer_line_slice_source("line_map")
+    recipe = FigureRecipeState(
+        sources=(
+            FigureSourceState(name="image", label="image"),
+            FigureSourceState(name="line_map", label="line map"),
+        ),
+        operations=(
+            FigureOperationState.line(label="profiles", source="line_map").model_copy(
+                update={"line_iter_dim": "eV", "line_color_mode": "coordinate"}
+            ),
+            FigureOperationState.plot_slices(
+                label="line slices",
+                sources=("line_map",),
+                slice_dim="eV",
+                slice_values=(-0.5, 0.5),
+            ).model_copy(update={"gradient": True}),
+            FigureOperationState.plot_slices(
+                label="image slices",
+                sources=("image",),
+                slice_dim="eV",
+                slice_values=(0.0,),
+            ).model_copy(update={"colorbar": "right"}),
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="plot",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ),
+        ),
+        primary_source="image",
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=recipe,
+        source_data={"image": image, "line_map": line_map},
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._update_operation_editor()
+    tool._select_step_section("selection")
+    line_selection_page = tool.step_editor_stack.currentWidget()
+    assert line_selection_page is not None
+    _assert_step_editor_section(
+        line_selection_page, "figureComposerLineSelectionDataSection"
+    )
+    _assert_step_editor_section(
+        line_selection_page, "figureComposerLineSelectionProfilesSection"
+    )
+    tool._select_step_section("view")
+    line_view_page = tool.step_editor_stack.currentWidget()
+    assert line_view_page is not None
+    assert (
+        line_view_page.findChild(
+            QtWidgets.QWidget, "figureComposerLineViewPlacementSection"
+        )
+        is None
+    )
+    tool._select_step_section("style")
+    line_style_page = tool.step_editor_stack.currentWidget()
+    assert line_style_page is not None
+    _assert_step_editor_section(line_style_page, "figureComposerLineStyleLegendSection")
+    _assert_step_editor_section(line_style_page, "figureComposerLineStyleColorSection")
+    _assert_step_editor_section(line_style_page, "figureComposerLineStyleLineSection")
+    tool._select_step_section("other")
+    line_other_page = tool.step_editor_stack.currentWidget()
+    assert line_other_page is not None
+    assert (
+        line_other_page.findChild(
+            QtWidgets.QWidget, "figureComposerLineOtherTransformSection"
+        )
+        is None
+    )
+
+    tool.operation_list.setCurrentRow(1)
+    tool._update_operation_editor()
+    tool._select_step_section("selection")
+    line_slices_selection_page = tool.step_editor_stack.currentWidget()
+    assert line_slices_selection_page is not None
+    _assert_step_editor_section(
+        line_slices_selection_page,
+        "figureComposerPlotSlicesSelectionDimensionsSection",
+    )
+    _assert_step_editor_section(
+        line_slices_selection_page,
+        "figureComposerPlotSlicesSelectionValuesSection",
+    )
+    tool._select_step_section("view")
+    line_slices_view_page = tool.step_editor_stack.currentWidget()
+    assert line_slices_view_page is not None
+    _assert_step_editor_section(
+        line_slices_view_page, "figureComposerPlotSlicesViewPanelsSection"
+    )
+    _assert_step_editor_section(
+        line_slices_view_page, "figureComposerPlotSlicesViewAxesSection"
+    )
+    tool._select_step_section("colors")
+    line_slices_colors_page = tool.step_editor_stack.currentWidget()
+    assert line_slices_colors_page is not None
+    _assert_step_editor_section(
+        line_slices_colors_page,
+        "figureComposerPlotSlicesColorsLineAppearanceSection",
+    )
+    _assert_step_editor_section(
+        line_slices_colors_page,
+        "figureComposerPlotSlicesColorsTransformSection",
+    )
+    _assert_step_editor_section(
+        line_slices_colors_page,
+        "figureComposerPlotSlicesColorsPanelOverridesSection",
+    )
+
+    tool.operation_list.setCurrentRow(2)
+    tool._update_operation_editor()
+    tool._select_step_section("colors")
+    image_slices_colors_page = tool.step_editor_stack.currentWidget()
+    assert image_slices_colors_page is not None
+    _assert_step_editor_section(
+        image_slices_colors_page,
+        "figureComposerPlotSlicesColorsImageColorSection",
+    )
+    _assert_step_editor_section(
+        image_slices_colors_page,
+        "figureComposerPlotSlicesColorsPanelOverridesSection",
+    )
+
+    tool.operation_list.setCurrentRow(3)
+    tool._update_operation_editor()
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    assert method_page is not None
+    _assert_step_editor_section(method_page, "figureComposerMethodCallSection")
+    _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
+    _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
 
 
 def test_figure_composer_norm_helpers_cover_structured_and_custom_norms(

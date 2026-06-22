@@ -2576,6 +2576,11 @@ def _build_plot_slices_editor(
     tool.operation_editor = selection_page
     tool.operation_editor_layout = selection_layout
 
+    tool._add_form_section(
+        selection_layout,
+        "Dimensions",
+        object_name="figureComposerPlotSlicesSelectionDimensionsSection",
+    )
     shape_summary = QtWidgets.QLabel(
         "\n".join(
             (
@@ -2597,6 +2602,11 @@ def _build_plot_slices_editor(
         "Shows the input dimensions and the dimensions plotted by this step.",
     )
 
+    tool._add_form_section(
+        selection_layout,
+        "Slice values",
+        object_name="figureComposerPlotSlicesSelectionValuesSection",
+    )
     dims = _available_source_dims(tool._source_data, operation.sources)
     dim_mixed = tool._batch_is_mixed(operation, lambda target: target.slice_dim)
     dim_combo = tool._combo(
@@ -2737,6 +2747,11 @@ def _build_plot_slices_editor(
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
+    tool._add_form_section(
+        view_layout,
+        "Panels",
+        object_name="figureComposerPlotSlicesViewPanelsSection",
+    )
     order_mixed = tool._batch_is_mixed(operation, lambda target: target.order)
     order_combo = tool._combo(
         ["C", "F"],
@@ -2804,6 +2819,11 @@ def _build_plot_slices_editor(
         "Optional x/y plot limits for this step.",
     )
 
+    tool._add_form_section(
+        view_layout,
+        "Axes",
+        object_name="figureComposerPlotSlicesViewAxesSection",
+    )
     crop_mixed = tool._batch_is_mixed(operation, lambda target: target.crop)
     crop_check = tool._check_box(
         operation.crop,
@@ -2822,6 +2842,11 @@ def _build_plot_slices_editor(
     )
 
     if is_image_plot:
+        tool._add_form_section(
+            colors_layout,
+            "Image color",
+            object_name="figureComposerPlotSlicesColorsImageColorSection",
+        )
         colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
         colorbar_combo = tool._combo(
             ["none", "right", "rightspan", "all"],
@@ -2926,6 +2951,11 @@ def _build_plot_slices_editor(
     )
 
     if is_line_plot:
+        tool._add_form_section(
+            colors_layout,
+            "Line appearance",
+            object_name="figureComposerPlotSlicesColorsLineAppearanceSection",
+        )
         _add_plot_slices_line_color_controls(
             tool, operation, colors_page, colors_layout
         )
@@ -3165,6 +3195,11 @@ def _build_plot_slices_editor(
             "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
 
+        tool._add_form_section(
+            colors_layout,
+            "Transform",
+            object_name="figureComposerPlotSlicesColorsTransformSection",
+        )
         transform_widget = QtWidgets.QWidget(colors_page)
         transform_widget.setObjectName("figureComposerPlotSlicesLineTransformGroup")
         transform_layout = QtWidgets.QFormLayout(transform_widget)
@@ -3224,6 +3259,11 @@ def _build_plot_slices_editor(
             "Dict literal or keyword arguments forwarded as gradient_kw.",
         )
 
+        tool._add_form_section(
+            colors_layout,
+            "Panel overrides",
+            object_name="figureComposerPlotSlicesColorsPanelOverridesSection",
+        )
         panel_styles_mixed = tool._batch_is_mixed(
             operation, lambda target: target.panel_styles_enabled
         )
@@ -3490,6 +3530,11 @@ def _build_plot_slices_editor(
             "Control plot_slices same_limits for image color scaling.",
         )
 
+        tool._add_form_section(
+            colors_layout,
+            "Panel overrides",
+            object_name="figureComposerPlotSlicesColorsPanelOverridesSection",
+        )
         panel_styles_mixed = tool._batch_is_mixed(
             operation, lambda target: target.panel_styles_enabled
         )

@@ -286,6 +286,11 @@ def _build_line_editor(
     coordinate_options_match = tool._batch_options_match(
         operation, lambda target: _available_line_coordinate_names(tool, target)
     )
+    tool._add_form_section(
+        selection_layout,
+        "Data",
+        object_name="figureComposerLineSelectionDataSection",
+    )
     coordinate_mixed = tool._batch_is_mixed(operation, lambda target: target.line_x)
     coordinate_combo = tool._optional_name_combo(
         coordinate_options,
@@ -360,6 +365,11 @@ def _build_line_editor(
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
+    tool._add_form_section(
+        selection_layout,
+        "Profiles",
+        object_name="figureComposerLineSelectionProfilesSection",
+    )
     iter_dim_options = [
         "",
         *_available_source_dims(tool._source_data, (operation.line_source or "",)),
@@ -440,6 +450,11 @@ def _build_line_editor(
     )
     _add_line_limit_controls(tool, operation, view_page, view_layout)
 
+    tool._add_form_section(
+        style_layout,
+        "Legend",
+        object_name="figureComposerLineStyleLegendSection",
+    )
     labels_text, labels_mixed = tool._batch_text(
         operation,
         label_editor_text,
@@ -465,8 +480,18 @@ def _build_line_editor(
         label_text_tooltip(label_contexts, item_name="profile"),
     )
 
+    tool._add_form_section(
+        style_layout,
+        "Color",
+        object_name="figureComposerLineStyleColorSection",
+    )
     _add_line_color_controls(tool, operation, style_page, style_layout)
 
+    tool._add_form_section(
+        style_layout,
+        "Line",
+        object_name="figureComposerLineStyleLineSection",
+    )
     _add_line_style_controls(tool, operation, style_page, style_layout)
 
     add_line_transform_controls(
