@@ -1796,6 +1796,9 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def _apply_figure_list_view_configuration(self) -> None:
+        self.figure_list.setVerticalScrollMode(
+            QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
             self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
             self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)

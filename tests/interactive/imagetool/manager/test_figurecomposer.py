@@ -21287,6 +21287,10 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         manager._select_figure_uid(first_uid)
 
         assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
+        assert (
+            manager.figure_list.verticalScrollMode()
+            == QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         assert manager.figure_gallery_size_combo.isHidden()
         assert manager.figure_view_list_button.text() == ""
         assert manager.figure_view_gallery_button.text() == ""
@@ -21296,6 +21300,10 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         manager.figure_view_gallery_button.click()
 
         assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.IconMode
+        assert (
+            manager.figure_list.verticalScrollMode()
+            == QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         assert manager.figure_gallery_size_combo.isVisible()
         assert manager._selected_figure_uids() == [first_uid]
         for row, uid in enumerate((first_uid, second_uid)):
