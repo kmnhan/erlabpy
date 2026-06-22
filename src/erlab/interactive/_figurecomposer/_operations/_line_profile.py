@@ -131,7 +131,7 @@ _LINE_COLOR_MODE_TEXT = {
 _SECTION_TOOLTIPS = {
     "selection": "Choose profile coordinates, qsel selection, and profile extraction.",
     "view": "Choose profile placement, axis direction, and plot limits.",
-    "style": "Set labels, colors, line style, and marker style.",
+    "style": "Set legend text, line appearance, and fill style.",
     "other": "Normalize, scale, and offset extracted profiles.",
 }
 
@@ -494,6 +494,13 @@ def _build_line_editor(
     )
     _add_line_style_controls(tool, operation, style_page, style_layout)
 
+    tool._add_form_section(
+        style_layout,
+        "Fill",
+        object_name="figureComposerLineStyleFillSection",
+    )
+    _add_line_fill_controls(tool, operation, style_page, style_layout)
+
     add_line_transform_controls(
         tool,
         operation,
@@ -506,7 +513,7 @@ def _build_line_editor(
         ("selection", "Selection", selection_page),
         ("view", "View", view_page),
         ("style", "Style", style_page),
-        ("other", "Other", other_page),
+        ("other", "Transform", other_page),
     ]
 
 
@@ -546,7 +553,7 @@ def _add_line_color_controls(
 
     tool._add_form_row(
         layout,
-        "Lines",
+        "Mode",
         row,
         "Choose manual colors or color profiles from coordinate values.",
     )
@@ -1094,6 +1101,13 @@ def _add_line_style_controls(
         "Marker face and edge colors for the extracted profiles.",
     )
 
+
+def _add_line_fill_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+) -> None:
     gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
     gradient_check = tool._check_box(
         operation.gradient,

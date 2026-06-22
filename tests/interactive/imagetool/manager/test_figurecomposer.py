@@ -2095,9 +2095,11 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLegendSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleColorSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLineSection")
+    _assert_step_editor_section(line_style_page, "figureComposerLineStyleFillSection")
     tool._select_step_section("other")
     line_other_page = tool.step_editor_stack.currentWidget()
     assert line_other_page is not None
+    assert tool.step_section_buttons["other"].property("section_title") == "Transform"
     assert (
         line_other_page.findChild(
             QtWidgets.QWidget, "figureComposerLineOtherTransformSection"
@@ -2132,15 +2134,32 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     assert line_slices_colors_page is not None
     _assert_step_editor_section(
         line_slices_colors_page,
-        "figureComposerPlotSlicesColorsLineAppearanceSection",
+        "figureComposerPlotSlicesStyleLegendSection",
     )
     _assert_step_editor_section(
         line_slices_colors_page,
-        "figureComposerPlotSlicesColorsTransformSection",
+        "figureComposerPlotSlicesStyleLineSection",
     )
     _assert_step_editor_section(
         line_slices_colors_page,
-        "figureComposerPlotSlicesColorsPanelOverridesSection",
+        "figureComposerPlotSlicesStyleFillSection",
+    )
+    _assert_step_editor_section(
+        line_slices_colors_page,
+        "figureComposerPlotSlicesStylePanelOverridesSection",
+    )
+    tool._select_step_section("transform")
+    line_slices_transform_page = tool.step_editor_stack.currentWidget()
+    assert line_slices_transform_page is not None
+    assert (
+        line_slices_transform_page.objectName()
+        == "figureComposerPlotSlicesTransformPage"
+    )
+    assert (
+        line_slices_transform_page.findChild(
+            QtWidgets.QWidget, "figureComposerPlotSlicesColorsTransformSection"
+        )
+        is None
     )
 
     tool.operation_list.setCurrentRow(2)
@@ -2151,6 +2170,10 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         image_slices_colors_page,
         "figureComposerPlotSlicesColorsImageColorSection",
+    )
+    _assert_step_editor_section(
+        image_slices_colors_page,
+        "figureComposerPlotSlicesColorsColorbarSection",
     )
     _assert_step_editor_section(
         image_slices_colors_page,
@@ -10656,6 +10679,7 @@ def test_figure_composer_line_profile_operation_uses_semantic_sections(
         "style",
         "other",
     ]
+    assert tool.step_section_buttons["other"].property("section_title") == "Transform"
     assert [
         tool.step_editor_stack.widget(index).objectName()
         for index in range(tool.step_editor_stack.count())
@@ -20572,20 +20596,39 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     )
     qtbot.addWidget(tool)
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
-    assert colors_page.findChild(
-        QtWidgets.QWidget, "figureComposerPlotSlicesLineTransformGroup"
+    assert "transform" in tool.step_section_keys
+    tool._select_step_section("transform")
+    transform_page = tool.step_editor_stack.currentWidget()
+    assert transform_page.objectName() == "figureComposerPlotSlicesTransformPage"
+    assert (
+        transform_page.findChild(
+            QtWidgets.QWidget, "figureComposerPlotSlicesLineTransformGroup"
+        )
+        is None
     )
-    assert colors_page.findChild(
+    assert transform_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
     )
-    assert colors_page.findChild(
+    assert transform_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineScalesEdit"
     )
-    assert colors_page.findChild(
+    assert transform_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineOffsetsEdit"
     )
+    assert (
+        transform_page.findChild(QtWidgets.QCheckBox, "figureComposerGradientCheck")
+        is None
+    )
+
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+    assert (
+        colors_page.findChild(
+            QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
+        )
+        is None
+    )
+    assert colors_page.findChild(QtWidgets.QCheckBox, "figureComposerGradientCheck")
 
     kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
         tool, tool.tool_status.operations[0]
@@ -20807,11 +20850,12 @@ def test_figure_composer_plot_slices_image_panels_hide_line_transforms(
     )
     qtbot.addWidget(tool)
 
+    assert "transform" not in tool.step_section_keys
     tool._select_step_section("colors")
     colors_page = tool.step_editor_stack.currentWidget()
     assert (
         colors_page.findChild(
-            QtWidgets.QWidget, "figureComposerPlotSlicesLineTransformGroup"
+            QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
         )
         is None
     )

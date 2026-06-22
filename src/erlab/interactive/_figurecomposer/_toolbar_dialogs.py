@@ -946,7 +946,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         layout.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
-        layout.addRow("Color lines", self.color_mode_widget)
+        layout.addRow("Color", self.color_mode_widget)
         layout.addRow("Colors", self.colors_widget)
         self.colors_label = layout.labelForField(self.colors_widget)
         self._sync_color_widgets()
@@ -1087,7 +1087,7 @@ class _PlotSlicesLineOperationStyleWidget(QtWidgets.QWidget):
         form.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
-        form.addRow("Color lines", self.color_mode_widget)
+        form.addRow("Color", self.color_mode_widget)
         layout.addLayout(form)
         layout.addWidget(self.panel_editor)
 

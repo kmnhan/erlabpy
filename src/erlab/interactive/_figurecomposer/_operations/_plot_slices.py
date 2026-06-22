@@ -2355,7 +2355,7 @@ def _add_plot_slices_line_color_controls(
 
     tool._add_form_row(
         layout,
-        "Lines",
+        "Color",
         row,
         "Choose a manual line color or color 1D panels from coordinate values.",
     )
@@ -2569,6 +2569,9 @@ def _build_plot_slices_editor(
     )
     colors_page, colors_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesColorsPage"
+    )
+    transform_page, transform_layout = tool._new_step_form_page(
+        "figureComposerPlotSlicesTransformPage"
     )
     advanced_page, advanced_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesAdvancedPage"
@@ -2841,48 +2844,6 @@ def _build_plot_slices_editor(
         "Crop each slice to explicit x/y limits before plotting.",
     )
 
-    if is_image_plot:
-        tool._add_form_section(
-            colors_layout,
-            "Image color",
-            object_name="figureComposerPlotSlicesColorsImageColorSection",
-        )
-        colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
-        colorbar_combo = tool._combo(
-            ["none", "right", "rightspan", "all"],
-            None if colorbar_mixed else operation.colorbar,
-            lambda text: tool._update_current_operation(colorbar=text),
-            parent=colors_page,
-            mixed=colorbar_mixed,
-        )
-        tool._add_form_row(
-            colors_layout,
-            "Colorbar",
-            colorbar_combo,
-            "Where plot_slices should place colorbars for image panels.",
-        )
-        colorbar_kwargs_text, colorbar_kwargs_mixed = tool._batch_text(
-            operation, lambda target: target.colorbar_kw, _format_dict
-        )
-        colorbar_kwargs_edit = tool._line_edit(
-            colorbar_kwargs_text,
-            parent=colors_page,
-        )
-        tool._apply_mixed_line_edit(colorbar_kwargs_edit, colorbar_kwargs_mixed)
-        colorbar_kwargs_edit.setObjectName("figureComposerColorbarKwEdit")
-        tool._connect_line_edit_finished(
-            colorbar_kwargs_edit,
-            lambda text: tool._update_current_operation(
-                colorbar_kw=_dict_from_text(text)
-            ),
-        )
-        tool._add_form_row(
-            colors_layout,
-            "Colorbar kwargs",
-            colorbar_kwargs_edit,
-            "Dict literal or keyword arguments forwarded as colorbar_kw.",
-        )
-
     axis_mixed = tool._batch_is_mixed(operation, lambda target: target.axis)
     axis_combo = tool._combo(
         ["auto", "on", "off", "equal", "scaled", "tight", "image", "square"],
@@ -2953,8 +2914,35 @@ def _build_plot_slices_editor(
     if is_line_plot:
         tool._add_form_section(
             colors_layout,
-            "Line appearance",
-            object_name="figureComposerPlotSlicesColorsLineAppearanceSection",
+            "Legend",
+            object_name="figureComposerPlotSlicesStyleLegendSection",
+        )
+        labels_text, labels_mixed = tool._batch_text(
+            operation,
+            label_editor_text,
+            str,
+        )
+        labels_edit = tool._line_edit(labels_text, parent=colors_page)
+        tool._apply_mixed_line_edit(labels_edit, labels_mixed)
+        labels_edit.setObjectName("figureComposerPlotSlicesLineLabelsEdit")
+        tool._connect_line_edit_finished(
+            labels_edit,
+            lambda text: update_current_line_label_text(tool, text),
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Labels",
+            labels_edit,
+            label_text_tooltip(
+                _plot_slices_line_label_contexts(tool, operation),
+                item_name="slice",
+            ),
+        )
+
+        tool._add_form_section(
+            colors_layout,
+            "Line",
+            object_name="figureComposerPlotSlicesStyleLineSection",
         )
         _add_plot_slices_line_color_controls(
             tool, operation, colors_page, colors_layout
@@ -3156,28 +3144,6 @@ def _build_plot_slices_editor(
             "Marker face and edge colors for 1D plot_slices panels.",
         )
 
-        labels_text, labels_mixed = tool._batch_text(
-            operation,
-            label_editor_text,
-            str,
-        )
-        labels_edit = tool._line_edit(labels_text, parent=colors_page)
-        tool._apply_mixed_line_edit(labels_edit, labels_mixed)
-        labels_edit.setObjectName("figureComposerPlotSlicesLineLabelsEdit")
-        tool._connect_line_edit_finished(
-            labels_edit,
-            lambda text: update_current_line_label_text(tool, text),
-        )
-        tool._add_form_row(
-            colors_layout,
-            "Labels",
-            labels_edit,
-            label_text_tooltip(
-                _plot_slices_line_label_contexts(tool, operation),
-                item_name="slice",
-            ),
-        )
-
         line_kwargs_text, line_kwargs_mixed = tool._batch_text(
             operation, extra_line_kw, _format_dict
         )
@@ -3195,33 +3161,21 @@ def _build_plot_slices_editor(
             "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
 
-        tool._add_form_section(
-            colors_layout,
-            "Transform",
-            object_name="figureComposerPlotSlicesColorsTransformSection",
-        )
-        transform_widget = QtWidgets.QWidget(colors_page)
-        transform_widget.setObjectName("figureComposerPlotSlicesLineTransformGroup")
-        transform_layout = QtWidgets.QFormLayout(transform_widget)
-        transform_layout.setContentsMargins(0, 0, 0, 0)
-        transform_layout.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
         add_line_transform_controls(
             tool,
             operation,
-            transform_widget,
+            transform_page,
             transform_layout,
             object_prefix="figureComposerPlotSlicesLine",
             offset_coord_options=lambda target: _available_plot_slices_offset_coords(
                 tool, target
             ),
         )
-        tool._add_form_row(
+
+        tool._add_form_section(
             colors_layout,
-            "Values",
-            transform_widget,
-            "Normalize, scale, and offset 1D plot_slices inputs before plotting.",
+            "Fill",
+            object_name="figureComposerPlotSlicesStyleFillSection",
         )
 
         gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
@@ -3262,7 +3216,7 @@ def _build_plot_slices_editor(
         tool._add_form_section(
             colors_layout,
             "Panel overrides",
-            object_name="figureComposerPlotSlicesColorsPanelOverridesSection",
+            object_name="figureComposerPlotSlicesStylePanelOverridesSection",
         )
         panel_styles_mixed = tool._batch_is_mixed(
             operation, lambda target: target.panel_styles_enabled
@@ -3303,6 +3257,11 @@ def _build_plot_slices_editor(
                 "Select panels and set optional line-style overrides.",
             )
     elif is_image_plot:
+        tool._add_form_section(
+            colors_layout,
+            "Image color",
+            object_name="figureComposerPlotSlicesColorsImageColorSection",
+        )
         cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
         cmap_widget = QtWidgets.QWidget(colors_page)
         cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
@@ -3532,6 +3491,47 @@ def _build_plot_slices_editor(
 
         tool._add_form_section(
             colors_layout,
+            "Colorbar",
+            object_name="figureComposerPlotSlicesColorsColorbarSection",
+        )
+        colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
+        colorbar_combo = tool._combo(
+            ["none", "right", "rightspan", "all"],
+            None if colorbar_mixed else operation.colorbar,
+            lambda text: tool._update_current_operation(colorbar=text),
+            parent=colors_page,
+            mixed=colorbar_mixed,
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Placement",
+            colorbar_combo,
+            "Where plot_slices should place colorbars for image panels.",
+        )
+        colorbar_kwargs_text, colorbar_kwargs_mixed = tool._batch_text(
+            operation, lambda target: target.colorbar_kw, _format_dict
+        )
+        colorbar_kwargs_edit = tool._line_edit(
+            colorbar_kwargs_text,
+            parent=colors_page,
+        )
+        tool._apply_mixed_line_edit(colorbar_kwargs_edit, colorbar_kwargs_mixed)
+        colorbar_kwargs_edit.setObjectName("figureComposerColorbarKwEdit")
+        tool._connect_line_edit_finished(
+            colorbar_kwargs_edit,
+            lambda text: tool._update_current_operation(
+                colorbar_kw=_dict_from_text(text)
+            ),
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Kwargs",
+            colorbar_kwargs_edit,
+            "Dict literal or keyword arguments forwarded as colorbar_kw.",
+        )
+
+        tool._add_form_section(
+            colors_layout,
             "Panel overrides",
             object_name="figureComposerPlotSlicesColorsPanelOverridesSection",
         )
@@ -3607,12 +3607,27 @@ def _build_plot_slices_editor(
         extra_edit,
         "Dict literal or keyword arguments merged into the plot_slices call.",
     )
-    return [
+    sections = [
         ("selection", "Selection", selection_page),
         ("view", "View", view_page),
-        ("colors", "Colors", colors_page),
-        ("advanced", "Other", advanced_page),
     ]
+    if is_line_plot:
+        sections.extend(
+            (
+                ("colors", "Style", colors_page),
+                ("transform", "Transform", transform_page),
+            )
+        )
+    else:
+        sections.append(
+            (
+                "colors",
+                "Colors" if is_image_plot else "Style",
+                colors_page,
+            )
+        )
+    sections.append(("advanced", "Other", advanced_page))
+    return sections
 
 
 def _bool_or_text(text: str) -> bool | str:
@@ -4476,7 +4491,8 @@ def _plot_slices_transformed_code_kwargs(
 _SECTION_TOOLTIPS = {
     "selection": "Choose dimension, values, and extraction options.",
     "view": "Set orientation, axis limits, labels, and annotation behavior.",
-    "colors": "Set image color scaling or 1D line styling for this plot_slices step.",
+    "colors": "Set image color scaling or line styling for this plot_slices step.",
+    "transform": "Normalize, scale, and offset 1D line slices before plotting.",
     "advanced": "Pass advanced keyword arguments to plot_slices.",
 }
 
@@ -4873,6 +4889,8 @@ def _section_summary(
             if operation.panel_styles_enabled and operation.panel_styles:
                 return "per-panel"
             return operation.cmap or "default"
+        case "transform":
+            return "set" if line_transform_active(operation) else ""
         case "advanced":
             return "set" if _effective_extra_kwargs(tool, operation) else ""
     return ""
