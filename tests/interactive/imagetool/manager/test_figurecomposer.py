@@ -21376,6 +21376,134 @@ def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
         assert manager.figure_list.gridSize() != old_grid_size
 
 
+def test_figure_composer_persists_compact_preview_cache_without_rendering(
+    qtbot, monkeypatch, tmp_path: Path
+) -> None:
+    first = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(4.0, 8.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="second",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="First"),
+            FigureSourceState(name="second", label="Second"),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    assert tool.refresh_preview_pixmap(allow_offscreen=True) is not None
+
+    def fail_render(*_args, **_kwargs) -> None:
+        pytest.fail("saving a preview cache must not render the figure")
+
+    monkeypatch.setattr(tool, "refresh_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_canvas_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_fallback_preview_pixmap", fail_render)
+
+    ds = tool.to_dataset()
+    encoded_cache = ds.attrs.get(
+        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_ATTR
+    )
+    assert isinstance(encoded_cache, str)
+    max_encoded_cache_size = 4 * (
+        (figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_MAX_BYTES + 2) // 3
+    )
+    assert len(encoded_cache) <= max_encoded_cache_size
+
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+    restored_preview = restored.preview_pixmap
+    assert restored_preview is not None
+    assert not restored.preview_pixmap_stale
+    xr.testing.assert_identical(restored.source_data()["second"], second)
+    assert (
+        restored_preview.width()
+        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width()
+    )
+    assert (
+        restored_preview.height()
+        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.height()
+    )
+    thumbnail = restored.preview_thumbnail_pixmap(QtCore.QSize(64, 64))
+    assert thumbnail is not None
+    assert not thumbnail.isNull()
+
+
+def test_figure_composer_skips_preview_cache_when_unrendered(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    assert tool.preview_pixmap is None
+
+    def fail_render(*_args, **_kwargs) -> None:
+        pytest.fail("saving without a preview cache must not render the figure")
+
+    monkeypatch.setattr(tool, "refresh_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_canvas_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_fallback_preview_pixmap", fail_render)
+
+    ds = tool.to_dataset()
+
+    assert figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_ATTR not in ds.attrs
+    assert tool.preview_pixmap is None
+
+
+def test_manager_workspace_restores_figure_gallery_preview_cache(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    workspace_path = tmp_path / "figure-preview-cache.itws"
+    with manager_context() as manager:
+        figure_tool = FigureComposerTool(data)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        assert figure_tool.refresh_preview_pixmap(allow_offscreen=True) is not None
+
+        manager._save_workspace_document(workspace_path, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        assert loaded_tool.preview_pixmap is not None
+        assert not loaded_tool.preview_pixmap_stale
+
+        manager.figure_view_gallery_button.click()
+        item = manager._figure_list_item_for_uid(figure_uid)
+        assert item is not None
+        assert not item.icon().isNull()
+
+
 def test_manager_figures_gallery_helpers_handle_invalid_sources(
     monkeypatch,
     manager_context: Callable[
@@ -21477,6 +21605,7 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
 
 
 def test_manager_figures_gallery_updates_one_icon_from_preview_signal(
+    qtbot,
     monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -21510,7 +21639,7 @@ def test_manager_figures_gallery_updates_one_icon_from_preview_signal(
             patch.setattr(manager, "_sync_figures_ui", fail_sync)
             figure_tool.sigInfoChanged.emit()
 
-        assert item.icon().cacheKey() != old_cache_key
+        qtbot.wait_until(lambda: item.icon().cacheKey() != old_cache_key, timeout=1000)
 
 
 def test_manager_figure_selection_defers_preview_generation(

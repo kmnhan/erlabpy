@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import contextlib
 import functools
@@ -146,6 +148,10 @@ _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
 _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS = 300
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
+_PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
+_PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
+_PERSISTED_PREVIEW_CACHE_SIZE = QtCore.QSize(192, 144)
+_PERSISTED_PREVIEW_CACHE_MAX_BYTES = 96_000
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
@@ -5212,7 +5218,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
-        del ds
         source_data = dict(self._source_data)
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
         changed = False
@@ -5232,6 +5237,71 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.set_source_data(source_data)
         self._apply_recipe_to_controls()
         _render_preview(self, show_window=False)
+        self._restore_persisted_preview_cache(ds)
+
+    def _persisted_preview_cache_pixmap(self) -> QtGui.QPixmap | None:
+        preview = self._preview_pixmap_cache
+        if preview is None or preview.isNull():
+            return None
+        if (
+            preview.width() > _PERSISTED_PREVIEW_CACHE_SIZE.width()
+            or preview.height() > _PERSISTED_PREVIEW_CACHE_SIZE.height()
+        ):
+            return preview.scaled(
+                _PERSISTED_PREVIEW_CACHE_SIZE,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        return QtGui.QPixmap(preview)
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        preview = self._persisted_preview_cache_pixmap()
+        if preview is None:
+            return ds
+
+        data = QtCore.QByteArray()
+        buffer = QtCore.QBuffer(data)
+        if not buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
+            return ds
+        try:
+            if not preview.save(buffer, "PNG"):
+                return ds
+        finally:
+            buffer.close()
+
+        png_bytes = bytes(data)
+        if len(png_bytes) > _PERSISTED_PREVIEW_CACHE_MAX_BYTES:
+            return ds
+
+        ds = ds.copy(deep=False)
+        ds.attrs[_PERSISTED_PREVIEW_CACHE_ATTR] = base64.b64encode(png_bytes).decode(
+            "ascii"
+        )
+        ds.attrs[_PERSISTED_PREVIEW_CACHE_STALE_ATTR] = bool(self._preview_pixmap_stale)
+        return ds
+
+    def _restore_persisted_preview_cache(self, ds: xr.Dataset) -> None:
+        encoded = ds.attrs.get(_PERSISTED_PREVIEW_CACHE_ATTR)
+        if not isinstance(encoded, str) or not encoded:
+            return
+        try:
+            png_bytes = base64.b64decode(encoded.encode("ascii"), validate=True)
+        except (binascii.Error, ValueError):
+            return
+        if len(png_bytes) > _PERSISTED_PREVIEW_CACHE_MAX_BYTES:
+            return
+        preview = QtGui.QPixmap()
+        if not preview.loadFromData(png_bytes, "PNG"):
+            return
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = bool(
+            ds.attrs.get(_PERSISTED_PREVIEW_CACHE_STALE_ATTR, False)
+        )
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        self._restore_persisted_preview_cache(ds)
 
     @property
     def preview_pixmap(self) -> QtGui.QPixmap | None:
