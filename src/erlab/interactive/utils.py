@@ -3276,6 +3276,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._write_history = True
+        self._restoring_from_dataset = False
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
         self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
@@ -4998,10 +4999,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         tool = cls_obj(
             data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
         )
-        with tool._history_suppressed():
-            tool.tool_status = cls_obj.StateModel.model_validate_json(
-                ds.attrs["tool_state"]
-            )
+        previous_restoring = bool(getattr(tool, "_restoring_from_dataset", False))
+        tool._restoring_from_dataset = True
+        try:
+            with tool._history_suppressed():
+                tool.tool_status = cls_obj.StateModel.model_validate_json(
+                    ds.attrs["tool_state"]
+                )
+        finally:
+            tool._restoring_from_dataset = previous_restoring
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         source_spec = None
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:

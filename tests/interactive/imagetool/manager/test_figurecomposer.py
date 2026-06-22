@@ -21479,6 +21479,7 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
     )
     assert len(encoded_cache) <= max_encoded_cache_size
 
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", fail_render)
     restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
     restored_preview = restored.preview_pixmap
     assert restored_preview is not None
@@ -21495,6 +21496,51 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
     thumbnail = restored.preview_thumbnail_pixmap(QtCore.QSize(64, 64))
     assert thumbnail is not None
     assert not thumbnail.isNull()
+
+
+def test_figure_composer_visible_restore_queues_auto_redraw(
+    qtbot,
+    monkeypatch,
+) -> None:
+    first = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(4.0, 8.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="second",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="First"),
+            FigureSourceState(name="second", label="Second"),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    render_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def record_render(*args, **kwargs) -> None:
+        render_calls.append((args, kwargs))
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", record_render)
+
+    ds = tool.to_dataset()
+    window_state = json.loads(ds.attrs["tool_window_state"])
+    window_state["visible"] = True
+    ds.attrs["tool_window_state"] = json.dumps(window_state)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
+    assert render_calls == [((restored,), {"show_window": True})]
 
 
 def test_figure_composer_skips_preview_cache_when_unrendered(

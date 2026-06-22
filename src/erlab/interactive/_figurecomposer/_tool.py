@@ -26,6 +26,7 @@ import erlab
 import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._toolbar_dialogs
+import erlab.interactive._qt_state as _qt_state
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
@@ -5198,6 +5199,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = status.model_copy(update={"operations": operations})
         self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
+        if getattr(self, "_restoring_from_dataset", False):
+            self._mark_preview_pixmap_stale()
+            return
         _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
@@ -5310,8 +5314,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         self.set_source_data(source_data)
         self._apply_recipe_to_controls()
-        _render_preview(self, show_window=False)
         self._restore_persisted_preview_cache(ds)
+        self._queue_post_restore_redraw_if_needed(ds)
+
+    @staticmethod
+    def _saved_tool_window_visible(ds: xr.Dataset) -> bool:
+        state = _qt_state.parse_qt_window_state(ds.attrs.get("tool_window_state"))
+        if state is not None:
+            return state.visible
+        return bool(ds.attrs.get("tool_visible", False))
+
+    def _queue_post_restore_redraw_if_needed(self, ds: xr.Dataset) -> None:
+        if not self._saved_tool_window_visible(ds) or not self._auto_redraw_enabled():
+            return
+        erlab.interactive.utils.single_shot(
+            self,
+            0,
+            functools.partial(self._redraw_plot, show_window=True),
+        )
 
     def _persisted_preview_cache_pixmap(self) -> QtGui.QPixmap | None:
         preview = self._preview_pixmap_cache
