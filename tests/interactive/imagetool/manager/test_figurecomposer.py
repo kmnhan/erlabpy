@@ -5132,6 +5132,8 @@ def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
     controller._manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={"figure_uid": node})
     )
+    controller._node_window_state_applied = {}
+    controller._pending_node_window_modified = {}
 
     controller._set_node_window_modified("figure_uid", True)
 
