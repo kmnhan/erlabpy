@@ -26,6 +26,7 @@ from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
+    _ChooseFromWorkspaceManifestDialog,
     _is_loader_func,
 )
 from erlab.interactive.imagetool.manager._widgets import (
@@ -1531,6 +1532,7 @@ class _WorkspaceIOController:
         *,
         replace: bool,
         mark_dirty: bool,
+        selected_paths: set[str] | None = None,
         profiler: _WorkspaceLoadProfiler | None = None,
     ) -> bool:
         if profiler is None:
@@ -1579,6 +1581,16 @@ class _WorkspaceIOController:
             parent_path, child_key = path.rsplit("/childtools/", maxsplit=1)
             if "/" not in child_key and parent_path in entries_by_path:
                 child_paths[parent_path].append(path)
+
+        if selected_paths is not None:
+            root_paths = [path for path in root_paths if path in selected_paths]
+            figure_paths = [path for path in figure_paths if path in selected_paths]
+            child_paths = {
+                parent_path: [
+                    child_path for child_path in paths if child_path in selected_paths
+                ]
+                for parent_path, paths in child_paths.items()
+            }
 
         def _load_xarray_dataset(
             payload_path: str, *, chunks: typing.Any, load: bool
@@ -3266,51 +3278,58 @@ class _WorkspaceIOController:
             with self._manager._workspace_document_access_context(fname) as access:
                 with profiler.stage("metadata read"):
                     _manager_workspace._recover_workspace_transactions(access.path)
-                if not select and replace:
-                    try:
-                        with profiler.stage("metadata read"):
-                            root_attrs = (
-                                _manager_workspace._read_workspace_root_attrs_h5py(
-                                    access.path
-                                )
-                            )
-                            schema_version, delta_save_count, manifest = (
-                                _manager_workspace._workspace_file_metadata_from_attrs(
-                                    root_attrs
-                                )
-                            )
-                        if (
-                            schema_version
-                            == _manager_workspace._current_workspace_schema_version()
-                            and manifest is not None
-                        ):
-                            loaded = self._manager._from_h5py_workspace_file(
-                                access.path,
-                                manifest,
-                                replace=replace,
-                                mark_dirty=mark_dirty,
-                                profiler=profiler,
-                            )
-                            if loaded and associate:
-                                self._manager._associate_loaded_workspace_file(
-                                    access.path,
-                                    schema_version,
-                                    native=native,
-                                    delta_save_count=delta_save_count,
-                                    workspace_access=access,
-                                    rebind_data=False,
-                                )
-                                if replace:
-                                    self._restore_workspace_option_overrides(manifest)
-                                    self._restore_workspace_loader_state(
-                                        manifest, apply_explorer=False
-                                    )
-                            return self._finish_workspace_file_load(loaded)
-                    except Exception:
-                        logger.debug(
-                            "Failed h5py workspace load path; falling back to DataTree",
-                            exc_info=True,
+                try:
+                    with profiler.stage("metadata read"):
+                        root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
+                            access.path
                         )
+                        schema_version, delta_save_count, manifest = (
+                            _manager_workspace._workspace_file_metadata_from_attrs(
+                                root_attrs
+                            )
+                        )
+                    if (
+                        schema_version
+                        == _manager_workspace._current_workspace_schema_version()
+                        and manifest is not None
+                    ):
+                        selected_paths: set[str] | None = None
+                        if select:
+                            with profiler.stage("selection dialog setup"):
+                                dialog = _ChooseFromWorkspaceManifestDialog(
+                                    self._manager, manifest
+                                )
+                            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                                return self._finish_workspace_file_load(False)
+                            selected_paths = dialog.selected_paths()
+                        loaded = self._manager._from_h5py_workspace_file(
+                            access.path,
+                            manifest,
+                            replace=replace,
+                            mark_dirty=mark_dirty,
+                            selected_paths=selected_paths,
+                            profiler=profiler,
+                        )
+                        if loaded and associate:
+                            self._manager._associate_loaded_workspace_file(
+                                access.path,
+                                schema_version,
+                                native=native,
+                                delta_save_count=delta_save_count,
+                                workspace_access=access,
+                                rebind_data=False,
+                            )
+                            if replace:
+                                self._restore_workspace_option_overrides(manifest)
+                                self._restore_workspace_loader_state(
+                                    manifest, apply_explorer=False
+                                )
+                        return self._finish_workspace_file_load(loaded)
+                except Exception:
+                    logger.debug(
+                        "Failed h5py workspace load path; falling back to DataTree",
+                        exc_info=True,
+                    )
                 with profiler.stage("metadata read"):
                     tree = _manager_xarray.open_workspace_datatree(
                         access.path, chunks=None

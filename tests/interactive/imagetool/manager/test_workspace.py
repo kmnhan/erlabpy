@@ -38,7 +38,10 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
-from erlab.interactive.imagetool.manager._dialogs import _ChooseFromDataTreeDialog
+from erlab.interactive.imagetool.manager._dialogs import (
+    _ChooseFromDataTreeDialog,
+    _ChooseFromWorkspaceManifestDialog,
+)
 
 from .helpers import (
     action_map_by_object_name,
@@ -5778,6 +5781,50 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
         tree.close()
 
 
+def test_choose_from_workspace_manifest_dialog_selected_paths(qtbot) -> None:
+    manager = QtWidgets.QWidget()
+    manager.next_idx = 7
+    qtbot.addWidget(manager)
+    manifest = {
+        "root_order": ["0", "1"],
+        "nodes": [
+            {
+                "path": "0",
+                "kind": "imagetool",
+                "display_name": "Root A",
+            },
+            {
+                "path": "0/childtools/profile",
+                "kind": "tool",
+                "display_name": "Profile",
+            },
+            {
+                "path": "1",
+                "kind": "imagetool",
+                "display_name": "Root B",
+            },
+            {
+                "path": "figures/n17",
+                "kind": "tool",
+                "display_name": "Figure 1",
+            },
+        ],
+    }
+    dialog = _ChooseFromWorkspaceManifestDialog(manager, manifest)
+    qtbot.addWidget(dialog)
+
+    assert dialog._tree_widget.topLevelItemCount() == 3
+    assert dialog._tree_widget.topLevelItem(0).text(0) == "7: Root A"
+    assert dialog.item_for_path("0/childtools/profile") is not None
+    root_item = dialog.item_for_path("0")
+    assert root_item is not None
+    child_item = dialog.item_for_path("0/childtools/profile")
+    assert child_item is not None
+    dialog._uncheck_children()
+
+    assert dialog.selected_paths() == {"0", "1", "figures/n17"}
+
+
 def test_manager_workspace_save_as_locked_target_does_not_write(
     monkeypatch,
     tmp_path,
@@ -7379,11 +7426,11 @@ def test_manager_workspace_import_appends_without_reassociation(
 ) -> None:
     choose_dialog_calls = {"count": 0}
 
-    class _SelectSecondDialog(_ChooseFromDataTreeDialog):
+    class _SelectSecondDialog(_ChooseFromWorkspaceManifestDialog):
         def __init__(self, *args, **kwargs) -> None:
             choose_dialog_calls["count"] += 1
             super().__init__(*args, **kwargs)
-            first_item = self._tree_widget.topLevelItem(0)
+            first_item = self.item_for_path("0")
             assert first_item is not None
             first_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
 
@@ -7392,7 +7439,7 @@ def test_manager_workspace_import_appends_without_reassociation(
 
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager._workspace_io,
-        "_ChooseFromDataTreeDialog",
+        "_ChooseFromWorkspaceManifestDialog",
         _SelectSecondDialog,
     )
 
@@ -7435,6 +7482,94 @@ def test_manager_workspace_import_appends_without_reassociation(
         assert choose_dialog_calls["count"] == 1
         assert manager.workspace_path == str(current_fname.resolve())
         assert manager.is_workspace_modified
+
+
+def test_manager_workspace_selected_import_uses_manifest_fast_path(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root_a = itool(data, manager=False, execute=False)
+        assert isinstance(root_a, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_a, show=False)
+        child_uid = manager.add_childtool(
+            _WorkspaceSweepChildTool(data + 10), 0, show=False
+        )
+        root_b = itool(data + 1, manager=False, execute=False)
+        assert isinstance(root_b, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_b, show=False)
+        figure_uid = manager.add_figuretool(
+            _WorkspaceSweepFigureTool(data + 20), show=False
+        )
+
+        fname = tmp_path / "manifest-selected-import.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        nodes = manifest["nodes"]
+        paths = {
+            str(entry["path"])
+            for entry in nodes
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+        }
+        root_paths = sorted(path for path in paths if "/" not in path)
+        child_paths = sorted(path for path in paths if "/childtools/" in path)
+        figure_paths = sorted(
+            path
+            for path in paths
+            if path.startswith("figures/") and path.count("/") == 1
+        )
+        assert root_paths == ["0", "1"]
+        assert child_paths == ["0/childtools/" + child_uid]
+        assert figure_paths == ["figures/" + figure_uid]
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        class _SelectRootOnlyDialog(_ChooseFromWorkspaceManifestDialog):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self._uncheck_children()
+                for path in root_paths[1:] + figure_paths:
+                    item = self.item_for_path(path)
+                    assert item is not None
+                    item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_ChooseFromWorkspaceManifestDialog",
+            _SelectRootOnlyDialog,
+        )
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_datatree",
+            lambda *args, **kwargs: pytest.fail(
+                "selected current-schema loads should use manifest h5py path"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=True,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+        assert figure_uid not in manager._tool_graph.nodes
 
 
 def test_manager_workspace_save_as_preserves_live_in_memory_windows(

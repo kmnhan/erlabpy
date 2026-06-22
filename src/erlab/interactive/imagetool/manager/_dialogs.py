@@ -16,7 +16,7 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     import xarray
 
@@ -1711,6 +1711,311 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
             if child_item is not None:  # pragma: no branch
                 out = child_item.checkState(0) == QtCore.Qt.CheckState.Checked
         return out
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
+        if column != 0:
+            return
+
+        check_state = item.checkState(0)
+        if check_state != QtCore.Qt.CheckState.PartiallyChecked:
+            self._tree_widget.blockSignals(True)
+            self._set_child_check_state(item, check_state)
+            self._tree_widget.blockSignals(False)
+
+        parent = item.parent()
+        while parent is not None:
+            child_states = [
+                typing.cast("QtWidgets.QTreeWidgetItem", parent.child(i)).checkState(0)
+                for i in range(parent.childCount())
+            ]
+            if not child_states:
+                break
+            if all(state == QtCore.Qt.CheckState.Checked for state in child_states):
+                state = QtCore.Qt.CheckState.Checked
+            elif all(state == QtCore.Qt.CheckState.Unchecked for state in child_states):
+                state = QtCore.Qt.CheckState.Unchecked
+            else:
+                state = QtCore.Qt.CheckState.PartiallyChecked
+            self._tree_widget.blockSignals(True)
+            parent.setCheckState(0, state)
+            self._tree_widget.blockSignals(False)
+            parent = parent.parent()
+
+
+class _ChooseFromWorkspaceManifestDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        manifest: Mapping[str, typing.Any],
+        mode: typing.Literal["load"] = "load",
+    ) -> None:
+        super().__init__(manager)
+        del mode
+        self._manager = weakref.ref(manager)
+        self.setWindowTitle("Select Tools to Add")
+
+        layout = QtWidgets.QHBoxLayout(self)
+
+        self._tree_widget = QtWidgets.QTreeWidget(self)
+        self._tree_widget.setColumnCount(1)
+        self._tree_widget.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._tree_widget.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
+        )
+        self._tree_widget.setUniformRowHeights(True)
+        self._tree_widget.setAlternatingRowColors(True)
+        self._tree_widget.setWordWrap(False)
+        self._tree_widget.setHeaderHidden(True)
+        self._tree_widget.setAnimated(True)
+        self._tree_widget.itemChanged.connect(self._on_item_changed)
+        self._tree_widget.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self._tree_widget.customContextMenuRequested.connect(self._show_tree_menu)
+        self._tree_menu = QtWidgets.QMenu(self._tree_widget)
+        self._tree_menu.addAction("Expand All", self._tree_widget.expandAll)
+        self._tree_menu.addAction("Collapse All", self._tree_widget.collapseAll)
+        self._tree_menu.addAction("Select All", self._check_all)
+        self._tree_menu.addAction("Deselect All", self._uncheck_all)
+        self._tree_menu.addAction("ImageTools Only", self._uncheck_children)
+
+        layout.addWidget(self._tree_widget)
+        self._populate_tree(manifest)
+
+        button_box = QtWidgets.QDialogButtonBox(QtCore.Qt.Orientation.Vertical)
+        btn_selectall = typing.cast(
+            "QtWidgets.QPushButton",
+            button_box.addButton(
+                "Select All", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            ),
+        )
+        btn_deselectall = typing.cast(
+            "QtWidgets.QPushButton",
+            button_box.addButton(
+                "Deselect All", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            ),
+        )
+        btn_itools_only = typing.cast(
+            "QtWidgets.QPushButton",
+            button_box.addButton(
+                "ImageTools Only", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            ),
+        )
+        btn_ok = typing.cast(
+            "QtWidgets.QPushButton",
+            button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Ok),
+        )
+        btn_cancel = typing.cast(
+            "QtWidgets.QPushButton",
+            button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Cancel),
+        )
+
+        btn_selectall.clicked.connect(self._check_all)
+        btn_deselectall.clicked.connect(self._uncheck_all)
+        btn_itools_only.clicked.connect(self._uncheck_children)
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        layout.addWidget(button_box)
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_tree_menu(self, pos: QtCore.QPoint) -> None:
+        self._tree_menu.popup(self.mapToGlobal(pos))
+
+    @QtCore.Slot()
+    def _check_all(self) -> None:
+        self._set_checked_all(QtCore.Qt.CheckState.Checked)
+
+    @QtCore.Slot()
+    def _uncheck_all(self) -> None:
+        self._set_checked_all(QtCore.Qt.CheckState.Unchecked)
+
+    @QtCore.Slot()
+    def _uncheck_children(self) -> None:
+        self._set_checked_all(QtCore.Qt.CheckState.Unchecked, only_children=True)
+
+    def _set_checked_all(
+        self, state: QtCore.Qt.CheckState, only_children: bool = False
+    ) -> None:
+        root = self._tree_widget.invisibleRootItem()
+        if root is not None:  # pragma: no branch
+            self._tree_widget.blockSignals(True)
+            try:
+                for i in range(root.childCount()):
+                    item = root.child(i)
+                    if item is None:
+                        continue
+                    if not only_children:
+                        item.setCheckState(0, state)
+                    self._set_child_check_state(item, state)
+            finally:
+                self._tree_widget.blockSignals(False)
+
+    def _set_child_check_state(
+        self, item: QtWidgets.QTreeWidgetItem, state: QtCore.Qt.CheckState
+    ) -> None:
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child is None:
+                continue
+            child.setCheckState(0, state)
+            self._set_child_check_state(child, state)
+
+    @staticmethod
+    def _manifest_entries(
+        manifest: Mapping[str, typing.Any],
+    ) -> dict[str, Mapping[str, typing.Any]]:
+        entries: dict[str, Mapping[str, typing.Any]] = {}
+        nodes = manifest.get("nodes", ())
+        if not isinstance(nodes, list):
+            return entries
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            kind = entry.get("kind")
+            if isinstance(path, str) and kind in {"imagetool", "tool"}:
+                entries[path] = entry
+        return entries
+
+    @staticmethod
+    def _entry_text(entry: Mapping[str, typing.Any], fallback: str) -> str:
+        display_name = entry.get("display_name")
+        if isinstance(display_name, str) and display_name:
+            return display_name
+        return fallback
+
+    def _add_manifest_item(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        path: str,
+        entry: Mapping[str, typing.Any],
+        child_paths: Mapping[str, list[str]],
+        entries_by_path: Mapping[str, Mapping[str, typing.Any]],
+        *,
+        text: str | None = None,
+    ) -> QtWidgets.QTreeWidgetItem:
+        item = QtWidgets.QTreeWidgetItem(
+            parent_item, [text or self._entry_text(entry, path.rsplit("/", 1)[-1])]
+        )
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, path)
+        item.setFlags(
+            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        )
+        item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+        for child_path in child_paths.get(path, ()):
+            child_entry = entries_by_path.get(child_path)
+            if child_entry is not None:
+                self._add_manifest_item(
+                    item, child_path, child_entry, child_paths, entries_by_path
+                )
+        return item
+
+    def _populate_tree(self, manifest: Mapping[str, typing.Any]) -> None:
+        root = self._tree_widget.invisibleRootItem()
+        manager = self._manager()
+        if root is None or manager is None:
+            return
+
+        entries_by_path = self._manifest_entries(manifest)
+        child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
+        for path in entries_by_path:
+            if "/childtools/" not in path:
+                continue
+            parent_path, child_key = path.rsplit("/childtools/", maxsplit=1)
+            if "/" not in child_key and parent_path in child_paths:
+                child_paths[parent_path].append(path)
+
+        root_order = manifest.get("root_order", ())
+        root_paths: list[str] = []
+        if isinstance(root_order, list):
+            for root_path in root_order:
+                path = str(root_path)
+                if (
+                    path in entries_by_path
+                    and "/" not in path
+                    and path not in root_paths
+                ):
+                    root_paths.append(path)
+        root_paths.extend(
+            path
+            for path in entries_by_path
+            if "/" not in path and path not in root_paths
+        )
+        figure_paths = [
+            path
+            for path in entries_by_path
+            if path.startswith("figures/") and path.count("/") == 1
+        ]
+
+        start = int(manager.next_idx)
+        for offset, path in enumerate(root_paths):
+            entry = entries_by_path[path]
+            title = self._entry_text(entry, path)
+            text = f"{start + offset}: {title}" if title else str(start + offset)
+            self._tree_widget.addTopLevelItem(
+                self._add_manifest_item(
+                    root, path, entry, child_paths, entries_by_path, text=text
+                )
+            )
+        for path in figure_paths:
+            entry = entries_by_path[path]
+            self._tree_widget.addTopLevelItem(
+                self._add_manifest_item(root, path, entry, child_paths, entries_by_path)
+            )
+        self._tree_widget.expandAll()
+
+    def selected_paths(self) -> set[str]:
+        selected: set[str] = set()
+        root = self._tree_widget.invisibleRootItem()
+        if root is None:
+            return selected
+
+        def _collect(item: QtWidgets.QTreeWidgetItem) -> None:
+            path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if (
+                isinstance(path, str)
+                and item.checkState(0) != QtCore.Qt.CheckState.Unchecked
+            ):
+                selected.add(path)
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child is not None:
+                    _collect(child)
+
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item is not None:
+                _collect(item)
+        return selected
+
+    def item_for_path(self, path: str) -> QtWidgets.QTreeWidgetItem | None:
+        root = self._tree_widget.invisibleRootItem()
+        if root is None:
+            return None
+
+        def _find(item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QTreeWidgetItem | None:
+            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == path:
+                return item
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child is None:
+                    continue
+                found = _find(child)
+                if found is not None:
+                    return found
+            return None
+
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item is None:
+                continue
+            found = _find(item)
+            if found is not None:
+                return found
+        return None
 
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
     def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:

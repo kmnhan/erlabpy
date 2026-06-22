@@ -3564,6 +3564,7 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         replace: bool,
         mark_dirty: bool,
+        selected_paths: set[str] | None = None,
         profiler: typing.Any | None = None,
     ) -> bool:
         return self._workspace_controller._from_h5py_workspace_file(
@@ -3571,6 +3572,7 @@ class ImageToolManager(_ImageToolManagerBase):
             manifest,
             replace=replace,
             mark_dirty=mark_dirty,
+            selected_paths=selected_paths,
             profiler=profiler,
         )
 
