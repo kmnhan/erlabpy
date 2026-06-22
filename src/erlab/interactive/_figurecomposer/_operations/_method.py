@@ -1773,7 +1773,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Values",
                 0,
                 "figureComposerERLabLabelPropertiesValuesEdit",
-                "Dictionary of property values, such as energy=[0, 1].",
+                "Dictionary of property values, such as eV=[0, -0.1].",
                 default={"value": [0]},
             ),
             _int_kwarg(

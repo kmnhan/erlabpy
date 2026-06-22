@@ -1187,9 +1187,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.operation_list.setToolTip(
-            "Checked steps run from top to bottom to build the figure."
-        )
         self.recipe_splitter.addWidget(self.operation_list)
 
         self.step_inspector = QtWidgets.QWidget(recipe_page)
