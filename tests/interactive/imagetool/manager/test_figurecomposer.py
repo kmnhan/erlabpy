@@ -330,13 +330,14 @@ def _click_tick_params_segment(
     object_name: str,
     value: object,
 ) -> None:
-    control = editor.findChild(QtWidgets.QWidget, object_name)
-    assert control is not None
-    for button in control.findChildren(QtWidgets.QToolButton):
-        if button.property("tick_params_value") == value:
-            button.click()
+    combo = editor.findChild(QtWidgets.QComboBox, object_name)
+    assert combo is not None
+    for index in range(combo.count()):
+        if combo.itemData(index) == value:
+            combo.setCurrentIndex(index)
+            combo.activated.emit(index)
             return
-    raise AssertionError(f"No tick params segment {object_name!r} for {value!r}")
+    raise AssertionError(f"No tick params combo {object_name!r} for {value!r}")
 
 
 def _set_tick_params_button(
@@ -344,13 +345,14 @@ def _set_tick_params_button(
     object_name: str,
     value: object,
 ) -> None:
-    button = editor.findChild(QtWidgets.QToolButton, object_name)
-    assert button is not None
-    for _ in range(4):
-        if button.property("tick_params_value") == value:
-            return
-        button.click()
-    raise AssertionError(f"No tick params button {object_name!r} state {value!r}")
+    check = editor.findChild(QtWidgets.QCheckBox, object_name)
+    assert check is not None
+    state = {
+        True: QtCore.Qt.CheckState.Checked,
+        False: QtCore.Qt.CheckState.Unchecked,
+        None: QtCore.Qt.CheckState.PartiallyChecked,
+    }[value]
+    check.setCheckState(state)
 
 
 def _finish_tick_params_edit(
@@ -14604,10 +14606,10 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     )
     assert tick_editor is not None
     tick_top_button = tick_editor.findChild(
-        QtWidgets.QToolButton, "figureComposerAxesMethodTickParamsTopCombo"
+        QtWidgets.QCheckBox, "figureComposerAxesMethodTickParamsTopCombo"
     )
     tick_labeltop_button = tick_editor.findChild(
-        QtWidgets.QToolButton, "figureComposerAxesMethodTickParamsLabelTopCombo"
+        QtWidgets.QCheckBox, "figureComposerAxesMethodTickParamsLabelTopCombo"
     )
     tick_length_edit = tick_editor.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"

@@ -80,29 +80,33 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.setObjectName(f"{object_prefix}Editor")
         self.setProperty("figureComposerTickParamsEditor", True)
 
-        self.axis_control = _SegmentedChoiceWidget(
-            (("both", "both"), ("x", "x"), ("y", "y")),
+        self.axis_control = _ChoiceComboBox(
+            (("Both", "both"), ("X", "x"), ("Y", "y")),
             self,
         )
         self.axis_control.setObjectName(f"{object_prefix}AxisCombo")
-        self.which_control = _SegmentedChoiceWidget(
-            (("major", "major"), ("minor", "minor"), ("both", "both")),
+        self.axis_control.setToolTip("Axis whose ticks should be changed.")
+        self.which_control = _ChoiceComboBox(
+            (("Major", "major"), ("Minor", "minor"), ("Both", "both")),
             self,
         )
         self.which_control.setObjectName(f"{object_prefix}WhichCombo")
-        self.direction_control = _SegmentedChoiceWidget(
+        self.which_control.setToolTip("Tick set to update.")
+        self.direction_control = _ChoiceComboBox(
             (("Default", None), ("in", "in"), ("out", "out"), ("inout", "inout")),
             self,
         )
         self.direction_control.setObjectName(f"{object_prefix}DirectionCombo")
-        self.reset_button = _TriStateButton("Reset", self)
+        self.direction_control.setToolTip("Direction tick marks point.")
+        self.reset_button = _TriStateCheckBox("Reset", self, show_text=True)
         self.reset_button.setObjectName(f"{object_prefix}ResetCombo")
+        self.reset_button.setToolTip("Reset ticks to defaults before applying changes.")
 
-        self.side_buttons: dict[str, _TriStateButton] = {}
+        self.side_buttons: dict[str, _TriStateCheckBox] = {}
         for _label, tick_key, label_key in _SIDE_ROWS:
-            tick_button = _TriStateButton(f"{tick_key} ticks", self)
+            tick_button = _TriStateCheckBox(f"{tick_key} ticks", self)
             tick_button.setObjectName(f"{object_prefix}{tick_key.title()}Combo")
-            label_button = _TriStateButton(f"{tick_key} labels", self)
+            label_button = _TriStateCheckBox(f"{tick_key} labels", self)
             label_button.setObjectName(f"{object_prefix}Label{tick_key.title()}Combo")
             self.side_buttons[tick_key] = tick_button
             self.side_buttons[label_key] = label_button
@@ -117,20 +121,20 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.grid_alpha_edit = _line_edit(f"{object_prefix}GridAlphaEdit", self)
         self.grid_width_edit = _line_edit(f"{object_prefix}GridLineWidthEdit", self)
 
-        self.colors_edit = _ColorLineEditWidget("", self)
+        self.colors_edit = _color_edit(self)
         self.colors_edit.setLineEditObjectName(f"{object_prefix}ColorsEdit")
         self.colors_edit.setColorButtonObjectName(f"{object_prefix}ColorsEditButton")
-        self.tick_color_edit = _ColorLineEditWidget("", self)
+        self.tick_color_edit = _color_edit(self)
         self.tick_color_edit.setLineEditObjectName(f"{object_prefix}TickColorEdit")
         self.tick_color_edit.setColorButtonObjectName(
             f"{object_prefix}TickColorEditButton"
         )
-        self.label_color_edit = _ColorLineEditWidget("", self)
+        self.label_color_edit = _color_edit(self)
         self.label_color_edit.setLineEditObjectName(f"{object_prefix}LabelColorEdit")
         self.label_color_edit.setColorButtonObjectName(
             f"{object_prefix}LabelColorEditButton"
         )
-        self.grid_color_edit = _ColorLineEditWidget("", self)
+        self.grid_color_edit = _color_edit(self)
         self.grid_color_edit.setLineEditObjectName(f"{object_prefix}GridColorEdit")
         self.grid_color_edit.setColorButtonObjectName(
             f"{object_prefix}GridColorEditButton"
@@ -139,6 +143,7 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.grid_style_combo = QtWidgets.QComboBox(self)
         self.grid_style_combo.setObjectName(f"{object_prefix}GridLineStyleCombo")
         configure_style_combo(self.grid_style_combo, LINE_STYLE_OPTIONS, None)
+        self.grid_style_combo.setMaximumWidth(120)
 
         self._build_layout()
         self._connect_controls()
@@ -216,56 +221,75 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        scope = QtWidgets.QWidget(self)
+        scope = QtWidgets.QGroupBox("Scope", self)
         scope_layout = QtWidgets.QGridLayout(scope)
-        scope_layout.setContentsMargins(0, 0, 0, 0)
+        scope_layout.setContentsMargins(8, 4, 8, 8)
         scope_layout.setHorizontalSpacing(6)
-        scope_layout.setVerticalSpacing(2)
+        scope_layout.setVerticalSpacing(4)
         _add_labeled_widget(scope_layout, 0, 0, "Axis", self.axis_control)
-        _add_labeled_widget(scope_layout, 0, 2, "Ticks", self.which_control)
+        _add_labeled_widget(scope_layout, 0, 2, "Set", self.which_control)
         _add_labeled_widget(scope_layout, 1, 0, "Direction", self.direction_control)
         _add_labeled_widget(scope_layout, 1, 2, "Reset", self.reset_button)
-        scope_layout.setColumnStretch(1, 1)
-        scope_layout.setColumnStretch(3, 1)
+        for column in (1, 3):
+            scope_layout.setColumnStretch(column, 1)
         layout.addWidget(scope)
 
-        sides = QtWidgets.QWidget(self)
+        sides = QtWidgets.QGroupBox("Sides", self)
         sides.setObjectName(f"{self._object_prefix}SidesMatrix")
         sides_layout = QtWidgets.QGridLayout(sides)
-        sides_layout.setContentsMargins(0, 0, 0, 0)
-        sides_layout.setHorizontalSpacing(6)
-        sides_layout.setVerticalSpacing(2)
-        sides_layout.addWidget(QtWidgets.QLabel("Side", sides), 0, 0)
-        sides_layout.addWidget(QtWidgets.QLabel("Tick", sides), 0, 1)
-        sides_layout.addWidget(QtWidgets.QLabel("Label", sides), 0, 2)
-        for row, (label, tick_key, label_key) in enumerate(_SIDE_ROWS, start=1):
-            sides_layout.addWidget(QtWidgets.QLabel(label, sides), row, 0)
-            sides_layout.addWidget(self.side_buttons[tick_key], row, 1)
-            sides_layout.addWidget(self.side_buttons[label_key], row, 2)
-        sides_layout.setColumnStretch(3, 1)
+        sides_layout.setContentsMargins(8, 4, 8, 8)
+        sides_layout.setHorizontalSpacing(8)
+        sides_layout.setVerticalSpacing(3)
+        for column in (0, 3):
+            sides_layout.addWidget(QtWidgets.QLabel("Side", sides), 0, column)
+            sides_layout.addWidget(QtWidgets.QLabel("Ticks", sides), 0, column + 1)
+            sides_layout.addWidget(QtWidgets.QLabel("Labels", sides), 0, column + 2)
+        for index, (label, tick_key, label_key) in enumerate(_SIDE_ROWS):
+            row = index // 2 + 1
+            column = (index % 2) * 3
+            sides_layout.addWidget(QtWidgets.QLabel(label, sides), row, column)
+            sides_layout.addWidget(
+                self.side_buttons[tick_key],
+                row,
+                column + 1,
+                alignment=QtCore.Qt.AlignmentFlag.AlignCenter,
+            )
+            sides_layout.addWidget(
+                self.side_buttons[label_key],
+                row,
+                column + 2,
+                alignment=QtCore.Qt.AlignmentFlag.AlignCenter,
+            )
         layout.addWidget(sides)
 
-        appearance = QtWidgets.QWidget(self)
+        appearance = QtWidgets.QGroupBox("Appearance", self)
         appearance_layout = QtWidgets.QGridLayout(appearance)
-        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        appearance_layout.setContentsMargins(8, 4, 8, 8)
         appearance_layout.setHorizontalSpacing(6)
         appearance_layout.setVerticalSpacing(4)
         _add_labeled_widget(appearance_layout, 0, 0, "Length", self.length_edit)
         _add_labeled_widget(appearance_layout, 0, 2, "Width", self.width_edit)
-        _add_labeled_widget(appearance_layout, 0, 4, "Pad", self.pad_edit)
-        _add_labeled_widget(appearance_layout, 1, 0, "Both color", self.colors_edit)
-        _add_labeled_widget(appearance_layout, 1, 2, "Tick color", self.tick_color_edit)
+        _add_labeled_widget(appearance_layout, 1, 0, "Pad", self.pad_edit)
         _add_labeled_widget(
-            appearance_layout, 1, 4, "Label color", self.label_color_edit
+            appearance_layout, 1, 2, "Rotation", self.label_rotation_edit
         )
         _add_labeled_widget(appearance_layout, 2, 0, "Size", self.label_size_edit)
-        _add_labeled_widget(
-            appearance_layout, 2, 2, "Rotation", self.label_rotation_edit
-        )
-        _add_labeled_widget(appearance_layout, 2, 4, "Font", self.label_font_edit)
-        for column in (1, 3, 5):
+        _add_labeled_widget(appearance_layout, 2, 2, "Font", self.label_font_edit)
+        for column in (1, 3):
             appearance_layout.setColumnStretch(column, 1)
         layout.addWidget(appearance)
+
+        colors = QtWidgets.QGroupBox("Color", self)
+        colors_layout = QtWidgets.QGridLayout(colors)
+        colors_layout.setContentsMargins(8, 4, 8, 8)
+        colors_layout.setHorizontalSpacing(6)
+        colors_layout.setVerticalSpacing(4)
+        _add_labeled_widget(colors_layout, 0, 0, "All", self.colors_edit)
+        _add_labeled_widget(colors_layout, 0, 2, "Ticks", self.tick_color_edit)
+        _add_labeled_widget(colors_layout, 1, 0, "Labels", self.label_color_edit)
+        for column in (1, 3):
+            colors_layout.setColumnStretch(column, 1)
+        layout.addWidget(colors)
 
         grid_content = QtWidgets.QWidget(self)
         grid_layout = QtWidgets.QGridLayout(grid_content)
@@ -274,9 +298,9 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         grid_layout.setVerticalSpacing(4)
         _add_labeled_widget(grid_layout, 0, 0, "Color", self.grid_color_edit)
         _add_labeled_widget(grid_layout, 0, 2, "Alpha", self.grid_alpha_edit)
-        _add_labeled_widget(grid_layout, 0, 4, "Width", self.grid_width_edit)
-        _add_labeled_widget(grid_layout, 1, 0, "Style", self.grid_style_combo)
-        for column in (1, 3, 5):
+        _add_labeled_widget(grid_layout, 1, 0, "Width", self.grid_width_edit)
+        _add_labeled_widget(grid_layout, 1, 2, "Style", self.grid_style_combo)
+        for column in (1, 3):
             grid_layout.setColumnStretch(column, 1)
         self.grid_disclosure = _DisclosureWidget("Grid", grid_content, self)
         self.grid_disclosure.setObjectName(f"{self._object_prefix}GridDisclosure")
@@ -432,7 +456,7 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             combo.setCurrentIndex(0)
 
 
-class _SegmentedChoiceWidget(QtWidgets.QWidget):
+class _ChoiceComboBox(QtWidgets.QComboBox):
     valueChanged = QtCore.Signal(object)
 
     def __init__(
@@ -441,59 +465,42 @@ class _SegmentedChoiceWidget(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._values = [value for _label, value in options]
-        self._buttons: list[QtWidgets.QToolButton] = []
-        self._group = QtWidgets.QButtonGroup(self)
-        self._group.setExclusive(True)
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        for index, (label, value) in enumerate(options):
-            button = QtWidgets.QToolButton(self)
-            button.setText(label)
-            button.setCheckable(True)
-            button.setAutoRaise(True)
-            button.setProperty("tick_params_value", value)
-            button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding,
-                QtWidgets.QSizePolicy.Policy.Fixed,
-            )
-            self._group.addButton(button, index)
-            self._buttons.append(button)
-            layout.addWidget(button)
-        self._group.idClicked.connect(self._id_clicked)
+        for label, value in options:
+            self.addItem(label, value)
+        self.setMaximumWidth(115)
+        self.activated.connect(self._index_activated)
 
     def value(self) -> typing.Any:
-        checked = self._group.checkedId()
-        if checked < 0:
-            return None
-        return self._values[checked]
+        return self.currentData()
 
     def set_value(self, value: typing.Any) -> None:
-        with QtCore.QSignalBlocker(self._group):
-            for index, candidate in enumerate(self._values):
-                if candidate == value:
-                    self._buttons[index].setChecked(True)
+        with QtCore.QSignalBlocker(self):
+            for index in range(self.count()):
+                if self.itemData(index) == value:
+                    self.setCurrentIndex(index)
                     return
-            self._buttons[0].setChecked(True)
+            self.setCurrentIndex(0)
 
-    def _id_clicked(self, index: int) -> None:
-        if 0 <= index < len(self._values):
-            self.valueChanged.emit(self._values[index])
+    def _index_activated(self, _index: int) -> None:
+        self.valueChanged.emit(self.currentData())
 
 
-class _TriStateButton(QtWidgets.QToolButton):
+class _TriStateCheckBox(QtWidgets.QCheckBox):
     valueChanged = QtCore.Signal(object)
 
-    def __init__(self, label: str, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        label: str,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        show_text: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._value: bool | None = None
         self._label = label
-        self.setAutoRaise(True)
-        self.setCheckable(True)
-        self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.clicked.connect(self._cycle)
+        self._show_text = show_text
+        self.setTristate(True)
+        self.stateChanged.connect(self._state_changed)
         self.set_value(None)
 
     def value(self) -> bool | None:
@@ -505,23 +512,22 @@ class _TriStateButton(QtWidgets.QToolButton):
         self._value = value
         self.setProperty("tick_params_value", value)
         if value is True:
-            self.setText("On")
-            self.setChecked(True)
+            self.setCheckState(QtCore.Qt.CheckState.Checked)
         elif value is False:
-            self.setText("Off")
-            self.setChecked(True)
+            self.setCheckState(QtCore.Qt.CheckState.Unchecked)
         else:
-            self.setText("Auto")
-            self.setChecked(False)
-        self.setToolTip(f"{self._label}: {self.text()}")
+            self.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+        if self._show_text:
+            self.setText(_tri_state_text(value))
+        self.setToolTip(f"{self._label}: {_tri_state_text(value)}")
 
-    def _cycle(self) -> None:
-        match self._value:
-            case None:
+    def _state_changed(self, state: int) -> None:
+        match QtCore.Qt.CheckState(state):
+            case QtCore.Qt.CheckState.Checked:
                 value = True
-            case True:
+            case QtCore.Qt.CheckState.Unchecked:
                 value = False
-            case False:
+            case _:
                 value = None
         self.set_value(value)
         self.valueChanged.emit(value)
@@ -564,7 +570,16 @@ def _line_edit(object_name: str, parent: QtWidgets.QWidget) -> QtWidgets.QLineEd
     edit = QtWidgets.QLineEdit(parent)
     edit.setObjectName(object_name)
     edit.setPlaceholderText("Auto")
-    edit.setMaximumWidth(110)
+    edit.setMaximumWidth(80)
+    return edit
+
+
+def _color_edit(parent: QtWidgets.QWidget) -> _ColorLineEditWidget:
+    edit = _ColorLineEditWidget("", parent)
+    edit.line_edit.setPlaceholderText("Auto")
+    edit.line_edit.setMaximumWidth(82)
+    edit.color_button.setFixedWidth(34)
+    edit.setMaximumWidth(124)
     return edit
 
 
@@ -589,3 +604,11 @@ def _format_literal(value: typing.Any) -> str:
     if value is None:
         return ""
     return _code_args((value,))
+
+
+def _tri_state_text(value: bool | None) -> str:
+    if value is True:
+        return "On"
+    if value is False:
+        return "Off"
+    return "Auto"
