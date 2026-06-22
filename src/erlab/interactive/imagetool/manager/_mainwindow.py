@@ -2056,11 +2056,15 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if not self.tree_view.selectedIndexes():
             return
+        if not self.figure_list.selectedItems():
+            return
         self.figure_list.blockSignals(True)
         try:
             self.figure_list.clearSelection()
         finally:
             self.figure_list.blockSignals(False)
+        self._update_actions()
+        self._update_info()
 
     @QtCore.Slot()
     def _figure_selection_changed(self) -> None:

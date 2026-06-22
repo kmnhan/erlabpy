@@ -20966,6 +20966,39 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert not hasattr(manager, "figure_tab")
 
 
+def test_manager_tool_selection_clears_stale_figure_selection_details(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        itool(
+            xr.DataArray(
+                np.arange(4.0),
+                dims=("x",),
+                coords={"x": np.arange(4.0)},
+                name="line",
+            ),
+            manager=True,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+
+        manager._select_figure_uid(figure_uid)
+
+        assert manager._selected_tool_uids() == [figure_uid]
+
+        select_tools(manager, [0])
+
+        root_uid = manager._tool_graph.root_wrappers[0].uid
+        assert manager._selected_imagetool_targets() == [0]
+        assert manager._selected_tool_uids() == []
+        assert manager._selected_figure_uids() == []
+        assert manager._metadata_node_uid == root_uid
+
+
 def test_imagetool_plot_with_matplotlib_warns_for_uneditable_selection(
     qtbot,
     monkeypatch,
