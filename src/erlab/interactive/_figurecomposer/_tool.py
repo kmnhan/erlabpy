@@ -329,6 +329,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._options_getter: Callable[[], AppOptions] | None = None
         self._updating_controls = False
         self._rendering = False
+        self._auto_redraw_dirty = False
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
@@ -558,7 +559,44 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
-        _render_preview(self, show_window=True)
+        self._redraw_plot(show_window=True)
+
+    def _auto_redraw_enabled(self) -> bool:
+        check = getattr(self, "auto_redraw_check", None)
+        return not isinstance(check, QtWidgets.QCheckBox) or check.isChecked()
+
+    def _redraw_plot(
+        self, *, show_window: bool | None = None, emit_info: bool = False
+    ) -> None:
+        self._cancel_preview_render_update()
+        if show_window is None:
+            _render_preview(self)
+        else:
+            _render_preview(self, show_window=show_window)
+        self._auto_redraw_dirty = False
+        if emit_info:
+            self.sigInfoChanged.emit()
+
+    def _maybe_redraw_plot(self, *, show_window: bool | None = None) -> bool:
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
+            return False
+        self._redraw_plot(show_window=show_window)
+        return True
+
+    @QtCore.Slot(bool)
+    def _auto_redraw_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._cancel_preview_render_update()
+            return
+        if self._auto_redraw_dirty:
+            self._redraw_plot(emit_info=True)
+
+    @QtCore.Slot()
+    def _redraw_plot_requested(self) -> None:
+        self._redraw_plot(emit_info=True)
 
     def _request_show_figure_window(self, *, activate: bool) -> None:
         if self._closing:
@@ -1044,7 +1082,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.move_operation_down_button.clicked.connect(
             self._move_current_operation_down
         )
-        self.show_figure_button = QtWidgets.QPushButton("Show Plot Window", root)
+        self.show_figure_button = QtWidgets.QPushButton("Show Plot", root)
         self.show_figure_button.setObjectName("figureComposerShowFigureButton")
         self.show_figure_button.setToolTip(
             "Open or raise the separate Matplotlib plot window."
@@ -1063,6 +1101,27 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         output_action_layout.addWidget(copy_button)
         output_action_layout.addWidget(export_button)
         output_action_layout.addStretch(1)
+        self.auto_redraw_check = QtWidgets.QCheckBox("Auto redraw", root)
+        self.auto_redraw_check.setObjectName("figureComposerAutoRedrawCheck")
+        self.auto_redraw_check.setToolTip(
+            "Automatically redraw the plot after recipe changes."
+        )
+        self.auto_redraw_check.setChecked(True)
+        self.auto_redraw_check.toggled.connect(self._auto_redraw_toggled)
+        output_action_layout.addWidget(self.auto_redraw_check)
+        self.redraw_plot_button = QtWidgets.QToolButton(root)
+        self.redraw_plot_button.setObjectName("figureComposerRedrawPlotButton")
+        self.redraw_plot_button.setAccessibleName("Redraw Plot")
+        self.redraw_plot_button.setToolTip("Redraw and update the plot now.")
+        self.redraw_plot_button.setIcon(
+            erlab.interactive.utils.qtawesome.icon("ph.arrow-clockwise")
+        )
+        self.redraw_plot_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self.redraw_plot_button.setAutoRaise(True)
+        self.redraw_plot_button.clicked.connect(self._redraw_plot_requested)
+        output_action_layout.addWidget(self.redraw_plot_button)
         action_layout.addLayout(output_action_layout)
         root_layout.addLayout(action_layout)
         root_layout.addWidget(self.editor_tabs, 1)
@@ -2896,6 +2955,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
 
     def _notify_operation_preview_changed(self, *, defer: bool = False) -> bool:
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
+            self.sigInfoChanged.emit()
+            return True
         if defer or self._active_editor_signal_widget is not None:
             delay_ms = (
                 _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS
@@ -2905,7 +2970,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._queue_preview_render_update(delay_ms=delay_ms)
             return False
         self._cancel_preview_render_update()
-        _render_preview(self)
+        self._redraw_plot()
         self.sigInfoChanged.emit()
         return True
 
@@ -2928,6 +2993,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, *, delay_ms: int = _PREVIEW_RENDER_UPDATE_DELAY_MS
     ) -> None:
         if self._closing:
+            return
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
             return
         self._preview_render_update_generation += 1
         generation = self._preview_render_update_generation
@@ -2952,10 +3022,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             return
         self._preview_render_update_pending = False
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._mark_preview_pixmap_stale()
+            return
         if self._rendering:
             self._queue_preview_render_update()
             return
-        _render_preview(self)
+        self._redraw_plot()
         self.sigInfoChanged.emit()
 
     def _update_step_action_buttons(self) -> None:
@@ -3056,7 +3130,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3172,7 +3246,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3843,7 +3917,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3913,7 +3987,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"operations": operations})
         self._refresh_operation_list()
         self.operation_list.setCurrentRow(len(operations) - 1)
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4244,7 +4318,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     break
         self._sync_axes_selector()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4263,7 +4337,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._apply_recipe_to_controls()
         self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4286,7 +4360,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -4319,7 +4393,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -4342,7 +4416,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -5496,10 +5570,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._source_data.pop(source.name, None)
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data.update(source_data)
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()

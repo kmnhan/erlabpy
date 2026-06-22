@@ -1539,9 +1539,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _read_figure_view_mode_setting(self) -> str:
         mode = self._settings_string(
-            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_LIST
+            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_GALLERY
         )
-        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_LIST
+        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_GALLERY
 
     def _read_figure_gallery_size_setting(self) -> str:
         size_name = self._settings_string(

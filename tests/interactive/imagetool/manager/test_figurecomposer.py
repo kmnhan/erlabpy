@@ -5066,6 +5066,55 @@ def test_figure_composer_managed_display_window_configures_save_shortcut(
     assert save_calls == [True, True]
 
 
+def test_figure_composer_manual_redraw_controls(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.show_figure_button.text() == "Show Plot"
+    assert tool.auto_redraw_check.isChecked()
+    assert tool.redraw_plot_button.text() == ""
+    assert tool.redraw_plot_button.toolButtonStyle() == (
+        QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+    )
+    assert not tool.redraw_plot_button.icon().isNull()
+
+    render_calls: list[tuple[object, dict[str, object]]] = []
+
+    def record_render(*args, **kwargs) -> None:
+        render_calls.append((args, kwargs))
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", record_render)
+
+    info_changed: list[None] = []
+    tool.sigInfoChanged.connect(lambda: info_changed.append(None))
+    tool.auto_redraw_check.setChecked(False)
+    tool._update_current_operation(label="manual")
+
+    assert tool.tool_status.operations[0].label == "manual"
+    assert render_calls == []
+    assert not tool._preview_render_update_pending
+    assert tool._auto_redraw_dirty
+    assert info_changed == [None]
+
+    tool.redraw_plot_button.click()
+
+    assert render_calls == [((tool,), {})]
+    assert not tool._auto_redraw_dirty
+    assert info_changed == [None, None]
+
+    render_calls.clear()
+    info_changed.clear()
+    tool.auto_redraw_check.setChecked(False)
+    tool._update_current_operation(label="catch up")
+    tool.auto_redraw_check.setChecked(True)
+
+    assert render_calls == [((tool,), {})]
+    assert not tool._auto_redraw_dirty
+    assert info_changed == [None, None]
+
+
 def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
     primary_window = QtWidgets.QMainWindow()
     secondary_window = QtWidgets.QMainWindow()
@@ -21286,17 +21335,20 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         second_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
         manager._select_figure_uid(first_uid)
 
-        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
+        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.IconMode
         assert (
             manager.figure_list.verticalScrollMode()
             == QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
         )
-        assert manager.figure_gallery_size_combo.isHidden()
+        assert manager.figure_gallery_size_combo.isVisible()
         assert manager.figure_view_list_button.text() == ""
         assert manager.figure_view_gallery_button.text() == ""
         assert not manager.figure_view_list_button.icon().isNull()
         assert not manager.figure_view_gallery_button.icon().isNull()
 
+        manager.figure_view_list_button.click()
+        assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.ListMode
+        assert manager.figure_gallery_size_combo.isHidden()
         manager.figure_view_gallery_button.click()
 
         assert manager.figure_list.viewMode() == QtWidgets.QListView.ViewMode.IconMode
@@ -21541,7 +21593,7 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
             manager_mainwindow, "_manager_settings", lambda: FakeSettings()
         )
         assert manager._settings_string("unknown", "fallback") == "fallback"
-        assert manager._read_figure_view_mode_setting() == "list"
+        assert manager._read_figure_view_mode_setting() == "gallery"
         assert manager._read_figure_gallery_size_setting() == "medium"
 
         figure_tool = FigureComposerTool(data)
