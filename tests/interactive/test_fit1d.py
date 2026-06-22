@@ -779,6 +779,32 @@ def test_fit1d_guess_components_and_slider(qtbot) -> None:
     assert param.name not in win._params_from_coord
 
 
+def test_fit1d_nonuniform_convolved_preview_opens_without_error(
+    qtbot, monkeypatch
+) -> None:
+    x = np.r_[np.linspace(-1.0, -0.2, 41), np.linspace(0.2, 1.0, 41)]
+    data = np.exp(-((x - 0.25) ** 2) / (2.0 * 0.2**2))
+    darr = xr.DataArray(data, dims=("x",), coords={"x": x}, name="nonuniform")
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        fit1d.Fit1DTool,
+        "_show_error",
+        lambda _self, title, text: errors.append((title, text)),
+    )
+
+    win = erlab.interactive.ftool(darr, execute=False)
+    qtbot.addWidget(win)
+
+    assert win._auto_segmented(convolve=True)
+    assert isinstance(
+        win._model.func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction
+    )
+    assert win._model.func.segmented
+    win._update_fit_curve()
+    assert errors == []
+    assert win._last_fit_y is not None
+
+
 def test_fit1d_multiple_fits_and_save(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     data = xr.DataArray(
