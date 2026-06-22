@@ -36,18 +36,37 @@ def effective_line_color_cmap(operation: FigureOperationState) -> str:
     return _cmap_with_reverse(base, operation.line_color_cmap_reverse) or base
 
 
-def effective_line_color_cmap_trim(operation: FigureOperationState) -> float:
-    trim = float(operation.line_color_cmap_trim)
-    if not math.isfinite(trim) or trim < 0.0 or trim >= 0.5:
-        raise ValueError("Line colormap trim must be at least 0 and less than 0.5")
-    return trim
+def effective_line_color_cmap_trim(
+    operation: FigureOperationState,
+) -> tuple[float, float]:
+    return _validate_line_color_cmap_trim(
+        operation.line_color_cmap_trim_lower,
+        operation.line_color_cmap_trim_upper,
+    )
 
 
-def line_color_cmap_trim_control_value(operation: FigureOperationState) -> float:
+def line_color_cmap_trim_control_values(
+    operation: FigureOperationState,
+) -> tuple[float, float]:
     try:
         return effective_line_color_cmap_trim(operation)
     except ValueError:
-        return 0.0
+        return (0.0, 0.0)
+
+
+def _validate_line_color_cmap_trim(
+    lower: float,
+    upper: float,
+) -> tuple[float, float]:
+    lower = float(lower)
+    upper = float(upper)
+    if not math.isfinite(lower) or not math.isfinite(upper):
+        raise ValueError("Line colormap trim values must be finite")
+    if lower < 0.0 or upper < 0.0 or lower + upper >= 1.0:
+        raise ValueError(
+            "Line colormap trim values must be at least 0 and sum to less than 1"
+        )
+    return lower, upper
 
 
 def numeric_context_field_names(
@@ -98,12 +117,14 @@ def values_from_contexts(
 
 
 def colors_from_values(
-    values: Sequence[float], cmap: str, *, trim: float = 0.0
+    values: Sequence[float],
+    cmap: str,
+    *,
+    trim: tuple[float, float] = (0.0, 0.0),
 ) -> tuple[tuple[float, float, float, float], ...]:
     if not values:
         return ()
-    if not math.isfinite(trim) or trim < 0.0 or trim >= 0.5:
-        raise ValueError("Line colormap trim must be at least 0 and less than 0.5")
+    trim_lower, trim_upper = _validate_line_color_cmap_trim(*trim)
     vmin = min(values)
     vmax = max(values)
     if vmin == vmax:
@@ -111,8 +132,8 @@ def colors_from_values(
     else:
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     normalized = norm(values)
-    if trim:
-        normalized = trim + (1.0 - 2.0 * trim) * normalized
+    if trim_lower or trim_upper:
+        normalized = trim_lower + (1.0 - trim_lower - trim_upper) * normalized
     mapped = plt.get_cmap(cmap)(normalized)
     return tuple(tuple(float(channel) for channel in color) for color in mapped)
 
@@ -121,19 +142,18 @@ def colormap_code_lines(
     value_expression: str,
     cmap: str,
     *,
-    trim: float = 0.0,
+    trim: tuple[float, float] = (0.0, 0.0),
     values_name: str = "line_color_values",
     colors_name: str = "line_colors",
 ) -> list[str]:
-    if not math.isfinite(trim) or trim < 0.0 or trim >= 0.5:
-        raise ValueError("Line colormap trim must be at least 0 and less than 0.5")
+    trim_lower, trim_upper = _validate_line_color_cmap_trim(*trim)
     vmin_name = f"{values_name}_vmin"
     vmax_name = f"{values_name}_vmax"
     norm_name = f"{values_name}_norm"
     color_values = f"{norm_name}({values_name})"
-    if trim:
-        scale = 1.0 - 2.0 * trim
-        color_values = f"{trim!r} + {scale!r} * {color_values}"
+    if trim_lower or trim_upper:
+        scale = 1.0 - trim_lower - trim_upper
+        color_values = f"{trim_lower!r} + {scale!r} * {color_values}"
         color_code = [
             f"    {colors_name} = plt.get_cmap({cmap!r})(",
             f"        {color_values}",

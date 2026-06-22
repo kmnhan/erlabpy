@@ -36,7 +36,7 @@ from erlab.interactive._figurecomposer._line_colormap import (
     effective_line_color_cmap,
     effective_line_color_cmap_trim,
     effective_line_color_coord,
-    line_color_cmap_trim_control_value,
+    line_color_cmap_trim_control_values,
     line_colormap_active,
     numeric_context_field_names,
     values_from_contexts,
@@ -628,46 +628,77 @@ def _add_line_coordinate_color_controls(
     cmap_layout.addWidget(cmap_combo, 1)
     cmap_layout.addWidget(reverse_check)
 
-    trim_mixed = tool._batch_is_mixed(
-        operation, lambda target: target.line_color_cmap_trim
+    trim_lower_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_cmap_trim_lower
     )
+    trim_upper_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_cmap_trim_upper
+    )
+    trim_lower, trim_upper = line_color_cmap_trim_control_values(operation)
     trim_row = QtWidgets.QWidget(page)
     trim_layout = QtWidgets.QHBoxLayout(trim_row)
     trim_layout.setContentsMargins(0, 0, 0, 0)
     trim_layout.setSpacing(6)
-    trim_tooltip = (
-        "Skip this fraction at both ends of the colormap.\n"
-        "For example, 0.10 samples the middle 80%."
-    )
+    trim_tooltip = "Skip fractions from the low and high ends of the colormap."
     trim_label = QtWidgets.QLabel("Trim", trim_row)
     trim_label.setToolTip(trim_tooltip)
-    trim_spin = QtWidgets.QDoubleSpinBox(trim_row)
-    trim_spin.setObjectName("figureComposerLineColorCmapTrimSpin")
-    trim_spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
-    trim_spin.setDecimals(2)
-    trim_spin.setSingleStep(0.05)
-    trim_spin.setKeyboardTracking(False)
-    trim_spin.setValue(
-        0.0 if trim_mixed else line_color_cmap_trim_control_value(operation)
+    lower_spin = _line_color_trim_spin(
+        "figureComposerLineColorCmapTrimLowerSpin",
+        0.0 if trim_lower_mixed else trim_lower,
+        trim_tooltip,
+        trim_row,
     )
-    trim_spin.setToolTip(trim_tooltip)
-    if trim_spin.lineEdit() is not None:
-        trim_spin.lineEdit().setToolTip(trim_tooltip)
+    upper_spin = _line_color_trim_spin(
+        "figureComposerLineColorCmapTrimUpperSpin",
+        0.0 if trim_upper_mixed else trim_upper,
+        trim_tooltip,
+        trim_row,
+    )
     tool._connect_value_signal(
-        trim_spin,
-        trim_spin.valueChanged,
+        lower_spin,
+        lower_spin.valueChanged,
         float,
-        lambda value: tool._update_current_operation(line_color_cmap_trim=value),
+        lambda value: tool._update_current_operation(line_color_cmap_trim_lower=value),
+    )
+    tool._connect_value_signal(
+        upper_spin,
+        upper_spin.valueChanged,
+        float,
+        lambda value: tool._update_current_operation(line_color_cmap_trim_upper=value),
     )
     trim_layout.addWidget(trim_label)
+    trim_layout.addWidget(QtWidgets.QLabel("Low", trim_row))
     trim_layout.addWidget(
-        tool._mixed_value_widget(trim_spin, mixed=trim_mixed, parent=page)
+        tool._mixed_value_widget(lower_spin, mixed=trim_lower_mixed, parent=page)
+    )
+    trim_layout.addWidget(QtWidgets.QLabel("High", trim_row))
+    trim_layout.addWidget(
+        tool._mixed_value_widget(upper_spin, mixed=trim_upper_mixed, parent=page)
     )
     trim_layout.addStretch(1)
 
     layout.addWidget(coord_combo)
     layout.addWidget(cmap_row)
     layout.addWidget(trim_row)
+
+
+def _line_color_trim_spin(
+    object_name: str,
+    value: float,
+    tooltip: str,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QDoubleSpinBox:
+    spin = QtWidgets.QDoubleSpinBox(parent)
+    spin.setObjectName(object_name)
+    spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
+    spin.setDecimals(2)
+    spin.setSingleStep(0.05)
+    spin.setKeyboardTracking(False)
+    spin.setValue(value)
+    spin.setToolTip(tooltip)
+    if spin.lineEdit() is not None:
+        spin.lineEdit().setToolTip(tooltip)
+    return spin
 
 
 def _update_current_line_color_cmap(

@@ -372,7 +372,8 @@ class FigureOperationState(pydantic.BaseModel):
     line_color_coord: str | None = None
     line_color_cmap: str | None = None
     line_color_cmap_reverse: bool = False
-    line_color_cmap_trim: float = 0.0
+    line_color_cmap_trim_lower: float = 0.0
+    line_color_cmap_trim_upper: float = 0.0
     line_colors: tuple[str, ...] = ()
     line_x: str | None = None
     line_y: str | None = None

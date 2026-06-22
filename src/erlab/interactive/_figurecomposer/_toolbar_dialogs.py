@@ -23,7 +23,7 @@ from erlab.interactive._figurecomposer._gridspec import (
 from erlab.interactive._figurecomposer._line_colormap import (
     LINE_COLOR_CMAP_TRIM_MAX,
     effective_line_color_coord,
-    line_color_cmap_trim_control_value,
+    line_color_cmap_trim_control_values,
     line_colormap_active,
 )
 from erlab.interactive._figurecomposer._line_style import (
@@ -1173,23 +1173,24 @@ class _LineColorModeWidget(QtWidgets.QWidget):
         trim_layout = QtWidgets.QHBoxLayout(trim_row)
         trim_layout.setContentsMargins(0, 0, 0, 0)
         trim_layout.setSpacing(6)
-        trim_tooltip = (
-            "Skip this fraction at both ends of the colormap.\n"
-            "For example, 0.10 samples the middle 80%."
-        )
+        trim_tooltip = "Skip fractions from the low and high ends of the colormap."
         trim_label = QtWidgets.QLabel("Trim", trim_row)
         trim_label.setToolTip(trim_tooltip)
-        self.trim_spin = QtWidgets.QDoubleSpinBox(trim_row)
-        self.trim_spin.setObjectName("figureComposerToolbarCurveColorCmapTrimSpin")
-        self.trim_spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
-        self.trim_spin.setDecimals(2)
-        self.trim_spin.setSingleStep(0.05)
-        self.trim_spin.setKeyboardTracking(False)
-        self.trim_spin.setToolTip(trim_tooltip)
-        if self.trim_spin.lineEdit() is not None:
-            self.trim_spin.lineEdit().setToolTip(trim_tooltip)
+        self.trim_lower_spin = _line_color_trim_spin(
+            "figureComposerToolbarCurveColorCmapTrimLowerSpin",
+            trim_tooltip,
+            trim_row,
+        )
+        self.trim_upper_spin = _line_color_trim_spin(
+            "figureComposerToolbarCurveColorCmapTrimUpperSpin",
+            trim_tooltip,
+            trim_row,
+        )
         trim_layout.addWidget(trim_label)
-        trim_layout.addWidget(self.trim_spin)
+        trim_layout.addWidget(QtWidgets.QLabel("Low", trim_row))
+        trim_layout.addWidget(self.trim_lower_spin)
+        trim_layout.addWidget(QtWidgets.QLabel("High", trim_row))
+        trim_layout.addWidget(self.trim_upper_spin)
         trim_layout.addStretch(1)
 
         coordinate_layout.addWidget(self.coord_combo)
@@ -1206,7 +1207,8 @@ class _LineColorModeWidget(QtWidgets.QWidget):
         self.coord_combo.activated.connect(self._coord_changed)
         self.cmap_combo.activated.connect(self._cmap_changed)
         self.reverse_check.stateChanged.connect(self._reverse_changed)
-        self.trim_spin.valueChanged.connect(self._trim_changed)
+        self.trim_lower_spin.valueChanged.connect(self._trim_lower_changed)
+        self.trim_upper_spin.valueChanged.connect(self._trim_upper_changed)
         self._sync_controls()
 
     def _available_coords(self) -> list[str]:
@@ -1271,10 +1273,13 @@ class _LineColorModeWidget(QtWidgets.QWidget):
                 self.reverse_check.setChecked(
                     self._operation.line_color_cmap_reverse or cmap_reverse
                 )
-            with QtCore.QSignalBlocker(self.trim_spin):
-                self.trim_spin.setValue(
-                    line_color_cmap_trim_control_value(self._operation)
-                )
+            trim_lower, trim_upper = line_color_cmap_trim_control_values(
+                self._operation
+            )
+            with QtCore.QSignalBlocker(self.trim_lower_spin):
+                self.trim_lower_spin.setValue(trim_lower)
+            with QtCore.QSignalBlocker(self.trim_upper_spin):
+                self.trim_upper_spin.setValue(trim_upper)
         finally:
             self._updating = False
 
@@ -1330,12 +1335,36 @@ class _LineColorModeWidget(QtWidgets.QWidget):
             )
         )
 
-    def _trim_changed(self, value: float) -> None:
+    def _trim_lower_changed(self, value: float) -> None:
         if self._updating:
             return
         self._set_operation(
-            self._operation.model_copy(update={"line_color_cmap_trim": value})
+            self._operation.model_copy(update={"line_color_cmap_trim_lower": value})
         )
+
+    def _trim_upper_changed(self, value: float) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(update={"line_color_cmap_trim_upper": value})
+        )
+
+
+def _line_color_trim_spin(
+    object_name: str,
+    tooltip: str,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QDoubleSpinBox:
+    spin = QtWidgets.QDoubleSpinBox(parent)
+    spin.setObjectName(object_name)
+    spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
+    spin.setDecimals(2)
+    spin.setSingleStep(0.05)
+    spin.setKeyboardTracking(False)
+    spin.setToolTip(tooltip)
+    if spin.lineEdit() is not None:
+        spin.lineEdit().setToolTip(tooltip)
+    return spin
 
 
 class _ImageOperationStyleWidget(QtWidgets.QWidget):
