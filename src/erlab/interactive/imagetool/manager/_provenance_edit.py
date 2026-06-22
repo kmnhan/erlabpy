@@ -432,7 +432,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         path = self.file_path()
         if _normalized_path(path) == _normalized_path(self._original_path):
             return peer.original_path
-        return path.parent / f"{peer.original_path.stem}{path.suffix}"
+        return path.parent / peer.original_path.name
 
     def _peer_path(self, peer: _FileLoadBatchPeer) -> pathlib.Path:
         return self._batch_peer_paths.get(peer.target_id, self._auto_peer_path(peer))

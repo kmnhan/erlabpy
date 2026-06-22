@@ -310,8 +310,12 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
     new_dir.mkdir()
     current_spec = _manager_replay_file_spec(old_dir / "a.h5")
     peer_spec = _manager_replay_file_spec(old_dir / "b.h5")
+    multi_suffix_peer_spec = _manager_replay_file_spec(old_dir / "c.scan.h5")
     assert current_spec.file_load_source is not None
     peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
+    multi_suffix_peer_node = types.SimpleNamespace(
+        uid="peer-multi", display_text="Peer Multi"
+    )
     peer = manager_provenance_edit._FileLoadBatchPeer(
         node=typing.cast("typing.Any", peer_node),
         scope="display",
@@ -319,12 +323,19 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
         original_path=old_dir / "b.h5",
         loader_summary="xarray.load_dataarray",
     )
+    multi_suffix_peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", multi_suffix_peer_node),
+        scope="display",
+        spec=multi_suffix_peer_spec,
+        original_path=old_dir / "c.scan.h5",
+        loader_summary="xarray.load_dataarray",
+    )
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     dialog = manager_provenance_edit._FileLoadEditDialog(
         current_spec.file_load_source,
         parent,
-        batch_peers=(peer,),
+        batch_peers=(peer, multi_suffix_peer),
     )
     qtbot.addWidget(dialog)
 
@@ -334,18 +345,28 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
 
     dialog.batch_apply_check.setChecked(True)
     item = dialog.batch_peer_tree.topLevelItem(0)
+    multi_suffix_item = dialog.batch_peer_tree.topLevelItem(1)
     assert not dialog.batch_peer_tree.isHidden()
     assert item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert multi_suffix_item.checkState(0) == QtCore.Qt.CheckState.Checked
     assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
-    assert dialog.selected_batch_peers() == (peer,)
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
+    assert dialog.selected_batch_peers() == (peer, multi_suffix_peer)
 
     dialog.kwargs_edit.setText("engine='h5netcdf', chunks={'x': 1}")
     assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
+
+    dialog.path_edit.setText(str(old_dir / "a.nc"))
+    assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
 
     dialog.path_edit.setText(str(new_dir / "a.nc"))
-    assert pathlib.Path(item.text(2)) == new_dir / "b.nc"
+    assert pathlib.Path(item.text(2)) == new_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == new_dir / "c.scan.h5"
 
     item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+    multi_suffix_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert dialog.selected_batch_peers() == ()
 
 
