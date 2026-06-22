@@ -81,13 +81,17 @@ class _ManagerWorkspaceState:
     def apply_dirty_event(self, event: _manager_workspace._WorkspaceDirtyEvent) -> bool:
         dirty_changed = False
         if event.uid is not None:
-            if event.added:
+            already_added = event.uid in self.dirty_added
+            already_data = event.uid in self.dirty_data
+            already_state = event.uid in self.dirty_state
+            if event.added and not already_added:
                 self.dirty_added.add(event.uid)
-            elif event.data:
+                dirty_changed = True
+            elif event.data and not (already_added or already_data):
                 self.dirty_data.add(event.uid)
-            elif event.state:
+                dirty_changed = True
+            elif event.state and not (already_added or already_state):
                 self.dirty_state.add(event.uid)
-            if event.added or event.data or event.state:
                 dirty_changed = True
         if event.removed is not None:
             self.dirty_removed.append(event.removed)

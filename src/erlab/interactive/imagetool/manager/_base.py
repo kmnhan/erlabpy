@@ -37,6 +37,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._heartbeat import (
         _RegistryHeartbeatController,
     )
+    from erlab.interactive.imagetool.manager._interaction import _ManagerInteractionGate
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._lineage import _LineageController
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
@@ -194,6 +195,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _refreshing_figure_list: bool
     _registry_heartbeat: _RegistryHeartbeatController
     _registry_heartbeat_timer: QtCore.QTimer
+    _interaction_gate: _ManagerInteractionGate
     _sigDataReplaced: QtCore.SignalInstance
     _sigReloadLinkers: QtCore.SignalInstance
     _sigReplyData: QtCore.SignalInstance

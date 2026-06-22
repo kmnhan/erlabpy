@@ -484,6 +484,78 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         assert "updated child info final" in manager.text_box.toPlainText()
 
 
+def test_manager_idle_queue_deduplicates_and_waits_for_idle(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        calls: list[str] = []
+
+        manager._note_interaction_activity()
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("old"))
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("new"))
+
+        assert calls == []
+        assert manager._interaction_gate.pending_keys == (("test", "work"),)
+        qtbot.wait_until(lambda: calls == ["new"], timeout=1000)
+        assert manager._interaction_gate.pending_keys == ()
+
+
+def test_manager_idle_queue_stops_when_activity_resumes(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+
+        def first_callback() -> None:
+            calls.append("first")
+            manager._note_interaction_activity()
+
+        manager._queue_idle_work(("test", "first"), first_callback)
+        manager._queue_idle_work(("test", "second"), lambda: calls.append("second"))
+
+        qtbot.wait_until(lambda: calls == ["first"], timeout=1000)
+        assert manager._interaction_gate.pending_keys == (("test", "second"),)
+
+        manager._flush_idle_work(force=True)
+
+        assert calls == ["first", "second"]
+        assert manager._interaction_gate.pending_keys == ()
+
+
+def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        key_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_A,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            "a",
+        )
+        QtWidgets.QApplication.sendEvent(manager, key_event)
+
+        assert manager._interaction_active
+        qtbot.wait_until(lambda: not manager._interaction_active, timeout=1000)
+
+        edit = QtWidgets.QLineEdit(manager)
+        qtbot.addWidget(edit)
+        focus_event = QtGui.QFocusEvent(QtCore.QEvent.Type.FocusIn)
+        QtWidgets.QApplication.sendEvent(edit, focus_event)
+
+        assert manager._interaction_active
+
+
 def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
     qtbot,
     test_data,
@@ -510,10 +582,9 @@ def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
         manager._tool_metadata_queue.set_interval(1)
 
         tool.emit_info_text("updated child info")
-        qtbot.wait_until(
-            lambda: not manager._tool_metadata_queue.is_active(), timeout=1000
-        )
 
+        assert manager._tool_metadata_queue.pending_uids == frozenset()
+        assert not manager._tool_metadata_queue.is_active()
         assert manager.text_box.toHtml() == visible_html
         assert "updated child info" not in manager.text_box.toPlainText()
 
@@ -546,6 +617,55 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
         assert [
             event for event in manager._workspace_state.dirty_events if event.uid == uid
         ] == [manager._workspace_state.dirty_events[-1]]
+
+
+def test_root_imagetool_repeated_history_changes_mark_state_dirty_once(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        workspace = tmp_path / "normal.itws"
+        manager._workspace_state.path = workspace
+        manager._mark_workspace_clean()
+        file_path_calls: list[str] = []
+        modified_calls: list[bool] = []
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowFilePath",
+            lambda _manager, path: file_path_calls.append(path),
+        )
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowModified",
+            lambda _manager, modified: modified_calls.append(modified),
+        )
+
+        root = manager._tool_graph.root_wrappers[0]
+        root._handle_imagetool_state_changed()
+        root._handle_imagetool_state_changed()
+        root._handle_imagetool_state_changed()
+
+        assert manager._workspace_state.dirty_state == {root.uid}
+        assert [
+            event
+            for event in manager._workspace_state.dirty_events
+            if event.uid == root.uid
+        ] == [manager._workspace_state.dirty_events[-1]]
+        assert file_path_calls == []
+        assert modified_calls == []
+
+        manager._flush_idle_work(force=True)
+
+        assert file_path_calls == []
+        assert modified_calls == [True]
 
 
 def test_remove_imagetool_removes_childtools() -> None:

@@ -5366,7 +5366,7 @@ def test_manager_workspace_window_title_sets_file_path(
 
 
 @pytest.mark.parametrize("dirty_kw", [{"data": True}, {"state": True}])
-def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
+def test_manager_repeated_tool_dirty_event_defers_document_metadata_until_idle(
     monkeypatch,
     tmp_path,
     dirty_kw: dict[str, bool],
@@ -5391,16 +5391,20 @@ def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
             lambda uid, modified: node_modified_calls.append((uid, modified)),
         )
 
+        manager._note_interaction_activity()
         manager._mark_workspace_dirty(uid="n1", **dirty_kw)
         manager._mark_workspace_dirty(uid="n1", **dirty_kw)
 
+        assert manager.is_workspace_modified
+        assert file_path_calls == []
+        assert node_modified_calls == []
+        assert [event.uid for event in manager._workspace_state.dirty_events] == ["n1"]
+        assert manager._workspace_state.dirty_generation == 1
+
+        manager._flush_idle_work(force=True)
+
         assert file_path_calls == [str(workspace)]
-        assert node_modified_calls == [("n1", True)]
-        assert [event.uid for event in manager._workspace_state.dirty_events] == [
-            "n1",
-            "n1",
-        ]
-        assert manager._workspace_state.dirty_generation == 2
+        assert node_modified_calls == []
 
 
 def test_manager_workspace_window_title_clears_file_path_without_workspace(
@@ -5422,7 +5426,7 @@ def test_manager_workspace_window_title_clears_file_path_without_workspace(
             )
             manager._update_workspace_window_title()
 
-        assert file_path_calls == [""]
+        assert file_path_calls == []
         assert "Untitled" in manager.windowTitle()
         assert not manager.isWindowModified()
 
@@ -5483,10 +5487,7 @@ def test_manager_loaded_workspace_association_updates_file_path(
                     workspace_access=access,
                     rebind_data=False,
                 )
-            assert file_path_calls == [
-                str(workspace.resolve()),
-                str(workspace.resolve()),
-            ]
+            assert file_path_calls == [str(workspace.resolve())]
 
         assert manager.workspace_path == str(workspace.resolve())
         assert workspace.name in manager.windowTitle()
@@ -8238,6 +8239,12 @@ def test_manager_workspace_dirty_markers_are_node_scoped(
 
         manager._child_node(child_uid).name = "renamed child"
         assert manager.is_workspace_modified
+        assert not manager.isWindowModified()
+        assert not root.isWindowModified()
+        assert not child.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
         assert manager.isWindowModified()
         assert not root.isWindowModified()
         assert child.isWindowModified()
@@ -8271,6 +8278,10 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         QtCore.QTimer.singleShot(0, lambda: manager._mark_node_state_dirty(uid))
         manager._mark_node_state_dirty(uid)
         assert manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
         assert root.isWindowModified()
 
         focus_restored: list[QtWidgets.QWidget | None] = []
@@ -8291,6 +8302,44 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         assert not manager.is_workspace_modified
         assert not root.isWindowModified()
         assert focus_restored == [root]
+
+
+def test_manager_workspace_save_during_active_interaction_uses_dirty_state(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "active-save.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        manager._note_interaction_activity()
+        manager._mark_node_state_dirty(uid)
+
+        assert manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        assert manager.save()
+
+        assert not manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
+        assert not manager.is_workspace_modified
+        assert not root.isWindowModified()
 
 
 def test_manager_workspace_restore_event_drain_avoids_event_loop(

@@ -999,7 +999,16 @@ class _DetailsPanelController:
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
         """Refresh expensive selected-tool metadata after bursty info updates settle."""
+        if not self._tool_metadata_update_relevant(uid):
+            return
         self._manager._tool_metadata_queue.schedule(uid)
+
+    def _tool_metadata_update_relevant(self, uid: str) -> bool:
+        selected_imagetools = self._manager._selected_imagetool_targets()
+        selected_childtools = self._manager._selected_tool_uids()
+        if len(selected_imagetools) + len(selected_childtools) != 1:
+            return False
+        return uid in selected_childtools or uid in selected_imagetools
 
     def _schedule_tool_preview_update(self, uid: str) -> None:
         self._tool_preview_update_generation += 1

@@ -19,6 +19,7 @@ from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._heartbeat import _RegistryHeartbeatController
+from erlab.interactive.imagetool.manager._interaction import _ManagerInteractionGate
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -642,9 +643,13 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self._workspace_state = _ManagerWorkspaceState()
+        self._interaction_gate = _ManagerInteractionGate(self)
+        self._interaction_gate.register_window(self)
         self._workspace_controller = _WorkspaceIOController(self)
         self._tool_metadata_queue = _ManagerToolMetadataQueue(
-            self, self._flush_pending_tool_metadata_updates
+            self,
+            self._flush_pending_tool_metadata_updates,
+            idle_scheduler=self._queue_idle_work,
         )
         self._update_workspace_window_title()
         self._registry_heartbeat_timer.start()
@@ -2025,6 +2030,12 @@ class ImageToolManager(_ImageToolManagerBase):
             finally:
                 self.figure_list.blockSignals(False)
 
+    def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
+        self._queue_idle_work(
+            ("figure-gallery-icon", uid),
+            lambda uid=uid: self._update_figure_gallery_icon(uid),
+        )
+
     def _figure_uid_from_item(
         self, item: QtWidgets.QListWidgetItem | None
     ) -> str | None:
@@ -3074,6 +3085,36 @@ class ImageToolManager(_ImageToolManagerBase):
     def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
         self._details_panel._flush_pending_tool_metadata_updates(pending)
 
+    def _register_interaction_window(self, window: QtWidgets.QWidget | None) -> None:
+        self._interaction_gate.register_window(window)
+
+    def _unregister_interaction_window(self, window: QtWidgets.QWidget | None) -> None:
+        self._interaction_gate.unregister_window(window)
+
+    def _note_interaction_activity(self) -> None:
+        self._interaction_gate.note_activity()
+
+    @property
+    def _interaction_active(self) -> bool:
+        return self._interaction_gate.is_active
+
+    def _queue_idle_work(
+        self,
+        key: typing.Hashable,
+        callback: Callable[[], None],
+        *,
+        require_idle: bool = True,
+    ) -> None:
+        self._interaction_gate.queue_work(key, callback, require_idle=require_idle)
+
+    def _flush_idle_work(
+        self,
+        *,
+        key_prefix: typing.Hashable | None = None,
+        force: bool = False,
+    ) -> None:
+        self._interaction_gate.flush(key_prefix=key_prefix, force=force)
+
     def _update_actions(self) -> None:
         self._details_panel._update_actions()
 
@@ -3190,8 +3231,8 @@ class ImageToolManager(_ImageToolManagerBase):
             coalesce_if_busy=coalesce_if_busy
         )
 
-    def _update_workspace_window_title(self) -> None:
-        self._workspace_controller._update_workspace_window_title()
+    def _update_workspace_window_title(self, *, force: bool = True) -> None:
+        self._workspace_controller._update_workspace_window_title(force=force)
 
     def _release_workspace_lock(self) -> None:
         self._workspace_controller._release_workspace_lock()

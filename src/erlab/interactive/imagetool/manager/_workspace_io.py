@@ -137,6 +137,9 @@ class _WorkspaceIOController:
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
+        self._workspace_window_state_applied: tuple[str, str, bool] | None = None
+        self._node_window_state_applied: dict[str, tuple[tuple[int, str], bool]] = {}
+        self._pending_node_window_modified: dict[str, bool] = {}
 
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
@@ -445,22 +448,40 @@ class _WorkspaceIOController:
             coalesce_if_busy=coalesce_if_busy,
         )
 
-    def _update_workspace_window_title(self) -> None:
+    def _workspace_window_state(self) -> tuple[str, str, bool]:
         if self._manager._workspace_state.path is None:
             window_file_path = ""
         else:
             window_file_path = typing.cast("str", self._manager.workspace_path)
-        self._manager.setWindowFilePath(window_file_path)
         workspace_display_name = (
             "Untitled"
             if self._manager._workspace_state.path is None
             else self._manager._workspace_state.path.name
         )
-        self._manager.setWindowTitle(
+        title = (
             f"{_window_title_with_modified_placeholder(workspace_display_name)}"
             f" - ImageTool Manager #{self._manager.manager_index}"
         )
-        self._manager.setWindowModified(self._manager.is_workspace_modified)
+        return window_file_path, title, self._manager.is_workspace_modified
+
+    def _update_workspace_window_title(self, *, force: bool = True) -> None:
+        if force:
+            self._apply_workspace_window_title()
+            return
+        self._manager._queue_idle_work(
+            ("workspace-window", "title"), self._apply_workspace_window_title
+        )
+
+    def _apply_workspace_window_title(self) -> None:
+        window_file_path, title, modified = self._workspace_window_state()
+        applied = self._workspace_window_state_applied
+        if applied is None or applied[0] != window_file_path:
+            self._manager.setWindowFilePath(window_file_path)
+        if applied is None or applied[1] != title:
+            self._manager.setWindowTitle(title)
+        if applied is None or applied[2] != modified:
+            self._manager.setWindowModified(modified)
+        self._workspace_window_state_applied = (window_file_path, title, modified)
 
     def _release_workspace_lock(self) -> None:
         if self._manager._workspace_state.lock is None:
@@ -609,8 +630,27 @@ class _WorkspaceIOController:
         return "\n\n".join(blocks)
 
     def _set_node_window_modified(self, uid: str, modified: bool) -> None:
+        self._pending_node_window_modified.pop(uid, None)
+        self._apply_node_window_modified(uid, modified)
+
+    def _queue_node_window_modified(self, uid: str, modified: bool) -> None:
+        self._pending_node_window_modified[uid] = modified
+        self._manager._queue_idle_work(
+            ("node-window", uid),
+            lambda uid=uid: self._flush_pending_node_window_modified(uid),
+        )
+
+    def _flush_pending_node_window_modified(self, uid: str) -> None:
+        try:
+            modified = self._pending_node_window_modified.pop(uid)
+        except KeyError:
+            return
+        self._apply_node_window_modified(uid, modified)
+
+    def _apply_node_window_modified(self, uid: str, modified: bool) -> None:
         node = self._manager._tool_graph.nodes.get(uid)
         if node is None:
+            self._node_window_state_applied.pop(uid, None)
             return
         window = node.window
         if node.tool_window is not None:
@@ -625,15 +665,28 @@ class _WorkspaceIOController:
         windows: list[tuple[QtWidgets.QWidget | None, str]] = [(window, base_title)]
         if node.tool_window is not None:
             windows.extend(node.tool_window._managed_secondary_windows())
+        valid_windows: list[tuple[QtWidgets.QWidget, str]] = []
         for target_window, target_title in windows:
             if target_window is None or not erlab.interactive.utils.qt_is_valid(
                 target_window
             ):
                 continue
+            valid_windows.append((target_window, target_title))
+        target_state = (
+            tuple(
+                (id(target_window), target_title)
+                for target_window, target_title in valid_windows
+            ),
+            modified,
+        )
+        if self._node_window_state_applied.get(uid) == target_state:
+            return
+        for target_window, target_title in valid_windows:
             title = _window_title_with_modified_placeholder(target_title)
             if title != target_window.windowTitle():
                 target_window.setWindowTitle(title)
             target_window.setWindowModified(modified)
+        self._node_window_state_applied[uid] = target_state
 
     def _apply_workspace_dirty_event(
         self, event: _manager_workspace._WorkspaceDirtyEvent
@@ -677,10 +730,10 @@ class _WorkspaceIOController:
             and (event.added or event.data or event.state)
             and not node_was_modified
         ):
-            self._manager._set_node_window_modified(event.uid, True)
+            self._queue_node_window_modified(event.uid, True)
         self._manager._workspace_state.mark_dirty(event)
         if not was_modified and self._manager.is_workspace_modified:
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
 
     def _mark_node_added(self, uid: str) -> None:
         self._manager._mark_workspace_dirty(
@@ -710,7 +763,7 @@ class _WorkspaceIOController:
         ):
             return
         if self._manager._workspace_state.mark_layout_dirty():
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
 
     def _mark_workspace_options_dirty(self) -> None:
         if (
@@ -720,7 +773,7 @@ class _WorkspaceIOController:
         ):
             return
         if self._manager._workspace_state.mark_options_dirty():
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
 
     def _mark_workspace_clean(self) -> None:
         self._manager._workspace_state.mark_clean()
