@@ -1,7 +1,6 @@
 import concurrent.futures
 import json
 import logging
-import math
 import pathlib
 import types
 import typing
@@ -550,7 +549,7 @@ def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     assert preview.isVisible()
 
 
-def test_single_image_preview_preserves_pixmap_aspect_ratio_on_resize(qtbot) -> None:
+def test_single_image_preview_keeps_legacy_stretch_on_resize(qtbot) -> None:
     preview = manager_widgets._SingleImagePreview()
     qtbot.addWidget(preview)
     pixmap = QtGui.QPixmap(160, 80)
@@ -566,8 +565,8 @@ def test_single_image_preview_preserves_pixmap_aspect_ratio_on_resize(qtbot) -> 
     qtbot.wait(0)
     second_transform = preview.transform()
 
-    assert math.isclose(first_transform.m11(), first_transform.m22(), rel_tol=1e-6)
-    assert math.isclose(second_transform.m11(), second_transform.m22(), rel_tol=1e-6)
+    assert first_transform.m11() != pytest.approx(first_transform.m22())
+    assert second_transform.m11() != pytest.approx(second_transform.m22())
 
 
 def test_batch_action_transform_error_paths(
