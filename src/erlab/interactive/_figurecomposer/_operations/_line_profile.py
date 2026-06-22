@@ -1143,11 +1143,11 @@ def _render_line(
     styles = _line_styles_for_profiles(operation, line_items, sources)
     for axis in axes:
         for line_data, kwargs in zip(line_items, styles, strict=True):
+            coordinate = _line_coordinate(line_data, operation.line_x)
             if operation.line_values_axis == "x":
-                coordinate = _line_coordinate(line_data, operation.line_x)
                 line = axis.plot(line_data.values, coordinate.values, **kwargs)[0]
             else:
-                line = line_data.plot(ax=axis, x=operation.line_x, **kwargs)[0]
+                line = axis.plot(coordinate.values, line_data.values, **kwargs)[0]
             _apply_line_gradient_fill(axis, line, operation)
         _apply_line_axes_limits(axis, operation)
 
@@ -1581,22 +1581,13 @@ def _regular_line_code(
     coordinate = _line_coordinate_code(operation)
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "        ")
-        )
     else:
-        call_args = "ax=ax"
-        if operation.line_x:
-            call_args += f", x={operation.line_x!r}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool, operation, f"profile.plot({call_args})", "ax", "        "
-            )
-        )
+        call_args = f"{coordinate}, profile"
+    if kwargs_text:
+        call_args += f", {kwargs_text}"
+    lines.extend(
+        _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "        ")
+    )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
     return lines
@@ -1628,28 +1619,19 @@ def _regular_line_single_axis_code(
     lines.extend(_loop_header_lines(loop_names, loop_values))
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool,
-                operation,
-                f"{axis_code}.plot({call_args})",
-                axis_code,
-                "    ",
-            )
-        )
     else:
-        call_args = f"ax={axis_code}"
-        if operation.line_x:
-            call_args += f", x={operation.line_x!r}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool, operation, f"profile.plot({call_args})", axis_code, "    "
-            )
+        call_args = f"{coordinate}, profile"
+    if kwargs_text:
+        call_args += f", {kwargs_text}"
+    lines.extend(
+        _line_plot_code(
+            tool,
+            operation,
+            f"{axis_code}.plot({call_args})",
+            axis_code,
+            "    ",
         )
+    )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
     return lines

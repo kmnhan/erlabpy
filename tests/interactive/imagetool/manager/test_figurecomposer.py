@@ -18286,14 +18286,14 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert "profile_offsets =" not in code
     assert "0.01 * profile_data['temperature'] + profile_data" in code
     assert "for ax in" not in code
-    assert "_line = profile.plot(ax=axs[0, 0]" in code
+    assert "_line = axs[0, 0].plot(profile['kx'], profile" in code
     assert "for _line in" not in code
     assert "ax.lines" not in code
     code_lines = code.splitlines()
     plot_index = next(
         index
         for index, line in enumerate(code_lines)
-        if "_line = profile.plot(" in line
+        if "_line = axs[0, 0].plot(" in line
     )
     assert code_lines[plot_index + 1] == "    eplt.gradient_fill("
     exec(code, namespace)  # noqa: S102
@@ -19031,7 +19031,7 @@ def test_figure_composer_line_gradient_fill_codegen_preserves_line_source(
     code = tool.generated_code()
     code_lines = code.splitlines()
     assert not any(line.startswith("    _line = profile.plot(") for line in code_lines)
-    assert "_line_2 = profile.plot(ax=axs[0, 0])[0]" in code
+    assert "_line_2 = axs[0, 0].plot(profile[profile.dims[0]], profile)[0]" in code
     assert "profile_data = _line" in code
 
     namespace: dict[str, typing.Any] = {"_line": data}
@@ -19413,10 +19413,10 @@ def test_figure_composer_regular_line_gradient_fill_codegen_executes(
             assert line.get_color() == ("red", "blue")[index]
 
     code = tool.generated_code()
-    assert "_line = profile.plot(ax=ax, x='kx', color=color)[0]" in code
+    assert "_line = ax.plot(profile['kx'], profile, color=color)[0]" in code
     code_lines = code.splitlines()
     plot_index = code_lines.index(
-        "        _line = profile.plot(ax=ax, x='kx', color=color)[0]"
+        "        _line = ax.plot(profile['kx'], profile, color=color)[0]"
     )
     assert code_lines[plot_index + 1] == "        eplt.gradient_fill("
 
@@ -19428,6 +19428,72 @@ def test_figure_composer_regular_line_gradient_fill_codegen_executes(
         for index, line in enumerate(axis.lines):
             np.testing.assert_allclose(line.get_xdata(), kx)
             np.testing.assert_allclose(line.get_ydata(), data.isel(cut=index).values)
+
+
+def test_figure_composer_line_gradient_fill_uses_new_line_after_existing_line(
+    qtbot,
+) -> None:
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.array([1.0, 2.0, 1.0]),
+        dims=("kx",),
+        coords={"kx": kx},
+        name="data",
+    )
+    base_operation = FigureOperationState.line(
+        label="base",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"line_x": "kx", "line_colors": ("black",)})
+    gradient_operation = FigureOperationState.line(
+        label="gradient",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_colors": ("red",),
+            "gradient": True,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(base_operation, gradient_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    axis = fig.axes[0]
+    assert len(axis.lines) == 2
+    assert len(axis.images) == 1
+    assert axis.lines[0].get_color() == "black"
+    assert axis.lines[1].get_color() == "red"
+    np.testing.assert_allclose(
+        axis.images[0].cmap(1.0),
+        mcolors.to_rgba(axis.lines[1].get_color()),
+        rtol=1e-7,
+    )
+
+    code = tool.generated_code()
+    assert "profile.plot(" not in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    axis = namespace["fig"].axes[0]
+    assert len(axis.lines) == 2
+    assert len(axis.images) == 1
+    assert axis.lines[0].get_color() == "black"
+    assert axis.lines[1].get_color() == "red"
+    np.testing.assert_allclose(
+        axis.images[0].cmap(1.0),
+        mcolors.to_rgba(axis.lines[1].get_color()),
+        rtol=1e-7,
+    )
 
 
 def test_figure_composer_line_labels_auto_add_axes_legend_step(
