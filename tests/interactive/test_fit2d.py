@@ -115,6 +115,13 @@ def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
     win._set_current_index(0)
     win._fit_is_current = True
     win._update_full_fit_saveable()
+    win._update_param_plot_options()
+
+
+def _seed_fit2d_param_results(win: Fit2DTool, params_list) -> None:
+    win._params_full = [params.copy() for params in params_list]
+    win._result_ds_full = [_fit_result_dataset(params) for params in params_list]
+    win._update_param_plot_options()
 
 
 def _lmfit_json_with_callable_pyversion(
@@ -318,7 +325,6 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     win.param_plot_overlay_check.setChecked(True)
 
     status = win.tool_status
-    expected_param_names = list(win._params.keys())
 
     win_restored = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win_restored)
@@ -332,9 +338,9 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     assert [
         win_restored.param_plot_combo.itemText(i)
         for i in range(win_restored.param_plot_combo.count())
-    ] == expected_param_names
-    win_restored.param_plot_combo.setCurrentText("p0_width")
-    assert win_restored.param_plot_overlay_check.isChecked()
+    ] == []
+    assert not win_restored.param_plot_combo.isEnabled()
+    assert not win_restored.param_plot_overlay_check.isChecked()
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
@@ -344,8 +350,9 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     qtbot.addWidget(win_roundtripped)
     assert isinstance(win_roundtripped, Fit2DTool)
     assert win_roundtripped.tool_status.params == status.params
-    win_roundtripped.param_plot_combo.setCurrentText("p0_width")
-    assert win_roundtripped.param_plot_overlay_check.isChecked()
+    assert win_roundtripped.param_plot_combo.count() == 0
+    assert not win_roundtripped.param_plot_combo.isEnabled()
+    assert not win_roundtripped.param_plot_overlay_check.isChecked()
 
 
 @pytest.mark.parametrize("case_name", ["multipeak", "polynomial"])
@@ -446,6 +453,9 @@ def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
     win.y_min_spin.setValue(1)
     win.y_max_spin.setValue(2)
     param_name = win.param_plot_combo.itemText(0)
@@ -466,7 +476,8 @@ def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
     assert win_restored.y_min_spin.value() == 1
     assert win_restored.y_max_spin.value() == 2
     win_restored.param_plot_combo.setCurrentText(param_name)
-    assert win_restored.param_plot_overlay_check.isChecked() is True
+    assert win_restored.param_plot_combo.count() == 0
+    assert win_restored.param_plot_overlay_check.isChecked() is False
 
 
 def test_fit2d_overlay_legend_sync(qtbot) -> None:
@@ -475,6 +486,9 @@ def test_fit2d_overlay_legend_sync(qtbot) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     param_name = win.param_plot_combo.itemText(0)
     win.param_plot_combo.setCurrentText(param_name)
     win.param_plot_overlay_check.setChecked(True)
@@ -505,6 +519,9 @@ def test_fit2d_update_param_plot_overlays_paths(qtbot) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     names = [win.param_plot_combo.itemText(i) for i in range(2)]
     for name in names:
         win._param_plot_overlay_states[name] = True
@@ -1488,7 +1505,7 @@ def test_fit2d_copy_code_full_inconsistent_params_warning(qtbot, monkeypatch) ->
 
     params1 = win._params.copy()
     params2 = win._params.copy()
-    del params2["p0_height"]
+    del params2["p0_center"]
 
     win._params_full = [params1, params2]
     win._result_ds_full = [xr.Dataset(), xr.Dataset()]
@@ -1632,8 +1649,9 @@ def test_fit2d_update_param_plot_with_results(qtbot) -> None:
     params = win._params.copy()
     params["p0_center"].set(value=0.25)
     params["p0_center"].stderr = 0.1
-    win._params_full = [params.copy() for _ in range(len(win._params_full))]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
 
     win.param_plot_combo.setCurrentText("p0_center")
     win._update_param_plot()
@@ -1656,8 +1674,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     params_0[center_name].stderr = 0.01
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
-    win._params_full = [params_0, params_1, params_2]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(win, [params_0, params_1, params_2])
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win._param_plot_dataarray(center_name)
@@ -1715,8 +1732,7 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     params_0[center_name].stderr = 0.01
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
-    win._params_full = [params_0, params_1, params_2]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(win, [params_0, params_1, params_2])
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
@@ -1786,8 +1802,9 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     params = win._params.copy()
     params[center_name].set(value=0.1)
     params[center_name].stderr = 0.01
-    win._params_full = [params.copy() for _ in range(len(win._params_full))]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
     win.param_plot_combo.setCurrentText(center_name)
 
     with pytest.raises(ValueError, match="Fit2DTool parameter output"):
@@ -1897,7 +1914,7 @@ def test_fit2d_param_plot_context_actions_missing_selection(qtbot, monkeypatch) 
     assert not shown
 
 
-def test_fit2d_param_plot_context_actions_no_data_available(qtbot, monkeypatch) -> None:
+def test_fit2d_param_plot_rejects_cached_guess_params(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1908,12 +1925,54 @@ def test_fit2d_param_plot_context_actions_no_data_available(qtbot, monkeypatch) 
         win, "_show_warning", lambda title, text: warnings.append((title, text))
     )
 
-    win._params_full = [None for _ in win._params_full]
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [None for _ in win._result_ds_full]
+    win._update_param_plot_options()
+
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert not win.param_plot_overlay_check.isEnabled()
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
+
     win.param_plot_combo.setCurrentText("p0_center")
     win.param_plot._show_parameter_values()
 
     assert warnings
-    assert warnings[-1][0] == "No data available"
+    assert warnings[-1][0] == "No parameter selected"
+
+
+def test_fit2d_index_changes_do_not_expose_guess_params(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._params_full[0] = win._params.copy()
+    win._set_current_index(0)
+    win._update_param_plot_options()
+
+    assert win._params_full[0] is not None
+    assert win.param_plot_combo.count() == 0
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+
+    fitted = win._params.copy()
+    fitted["p0_center"].set(value=0.5)
+    win._result_ds_full[0] = _fit_result_dataset(fitted)
+    win._update_param_plot_options()
+
+    assert "p0_center" in {
+        win.param_plot_combo.itemText(i) for i in range(win.param_plot_combo.count())
+    }
 
 
 def test_fit2d_param_plot_save_dataarray_as_hdf5(
@@ -2162,6 +2221,11 @@ def test_fit2d_param_plot_options_update(qtbot, exp_decay_model) -> None:
     assert isinstance(win, Fit2DTool)
 
     win.set_model(win._make_model_from_choice("MultiPeakModel"))
+    assert win.param_plot_combo.count() == 0
+
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     combo_items = {
         win.param_plot_combo.itemText(i) for i in range(win.param_plot_combo.count())
     }

@@ -471,6 +471,7 @@ class Fit2DTool(Fit1DTool):
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
+        self._update_param_plot_options()
         self._update_param_plot()
 
     def _build_ui(self) -> None:
@@ -759,6 +760,7 @@ class Fit2DTool(Fit1DTool):
     @property
     def tool_status(self) -> Fit1DTool.StateModel:
         state_dict = super().tool_status.model_dump()
+        param_plot_names = set(self._param_plot_names())
         state_dict["state2d"] = _State2D(
             current_idx=int(self._current_idx),
             data_name_full=str(self._data_name_full),
@@ -778,7 +780,11 @@ class Fit2DTool(Fit1DTool):
                 self.fill_mode_combo.currentText().lower(),
             ),
             y_limits=(self.y_min_spin.value(), self.y_max_spin.value()),
-            param_plot_overlay_states=self._param_plot_overlay_states.copy(),
+            param_plot_overlay_states={
+                name: checked
+                for name, checked in self._param_plot_overlay_states.items()
+                if name in param_plot_names
+            },
         )
         return self.StateModel(**state_dict)
 
@@ -843,6 +849,8 @@ class Fit2DTool(Fit1DTool):
             self._param_bounds_repair_names = previous_repaired_bounds
         self._show_repaired_parameter_bounds_warning(repaired_bounds)
         self.y_index_spin.setValue(self._current_idx)
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
     def _transpose(self) -> None:
@@ -935,35 +943,38 @@ class Fit2DTool(Fit1DTool):
         with QtCore.QSignalBlocker(self.param_plot_combo):
             prev_param = self.param_plot_combo.currentText()
             self.param_plot_combo.clear()
-            updated_names = list(self._params.keys())
+            updated_names = self._param_plot_names()
             self.param_plot_combo.addItems(updated_names)
-            if set(self._param_plot_overlay_states) != set(updated_names):
-                self._reset_param_plot_overlay_states(updated_names)
+            for name in updated_names:
+                self._param_plot_overlay_states.setdefault(name, False)
+            self._remove_unavailable_param_plot_overlay_items(updated_names)
             if prev_param in updated_names:
                 self.param_plot_combo.setCurrentText(prev_param)
-            else:
-                self._update_param_plot()
+            self.param_plot_combo.setEnabled(bool(updated_names))
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
 
     def _apply_param_plot_overlay_states(self, states: dict[str, bool]) -> None:
         """Apply saved overlay states and refresh overlay UI."""
-        param_names = list(self._params.keys())
-        if set(states) != set(param_names):
-            self._reset_param_plot_overlay_states(param_names)
-            return
         self._param_plot_overlay_states = dict(states)
+        for name in self._param_plot_names():
+            self._param_plot_overlay_states.setdefault(name, False)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
 
-    def _reset_param_plot_overlay_states(self, param_names: list[str]) -> None:
-        """Reset overlay state/items when parameter names change."""
-        for errbar, scatter in self._param_plot_overlay_items.values():
+    def _remove_unavailable_param_plot_overlay_items(
+        self, param_names: list[str]
+    ) -> None:
+        """Remove visible overlays for parameters without fit-result data."""
+        available = set(param_names)
+        for name in list(self._param_plot_overlay_items):
+            if name in available:
+                continue
+            errbar, scatter = self._param_plot_overlay_items.pop(name)
             self.image_plot.removeItem(errbar)
             self.image_plot.removeItem(scatter)
-        self._param_plot_overlay_items = {}
-        self._param_plot_overlay_states = dict.fromkeys(param_names, False)
-        self._clear_image_plot_legend()
+            if self.image_plot_legend is not None:
+                self.image_plot_legend.removeItem(name)
 
     def _toggle_param_plot_overlay(self, checked: bool) -> None:
         """Toggle overlay visibility for the currently selected parameter."""
@@ -1018,6 +1029,7 @@ class Fit2DTool(Fit1DTool):
             reset_params_from_coord=reset_params_from_coord,
         )
         self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
     def _update_param_plot(self) -> None:
@@ -1062,11 +1074,15 @@ class Fit2DTool(Fit1DTool):
         """Update the overlay checkbox for the current parameter."""
         param_name = self.param_plot_combo.currentText()
         if not param_name:  # pragma: no cover
+            with QtCore.QSignalBlocker(self.param_plot_overlay_check):
+                self.param_plot_overlay_check.setChecked(False)
+                self.param_plot_overlay_check.setEnabled(False)
             return
         if checked is None:  # pragma: no branch
             checked = self._param_plot_overlay_states.get(param_name, False)
         with QtCore.QSignalBlocker(self.param_plot_overlay_check):
             self.param_plot_overlay_check.setChecked(checked)
+            self.param_plot_overlay_check.setEnabled(True)
 
     def _clear_image_plot_legend(self) -> None:
         """Remove all entries from the image plot legend."""
@@ -1088,7 +1104,9 @@ class Fit2DTool(Fit1DTool):
         if y_vals is None or params_list is None:
             y_range_slice = self._y_range_slice()
             y_vals = self._y_values()[y_range_slice]
-            params_list = self._params_full[y_range_slice]
+            params_list = self._fit_result_params_list(
+                self._result_ds_full[y_range_slice]
+            )
 
         plot_y = []
         param_values = []
@@ -1102,6 +1120,43 @@ class Fit2DTool(Fit1DTool):
             param_errors.append(param.stderr if param.stderr is not None else 0.0)
 
         return np.array(plot_y), np.array(param_values), np.array(param_errors)
+
+    @staticmethod
+    def _fit_result_params(result_ds: xr.Dataset | None) -> lmfit.Parameters | None:
+        if result_ds is None or "modelfit_results" not in result_ds.data_vars:
+            return None
+        try:
+            result = result_ds.modelfit_results.compute().item()
+        except Exception:
+            logger.warning(
+                "Ignoring invalid Fit2D result dataset for parameter plot",
+                exc_info=True,
+                extra={"suppress_ui_alert": True},
+            )
+            return None
+        params = getattr(result, "params", None)
+        return params if params is not None else None
+
+    @classmethod
+    def _fit_result_params_list(
+        cls, result_datasets: list[xr.Dataset | None]
+    ) -> list[lmfit.Parameters | None]:
+        return [cls._fit_result_params(result_ds) for result_ds in result_datasets]
+
+    def _param_plot_names(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for params in self._fit_result_params_list(
+            self._result_ds_full[self._y_range_slice()]
+        ):
+            if params is None:
+                continue
+            for name in params:
+                if name in seen:
+                    continue
+                seen.add(name)
+                names.append(name)
+        return names
 
     def _param_plot_dataarray(
         self, param_name: str, *, stderr: bool = False
@@ -1145,10 +1200,11 @@ class Fit2DTool(Fit1DTool):
 
         y_range_slice = self._y_range_slice()
         y_vals = self._y_values()[y_range_slice]
-        params_list = self._params_full[y_range_slice]
+        params_list = self._fit_result_params_list(self._result_ds_full[y_range_slice])
+        available_names = set(self._param_plot_names())
         enabled = []
         for name, checked in self._param_plot_overlay_states.items():
-            if not checked:
+            if not checked or name not in available_names:
                 items = self._param_plot_overlay_items.pop(name, None)
                 if items is not None:
                     errbar, scatter = items
@@ -1313,6 +1369,8 @@ class Fit2DTool(Fit1DTool):
         self._params_from_coord_full = [{} for _ in range(y_size)]
         self._result_ds_full = [slice_ds for _, slice_ds in slice_states]
         self._fit_is_current = True
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
         saved_results = [
@@ -1369,6 +1427,8 @@ class Fit2DTool(Fit1DTool):
                 ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)
             )
         )
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
@@ -1387,6 +1447,7 @@ class Fit2DTool(Fit1DTool):
         self.y_min_line.setPos(min_val)
         self.y_max_line.setPos(max_val)
         self._update_full_fit_saveable()
+        self._update_param_plot_options()
         self._update_param_plot()
         self._write_state()
         self._emit_info_changed()
@@ -1504,6 +1565,7 @@ class Fit2DTool(Fit1DTool):
         self._params_from_coord_full = [{} for _ in range(len(self._params_full))]
         self._result_ds_full = [None] * len(self._params_full)
         self._refresh_contents_from_index()
+        self._update_param_plot_options()
         self._update_param_plot()
         self._mark_fit_stale()
 
@@ -1648,6 +1710,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_direction = None
         self._fit_2d_initial_range = None
         self._update_full_fit_saveable()
+        self._update_param_plot_options()
         self._update_param_plot()
 
     def _y_values(self) -> np.ndarray:
@@ -2025,7 +2088,7 @@ class Fit2DTool(Fit1DTool):
 
     def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
         param_name = self.param_plot_combo.currentText().strip()
-        if not param_name:
+        if not param_name or param_name not in self._param_plot_names():
             return None
         return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
 
@@ -2033,10 +2096,7 @@ class Fit2DTool(Fit1DTool):
         self, output: Output, param_name: str
     ) -> tuple[str, bool] | None:
         stderr = output == self.Output.PARAMETER_STDERR
-        if not param_name or all(
-            self.param_plot_combo.itemText(i) != param_name
-            for i in range(self.param_plot_combo.count())
-        ):
+        if not param_name or param_name not in self._param_plot_names():
             return None
         return param_name, stderr
 
