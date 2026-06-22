@@ -5188,6 +5188,64 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     assert info_changes == [(4.5, 3.0)]
 
 
+def test_figure_composer_plot_window_undo_redo_resizes_canvas(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    figure_window = tool.figure_window
+    qtbot.wait_until(lambda: figure_window.isVisible(), timeout=5000)
+    tool._reset_history_stack()
+
+    initial_size = tool.tool_status.setup.figsize
+    base_dpi = float(typing.cast("typing.Any", figure_window.figure)._original_dpi)
+    target_size = (initial_size[0] + 0.75, initial_size[1] + 0.5)
+    size_delta = figure_window.size() - figure_window.canvas.size()
+    figure_window.resize(
+        round(target_size[0] * base_dpi) + size_delta.width(),
+        round(target_size[1] * base_dpi) + size_delta.height(),
+    )
+    qtbot.wait_until(
+        lambda: (
+            np.isclose(tool.tool_status.setup.figsize[0], target_size[0], atol=0.03)
+            and np.isclose(tool.tool_status.setup.figsize[1], target_size[1], atol=0.03)
+        ),
+        timeout=5000,
+    )
+    resized_size = tool.tool_status.setup.figsize
+
+    figure_window.toolbar.back()
+    qtbot.wait_until(
+        lambda: (
+            np.isclose(tool.tool_status.setup.figsize[0], initial_size[0], atol=0.03)
+            and np.isclose(
+                tool.tool_status.setup.figsize[1], initial_size[1], atol=0.03
+            )
+            and abs(figure_window.canvas.width() - round(initial_size[0] * base_dpi))
+            <= 2
+            and abs(figure_window.canvas.height() - round(initial_size[1] * base_dpi))
+            <= 2
+        ),
+        timeout=5000,
+    )
+
+    figure_window.toolbar.forward()
+    qtbot.wait_until(
+        lambda: (
+            np.isclose(tool.tool_status.setup.figsize[0], resized_size[0], atol=0.03)
+            and np.isclose(
+                tool.tool_status.setup.figsize[1], resized_size[1], atol=0.03
+            )
+            and abs(figure_window.canvas.width() - round(resized_size[0] * base_dpi))
+            <= 2
+            and abs(figure_window.canvas.height() - round(resized_size[1] * base_dpi))
+            <= 2
+        ),
+        timeout=5000,
+    )
+
+
 def test_figure_composer_resize_render_is_cancelled_on_close(qtbot) -> None:
     tool = FigureComposerTool(
         xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})

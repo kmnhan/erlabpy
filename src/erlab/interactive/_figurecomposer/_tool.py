@@ -890,6 +890,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             emit_info=emit_info,
         )
 
+    def _sync_figure_window_to_recipe_setup(self) -> None:
+        window = self._figure_window
+        if window is None or not erlab.interactive.utils.qt_is_valid(window):
+            return
+        window.resize_to_setup(self._recipe.setup)
+        with contextlib.suppress(RuntimeError):
+            window.canvas.flush_events()
+
     def _set_recipe_figsize_from_canvas(
         self,
         width_inches: float,
@@ -5199,6 +5207,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = status.model_copy(update={"operations": operations})
         self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
+        self._sync_figure_window_to_recipe_setup()
         if getattr(self, "_restoring_from_dataset", False):
             self._mark_preview_pixmap_stale()
             return
