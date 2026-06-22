@@ -2355,7 +2355,7 @@ def _add_plot_slices_line_color_controls(
 
     tool._add_form_row(
         layout,
-        "Color lines",
+        "Lines",
         row,
         "Choose a manual line color or color 1D panels from coordinate values.",
     )
@@ -2597,7 +2597,7 @@ def _build_plot_slices_editor(
         shape_summary.setForegroundRole(QtGui.QPalette.ColorRole.Link)
     tool._add_form_row(
         selection_layout,
-        "Dimensions",
+        "Summary",
         shape_summary,
         "Shows the input dimensions and the dimensions plotted by this step.",
     )
@@ -2724,7 +2724,7 @@ def _build_plot_slices_editor(
     )
     tool._add_form_row(
         selection_layout,
-        "Integration width",
+        "Width",
         width_edit,
         "Optional qsel width around each selected value before plotting.",
     )
@@ -2741,7 +2741,7 @@ def _build_plot_slices_editor(
     )
     tool._add_form_row(
         selection_layout,
-        "Additional slice kwargs",
+        "Extra kwargs",
         slice_kwargs_edit,
         "Additional plot_slices selection kwargs passed to qsel.\n"
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
@@ -2763,7 +2763,7 @@ def _build_plot_slices_editor(
     order_combo.setObjectName("figureComposerOrderCombo")
     tool._add_form_row(
         view_layout,
-        "Panel order",
+        "Order",
         order_combo,
         "C places sources by row and selected values by column. F places selected "
         "values by row and sources by column.",
@@ -2945,7 +2945,7 @@ def _build_plot_slices_editor(
     )
     tool._add_form_row(
         view_layout,
-        "Annotation kwargs",
+        "Annotation",
         annotate_kwargs_edit,
         "Dict literal or keyword arguments forwarded as annotate_kw.",
     )
@@ -3001,7 +3001,7 @@ def _build_plot_slices_editor(
         )
         tool._add_compound_form_row(
             colors_layout,
-            "Line",
+            "Stroke",
             (
                 (
                     "Style",
@@ -3140,7 +3140,7 @@ def _build_plot_slices_editor(
         )
         tool._add_compound_form_row(
             colors_layout,
-            "Marker colors",
+            "Colors",
             (
                 (
                     "Face",
@@ -3170,7 +3170,7 @@ def _build_plot_slices_editor(
         )
         tool._add_form_row(
             colors_layout,
-            "Legend labels",
+            "Labels",
             labels_edit,
             label_text_tooltip(
                 _plot_slices_line_label_contexts(tool, operation),
@@ -3190,7 +3190,7 @@ def _build_plot_slices_editor(
         )
         tool._add_form_row(
             colors_layout,
-            "Line kwargs",
+            "Kwargs",
             line_kwargs_edit,
             "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
@@ -3219,7 +3219,7 @@ def _build_plot_slices_editor(
         )
         tool._add_form_row(
             colors_layout,
-            "Line transform",
+            "Values",
             transform_widget,
             "Normalize, scale, and offset 1D plot_slices inputs before plotting.",
         )
@@ -3254,7 +3254,7 @@ def _build_plot_slices_editor(
         )
         tool._add_form_row(
             colors_layout,
-            "Gradient kwargs",
+            "Kwargs",
             gradient_kwargs_edit,
             "Dict literal or keyword arguments forwarded as gradient_kw.",
         )
@@ -3298,7 +3298,7 @@ def _build_plot_slices_editor(
             )
             tool._add_form_row(
                 colors_layout,
-                "Panel styles",
+                "Styles",
                 panel_editor,
                 "Select panels and set optional line-style overrides.",
             )
@@ -3525,7 +3525,7 @@ def _build_plot_slices_editor(
         same_limits_combo.setObjectName("figureComposerSameLimitsCombo")
         tool._add_form_row(
             colors_layout,
-            "Match color limits",
+            "Match limits",
             same_limits_combo,
             "Control plot_slices same_limits for image color scaling.",
         )
@@ -3569,7 +3569,7 @@ def _build_plot_slices_editor(
             )
             tool._add_form_row(
                 colors_layout,
-                "Panel styles",
+                "Styles",
                 panel_editor,
                 "Select panels and set optional colormap or norm overrides.",
             )

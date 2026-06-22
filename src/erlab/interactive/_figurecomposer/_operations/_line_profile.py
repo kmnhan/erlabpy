@@ -304,7 +304,7 @@ def _build_line_editor(
     coordinate_combo.setObjectName("figureComposerProfileCoordinateCombo")
     tool._add_form_row(
         selection_layout,
-        "Profile coordinate",
+        "Coordinate",
         coordinate_combo,
         "Coordinate along each profile.\n"
         "Automatic: use the only remaining dimension.\n"
@@ -333,7 +333,7 @@ def _build_line_editor(
     values_combo.setObjectName("figureComposerProfileValuesCombo")
     tool._add_form_row(
         selection_layout,
-        "Profile values",
+        "Values",
         values_combo,
         "Values plotted from the selected profile.\n"
         "Data array values: use the selected data itself.\n"
@@ -359,7 +359,7 @@ def _build_line_editor(
     )
     tool._add_form_row(
         selection_layout,
-        "Data selection",
+        "Selection",
         selection_edit,
         "Selection kwargs passed to qsel.\n"
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
@@ -475,7 +475,7 @@ def _build_line_editor(
     )
     tool._add_form_row(
         style_layout,
-        "Legend labels",
+        "Labels",
         labels_edit,
         label_text_tooltip(label_contexts, item_name="profile"),
     )
@@ -546,7 +546,7 @@ def _add_line_color_controls(
 
     tool._add_form_row(
         layout,
-        "Color lines",
+        "Lines",
         row,
         "Choose manual colors or color profiles from coordinate values.",
     )
@@ -949,7 +949,7 @@ def _add_line_style_controls(
     )
     tool._add_compound_form_row(
         layout,
-        "Line",
+        "Stroke",
         (
             (
                 "Style",
@@ -1078,7 +1078,7 @@ def _add_line_style_controls(
     )
     tool._add_compound_form_row(
         layout,
-        "Marker colors",
+        "Colors",
         (
             (
                 "Face",

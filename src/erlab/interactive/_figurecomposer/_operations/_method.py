@@ -2785,7 +2785,7 @@ def _build_method_editor(
         )
         tool._add_form_row(
             layout,
-            "Text values",
+            "Text",
             text_edit,
             "One text value per line for methods that apply labels or annotations.",
         )
