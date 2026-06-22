@@ -12171,6 +12171,71 @@ def test_figure_composer_toolbar_axes_dialog_updates_curve_style(qtbot) -> None:
     assert operation.line_kw["marker"] == "o"
 
 
+def test_figure_composer_toolbar_axes_dialog_updates_curve_color_mode(qtbot) -> None:
+    data = _figure_composer_line_slice_source("data")
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"line_x": "kx", "line_iter_dim": "eV"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    mode_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveColorModeCombo"
+    )
+    coord_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveColorCoordCombo"
+    )
+    cmap_combo = dialog.findChild(
+        erlab.interactive.colors.ColorMapComboBox,
+        "figureComposerToolbarCurveColorCmapCombo",
+    )
+    reverse_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarCurveColorCmapReverseCheck"
+    )
+    trim_spin = dialog.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerToolbarCurveColorCmapTrimSpin"
+    )
+    colors_widget = dialog.findChild(
+        QtWidgets.QWidget, "figureComposerToolbarCurveColorsWidget"
+    )
+    assert mode_combo is not None
+    assert coord_combo is not None
+    assert cmap_combo is not None
+    assert reverse_check is not None
+    assert trim_spin is not None
+    assert colors_widget is not None
+    assert mode_combo.findData("coordinate") >= 0
+    assert coord_combo.findData("eV") >= 0
+    assert not colors_widget.isHidden()
+
+    _activate_combo_index(mode_combo, mode_combo.findData("coordinate"))
+    cmap_combo.setCurrentText("plasma")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
+    reverse_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    trim_spin.setValue(0.1)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.line_color_mode == "coordinate"
+    assert operation.line_color_coord == "eV"
+    assert operation.line_color_cmap == "plasma"
+    assert operation.line_color_cmap_reverse
+    assert operation.line_color_cmap_trim == 0.1
+    assert colors_widget.isHidden()
+
+
 def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
     qtbot,
 ) -> None:
@@ -12222,6 +12287,16 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
     line_kwargs_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerPanelLineKwEdit"
     )
+    mode_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveColorModeCombo"
+    )
+    coord_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveColorCoordCombo"
+    )
+    cmap_combo = dialog.findChild(
+        erlab.interactive.colors.ColorMapComboBox,
+        "figureComposerToolbarCurveColorCmapCombo",
+    )
     assert target_combo is not None
     assert panel_list is not None
     assert color_edit is not None
@@ -12230,13 +12305,22 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
     assert marker_combo is not None
     assert marker_size_edit is not None
     assert line_kwargs_edit is not None
+    assert mode_combo is not None
+    assert coord_combo is not None
+    assert cmap_combo is not None
     assert target_combo.count() == 1
     assert panel_list.count() == 2
+    assert mode_combo.findData("coordinate") >= 0
+    assert coord_combo.findData("eV") >= 0
     main_panel_styles_check = tool.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
     )
     assert main_panel_styles_check is not None
     assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    _activate_combo_index(mode_combo, mode_combo.findData("coordinate"))
+    cmap_combo.setCurrentText("plasma")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
 
     panel_list.clearSelection()
     first_panel = panel_list.item(0)
@@ -12255,6 +12339,9 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
     line_kwargs_edit.editingFinished.emit()
 
     operation = tool.tool_status.operations[0]
+    assert operation.line_color_mode == "coordinate"
+    assert operation.line_color_coord == "eV"
+    assert operation.line_color_cmap == "plasma"
     assert operation.panel_styles_enabled
     assert operation.panel_styles == (
         FigurePlotSlicesPanelStyleState(
@@ -12359,6 +12446,83 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     )
     assert main_panel_styles_check is not None
     assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Checked
+
+
+def test_figure_composer_toolbar_axes_dialog_updates_single_image_style_directly(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    target_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
+    )
+    cmap_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelCmapOverrideCheck"
+    )
+    norm_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelNormOverrideCheck"
+    )
+    cmap_combo = dialog.findChild(
+        erlab.interactive.colors.ColorMapComboBox, "figureComposerPanelCmapCombo"
+    )
+    cmap_reverse_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelCmapReverseCheck"
+    )
+    norm_combo = dialog.findChild(QtWidgets.QComboBox, "figureComposerPanelNormCombo")
+    gamma_edit = dialog.findChild(QtWidgets.QLineEdit, "figureComposerPanelGammaEdit")
+    vmin_edit = dialog.findChild(QtWidgets.QLineEdit, "figureComposerPanelVminEdit")
+    vmax_edit = dialog.findChild(QtWidgets.QLineEdit, "figureComposerPanelVmaxEdit")
+    assert target_combo is not None
+    assert cmap_check is None
+    assert norm_check is None
+    assert cmap_combo is not None
+    assert cmap_reverse_check is not None
+    assert norm_combo is not None
+    assert gamma_edit is not None
+    assert vmin_edit is not None
+    assert vmax_edit is not None
+    assert target_combo.count() == 1
+
+    cmap_combo.setCurrentText("magma")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
+    cmap_reverse_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    _activate_combo_text(norm_combo, "Normalize")
+    vmin_edit.setText("-1")
+    vmin_edit.editingFinished.emit()
+    vmax_edit.setText("1")
+    vmax_edit.editingFinished.emit()
+
+    operation = tool.tool_status.operations[0]
+    assert operation.cmap == "magma_r"
+    assert operation.norm_name == "Normalize"
+    assert operation.vmin == -1.0
+    assert operation.vmax == 1.0
+    assert operation.panel_styles == ()
+    assert not operation.panel_styles_enabled
+    assert not gamma_edit.isEnabled()
+    assert vmin_edit.isEnabled()
+    assert vmax_edit.isEnabled()
 
 
 def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -> None:
