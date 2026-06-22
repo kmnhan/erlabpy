@@ -1863,12 +1863,6 @@ class ImageToolManager(_ImageToolManagerBase):
         tool_window = node.tool_window
         if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        if getattr(tool_window, "preview_pixmap_stale", False):
-            request_preview = getattr(
-                tool_window, "request_preview_pixmap_update", None
-            )
-            if callable(request_preview):
-                request_preview()
         thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
         if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())

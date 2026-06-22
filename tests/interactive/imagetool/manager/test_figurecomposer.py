@@ -21707,7 +21707,7 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
         )
         figure_tool._preview_pixmap_stale = True
         assert not manager._figure_gallery_icon(figure_uid).isNull()
-        assert requested == [None]
+        assert requested == []
 
 
 def test_manager_figures_gallery_updates_one_icon_from_preview_signal(
