@@ -106,6 +106,25 @@ class _WorkspaceLoadProfiler:
                 logger.debug("Workspace load stage %s: %.3fs", name, duration)
 
 
+class _WorkspaceReplaceBackup:
+    __slots__ = ("file_path", "snapshot", "tree")
+
+    def __init__(
+        self,
+        snapshot: _WorkspaceStateSnapshot,
+        *,
+        tree: xr.DataTree | None = None,
+        file_path: pathlib.Path | None = None,
+    ) -> None:
+        self.snapshot = snapshot
+        self.tree = tree
+        self.file_path = file_path
+
+    def close(self) -> None:
+        if self.tree is not None:
+            self.tree.close()
+
+
 def _workspace_dataset_window_visible(
     ds: xr.Dataset, prefix: str, *, default: bool = True
 ) -> bool:
@@ -860,6 +879,44 @@ class _WorkspaceIOController:
         return self._manager._workspace_state.snapshot(
             node_uid_counter=self._manager._tool_graph.uid_counter
         )
+
+    def _workspace_file_can_restore_replace_backup(self, path: pathlib.Path) -> bool:
+        try:
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(path)
+            schema_version, _delta_save_count, manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+            )
+        except Exception:
+            logger.debug(
+                "Cannot use workspace file rollback backup for %s",
+                path,
+                exc_info=True,
+            )
+            return False
+        return (
+            schema_version == _manager_workspace._current_workspace_schema_version()
+            and manifest is not None
+        )
+
+    def _workspace_replace_backup_for_load(
+        self,
+        incoming_path: str | os.PathLike[str] | None,
+    ) -> _WorkspaceReplaceBackup:
+        snapshot = self._manager._workspace_state_snapshot()
+        current_path = self._manager._workspace_state.path
+        incoming_resolved = (
+            None if incoming_path is None else pathlib.Path(incoming_path).resolve()
+        )
+        if (
+            current_path is not None
+            and incoming_resolved is not None
+            and current_path != incoming_resolved
+            and not self._manager.is_workspace_modified
+            and current_path.exists()
+            and self._workspace_file_can_restore_replace_backup(current_path)
+        ):
+            return _WorkspaceReplaceBackup(snapshot, file_path=current_path)
+        return _WorkspaceReplaceBackup(snapshot, tree=self._manager._to_datatree())
 
     def _restore_workspace_state_snapshot(
         self, snapshot: _WorkspaceStateSnapshot
@@ -1689,8 +1746,7 @@ class _WorkspaceIOController:
             if not mark_dirty
             else contextlib.nullcontext()
         )
-        backup_tree: xr.DataTree | None = None
-        backup_snapshot: _WorkspaceStateSnapshot | None = None
+        backup: _WorkspaceReplaceBackup | None = None
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(self._manager, "Loading workspace..."),
@@ -1698,8 +1754,7 @@ class _WorkspaceIOController:
             try:
                 if replace:
                     with profiler.stage("rollback backup"):
-                        backup_snapshot = self._manager._workspace_state_snapshot()
-                        backup_tree = self._manager._to_datatree()
+                        backup = self._workspace_replace_backup_for_load(fname)
                     with profiler.stage("ui catch-up"):
                         self._manager.remove_all_tools()
                         self._manager._drain_workspace_restore_events()
@@ -1729,17 +1784,15 @@ class _WorkspaceIOController:
                     with profiler.stage("ui catch-up"):
                         self._manager._drain_workspace_restore_events()
             except Exception:
-                if backup_tree is not None and backup_snapshot is not None:
+                if backup is not None:
                     try:
-                        self._manager._restore_replaced_workspace(
-                            backup_tree, backup_snapshot
-                        )
+                        self._restore_replaced_workspace_backup(backup)
                     except Exception:
                         logger.exception("Failed to restore previous workspace")
                 raise
             finally:
-                if backup_tree is not None:
-                    backup_tree.close()
+                if backup is not None:
+                    backup.close()
                 profiler.log_summary()
         return True
 
@@ -1757,6 +1810,47 @@ class _WorkspaceIOController:
             self._manager._load_workspace_figures(backup_tree)
             self._manager._drain_workspace_restore_events()
         self._manager._restore_workspace_state_snapshot(snapshot)
+
+    def _restore_replaced_workspace_file(
+        self, path: pathlib.Path, snapshot: _WorkspaceStateSnapshot
+    ) -> None:
+        with self._manager._workspace_load_context():
+            self._manager.remove_all_tools()
+            self._manager._drain_workspace_restore_events()
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(path)
+            schema_version, _delta_save_count, manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+            )
+            if (
+                schema_version == _manager_workspace._current_workspace_schema_version()
+                and manifest is not None
+            ):
+                self._manager._from_h5py_workspace_file(
+                    path,
+                    manifest,
+                    replace=False,
+                    mark_dirty=False,
+                )
+            else:
+                tree = _manager_xarray.open_workspace_datatree(path, chunks=None)
+                self._manager._from_datatree(
+                    tree,
+                    replace=False,
+                    mark_dirty=False,
+                    select=False,
+                    workspace_file_path=path,
+                )
+            self._manager._drain_workspace_restore_events()
+        self._manager._restore_workspace_state_snapshot(snapshot)
+
+    def _restore_replaced_workspace_backup(
+        self, backup: _WorkspaceReplaceBackup
+    ) -> None:
+        if backup.tree is not None:
+            self._manager._restore_replaced_workspace(backup.tree, backup.snapshot)
+            return
+        if backup.file_path is not None:
+            self._restore_replaced_workspace_file(backup.file_path, backup.snapshot)
 
     def _from_datatree(
         self,
@@ -1823,8 +1917,7 @@ class _WorkspaceIOController:
                 if not mark_dirty
                 else contextlib.nullcontext()
             )
-            backup_tree: xr.DataTree | None = None
-            backup_snapshot: _WorkspaceStateSnapshot | None = None
+            backup: _WorkspaceReplaceBackup | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
             with (
                 maybe_guard,
@@ -1835,8 +1928,9 @@ class _WorkspaceIOController:
                 try:
                     if replace:
                         with profiler.stage("rollback backup"):
-                            backup_snapshot = self._manager._workspace_state_snapshot()
-                            backup_tree = self._manager._to_datatree()
+                            backup = self._workspace_replace_backup_for_load(
+                                workspace_file_path
+                            )
                         with profiler.stage("ui catch-up"):
                             self._manager.remove_all_tools()
                             self._manager._drain_workspace_restore_events()
@@ -1879,17 +1973,15 @@ class _WorkspaceIOController:
                         with profiler.stage("ui catch-up"):
                             self._manager._drain_workspace_restore_events()
                 except Exception:
-                    if backup_tree is not None and backup_snapshot is not None:
+                    if backup is not None:
                         try:
-                            self._manager._restore_replaced_workspace(
-                                backup_tree, backup_snapshot
-                            )
+                            self._restore_replaced_workspace_backup(backup)
                         except Exception:
                             logger.exception("Failed to restore previous workspace")
                     raise
                 finally:
-                    if backup_tree is not None:
-                        backup_tree.close()
+                    if backup is not None:
+                        backup.close()
             return True
         finally:
             tree.close()

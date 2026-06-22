@@ -10026,7 +10026,11 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
 
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
@@ -10057,6 +10061,113 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
         assert manager.ntools == 1
         xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
         assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        current_fname = tmp_path / "current-clean.itws"
+        manager._save_workspace_document(current_fname, force_full=True)
+        manager._adopt_workspace_path(current_fname)
+        manager._mark_workspace_clean()
+
+        def _fail_to_datatree(*_args, **_kwargs):
+            raise AssertionError("clean associated replace load should use file backup")
+
+        monkeypatch.setattr(manager, "_to_datatree", _fail_to_datatree)
+
+        broken_fname = tmp_path / "broken-clean.itws"
+        with h5py.File(broken_fname, "w") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 4
+            h5_file.create_group("0")
+
+        with pytest.raises(ValueError, match="No workspace windows"):
+            manager._load_workspace_file(
+                broken_fname,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+
+        assert manager.workspace_path == str(current_fname.resolve())
+        assert manager.ntools == 1
+        xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
+        assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        current_fname = tmp_path / "current-dirty.itws"
+        manager._save_workspace_document(current_fname, force_full=True)
+        manager._adopt_workspace_path(current_fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_state_dirty(uid)
+        assert manager.is_workspace_modified
+
+        to_datatree_calls = 0
+        original_to_datatree = manager._to_datatree
+
+        def _record_to_datatree(*args, **kwargs):
+            nonlocal to_datatree_calls
+            to_datatree_calls += 1
+            return original_to_datatree(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "_to_datatree", _record_to_datatree)
+
+        broken_fname = tmp_path / "broken-dirty.itws"
+        with h5py.File(broken_fname, "w") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 4
+            h5_file.create_group("0")
+
+        with pytest.raises(ValueError, match="No workspace windows"):
+            manager._load_workspace_file(
+                broken_fname,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+
+        assert to_datatree_calls == 1
+        assert manager.workspace_path == str(current_fname.resolve())
+        assert manager.ntools == 1
+        xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
+        assert manager.is_workspace_modified
 
 
 def test_manager_workspace_load_visible_windows_stays_clean_after_events(
