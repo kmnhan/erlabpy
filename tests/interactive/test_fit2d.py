@@ -1212,6 +1212,50 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     assert win_restored.current_provenance_spec() is not None
 
 
+def test_fit2d_irregular_current_slice_disables_unsafe_segments(
+    qtbot, monkeypatch
+) -> None:
+    sample_temp = np.array([0.0, 1.0, 2.7, 4.1, 7.6, 8.2], dtype=float)
+    alpha = np.array([0.0, 1.0])
+    data = np.vstack(
+        [
+            np.exp(-((sample_temp - 3.0) ** 2) / 5.0),
+            np.exp(-((sample_temp - 4.0) ** 2) / 5.0),
+        ]
+    )
+    darr = xr.DataArray(
+        data,
+        dims=("alpha", "sample_temp"),
+        coords={"alpha": alpha, "sample_temp": sample_temp},
+        name="cut",
+    )
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        npeaks=1,
+        peak_shapes="lorentzian",
+        convolve=True,
+        segmented=True,
+        oversample=3,
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        Fit2DTool,
+        "_show_error",
+        lambda _self, title, text: errors.append((title, text)),
+    )
+
+    win = erlab.interactive.ftool(darr, model=model, execute=False)
+    qtbot.addWidget(win)
+
+    assert isinstance(win, Fit2DTool)
+    assert win._data.dims == ("sample_temp",)
+    assert win._model.func.convolve
+    assert not win._model.func.segmented
+    win._update_fit_curve()
+    assert errors == []
+    assert win._last_residual is not None
+    assert win._last_residual.shape == sample_temp.shape
+
+
 def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     qtbot, exp_decay_model
 ) -> None:

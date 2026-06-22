@@ -822,6 +822,80 @@ def test_fit1d_nonuniform_convolved_preview_opens_without_error(
     assert win._last_fit_y is not None
 
 
+def test_fit1d_irregular_convolved_model_disables_unsafe_segments(
+    qtbot, monkeypatch
+) -> None:
+    x = np.array([0.0, 1.0, 2.7, 4.1, 7.6, 8.2], dtype=float)
+    data = np.exp(-((x - 4.0) ** 2) / 5.0)
+    darr = xr.DataArray(data, dims=("sample_temp",), coords={"sample_temp": x})
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        npeaks=1,
+        peak_shapes="lorentzian",
+        convolve=True,
+        segmented=True,
+        oversample=3,
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        fit1d.Fit1DTool,
+        "_show_error",
+        lambda _self, title, text: errors.append((title, text)),
+    )
+
+    win = erlab.interactive.ftool(darr, model=model, execute=False)
+    qtbot.addWidget(win)
+
+    assert win._model.func.convolve
+    assert not win._model.func.segmented
+    assert not win._auto_segmented(convolve=True)
+    win._update_fit_curve()
+    assert errors == []
+    assert win._last_residual is not None
+    assert win._last_residual.shape == data.shape
+
+
+def test_fit1d_restore_irregular_segmented_model_does_not_crash(
+    qtbot, monkeypatch
+) -> None:
+    x = np.array([0.0, 1.0, 2.7, 4.1, 7.6, 8.2], dtype=float)
+    data = np.exp(-((x - 4.0) ** 2) / 5.0)
+    darr = xr.DataArray(data, dims=("sample_temp",), coords={"sample_temp": x})
+    saved_model = erlab.analysis.fit.models.MultiPeakModel(
+        npeaks=1,
+        peak_shapes="lorentzian",
+        convolve=True,
+        segmented=True,
+        oversample=3,
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        fit1d.Fit1DTool,
+        "_show_error",
+        lambda _self, title, text: errors.append((title, text)),
+    )
+    win = erlab.interactive.ftool(darr, execute=False)
+    qtbot.addWidget(win)
+
+    status = win.tool_status.model_copy(
+        update={
+            "model_state": (
+                f"{saved_model.__class__.__module__}:"
+                f"{saved_model.__class__.__qualname__}",
+                saved_model.dumps(),
+            ),
+            "params": win._serialize_params(saved_model.make_params()),
+        }
+    )
+    win.tool_status = status
+
+    assert win._model.func.convolve
+    assert not win._model.func.segmented
+    win._update_fit_curve()
+    assert errors == []
+    assert win._last_residual is not None
+    assert win._last_residual.shape == data.shape
+
+
 def test_fit1d_multiple_fits_and_save(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     data = xr.DataArray(

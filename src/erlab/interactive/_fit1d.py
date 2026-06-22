@@ -968,6 +968,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._model: lmfit.Model = self._make_default_model()
         else:
             self._model = model
+        self._sanitize_model_convolution_for_x()
 
         self._model_load_path: str | None = None
         if data_name is None:
@@ -1858,6 +1859,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         prev_model = self._model
         prev_widths = dict(self._slider_widths)
         self._model = model
+        self._sanitize_model_convolution_for_x()
         self._model_load_path = model_load_path
 
         if reset_params_from_coord:
@@ -1976,6 +1978,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 # Saved params are authoritative during restore; generating model
                 # defaults here can evaluate incomplete deserialized model state.
                 self._model = model
+                self._sanitize_model_convolution_for_x()
                 self._model_load_path = status.model_load_path
                 self._params = restored_params
                 self._initial_params = self._params.copy()
@@ -2233,6 +2236,21 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return str(self._model.independent_vars[0])
         return str(self._coord_name)
 
+    def _model_eval_values(self, xvals: np.ndarray) -> np.ndarray:
+        indep_var_kwargs = {self._independent_var(): xvals}
+        if "y" in self._model.independent_vars:
+            indep_var_kwargs["y"] = self._normalized_data_values()
+        values = np.asarray(
+            self._model.eval(params=self._params, **indep_var_kwargs),
+            dtype=float,
+        )
+        if values.shape != xvals.shape:
+            raise ValueError(
+                "Model evaluation returned "
+                f"{values.size} values for {xvals.size} x values"
+            )
+        return values
+
     def _update_fit_curve(self) -> None:
         xvals = self._x_values()
         if self._has_non_finite_params():
@@ -2251,22 +2269,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if "y" in self._model.independent_vars:
             x_fine = xvals
         try:
-            indep_var_kwargs = {self._independent_var(): x_fine}
-            if "y" in self._model.independent_vars:
-                indep_var_kwargs["y"] = self._normalized_data_values()
-            y_fine = self._model.eval(params=self._params, **indep_var_kwargs)
+            y_fine = self._model_eval_values(x_fine)
         except Exception:  # pragma: no cover - GUI feedback
             self._show_error("Evaluation failed", "Failed to evaluate model.")
             return
         self.fit_curve.setData(x_fine, y_fine)
-        residuals = self._residuals_from_result(xvals)
-        brushes = self._domain_brushes(xvals)
-        if brushes is None:
-            self.residual_curve.setData(xvals, residuals)
+        try:
+            residuals = self._residuals_from_result(xvals)
+        except Exception:
+            logger.warning("Failed to evaluate fit residuals", exc_info=True)
+            self.residual_curve.setData([], [])
+            self._last_residual = None
         else:
-            self.residual_curve.setData(xvals, residuals, symbolBrush=brushes)
+            brushes = self._domain_brushes(xvals)
+            if brushes is None:
+                self.residual_curve.setData(xvals, residuals)
+            else:
+                self.residual_curve.setData(xvals, residuals, symbolBrush=brushes)
+            self._last_residual = residuals
         self._last_fit_y = y_fine
-        self._last_residual = residuals
         self._update_component_curves(x_fine)
         self._update_peak_lines(xvals)
 
@@ -2485,7 +2506,33 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if xvals.size < 3:
             return False
         diffs = np.diff(xvals)
-        return not np.allclose(diffs, diffs[0])
+        return not np.allclose(
+            diffs, diffs[0]
+        ) and self._x_values_support_segmented_convolution(xvals)
+
+    @staticmethod
+    def _x_values_support_segmented_convolution(xvals: np.ndarray) -> bool:
+        if xvals.size < 3 or not np.all(np.isfinite(xvals)):
+            return False
+        from erlab.utils._array_jit import _split_uniform_segments
+
+        try:
+            segments = _split_uniform_segments(
+                np.ascontiguousarray(xvals, dtype=np.float64)
+            )
+        except Exception:
+            return False
+        return sum(segment.size for segment in segments) == xvals.size
+
+    def _sanitize_model_convolution_for_x(self) -> None:
+        func = getattr(self._model, "func", None)
+        if (
+            isinstance(func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction)
+            and func.convolve
+            and func.segmented
+            and not self._x_values_support_segmented_convolution(self._x_values())
+        ):
+            func.segmented = False
 
     def _update_component_curves(self, xvals: np.ndarray) -> None:
         if (
@@ -2573,6 +2620,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             line.refresh_pos()
 
     def _residuals_from_result(self, xvals: np.ndarray) -> np.ndarray:
+        data_values = self._normalized_data_values()
         if (
             self._fit_is_current
             and self._last_result_ds is not None
@@ -2582,13 +2630,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             best_fit = getattr(
                 self._last_result_ds.modelfit_results.compute().item(), "best_fit", None
             )
-            if best_fit is not None and best_fit.size == self._data.size:
-                return self._normalized_data_values() - best_fit
-        indep_var_kwargs = {self._independent_var(): xvals}
-        if "y" in self._model.independent_vars:
-            indep_var_kwargs["y"] = self._normalized_data_values()
-        yvals = self._model.eval(params=self._params, **indep_var_kwargs)
-        return self._normalized_data_values() - yvals
+            if best_fit is not None and np.shape(best_fit) == data_values.shape:
+                return data_values - best_fit
+        yvals = self._model_eval_values(xvals)
+        return data_values - yvals
 
     @staticmethod
     def _params_match_result(ds: xr.Dataset, params: lmfit.Parameters) -> bool:
