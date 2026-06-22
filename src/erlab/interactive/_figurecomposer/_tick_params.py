@@ -85,22 +85,18 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             self,
         )
         self.axis_control.setObjectName(f"{object_prefix}AxisCombo")
-        self.axis_control.setToolTip("Axis whose ticks should be changed.")
         self.which_control = _ChoiceComboBox(
             (("Major", "major"), ("Minor", "minor"), ("Both", "both")),
             self,
         )
         self.which_control.setObjectName(f"{object_prefix}WhichCombo")
-        self.which_control.setToolTip("Tick set to update.")
         self.direction_control = _ChoiceComboBox(
             (("Default", None), ("in", "in"), ("out", "out"), ("inout", "inout")),
             self,
         )
         self.direction_control.setObjectName(f"{object_prefix}DirectionCombo")
-        self.direction_control.setToolTip("Direction tick marks point.")
         self.reset_button = _TriStateCheckBox("Reset", self, show_text=True)
         self.reset_button.setObjectName(f"{object_prefix}ResetCombo")
-        self.reset_button.setToolTip("Reset ticks to defaults before applying changes.")
 
         self.side_buttons: dict[str, _TriStateCheckBox] = {}
         for _label, tick_key, label_key in _SIDE_ROWS:
@@ -145,9 +141,14 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         configure_style_combo(self.grid_style_combo, LINE_STYLE_OPTIONS, None)
         self.grid_style_combo.setMaximumWidth(120)
 
+        self._configure_tooltips()
         self._build_layout()
         self._connect_controls()
         self.set_tick_params(tick_params or {})
+
+    def setToolTip(self, _text: str | None) -> None:
+        """Keep generic form-row tooltips off the compound widget itself."""
+        super().setToolTip("")
 
     def tick_params(self) -> dict[str, typing.Any]:
         """Return explicit controlled keyword arguments."""
@@ -215,6 +216,51 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             self.advanced_disclosure.setExpanded("zorder" in self._kwargs)
         finally:
             self._updating = False
+
+    def _configure_tooltips(self) -> None:
+        self.axis_control.setToolTip("Choose x ticks, y ticks, or both.")
+        self.which_control.setToolTip("Choose major ticks, minor ticks, or both.")
+        self.direction_control.setToolTip(
+            "Choose the direction tick marks point.\n"
+            "Default leaves tick direction unchanged."
+        )
+        self.reset_button.setToolTip(
+            "Auto leaves reset unspecified.\n"
+            "On resets ticks before applying these changes.\n"
+            "Off passes reset=False."
+        )
+        side_tooltips = {
+            "bottom": "Bottom tick marks.",
+            "top": "Top tick marks.",
+            "left": "Left tick marks.",
+            "right": "Right tick marks.",
+            "labelbottom": "Bottom tick labels.",
+            "labeltop": "Top tick labels.",
+            "labelleft": "Left tick labels.",
+            "labelright": "Right tick labels.",
+        }
+        for key, button in self.side_buttons.items():
+            button.setToolTip(
+                f"{side_tooltips[key]}\n"
+                "Auto leaves this setting unchanged.\n"
+                "Checked passes True; unchecked passes False."
+            )
+        self.length_edit.setToolTip("Tick mark length in points.")
+        self.width_edit.setToolTip("Tick mark width in points.")
+        self.pad_edit.setToolTip("Distance between tick marks and labels in points.")
+        self.label_rotation_edit.setToolTip("Tick label rotation in degrees.")
+        self.label_size_edit.setToolTip(
+            "Tick label font size, such as 8, 'small', or 'large'."
+        )
+        self.label_font_edit.setToolTip("Tick label font family.")
+        self.colors_edit.setToolTip("Color applied to both tick marks and labels.")
+        self.tick_color_edit.setToolTip("Tick mark color.")
+        self.label_color_edit.setToolTip("Tick label color.")
+        self.zorder_edit.setToolTip("Drawing order for ticks and labels.")
+        self.grid_color_edit.setToolTip("Grid line color for the selected ticks.")
+        self.grid_alpha_edit.setToolTip("Grid line opacity between 0 and 1.")
+        self.grid_width_edit.setToolTip("Grid line width.")
+        self.grid_style_combo.setToolTip("Grid line style.")
 
     def _build_layout(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
@@ -304,6 +350,7 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             grid_layout.setColumnStretch(column, 1)
         self.grid_disclosure = _DisclosureWidget("Grid", grid_content, self)
         self.grid_disclosure.setObjectName(f"{self._object_prefix}GridDisclosure")
+        self.grid_disclosure.setToolTip("Show grid-line tick parameter controls.")
         self.grid_disclosure.setExpanded(
             any(key.startswith("grid_") for key in self._kwargs)
         )
@@ -319,6 +366,7 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.advanced_disclosure.setObjectName(
             f"{self._object_prefix}AdvancedDisclosure"
         )
+        self.advanced_disclosure.setToolTip("Show less common tick parameter controls.")
         self.advanced_disclosure.setExpanded("zorder" in self._kwargs)
         layout.addWidget(self.advanced_disclosure)
 
@@ -499,6 +547,7 @@ class _TriStateCheckBox(QtWidgets.QCheckBox):
         self._value: bool | None = None
         self._label = label
         self._show_text = show_text
+        self._base_tooltip = ""
         self.setTristate(True)
         self.stateChanged.connect(self._state_changed)
         self.set_value(None)
@@ -519,7 +568,11 @@ class _TriStateCheckBox(QtWidgets.QCheckBox):
             self.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
         if self._show_text:
             self.setText(_tri_state_text(value))
-        self.setToolTip(f"{self._label}: {_tri_state_text(value)}")
+        self._update_tooltip()
+
+    def setToolTip(self, text: str | None) -> None:
+        self._base_tooltip = "" if text is None else text
+        self._update_tooltip()
 
     def _state_changed(self, state: int) -> None:
         match QtCore.Qt.CheckState(state):
@@ -531,6 +584,13 @@ class _TriStateCheckBox(QtWidgets.QCheckBox):
                 value = None
         self.set_value(value)
         self.valueChanged.emit(value)
+
+    def _update_tooltip(self) -> None:
+        current = f"Current: {_tri_state_text(self._value)}."
+        if self._base_tooltip:
+            super().setToolTip(f"{self._base_tooltip}\n{current}")
+        else:
+            super().setToolTip(f"{self._label}: {current}")
 
 
 class _DisclosureWidget(QtWidgets.QWidget):
@@ -564,6 +624,10 @@ class _DisclosureWidget(QtWidgets.QWidget):
             else QtCore.Qt.ArrowType.RightArrow
         )
         self._content.setVisible(expanded)
+
+    def setToolTip(self, text: str | None) -> None:
+        super().setToolTip(text)
+        self._button.setToolTip(text)
 
 
 def _line_edit(object_name: str, parent: QtWidgets.QWidget) -> QtWidgets.QLineEdit:

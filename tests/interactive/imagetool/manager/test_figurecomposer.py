@@ -14260,6 +14260,42 @@ def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
     )
     assert editor is not None
     assert editor.tick_params() == {}
+    editor.setToolTip("generic tick params tooltip")
+    assert editor.toolTip() == ""
+    axis_control = editor.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsAxisCombo"
+    )
+    reset_control = editor.findChild(
+        QtWidgets.QCheckBox, "figureComposerAxesMethodTickParamsResetCombo"
+    )
+    bottom_control = editor.findChild(
+        QtWidgets.QCheckBox, "figureComposerAxesMethodTickParamsBottomCombo"
+    )
+    length_edit = editor.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"
+    )
+    colors_edit = editor.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
+    )
+    grid_disclosure = editor.findChild(
+        QtWidgets.QWidget, "figureComposerAxesMethodTickParamsGridDisclosure"
+    )
+    assert axis_control is not None
+    assert reset_control is not None
+    assert bottom_control is not None
+    assert length_edit is not None
+    assert colors_edit is not None
+    assert grid_disclosure is not None
+    tick_tooltips = (
+        axis_control.toolTip(),
+        reset_control.toolTip(),
+        bottom_control.toolTip(),
+        length_edit.toolTip(),
+        colors_edit.toolTip(),
+        grid_disclosure.toolTip(),
+    )
+    assert all(tick_tooltips)
+    assert len(set(tick_tooltips)) == len(tick_tooltips)
     assert tool.tool_status.operations[0].method_kwargs == {}
 
     _click_tick_params_segment(
