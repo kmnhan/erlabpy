@@ -693,6 +693,14 @@ class ImageToolManager(_ImageToolManagerBase):
             self._read_figure_gallery_size_setting()
         )
         self._updating_figure_view_controls = False
+        self._workspace_ui_refresh_defer_depth = 0
+        self._deferred_workspace_figures_refresh = False
+        self._deferred_workspace_figure_select_uid: str | None = None
+        self._deferred_workspace_info_uids: set[str | None] = set()
+        self._deferred_workspace_dependency_uids: set[str] = set()
+        self._deferred_workspace_source_controls_refresh = False
+        self._deferred_workspace_gallery_icon_uids: set[str] = set()
+        self._deferred_workspace_actions_refresh = False
 
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
@@ -1975,6 +1983,12 @@ class ImageToolManager(_ImageToolManagerBase):
         return f"{base_name} {suffix}"
 
     def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_figures_refresh = True
+            if select_uid is not None:
+                self._deferred_workspace_figure_select_uid = select_uid
+            return
+
         figure_uids = self._figure_uids()
         selected_uids = (
             {select_uid}
@@ -2017,6 +2031,9 @@ class ImageToolManager(_ImageToolManagerBase):
         return None
 
     def _update_figure_gallery_icon(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_gallery_icon_uids.add(uid)
+            return
         if (
             not erlab.interactive.utils.qt_is_valid(self)
             or not hasattr(self, "figure_list")
@@ -2035,6 +2052,9 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.figure_list.blockSignals(False)
 
     def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_gallery_icon_uids.add(uid)
+            return
         self._queue_idle_work(
             ("figure-gallery-icon", uid),
             lambda uid=uid: self._update_figure_gallery_icon(uid),
@@ -2514,6 +2534,10 @@ class ImageToolManager(_ImageToolManagerBase):
         return refreshed
 
     def _refresh_figure_source_controls(self) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_source_controls_refresh = True
+            return
+
         from erlab.interactive._figurecomposer import FigureComposerTool
 
         for figure_uid in self._figure_uids():
@@ -3089,6 +3113,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._commit_note_editor()
 
     def _update_info(self, *, uid: str | None = None) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_info_uids.add(uid)
+            return
         self._details_panel._update_info(uid=uid)
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
@@ -3128,6 +3155,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self._interaction_gate.flush(key_prefix=key_prefix, force=force)
 
     def _update_actions(self) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_actions_refresh = True
+            return
         self._details_panel._update_actions()
 
     def about(self) -> None:
@@ -3534,9 +3564,14 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         replace: bool,
         mark_dirty: bool,
+        profiler: typing.Any | None = None,
     ) -> bool:
         return self._workspace_controller._from_h5py_workspace_file(
-            fname, manifest, replace=replace, mark_dirty=mark_dirty
+            fname,
+            manifest,
+            replace=replace,
+            mark_dirty=mark_dirty,
+            profiler=profiler,
         )
 
     def _restore_replaced_workspace(
@@ -3552,6 +3587,7 @@ class ImageToolManager(_ImageToolManagerBase):
         mark_dirty: bool = True,
         select: bool = True,
         workspace_file_path: str | os.PathLike[str] | None = None,
+        profiler: typing.Any | None = None,
     ) -> bool:
         return self._workspace_controller._from_datatree(
             tree,
@@ -3559,6 +3595,7 @@ class ImageToolManager(_ImageToolManagerBase):
             mark_dirty=mark_dirty,
             select=select,
             workspace_file_path=workspace_file_path,
+            profiler=profiler,
         )
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
@@ -3890,7 +3927,57 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._lineage_controller._dependency_dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_dependency_uids.add(uid)
+            return
         self._lineage_controller._refresh_dependency_dependents(uid)
+
+    @contextlib.contextmanager
+    def _workspace_ui_refresh_context(self) -> Iterator[None]:
+        self._workspace_ui_refresh_defer_depth += 1
+        try:
+            yield
+        finally:
+            self._workspace_ui_refresh_defer_depth -= 1
+            if self._workspace_ui_refresh_defer_depth == 0:
+                active_exception = sys.exc_info()[0] is not None
+                try:
+                    self._flush_deferred_workspace_ui_refreshes()
+                except Exception:
+                    if not active_exception:
+                        raise
+                    logger.exception("Failed to flush deferred workspace UI refreshes")
+
+    def _flush_deferred_workspace_ui_refreshes(self) -> None:
+        figure_refresh = self._deferred_workspace_figures_refresh
+        figure_select_uid = self._deferred_workspace_figure_select_uid
+        info_uids = set(self._deferred_workspace_info_uids)
+        dependency_uids = sorted(self._deferred_workspace_dependency_uids)
+        source_controls = self._deferred_workspace_source_controls_refresh
+        gallery_icon_uids = sorted(self._deferred_workspace_gallery_icon_uids)
+        actions_refresh = self._deferred_workspace_actions_refresh
+
+        self._deferred_workspace_figures_refresh = False
+        self._deferred_workspace_figure_select_uid = None
+        self._deferred_workspace_info_uids.clear()
+        self._deferred_workspace_dependency_uids.clear()
+        self._deferred_workspace_source_controls_refresh = False
+        self._deferred_workspace_gallery_icon_uids.clear()
+        self._deferred_workspace_actions_refresh = False
+
+        if figure_refresh:
+            self._sync_figures_ui(select_uid=figure_select_uid)
+        for uid in dependency_uids:
+            self._refresh_dependency_dependents(uid)
+        if source_controls:
+            self._refresh_figure_source_controls()
+        for uid in gallery_icon_uids:
+            self._update_figure_gallery_icon(uid)
+        if actions_refresh:
+            self._update_actions()
+        if info_uids:
+            uid = next(iter(info_uids)) if len(info_uids) == 1 else None
+            self._update_info(uid=uid)
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode

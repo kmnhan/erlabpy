@@ -8253,6 +8253,88 @@ def test_manager_workspace_dirty_markers_are_node_scoped(
         assert "Data modified:" not in details
 
 
+def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[tuple[str, object]] = []
+
+        monkeypatch.setattr(manager, "_figure_uids", list)
+        monkeypatch.setattr(
+            manager,
+            "_set_figures_tab_available",
+            lambda available: calls.append(("figures", available)),
+        )
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_update_info",
+            lambda *, uid=None: calls.append(("info", uid)),
+        )
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_update_actions",
+            lambda: calls.append(("actions", None)),
+        )
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_refresh_dependency_dependents",
+            lambda uid: calls.append(("dependency", uid)),
+        )
+        update_figure_gallery_icon = manager._update_figure_gallery_icon
+
+        def _update_figure_gallery_icon(uid: str) -> None:
+            if manager._workspace_ui_refresh_defer_depth > 0:
+                update_figure_gallery_icon(uid)
+                return
+            calls.append(("gallery", uid))
+
+        monkeypatch.setattr(
+            manager,
+            "_update_figure_gallery_icon",
+            _update_figure_gallery_icon,
+        )
+        refresh_figure_source_controls = manager._refresh_figure_source_controls
+
+        def _refresh_figure_source_controls() -> None:
+            if manager._workspace_ui_refresh_defer_depth > 0:
+                refresh_figure_source_controls()
+                return
+            calls.append(("source_controls", None))
+
+        monkeypatch.setattr(
+            manager,
+            "_refresh_figure_source_controls",
+            _refresh_figure_source_controls,
+        )
+
+        with manager._workspace_load_context():
+            manager._sync_figures_ui(select_uid="figure")
+            manager._update_info(uid="figure")
+            manager._update_info(uid="figure")
+            manager._update_actions()
+            manager._update_actions()
+            manager._refresh_dependency_dependents("source")
+            manager._refresh_dependency_dependents("source")
+            manager._update_figure_gallery_icon("figure")
+            manager._schedule_figure_gallery_icon_update("figure")
+            manager._schedule_figure_gallery_icon_update("figure")
+            manager._refresh_figure_source_controls()
+            manager._refresh_figure_source_controls()
+            assert calls == []
+
+        assert calls == [
+            ("figures", False),
+            ("dependency", "source"),
+            ("source_controls", None),
+            ("gallery", "figure"),
+            ("actions", None),
+            ("info", "figure"),
+        ]
+
+
 def test_manager_workspace_save_clears_deferred_dirty_events(
     qtbot,
     monkeypatch,
