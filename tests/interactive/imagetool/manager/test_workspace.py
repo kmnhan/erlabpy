@@ -2504,6 +2504,65 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
         assert child_uids[1] not in manager._tool_graph.nodes
 
 
+def test_manager_workspace_load_selection_skips_unchecked_figures(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _SelectedChooseDialog(
+        erlab.interactive.imagetool.manager._workspace_io._ChooseFromDataTreeDialog
+    ):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            root = self._tree_widget.invisibleRootItem()
+            assert root is not None
+            for index in range(root.childCount()):
+                item = root.child(index)
+                if (
+                    item is not None
+                    and item.data(0, QtCore.Qt.ItemDataRole.UserRole) == figure_path
+                ):
+                    item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+                    break
+            else:
+                pytest.fail("figure entry was not shown in the workspace load dialog")
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._workspace_io,
+        "_ChooseFromDataTreeDialog",
+        _SelectedChooseDialog,
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+        figure_uid = manager.add_figuretool(
+            _WorkspaceSweepFigureTool(data + 1), show=False
+        )
+        figure_path = f"figures/{figure_uid}"
+
+        tree = manager._to_datatree()
+        try:
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            manager._from_datatree(tree)
+        finally:
+            tree.close()
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert figure_uid not in manager._tool_graph.nodes
+
+
 def test_manager_workspace_load_migrates_legacy_manual_title_to_data_name(
     qtbot,
     tmp_path: pathlib.Path,
@@ -5763,7 +5822,8 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
         {
             "0/imagetool": xr.Dataset(
                 attrs={"itool_title": "Loaded"},
-            )
+            ),
+            "figures/figure/tool": xr.Dataset(attrs={"tool_title": "Figure 1"}),
         }
     )
     try:
@@ -5775,8 +5835,12 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
         )
         qtbot.addWidget(dialog)
 
-        assert dialog._tree_widget.topLevelItemCount() == 1
+        assert dialog._tree_widget.topLevelItemCount() == 2
         assert dialog._tree_widget.topLevelItem(0).text(0) == "7: Loaded"
+        figure_item = dialog._tree_widget.topLevelItem(1)
+        assert figure_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "figures/figure"
+        dialog._uncheck_children()
+        assert figure_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
     finally:
         tree.close()
 
@@ -5822,7 +5886,7 @@ def test_choose_from_workspace_manifest_dialog_selected_paths(qtbot) -> None:
     assert child_item is not None
     dialog._uncheck_children()
 
-    assert dialog.selected_paths() == {"0", "1", "figures/n17"}
+    assert dialog.selected_paths() == {"0", "1"}
 
 
 def test_manager_workspace_save_as_locked_target_does_not_write(

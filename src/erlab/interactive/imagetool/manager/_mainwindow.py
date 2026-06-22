@@ -3415,12 +3415,14 @@ class ImageToolManager(_ImageToolManagerBase):
         self,
         tree: xr.DataTree,
         *,
+        root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int:
         return self._workspace_controller._load_workspace_figures(
             tree,
+            root_item=root_item,
             manifest=manifest,
             workspace_file_path=workspace_file_path,
             loaded_targets_by_uid=loaded_targets_by_uid,

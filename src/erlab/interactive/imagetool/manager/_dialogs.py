@@ -1612,7 +1612,7 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
             for i in range(root.childCount()):
                 item = root.child(i)
                 if item is not None:  # pragma: no branch
-                    if not only_children:
+                    if not only_children or self._is_figure_item(item):
                         item.setCheckState(0, state)
                     self._set_child_check_state(item, state)
 
@@ -1625,6 +1625,11 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
                 continue
             child.setCheckState(0, state)
             self._set_child_check_state(child, state)
+
+    @staticmethod
+    def _is_figure_item(item: QtWidgets.QTreeWidgetItem) -> bool:
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        return isinstance(path, str) and path.startswith("figures/")
 
     def _node_payload(
         self, node: xarray.DataTree
@@ -1692,6 +1697,16 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
                 item = self._populate_tree_item(root, node, key=key, root_name=name)
                 self._tree_widget.addTopLevelItem(item)
                 n_items += 1
+            if not self._saving and "figures" in tree:
+                figures = typing.cast("xarray.DataTree", tree["figures"])
+                for figure_key, figure_node in figures.items():
+                    if isinstance(figure_node, xr.DataTree):
+                        item = self._populate_tree_item(
+                            root,
+                            figure_node,
+                            key=f"figures/{figure_key}",
+                        )
+                        self._tree_widget.addTopLevelItem(item)
             self._tree_widget.expandAll()
 
     def imagetool_selected(self, index: int) -> bool:
@@ -1847,7 +1862,7 @@ class _ChooseFromWorkspaceManifestDialog(QtWidgets.QDialog):
                     item = root.child(i)
                     if item is None:
                         continue
-                    if not only_children:
+                    if not only_children or self._is_figure_item(item):
                         item.setCheckState(0, state)
                     self._set_child_check_state(item, state)
             finally:
@@ -1862,6 +1877,11 @@ class _ChooseFromWorkspaceManifestDialog(QtWidgets.QDialog):
                 continue
             child.setCheckState(0, state)
             self._set_child_check_state(child, state)
+
+    @staticmethod
+    def _is_figure_item(item: QtWidgets.QTreeWidgetItem) -> bool:
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        return isinstance(path, str) and path.startswith("figures/")
 
     @staticmethod
     def _manifest_entries(

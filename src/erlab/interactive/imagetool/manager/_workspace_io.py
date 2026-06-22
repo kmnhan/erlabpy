@@ -1544,6 +1544,7 @@ class _WorkspaceIOController:
         self,
         tree: xr.DataTree,
         *,
+        root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
@@ -1570,12 +1571,20 @@ class _WorkspaceIOController:
         for figure_key in figure_keys:
             if figure_key not in figures:
                 continue
+            figure_path = f"figures/{figure_key}"
+            item = self._manager._tree_item_child_by_key(root_item, figure_path)
+            if (
+                item is not None
+                and item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+            ):
+                continue
             target = self._manager._load_workspace_node_or_warn(
                 typing.cast("xr.DataTree", figures[figure_key]),
                 parent_target=None,
+                selection_item=item,
                 manifest=manifest,
                 workspace_file_path=workspace_file_path,
-                node_path=f"figures/{figure_key}",
+                node_path=figure_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
             if target is not None:
@@ -1950,6 +1959,7 @@ class _WorkspaceIOController:
                         )
                         loaded_count += self._manager._load_workspace_figures(
                             tree,
+                            root_item=root_item,
                             manifest=manifest,
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
