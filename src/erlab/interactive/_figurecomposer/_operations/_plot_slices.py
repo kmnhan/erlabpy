@@ -29,10 +29,13 @@ from erlab.interactive._figurecomposer._labels import (
     update_current_line_label_text,
 )
 from erlab.interactive._figurecomposer._line_colormap import (
+    LINE_COLOR_CMAP_TRIM_MAX,
     colormap_code_lines,
     colors_from_values,
     effective_line_color_cmap,
+    effective_line_color_cmap_trim,
     effective_line_color_coord,
+    line_color_cmap_trim_control_value,
     line_colormap_active,
     numeric_context_field_names,
     values_from_contexts,
@@ -760,6 +763,7 @@ def _plot_slices_line_colormap_colors(
     return colors_from_values(
         _plot_slices_line_color_values(tool, operation),
         effective_line_color_cmap(operation),
+        trim=effective_line_color_cmap_trim(operation),
     )
 
 
@@ -918,7 +922,11 @@ def _plot_slices_line_color_code_lines(
             f"[float(slice_value) for _ in range({map_count}) "
             f"for slice_value in {slice_values_code}]"
         )
-    return colormap_code_lines(values_code, effective_line_color_cmap(operation))
+    return colormap_code_lines(
+        values_code,
+        effective_line_color_cmap(operation),
+        trim=effective_line_color_cmap_trim(operation),
+    )
 
 
 def _plot_slices_label_line_kw_comprehension_code(
@@ -2460,8 +2468,46 @@ def _add_plot_slices_coordinate_color_controls(
     cmap_layout.addWidget(cmap_combo, 1)
     cmap_layout.addWidget(reverse_check)
 
+    trim_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_cmap_trim
+    )
+    trim_row = QtWidgets.QWidget(page)
+    trim_layout = QtWidgets.QHBoxLayout(trim_row)
+    trim_layout.setContentsMargins(0, 0, 0, 0)
+    trim_layout.setSpacing(6)
+    trim_tooltip = (
+        "Skip this fraction at both ends of the colormap.\n"
+        "For example, 0.10 samples the middle 80%."
+    )
+    trim_label = QtWidgets.QLabel("Trim", trim_row)
+    trim_label.setToolTip(trim_tooltip)
+    trim_spin = QtWidgets.QDoubleSpinBox(trim_row)
+    trim_spin.setObjectName("figureComposerPlotSlicesLineColorCmapTrimSpin")
+    trim_spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
+    trim_spin.setDecimals(2)
+    trim_spin.setSingleStep(0.05)
+    trim_spin.setKeyboardTracking(False)
+    trim_spin.setValue(
+        0.0 if trim_mixed else line_color_cmap_trim_control_value(operation)
+    )
+    trim_spin.setToolTip(trim_tooltip)
+    if trim_spin.lineEdit() is not None:
+        trim_spin.lineEdit().setToolTip(trim_tooltip)
+    tool._connect_value_signal(
+        trim_spin,
+        trim_spin.valueChanged,
+        float,
+        lambda value: tool._update_current_operation(line_color_cmap_trim=value),
+    )
+    trim_layout.addWidget(trim_label)
+    trim_layout.addWidget(
+        tool._mixed_value_widget(trim_spin, mixed=trim_mixed, parent=page)
+    )
+    trim_layout.addStretch(1)
+
     layout.addWidget(coord_combo)
     layout.addWidget(cmap_row)
+    layout.addWidget(trim_row)
 
 
 def _update_current_plot_slices_line_color_cmap(

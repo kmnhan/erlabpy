@@ -558,14 +558,19 @@ def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
     )
 
 
-def _expected_line_colormap_colors(values: Sequence[float], cmap: str) -> np.ndarray:
+def _expected_line_colormap_colors(
+    values: Sequence[float], cmap: str, *, trim: float = 0.0
+) -> np.ndarray:
     vmin = min(values)
     vmax = max(values)
     if vmin == vmax:
         norm = mcolors.Normalize(vmin=vmin - 0.5, vmax=vmax + 0.5)
     else:
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    return plt.get_cmap(cmap)(norm(values))
+    normalized = norm(values)
+    if trim:
+        normalized = trim + (1.0 - 2.0 * trim) * normalized
+    return plt.get_cmap(cmap)(normalized)
 
 
 def test_figure_composer_plot_slices_source_selector_updates_sources(
@@ -17823,6 +17828,7 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
             "line_iter_dim": "eV",
             "line_color_mode": "coordinate",
             "line_color_cmap": "plasma",
+            "line_color_cmap_trim": 0.1,
             "line_colors": ("black",),
             "line_kw": {"color": "red", "linestyle": "--"},
         }
@@ -17837,7 +17843,7 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
     )
     qtbot.addWidget(tool)
 
-    expected_colors = _expected_line_colormap_colors(eV, "plasma")
+    expected_colors = _expected_line_colormap_colors(eV, "plasma", trim=0.1)
     assert figurecomposer_line_profile._available_line_color_coords(
         tool, operation
     ) == ["eV"]
@@ -17866,6 +17872,13 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
         )
         is not None
     )
+    trim_spin = style_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerLineColorCmapTrimSpin"
+    )
+    assert trim_spin is not None
+    assert trim_spin.value() == pytest.approx(0.1)
+    assert not trim_spin.keyboardTracking()
+    assert trim_spin.toolTip()
     assert (
         style_page.findChild(QtWidgets.QLineEdit, "figureComposerLineColorsEdit")
         is None
@@ -17874,7 +17887,8 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
     code = tool.generated_code()
     assert "import matplotlib.colors as mcolors" in code
     assert "line_color_values =" in code
-    assert "line_colors = plt.get_cmap('plasma')" in code
+    assert "line_colors = plt.get_cmap('plasma')(" in code
+    assert "0.1 + 0.8 * line_color_values_norm(line_color_values)" in code
     assert "black" not in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
@@ -17883,12 +17897,30 @@ def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
         np.asarray([mcolors.to_rgba(line.get_color()) for line in generated_lines]),
         expected_colors,
     )
+    trim_spin.setValue(0.2)
+    assert tool.tool_status.operations[0].line_color_cmap_trim == pytest.approx(0.2)
 
 
 def test_figure_composer_line_colormap_equal_values_use_midpoint() -> None:
-    colors = figurecomposer_line_colormap.colors_from_values((2.0, 2.0), "viridis")
+    colors = figurecomposer_line_colormap.colors_from_values(
+        (2.0, 2.0), "viridis", trim=0.2
+    )
     expected = plt.get_cmap("viridis")([0.5, 0.5])
     np.testing.assert_allclose(colors, expected)
+
+
+def test_figure_composer_line_colormap_rejects_invalid_trim() -> None:
+    with pytest.raises(ValueError, match="trim"):
+        figurecomposer_line_colormap.colors_from_values((1.0,), "viridis", trim=0.5)
+    with pytest.raises(ValueError, match="trim"):
+        figurecomposer_line_colormap.colormap_code_lines("[1.0]", "viridis", trim=-0.1)
+    operation = FigureOperationState.line(label="profiles", source="data").model_copy(
+        update={"line_color_cmap_trim": 0.5}
+    )
+    assert (
+        figurecomposer_line_colormap.line_color_cmap_trim_control_value(operation)
+        == 0.0
+    )
 
 
 def test_figure_composer_default_line_labels_use_property_labels() -> None:
@@ -17988,6 +18020,7 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
         update={
             "line_color_mode": "coordinate",
             "line_color_cmap": "viridis",
+            "line_color_cmap_trim": 0.15,
             "line_kw": {"color": "red", "linestyle": "--"},
             "line_label_text": r"$E-E_F = {eV:g}$ eV",
             "panel_styles_enabled": True,
@@ -18011,7 +18044,7 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     )
     qtbot.addWidget(tool)
 
-    expected_colors = _expected_line_colormap_colors(eV, "viridis")
+    expected_colors = _expected_line_colormap_colors(eV, "viridis", trim=0.15)
     assert figurecomposer_plot_slices._available_plot_slices_line_color_coords(
         tool, operation
     ) == ["eV"]
@@ -18055,6 +18088,13 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
         )
         is not None
     )
+    trim_spin = colors_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerPlotSlicesLineColorCmapTrimSpin"
+    )
+    assert trim_spin is not None
+    assert trim_spin.value() == pytest.approx(0.15)
+    assert not trim_spin.keyboardTracking()
+    assert trim_spin.toolTip()
     assert (
         colors_page.findChild(
             QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
@@ -18065,7 +18105,8 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     code = tool.generated_code()
     assert "import matplotlib.colors as mcolors" in code
     assert "line_color_values =" in code
-    assert "line_colors = plt.get_cmap('viridis')" in code
+    assert "line_colors = plt.get_cmap('viridis')(" in code
+    assert "0.15 + 0.7 * line_color_values_norm(line_color_values)" in code
     assert "red" not in code
     assert "black" not in code
     assert "line_colors[0]" in code
@@ -18078,6 +18119,8 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     )
     assert [line.get_linestyle() for line in generated_lines] == ["--", "--"]
     assert generated_lines[1].get_linewidth() == 2.5
+    trim_spin.setValue(0.2)
+    assert tool.tool_status.operations[0].line_color_cmap_trim == pytest.approx(0.2)
 
 
 def test_figure_composer_line_coordinate_colormap_rejects_bad_values(qtbot) -> None:
@@ -18108,10 +18151,9 @@ def test_figure_composer_line_coordinate_colormap_rejects_bad_values(qtbot) -> N
     )
     qtbot.addWidget(tool)
 
-    with pytest.raises(ValueError, match="finite numeric scalars"):
-        figurecomposer_rendering._render_into_figure(
-            tool, tool.figure, sync_visible=False
-        )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    render_error = tool._operation_render_errors[operation.operation_id]
+    assert "finite numeric scalars" in render_error
     with pytest.raises(ValueError, match="finite numeric scalars"):
         tool.generated_code()
 
