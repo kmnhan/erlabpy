@@ -1277,7 +1277,7 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
             self.updateGeometry()
             return
         self._pixmapitem.setPixmap(pixmap)
-        self.fitInView(self._pixmapitem)
+        self.fitInView(self._pixmapitem, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def setVisible(self, visible: bool) -> None:
         if visible and self._pixmapitem.pixmap().isNull():
@@ -1301,7 +1301,7 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)
-        self.fitInView(self._pixmapitem)
+        self.fitInView(self._pixmapitem, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
         # Disable scrolling by ignoring wheel events

@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import logging
+import math
 import pathlib
 import types
 import typing
@@ -547,6 +548,26 @@ def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     preview.setVisible(True)
 
     assert preview.isVisible()
+
+
+def test_single_image_preview_preserves_pixmap_aspect_ratio_on_resize(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+    pixmap = QtGui.QPixmap(160, 80)
+    pixmap.fill(QtGui.QColor("red"))
+
+    preview.resize(320, 80)
+    preview.setPixmap(pixmap)
+    preview.setVisible(True)
+    qtbot.waitExposed(preview)
+    first_transform = preview.transform()
+
+    preview.resize(120, 300)
+    qtbot.wait(0)
+    second_transform = preview.transform()
+
+    assert math.isclose(first_transform.m11(), first_transform.m22(), rel_tol=1e-6)
+    assert math.isclose(second_transform.m11(), second_transform.m22(), rel_tol=1e-6)
 
 
 def test_batch_action_transform_error_paths(
