@@ -88,12 +88,15 @@ from erlab.interactive._figurecomposer._rendering import (
     _render_preview,
     _rendered_output_figure,
 )
+from erlab.interactive._figurecomposer._source_inspector import (
+    SourceInspectorWidget,
+    source_metadata_tooltip,
+)
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
     _public_source_data,
     _source_display_label,
-    _source_display_tooltip,
     _source_duplicate_labels,
     _source_label,
     _source_name,
@@ -369,6 +372,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_callback: Callable[[str], bool] | None = None
         self._source_refresh_many_callback: Callable[[Sequence[str]], int] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
+        self._source_inspector_target: str | None = None
+        self._updating_source_selection = False
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
@@ -720,6 +725,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         self._update_source_status(current_operation[1] if current_operation else None)
+        self._refresh_source_inspector()
         if current_operation is not None and (
             current_operation[1].operation_id in changed_operation_ids
         ):
@@ -1206,10 +1212,27 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_section_keys: list[str] = []
         step_inspector_layout.addWidget(self.step_navigator)
 
-        self.step_editor_stack = QtWidgets.QStackedWidget(self.step_inspector)
+        self.step_detail_splitter = QtWidgets.QSplitter(
+            QtCore.Qt.Orientation.Horizontal, self.step_inspector
+        )
+        self.step_detail_splitter.setObjectName("figureComposerStepDetailSplitter")
+        self.step_detail_splitter.setChildrenCollapsible(False)
+        step_inspector_layout.addWidget(self.step_detail_splitter, 1)
+
+        self.step_editor_stack = QtWidgets.QStackedWidget(self.step_detail_splitter)
         self.step_editor_stack.setObjectName("figureComposerStepSectionStack")
-        step_inspector_layout.addWidget(self.step_editor_stack, 1)
+        self.step_detail_splitter.addWidget(self.step_editor_stack)
         self._operation_editor_pages: list[QtWidgets.QWidget] = []
+
+        self.source_inspector = SourceInspectorWidget(self.step_detail_splitter)
+        self.source_inspector.setMinimumWidth(260)
+        self.source_inspector.followSelectionChanged.connect(
+            self._source_inspector_follow_changed
+        )
+        self.step_detail_splitter.addWidget(self.source_inspector)
+        self.step_detail_splitter.setStretchFactor(0, 2)
+        self.step_detail_splitter.setStretchFactor(1, 1)
+        self.step_detail_splitter.setSizes((540, 300))
 
         self.step_sources_page = QtWidgets.QWidget(self.step_editor_stack)
         self.step_sources_page.setObjectName("figureComposerStepSourcesPage")
@@ -1257,7 +1280,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.setUniformRowHeights(True)
         self.source_list.setAlternatingRowColors(True)
         self.source_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.source_list.currentItemChanged.connect(
+            self._source_list_current_item_changed
         )
         self.source_list.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1851,6 +1877,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
         self._refresh_source_controls()
+        self._refresh_source_inspector()
 
     def _clear_source_list_widgets(self) -> None:
         for row in range(self.source_list.topLevelItemCount()):
@@ -1921,6 +1948,34 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             shape_label.setPalette(palette)
         item.setSizeHint(_SOURCE_LIST_SHAPE_COLUMN, shape_label.sizeHint())
         self.source_list.setItemWidget(item, _SOURCE_LIST_SHAPE_COLUMN, shape_label)
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, QtWidgets.QTreeWidgetItem)
+    def _source_list_current_item_changed(
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None,
+    ) -> None:
+        if (
+            self._updating_source_selection
+            or not self.source_inspector.follows_selection()
+        ):
+            return
+        source_name = self._source_name_from_list_item(current)
+        if source_name is None:
+            return
+        self._source_inspector_target = source_name
+        self._refresh_source_inspector()
+
+    @staticmethod
+    def _source_name_from_list_item(
+        item: QtWidgets.QTreeWidgetItem | None,
+    ) -> str | None:
+        if item is None:
+            return None
+        source_name = item.data(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
+        )
+        return source_name if isinstance(source_name, str) else None
 
     def _source_refresh_button(self, name: str) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.source_list)
@@ -2145,6 +2200,78 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
             )
             self._set_source_list_row_used(item, source_name in used_sources)
+        self._refresh_source_inspector()
+
+    @QtCore.Slot(bool)
+    def _source_inspector_follow_changed(self, checked: bool) -> None:
+        if checked:
+            self._source_inspector_target = self._default_source_inspector_target()
+            self._refresh_source_inspector()
+
+    def _default_source_inspector_target(self) -> str | None:
+        current = self._current_operation()
+        source_states = self._source_by_name()
+        if current is not None:
+            for source_name in self._selected_sources_for_operation(current[1]):
+                if source_name in self._source_data or source_name in source_states:
+                    return source_name
+        source_name = self._source_name_from_list_item(self.source_list.currentItem())
+        if source_name is not None:
+            return source_name
+        if self._recipe.primary_source in self._source_data:
+            return self._recipe.primary_source
+        if self._recipe.sources:
+            return self._recipe.sources[0].name
+        return next(iter(self._source_data), None)
+
+    def _refresh_source_inspector(self) -> None:
+        inspector = getattr(self, "source_inspector", None)
+        if not isinstance(inspector, SourceInspectorWidget):
+            return
+        source_states = self._source_by_name()
+        if inspector.follows_selection():
+            target = self._source_inspector_target
+            if target is None:
+                target = self._default_source_inspector_target()
+        else:
+            target = self._source_inspector_target
+        if (
+            target is not None
+            and target not in self._source_data
+            and target not in source_states
+        ):
+            target = self._default_source_inspector_target()
+        self._source_inspector_target = target
+        self._select_source_list_row_silent(target)
+        current = self._current_operation()
+        operation = None if current is None else current[1]
+        operation_sources = (
+            () if operation is None else self._selected_sources_for_operation(operation)
+        )
+        inspector.set_context(
+            source_name=target,
+            source_state=None if target is None else source_states.get(target),
+            data=None if target is None else self._source_data.get(target),
+            operation=operation,
+            operation_source_names=operation_sources,
+            source_data=self._source_data,
+            source_states=source_states,
+        )
+
+    def _select_source_list_row_silent(self, source_name: str | None) -> None:
+        self._updating_source_selection = True
+        try:
+            if source_name is None:
+                self.source_list.clearSelection()
+                self.source_list.setCurrentIndex(QtCore.QModelIndex())
+                return
+            for row in range(self.source_list.topLevelItemCount()):
+                item = self.source_list.topLevelItem(row)
+                if self._source_name_from_list_item(item) == source_name:
+                    self.source_list.setCurrentItem(item)
+                    return
+        finally:
+            self._updating_source_selection = False
 
     def _rebuild_axes_grid(self) -> None:
         self.axes_selector.set_grid(
@@ -3365,6 +3492,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 operation_id = self._operation_id_for_item(item)
                 if operation_id is not None:
                     self._set_selected_operation_ids_silent({operation_id})
+        if (
+            isinstance(getattr(self, "source_inspector", None), SourceInspectorWidget)
+            and self.source_inspector.follows_selection()
+        ):
+            self._source_inspector_target = None
         self._sync_axes_selector()
         self._update_operation_editor()
 
@@ -3698,7 +3830,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(self._source_display_name(name) for name in names)
 
     def _source_tooltip(self, name: str) -> str:
-        return _source_display_tooltip(self._source_by_name().get(name), name)
+        return source_metadata_tooltip(
+            self._source_by_name().get(name), name, self._source_data.get(name)
+        )
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
         if self._recipe.setup.layout_mode == "gridspec":

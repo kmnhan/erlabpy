@@ -366,6 +366,24 @@ def _plot_source_move_buttons(
     }
 
 
+def _tree_row_values(table: QtWidgets.QTreeWidget) -> dict[str, str]:
+    return {
+        str(item.data(0, QtCore.Qt.ItemDataRole.UserRole)): str(
+            item.data(1, QtCore.Qt.ItemDataRole.UserRole)
+        )
+        for row in range(table.topLevelItemCount())
+        if (item := table.topLevelItem(row)) is not None
+    }
+
+
+def _tree_row_item(table: QtWidgets.QTreeWidget, key: str) -> QtWidgets.QTreeWidgetItem:
+    for row in range(table.topLevelItemCount()):
+        item = table.topLevelItem(row)
+        if item is not None and item.data(0, QtCore.Qt.ItemDataRole.UserRole) == key:
+            return item
+    raise AssertionError(f"Missing tree row {key!r}")
+
+
 def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     qtbot, monkeypatch
 ) -> None:
@@ -1651,6 +1669,164 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     shape_label = tool.source_list.itemWidget(shape_item, 2)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert "sample_temp_idx" not in shape_label.text()
+
+
+def test_figure_composer_source_inspector_shows_source_metadata(qtbot) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [-0.1, 0.1], "kx": [0.0, 0.5, 1.0]},
+        attrs={"sample": "TiSe2", "long": "x" * 200},
+        name="map",
+    )
+    second = xr.DataArray(
+        np.arange(4.0),
+        dims=("delay",),
+        coords={"delay": [0.0, 1.0, 2.0, 3.0]},
+        attrs={"scan": 12},
+        name="profile",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"map": first, "profile": second},
+        sources=(
+            FigureSourceState(name="map", label="Map source", node_uid="node-map"),
+            FigureSourceState(name="profile", label="Profile source"),
+        ),
+        operations=(FigureOperationState.plot_slices(label="maps", sources=("map",)),),
+        primary_source="map",
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.source_inspector.source_name() == "map"
+    assert (
+        tool.source_list.selectionMode()
+        == QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+    )
+    summary = _tree_row_values(tool.source_inspector.summary_table)
+    assert summary["Alias"] == "map"
+    assert summary["Workspace node"] == "node-map"
+    assert summary["Dtype"] == "float64"
+    assert summary["Coordinates"] == "2"
+    coord_item = _tree_row_item(tool.source_inspector.coord_table, "kx")
+    assert coord_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) == ("kx",)
+    assert coord_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 2) == "float64"
+    attrs = _tree_row_values(tool.source_inspector.attr_table)
+    assert attrs["sample"] == "'TiSe2'"
+    long_attr_item = _tree_row_item(tool.source_inspector.attr_table, "long")
+    assert len(long_attr_item.text(1)) < 200
+    assert long_attr_item.data(1, QtCore.Qt.ItemDataRole.UserRole) == repr("x" * 200)
+
+    second_item = tool.source_list.topLevelItem(1)
+    assert second_item is not None
+    tool.source_list.setCurrentItem(second_item)
+    assert tool.source_inspector.source_name() == "profile"
+    assert _tree_row_values(tool.source_inspector.summary_table)["Alias"] == "profile"
+
+
+def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> None:
+    public = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1],
+            "sample_temp": [10.0, 15.0, 30.0, 60.0],
+        },
+        name="map",
+    )
+    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    tool = FigureComposerTool.from_sources(
+        {"data": internal},
+        sources=(FigureSourceState(name="data", label="map"),),
+        operations=(FigureOperationState.plot_slices(label="maps", sources=("data",)),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    summary = _tree_row_values(tool.source_inspector.summary_table)
+    assert "sample_temp" in summary["Dims"]
+    assert "sample_temp_idx" not in summary["Dims"]
+    coord_names = {
+        tool.source_inspector.coord_table.topLevelItem(row).data(
+            0, QtCore.Qt.ItemDataRole.UserRole
+        )
+        for row in range(tool.source_inspector.coord_table.topLevelItemCount())
+    }
+    assert "sample_temp" in coord_names
+    assert "sample_temp_idx" not in coord_names
+
+
+def test_figure_composer_source_inspector_follows_operations_and_pin(qtbot) -> None:
+    first = xr.DataArray([1.0, 2.0], dims=("x",), name="first")
+    second = xr.DataArray([3.0, 4.0], dims=("x",), name="second")
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.line(label="first line", source="first"),
+            FigureOperationState.line(label="second line", source="second"),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.source_inspector.source_name() == "first"
+    tool.operation_list.setCurrentRow(1)
+    assert tool.source_inspector.source_name() == "second"
+    tool.source_inspector.set_follows_selection(False)
+    tool.operation_list.setCurrentRow(0)
+    assert tool.source_inspector.source_name() == "second"
+    tool.source_inspector.set_follows_selection(True)
+    assert tool.source_inspector.source_name() == "first"
+
+
+def test_figure_composer_source_inspector_updates_without_render_or_history(
+    qtbot, monkeypatch
+) -> None:
+    x_data = xr.DataArray([0.0, 1.0, 2.0], dims=("x",), name="x")
+    y_data = xr.DataArray([1.0, 2.0], dims=("y",), name="y")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(
+        update={
+            "method_plot_data_mode": "from_data",
+            "method_plot_x": FigureMethodPlotValueState(source="x", kind="data"),
+            "method_plot_y": FigureMethodPlotValueState(source="y", kind="data"),
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"x": x_data, "y": y_data},
+        sources=(
+            FigureSourceState(name="x", label="x"),
+            FigureSourceState(name="y", label="y"),
+        ),
+        operations=(operation,),
+        primary_source="y",
+    )
+    qtbot.addWidget(tool)
+    render_calls: list[object] = []
+    write_calls: list[object] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **kwargs: render_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(tool, "_write_state", lambda: write_calls.append(None))
+
+    y_item = tool.source_list.topLevelItem(1)
+    assert y_item is not None
+    tool.source_list.setCurrentItem(y_item)
+
+    assert render_calls == []
+    assert write_calls == []
+    assert tool.source_inspector.source_name() == "y"
+    plot_rows = _tree_row_values(tool.source_inspector.plot_table)
+    assert plot_rows["Step"] == "ax.plot picked data"
+    assert plot_rows["Status"] == "X and Y lengths differ"
 
 
 def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None:

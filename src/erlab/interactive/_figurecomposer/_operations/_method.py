@@ -106,6 +106,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _iter_axes,
     _live_layout_axes,
 )
+from erlab.interactive._figurecomposer._source_inspector import source_value_tooltip
 from erlab.interactive._figurecomposer._sources import (
     _public_source_data,
     _valid_source_variable,
@@ -3949,7 +3950,7 @@ def _plot_values_combo(
         combo.addItem(text, value)
         combo.setItemData(
             combo.count() - 1,
-            _plot_values_item_tooltip(axis, value),
+            _plot_values_item_tooltip(tool, source, axis, value),
             QtCore.Qt.ItemDataRole.ToolTipRole,
         )
     current_data = _plot_value_combo_data(current)
@@ -4029,13 +4030,16 @@ def _plot_values_combo_tooltip(
 
 
 def _plot_values_item_tooltip(
-    axis: typing.Literal["x", "y"], value: tuple[str, str | None]
+    tool: FigureComposerTool,
+    source: str | None,
+    axis: typing.Literal["x", "y"],
+    value: tuple[str, str | None],
 ) -> str:
-    axis_name = axis.upper()
-    kind, name = value
-    if kind == "data":
-        return f"Use the selected DataArray values as {axis_name} values."
-    return f"Use coordinate {name!r} as {axis_name} values."
+    return source_value_tooltip(
+        None if source is None else tool._source_data.get(source),
+        value,
+        axis=axis,
+    )
 
 
 def _plot_value_options_for_target(
