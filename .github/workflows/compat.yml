@@ -82,7 +82,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         qt-api: ["pyqt6", "pyside6"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
