@@ -2804,6 +2804,84 @@ def test_remove_childtool_direct_removal(
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
 
 
+def test_shutdown_bulk_remove_skips_final_ui_refresh(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+        previous_closing = manager._workspace_state.closing_document
+        monkeypatch.setattr(
+            manager, "_cleanup_linkers", lambda: calls.append("cleanup")
+        )
+        monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        monkeypatch.setattr(manager, "_update_info", lambda: calls.append("info"))
+
+        try:
+            manager._workspace_state.closing_document = True
+            with manager._bulk_remove_context():
+                assert not manager.updatesEnabled()
+                assert not manager.tree_view.updatesEnabled()
+        finally:
+            manager._workspace_state.closing_document = previous_closing
+
+        assert manager.updatesEnabled()
+        assert manager.tree_view.updatesEnabled()
+        assert calls == []
+
+
+def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    with manager_context() as manager:
+        root_tool = itool(data, manager=False, execute=False)
+        root_index = manager.add_imagetool(root_tool, show=False)
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            manager.tree_view,
+            "childtool_removed",
+            lambda _uid: calls.append("childtool_removed"),
+        )
+        monkeypatch.setattr(
+            manager, "_sync_figures_ui", lambda **_kwargs: calls.append("figures")
+        )
+        monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        monkeypatch.setattr(
+            manager,
+            "_refresh_dependency_dependents",
+            lambda _uid: calls.append("dependents"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_refresh_figure_source_controls",
+            lambda: calls.append("source_controls"),
+        )
+
+        previous_closing = manager._workspace_state.closing_document
+        try:
+            manager._workspace_state.closing_document = True
+            manager.remove_all_tools()
+        finally:
+            manager._workspace_state.closing_document = previous_closing
+
+        assert root_index not in manager._tool_graph.root_wrappers
+        assert figure_uid not in manager._tool_graph.nodes
+        assert calls == []
+
+
 def test_remove_child_imagetool_remove_action(
     qtbot,
     accept_dialog,

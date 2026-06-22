@@ -1640,8 +1640,12 @@ class _ActionsController:
             return
         was_figure = self._manager._is_figure_uid(uid)
         self._manager._mark_removed_subtree_dirty(uid)
-        self._manager.tree_view.childtool_removed(uid)
+        closing_document = self._manager._workspace_state.closing_document
+        if not closing_document:
+            self._manager.tree_view.childtool_removed(uid)
         self._manager._remove_uid_target(uid)
+        if closing_document:
+            return
         if was_figure:
             self._manager._sync_figures_ui()
         self._manager._update_actions()

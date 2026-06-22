@@ -1495,8 +1495,9 @@ class ImageToolManager(_ImageToolManagerBase):
         if node is None:
             return
         self._dependency_tracker.clear_uid(uid)
-        self._refresh_dependency_dependents(uid)
-        self._refresh_figure_source_controls()
+        if not self._workspace_state.closing_document:
+            self._refresh_dependency_dependents(uid)
+            self._refresh_figure_source_controls()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -2892,8 +2893,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
-        self._refresh_dependency_dependents(wrapper.uid)
-        self._refresh_figure_source_controls()
+        if not self._workspace_state.closing_document:
+            self._refresh_dependency_dependents(wrapper.uid)
+            self._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -2913,11 +2915,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.tree_view.setUpdatesEnabled(True)
                 self.setUpdatesEnabled(True)
 
-                if self._link_registry.pop_pending_cleanup():
-                    self._cleanup_linkers()
+                if self._workspace_state.closing_document:
+                    self._link_registry.clear_pending_cleanup()
+                else:
+                    if self._link_registry.pop_pending_cleanup():
+                        self._cleanup_linkers()
 
-                self._update_actions()
-                self._update_info()
+                    self._update_actions()
+                    self._update_info()
 
     def _remove_imagetools(
         self,
