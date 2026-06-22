@@ -123,6 +123,12 @@ def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
     assert isinstance(win, Fit1DTool)
+    assert isinstance(win._model, erlab.analysis.fit.models.MultiPeakModel)
+    assert win._model.func._peak_shapes == ["voigt"]
+    assert not win._model.func.convolve
+    assert win.peak_shape_combo.currentText() == "voigt"
+    assert not win.convolve_check.isChecked()
+    assert not win.oversample_spin.isEnabled()
 
     index = win.param_model.index(0, 1)
     assert win.param_model.setData(index, "1.5", QtCore.Qt.ItemDataRole.EditRole)
@@ -142,7 +148,14 @@ def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     win_restored = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win_restored)
     win_restored.tool_status = status
-    assert win_restored.tool_status.model_dump() == status.model_dump()
+    restored_status = win_restored.tool_status.model_dump()
+    expected_status = status.model_dump()
+    restored_status.pop("model_state")
+    expected_status.pop("model_state")
+    assert restored_status == expected_status
+    assert isinstance(win_restored._model, erlab.analysis.fit.models.MultiPeakModel)
+    assert win_restored._model.func._peak_shapes == ["voigt"]
+    assert not win_restored._model.func.convolve
 
     code = win.copy_code()
     assert "modelfit" in code
@@ -795,10 +808,14 @@ def test_fit1d_nonuniform_convolved_preview_opens_without_error(
     win = erlab.interactive.ftool(darr, execute=False)
     qtbot.addWidget(win)
 
+    assert errors == []
+    assert not win._model.func.convolve
     assert win._auto_segmented(convolve=True)
+    win.convolve_check.setChecked(True)
     assert isinstance(
         win._model.func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction
     )
+    assert win._model.func.convolve
     assert win._model.func.segmented
     win._update_fit_curve()
     assert errors == []

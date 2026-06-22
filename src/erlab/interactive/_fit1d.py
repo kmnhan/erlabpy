@@ -1497,11 +1497,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _make_default_model(self) -> lmfit.Model:
         return erlab.analysis.fit.models.MultiPeakModel(
             npeaks=1,
-            peak_shapes="lorentzian",
+            peak_shapes="voigt",
             fd=False,
             background="none",
-            convolve=True,
-            segmented=self._auto_segmented(convolve=True),
+            convolve=False,
+            segmented=False,
         )
 
     def _model_option_registry(self) -> dict[str, dict[str, Callable]]:
@@ -1586,7 +1586,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return dict(
             npeaks=self.npeaks_spin.value(),
             peak_shapes=typing.cast(
-                "typing.Literal['lorentzian', 'gaussian']",
+                "typing.Literal['lorentzian', 'gaussian', 'voigt']",
                 self.peak_shape_combo.currentText(),
             ),
             fd=self.fd_check.isChecked(),
@@ -1618,7 +1618,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.peak_shape_label = QtWidgets.QLabel("Peak shape")
         self.peak_shape_combo = QtWidgets.QComboBox()
         self.peak_shape_combo.addItems(["lorentzian", "gaussian", "voigt"])
-        self.peak_shape_combo.setCurrentText("lorentzian")
+        self.peak_shape_combo.setCurrentText("voigt")
 
         self.fd_check = QtWidgets.QCheckBox("Fermi-Dirac")
         self.fd_check.setChecked(False)
@@ -1639,7 +1639,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.degree_spin.setToolTip("Degree of the polynomial background.")
 
         self.convolve_check = QtWidgets.QCheckBox("Convolve")
-        self.convolve_check.setChecked(True)
+        self.convolve_check.setChecked(False)
         self.convolve_check.setToolTip(
             "Convolve peaks with a Gaussian to account for instrumental "
             "broadening.\n"
