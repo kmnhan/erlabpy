@@ -244,6 +244,7 @@ class FigureExportState(pydantic.BaseModel):
 
 
 class FigureOperationKind(enum.StrEnum):
+    SET_PALETTE = "set_palette"
     PLOT_SLICES = "plot_slices"
     LINE = "line"
     BZ_OVERLAY = "bz_overlay"
@@ -323,6 +324,11 @@ class FigureOperationState(pydantic.BaseModel):
     axes: FigureAxesSelectionState = pydantic.Field(
         default_factory=FigureAxesSelectionState
     )
+
+    palette_name: str = "deep"
+    palette_n_colors: int | None = pydantic.Field(default=None, ge=1)
+    palette_desat: float | None = pydantic.Field(default=None, ge=0.0, le=1.0)
+    palette_color_codes: bool = False
 
     sources: tuple[str, ...] = ()
     map_selections: tuple[FigureDataSelectionState, ...] = ()
@@ -437,6 +443,14 @@ class FigureOperationState(pydantic.BaseModel):
     trusted: bool = False
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @classmethod
+    def set_palette(cls, *, label: str = "set palette") -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.SET_PALETTE,
+            label=label,
+            axes=FigureAxesSelectionState(axes=()),
+        )
 
     @classmethod
     def plot_slices(

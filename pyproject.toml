@@ -57,7 +57,7 @@ dependencies = [
 
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
-viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
+viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets", "seaborn>=0.13.2"]
 io = [
     "astropy>=5.1.1",
     "nexusformat>=1.0.6",

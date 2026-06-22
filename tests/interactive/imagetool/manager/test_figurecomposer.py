@@ -1,4 +1,5 @@
 import ast
+import builtins
 import contextlib
 import functools
 import gc
@@ -91,6 +92,9 @@ from erlab.interactive._figurecomposer._operations import (
 )
 from erlab.interactive._figurecomposer._operations import (
     _plot_slices as figurecomposer_plot_slices,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _set_palette as figurecomposer_set_palette,
 )
 from erlab.interactive._figurecomposer._seeding import (
     bz_overlay_operation_from_ktool,
@@ -431,6 +435,7 @@ def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
         figurecomposer_method,
         figurecomposer_photon_energy,
         figurecomposer_plot_slices,
+        figurecomposer_set_palette,
     )
     direct_connects: list[str] = []
     for module in modules:
@@ -604,6 +609,192 @@ def _expected_line_colormap_colors(
     if trim_lower or trim_upper:
         normalized = trim_lower + (1.0 - trim_lower - trim_upper) * normalized
     return plt.get_cmap(cmap)(normalized)
+
+
+def test_figure_composer_set_palette_editor_preview_and_controls(qtbot) -> None:
+    sns = pytest.importorskip("seaborn")
+    profile = _figure_composer_profile_source("profile")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_name": "deep"}
+    )
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+
+    combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
+    assert combo is not None
+    assert combo.isEnabled()
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert preview is not None
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    assert swatches
+    expected_first = QtGui.QColor.fromRgbF(*sns.color_palette("deep")[0]).name()
+    assert swatches[0].property("palette_color") == expected_first
+
+    _activate_combo_text(combo, "colorblind")
+    assert tool.tool_status.operations[0].palette_name == "colorblind"
+
+    count_spin = page.findChild(QtWidgets.QSpinBox, "figureComposerSetPaletteCountSpin")
+    assert count_spin is not None
+    count_spin.setValue(3)
+    QtWidgets.QApplication.processEvents()
+    assert tool.tool_status.operations[0].palette_n_colors == 3
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    assert len(swatches) == 3
+    expected_first = QtGui.QColor.fromRgbF(
+        *sns.color_palette("colorblind", n_colors=3)[0]
+    ).name()
+    assert swatches[0].property("palette_color") == expected_first
+
+    desat_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerSetPaletteSaturationSpin"
+    )
+    assert desat_spin is not None
+    desat_spin.setValue(0.7)
+    assert tool.tool_status.operations[0].palette_desat == pytest.approx(0.7)
+
+    color_codes = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerSetPaletteColorCodesCheck"
+    )
+    assert color_codes is not None
+    color_codes.click()
+    assert tool.tool_status.operations[0].palette_color_codes is True
+
+
+def test_figure_composer_set_palette_editor_disables_without_seaborn(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(figurecomposer_set_palette, "_import_seaborn", lambda: None)
+    profile = _figure_composer_profile_source("profile")
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(FigureOperationState.set_palette(),),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+
+    combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
+    count_spin = page.findChild(QtWidgets.QSpinBox, "figureComposerSetPaletteCountSpin")
+    desat_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerSetPaletteSaturationSpin"
+    )
+    color_codes = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerSetPaletteColorCodesCheck"
+    )
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    message = page.findChild(
+        QtWidgets.QLabel, "figureComposerSetPaletteUnavailableLabel"
+    )
+
+    assert combo is not None
+    assert not combo.isEnabled()
+    assert count_spin is not None
+    assert not count_spin.isEnabled()
+    assert desat_spin is not None
+    assert not desat_spin.isEnabled()
+    assert color_codes is not None
+    assert not color_codes.isEnabled()
+    assert preview is not None
+    assert not preview.isEnabled()
+    assert message is not None
+    assert message.property("missing_dependency") == "seaborn"
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert item.text().startswith("Skipped Set Palette:")
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+
+
+def test_figure_composer_set_palette_render_and_generated_code(qtbot) -> None:
+    sns = pytest.importorskip("seaborn")
+    profile = _figure_composer_profile_source("profile")
+    palette_operation = FigureOperationState.set_palette().model_copy(
+        update={
+            "palette_name": "colorblind",
+            "palette_n_colors": 3,
+            "palette_desat": 0.8,
+            "palette_color_codes": True,
+        }
+    )
+    line_operation = FigureOperationState.line(label="line", source="profile")
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(palette_operation, line_operation),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    expected = sns.color_palette("colorblind", n_colors=3, desat=0.8)[0]
+    np.testing.assert_allclose(
+        mcolors.to_rgb(tool.figure.axes[0].lines[0].get_color()),
+        expected,
+    )
+
+    code = tool.generated_code()
+    assert "import seaborn as sns" in code
+    namespace: dict[str, typing.Any] = {"profile": profile}
+    exec(code, namespace)  # noqa: S102
+    generated_line = namespace["fig"].axes[0].lines[0]
+    np.testing.assert_allclose(mcolors.to_rgb(generated_line.get_color()), expected)
+
+
+def test_figure_composer_set_palette_generated_code_skips_without_seaborn(
+    qtbot,
+) -> None:
+    profile = _figure_composer_profile_source("profile")
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(
+            FigureOperationState.set_palette(),
+            FigureOperationState.line(label="line", source="profile"),
+        ),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+
+    real_import = builtins.__import__
+
+    def import_without_seaborn(
+        name: str,
+        globals_: dict[str, typing.Any] | None = None,
+        locals_: dict[str, typing.Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> typing.Any:
+        if name == "seaborn" or name.startswith("seaborn."):
+            raise ImportError("seaborn is not installed")
+        return real_import(name, globals_, locals_, fromlist, level)
+
+    namespace: dict[str, typing.Any] = {
+        "profile": profile,
+        "__builtins__": {
+            **vars(builtins),
+            "__import__": import_without_seaborn,
+        },
+    }
+    exec(tool.generated_code(), namespace)  # noqa: S102
+
+    assert len(namespace["fig"].axes[0].lines) == 1
 
 
 def test_figure_composer_plot_slices_source_selector_updates_sources(
@@ -10165,6 +10356,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     } == {QtWidgets.QSizePolicy.Policy.Fixed}
     assert len({button.sizeHint().height() for button in step_toolbar_buttons}) == 1
     assert [action.data() for action in tool.add_step_menu.actions()] == [
+        "set_palette",
         "plot_slices",
         "line",
         "bz_overlay",
@@ -10175,6 +10367,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "custom",
     ]
     assert [action.text() for action in tool.add_step_menu.actions()] == [
+        "Set Palette",
         "Slice Plot",
         "Line/Profile",
         "BZ Overlay",
