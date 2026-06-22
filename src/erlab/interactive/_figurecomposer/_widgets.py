@@ -720,6 +720,13 @@ _SHOW_COMPOSER_TOOLITEM = (
     "figure_composer",
     "show_composer",
 )
+_TOOLBAR_ICON_REFRESH_EVENTS = {
+    QtCore.QEvent.Type.ActivationChange,
+    QtCore.QEvent.Type.ApplicationPaletteChange,
+    QtCore.QEvent.Type.EnabledChange,
+    QtCore.QEvent.Type.PaletteChange,
+    QtCore.QEvent.Type.StyleChange,
+}
 
 
 def _noop_toolbar_callback() -> None:
@@ -878,6 +885,19 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         color = self.palette().color(QtGui.QPalette.ColorRole.ButtonText)
         return erlab.interactive.utils.qtawesome.icon(icon_name, color=color)
 
+    def _refresh_icons(self) -> None:
+        erlab.interactive.utils.qtawesome.reset_cache()
+        for callback_name, action in self._actions.items():
+            icon_name = {
+                "zoom": "zoom_to_rect",
+                "pan": "move",
+                "show_composer": "figure_composer",
+                "configure_subplots": "subplots",
+                "edit_parameters": "qt4_editor_options",
+                "save_figure": "filesave",
+            }.get(callback_name, callback_name)
+            action.setIcon(self._icon(icon_name))
+
     def configure_subplots(self, *args: typing.Any) -> typing.Any:
         self._subplot_adjust_callback()
 
@@ -1016,18 +1036,8 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         self._commit_colorbar_clims(colorbar_before)
 
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
-        if event is not None and event.type() == QtCore.QEvent.Type.PaletteChange:
-            erlab.interactive.utils.qtawesome.reset_cache()
-            for callback_name, action in self._actions.items():
-                icon_name = {
-                    "zoom": "zoom_to_rect",
-                    "pan": "move",
-                    "show_composer": "figure_composer",
-                    "configure_subplots": "subplots",
-                    "edit_parameters": "qt4_editor_options",
-                    "save_figure": "filesave",
-                }.get(callback_name, callback_name)
-                action.setIcon(self._icon(icon_name))
+        if event is not None and event.type() in _TOOLBAR_ICON_REFRESH_EVENTS:
+            self._refresh_icons()
         super().changeEvent(event)
 
 
@@ -1136,6 +1146,15 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
                 event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if (
+            event is not None
+            and event.type() in _TOOLBAR_ICON_REFRESH_EVENTS
+            and erlab.interactive.utils.qt_is_valid(self.toolbar)
+        ):
+            self.toolbar._refresh_icons()
+        super().changeEvent(event)
 
     def _workspace_save_shortcut(self) -> QtWidgets.QShortcut | None:
         for shortcut in self.findChildren(QtWidgets.QShortcut):

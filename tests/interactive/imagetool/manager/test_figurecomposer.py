@@ -10670,6 +10670,40 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
         assert not toolbar._actions[action_id].icon().isNull()
 
 
+def test_figure_composer_figure_window_refreshes_toolbar_icons_on_palette_change(
+    qtbot, monkeypatch
+) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    toolbar = tool.figure_window.toolbar
+    icon_names: list[str] = []
+    reset_calls: list[None] = []
+
+    def record_icon(name: str) -> QtGui.QIcon:
+        icon_names.append(name)
+        pixmap = QtGui.QPixmap(12, 12)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        return QtGui.QIcon(pixmap)
+
+    monkeypatch.setattr(toolbar, "_icon", record_icon)
+    monkeypatch.setattr(
+        erlab.interactive.utils.qtawesome,
+        "reset_cache",
+        lambda: reset_calls.append(None),
+    )
+
+    tool.figure_window.changeEvent(
+        QtCore.QEvent(QtCore.QEvent.Type.ApplicationPaletteChange)
+    )
+
+    assert reset_calls == [None]
+    assert "figure_composer" in icon_names
+    assert "move" in icon_names
+    assert "zoom_to_rect" in icon_names
+    assert "copy_figure_to_clipboard" in icon_names
+    assert not toolbar._actions["pan"].icon().isNull()
+
+
 def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
