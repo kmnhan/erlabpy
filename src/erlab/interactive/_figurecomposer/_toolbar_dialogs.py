@@ -97,6 +97,10 @@ from erlab.interactive._figurecomposer._text import (
     _format_dict,
     _limit_pair_from_text,
 )
+from erlab.interactive._figurecomposer._tick_params import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+    TickParamsEditorWidget,
+)
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _ColorLineEditWidget,
@@ -399,6 +403,10 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_which_combo = QtWidgets.QComboBox(axes_page)
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
+    tick_params_editor = TickParamsEditorWidget(
+        parent=axes_page,
+        object_prefix="figureComposerToolbarAxesTickParams",
+    )
 
     title_tooltip = (
         "Set ax.set_title(...) on every selected axis.\n"
@@ -484,6 +492,12 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         ),
         "Grid visibility and target tick lines for every selected axis.",
     )
+    _add_axis_form_row(
+        form_layout,
+        "Ticks",
+        tick_params_editor,
+        "Compact controls for ax.tick_params on every selected axis.",
+    )
 
     updating = False
     curve_targets: list[_StyleTarget] = []
@@ -506,6 +520,22 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             args=args,
             kwargs=kwargs,
         )
+
+    def tick_params_for_selection() -> dict[str, typing.Any]:
+        selection = current_selection()
+        for operation in tool._recipe.operations:
+            if (
+                operation.kind == FigureOperationKind.METHOD
+                and operation.method_family == FigureMethodFamily.AXES
+                and operation.method_name == "tick_params"
+                and _method_axes_match(operation.axes, selection)
+            ):
+                return {
+                    key: value
+                    for key, value in operation.method_kwargs.items()
+                    if key in TICK_PARAMS_CONTROLLED_KWARGS
+                }
+        return {}
 
     def refresh_style_targets() -> None:
         nonlocal curve_targets, image_targets
@@ -661,6 +691,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     _apply_axis_combo_state(combo, unavailable_state)
                 for combo in (grid_axis_combo, grid_which_combo):
                     combo.setEnabled(False)
+                tick_params_editor.set_tick_params({})
+                tick_params_editor.setEnabled(False)
                 _apply_axis_check_state(grid_check, unavailable_state)
                 return
             _apply_axis_line_edit_state(
@@ -694,6 +726,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             )
             for combo in (grid_axis_combo, grid_which_combo):
                 combo.setEnabled(True)
+            tick_params_editor.setEnabled(True)
+            tick_params_editor.set_tick_params(tick_params_for_selection())
             _apply_axis_check_state(
                 grid_check,
                 _axis_value_state(
@@ -795,6 +829,14 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def grid_combo_activated(_index: int) -> None:
         update_grid()
 
+    def tick_params_changed(kwargs: object) -> None:
+        if updating:
+            return
+        upsert_axis_method(
+            "tick_params",
+            kwargs=dict(typing.cast("Mapping[str, typing.Any]", kwargs)),
+        )
+
     def selection_changed(_selection: object) -> None:
         refresh_from_axis()
 
@@ -809,6 +851,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_check.stateChanged.connect(grid_state_changed)
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
+    tick_params_editor.sigTickParamsChanged.connect(tick_params_changed)
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
     images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)

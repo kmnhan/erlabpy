@@ -38,6 +38,7 @@ import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
 import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._tick_params as figurecomposer_tick_params
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
@@ -322,6 +323,47 @@ def _activate_combo_text(combo: QtWidgets.QComboBox, text: str) -> None:
 def _activate_combo_index(combo: QtWidgets.QComboBox, index: int) -> None:
     combo.setCurrentIndex(index)
     combo.activated.emit(index)
+
+
+def _click_tick_params_segment(
+    editor: figurecomposer_tick_params.TickParamsEditorWidget,
+    object_name: str,
+    value: object,
+) -> None:
+    control = editor.findChild(QtWidgets.QWidget, object_name)
+    assert control is not None
+    for button in control.findChildren(QtWidgets.QToolButton):
+        if button.property("tick_params_value") == value:
+            button.click()
+            return
+    raise AssertionError(f"No tick params segment {object_name!r} for {value!r}")
+
+
+def _set_tick_params_button(
+    editor: figurecomposer_tick_params.TickParamsEditorWidget,
+    object_name: str,
+    value: object,
+) -> None:
+    button = editor.findChild(QtWidgets.QToolButton, object_name)
+    assert button is not None
+    for _ in range(4):
+        if button.property("tick_params_value") == value:
+            return
+        button.click()
+    raise AssertionError(f"No tick params button {object_name!r} state {value!r}")
+
+
+def _finish_tick_params_edit(
+    editor: figurecomposer_tick_params.TickParamsEditorWidget,
+    object_name: str,
+    text: str,
+) -> QtWidgets.QLineEdit:
+    edit = editor.findChild(QtWidgets.QLineEdit, object_name)
+    assert edit is not None
+    edit.setText(text)
+    edit.setModified(True)
+    edit.editingFinished.emit()
+    return edit
 
 
 def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckBox]:
@@ -12198,6 +12240,10 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     grid_axis_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarAxesGridAxisCombo"
     )
+    tick_editor = dialog.findChild(
+        figurecomposer_tick_params.TickParamsEditorWidget,
+        "figureComposerToolbarAxesTickParamsEditor",
+    )
     assert title_edit is not None
     assert xlim_edit is not None
     assert xlabel_edit is not None
@@ -12206,6 +12252,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert xscale_combo is not None
     assert grid_check is not None
     assert grid_axis_combo is not None
+    assert tick_editor is not None
     labels_row = dialog.findChild(
         QtWidgets.QWidget, "figureComposerToolbarAxesLabelsRow"
     )
@@ -12332,6 +12379,21 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert len(grid_ops) == 1
     assert grid_ops[0].method_kwargs == {"which": "major", "axis": "x"}
 
+    _click_tick_params_segment(
+        tick_editor,
+        "figureComposerToolbarAxesTickParamsAxisCombo",
+        "y",
+    )
+    _finish_tick_params_edit(
+        tick_editor,
+        "figureComposerToolbarAxesTickParamsLengthEdit",
+        "5",
+    )
+    tick_ops = _method_operations(tool, FigureMethodFamily.AXES, "tick_params")
+    assert len(tick_ops) == 1
+    assert tick_ops[0].axes.axes == ((0, 0),)
+    assert tick_ops[0].method_kwargs == {"axis": "y", "length": 5.0}
+
     selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
     assert selector is not None
     selector.set_selected_axes(((0, 1),), emit=True)
@@ -12452,14 +12514,20 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
+    tick_editor = dialog.findChild(
+        figurecomposer_tick_params.TickParamsEditorWidget,
+        "figureComposerToolbarAxesTickParamsEditor",
+    )
     assert title_edit is not None
     assert xscale_combo is not None
     assert grid_axis_combo is not None
     assert grid_check is not None
+    assert tick_editor is not None
     assert not title_edit.isEnabled()
     assert not xscale_combo.isEnabled()
     assert not grid_axis_combo.isEnabled()
     assert not grid_check.isEnabled()
+    assert not tick_editor.isEnabled()
 
 
 def test_figure_composer_toolbar_axes_dialog_handles_stale_style_targets(
@@ -14184,52 +14252,44 @@ def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     assert method_page is not None
-    axis_combo = method_page.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsAxisCombo"
+    editor = method_page.findChild(
+        figurecomposer_tick_params.TickParamsEditorWidget,
+        "figureComposerAxesMethodTickParamsEditor",
     )
-    which_combo = method_page.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsWhichCombo"
-    )
-    direction_combo = method_page.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsDirectionCombo"
-    )
-    bottom_combo = method_page.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsBottomCombo"
-    )
-    length_edit = method_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"
-    )
-    label_size_edit = method_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLabelSizeEdit"
-    )
-    colors_edit = method_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
-    )
-    assert axis_combo is not None
-    assert which_combo is not None
-    assert direction_combo is not None
-    assert bottom_combo is not None
-    assert length_edit is not None
-    assert label_size_edit is not None
-    assert colors_edit is not None
-    assert axis_combo.currentText() == "both"
-    assert which_combo.currentText() == "major"
-    assert direction_combo.currentData() is None
-    assert bottom_combo.currentData() is None
+    assert editor is not None
+    assert editor.tick_params() == {}
     assert tool.tool_status.operations[0].method_kwargs == {}
 
-    _activate_combo_text(axis_combo, "x")
-    _activate_combo_text(direction_combo, "inout")
-    _activate_combo_text(bottom_combo, "False")
-    length_edit.setText("4.5")
-    length_edit.setModified(True)
-    length_edit.editingFinished.emit()
-    label_size_edit.setText("9")
-    label_size_edit.setModified(True)
-    label_size_edit.editingFinished.emit()
-    colors_edit.setText("tab:red")
-    colors_edit.setModified(True)
-    colors_edit.editingFinished.emit()
+    _click_tick_params_segment(
+        editor,
+        "figureComposerAxesMethodTickParamsAxisCombo",
+        "x",
+    )
+    _click_tick_params_segment(
+        editor,
+        "figureComposerAxesMethodTickParamsDirectionCombo",
+        "inout",
+    )
+    _set_tick_params_button(
+        editor,
+        "figureComposerAxesMethodTickParamsBottomCombo",
+        False,
+    )
+    _finish_tick_params_edit(
+        editor,
+        "figureComposerAxesMethodTickParamsLengthEdit",
+        "4.5",
+    )
+    _finish_tick_params_edit(
+        editor,
+        "figureComposerAxesMethodTickParamsLabelSizeEdit",
+        "9",
+    )
+    _finish_tick_params_edit(
+        editor,
+        "figureComposerAxesMethodTickParamsColorsEdit",
+        "tab:red",
+    )
 
     assert tool.tool_status.operations[0].method_kwargs == {
         "axis": "x",
@@ -14240,10 +14300,12 @@ def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
         "colors": "tab:red",
     }
 
-    _activate_combo_index(bottom_combo, 0)
-    length_edit.setText("")
-    length_edit.setModified(True)
-    length_edit.editingFinished.emit()
+    _set_tick_params_button(
+        editor,
+        "figureComposerAxesMethodTickParamsBottomCombo",
+        None,
+    )
+    _finish_tick_params_edit(editor, "figureComposerAxesMethodTickParamsLengthEdit", "")
 
     assert tool.tool_status.operations[0].method_kwargs == {
         "axis": "x",
@@ -14536,43 +14598,36 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
 
     tool.operation_list.setCurrentRow(13)
     tool._select_step_section("method")
-    tick_axis_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsAxisCombo"
+    tick_editor = tool.findChild(
+        figurecomposer_tick_params.TickParamsEditorWidget,
+        "figureComposerAxesMethodTickParamsEditor",
     )
-    tick_which_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsWhichCombo"
+    assert tick_editor is not None
+    tick_top_button = tick_editor.findChild(
+        QtWidgets.QToolButton, "figureComposerAxesMethodTickParamsTopCombo"
     )
-    tick_direction_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsDirectionCombo"
+    tick_labeltop_button = tick_editor.findChild(
+        QtWidgets.QToolButton, "figureComposerAxesMethodTickParamsLabelTopCombo"
     )
-    tick_top_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsTopCombo"
-    )
-    tick_labeltop_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsLabelTopCombo"
-    )
-    tick_length_edit = tool.findChild(
+    tick_length_edit = tick_editor.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLengthEdit"
     )
-    tick_label_size_edit = tool.findChild(
+    tick_label_size_edit = tick_editor.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsLabelSizeEdit"
     )
-    tick_colors_edit = tool.findChild(
+    tick_colors_edit = tick_editor.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
     )
-    assert tick_axis_combo is not None
-    assert tick_which_combo is not None
-    assert tick_direction_combo is not None
-    assert tick_top_combo is not None
-    assert tick_labeltop_combo is not None
+    assert tick_top_button is not None
+    assert tick_labeltop_button is not None
     assert tick_length_edit is not None
     assert tick_label_size_edit is not None
     assert tick_colors_edit is not None
-    assert tick_axis_combo.currentText() == "x"
-    assert tick_which_combo.currentText() == "both"
-    assert tick_direction_combo.currentData() == "in"
-    assert tick_top_combo.currentData() == "True"
-    assert tick_labeltop_combo.currentData() == "False"
+    assert tick_editor.tick_params()["axis"] == "x"
+    assert tick_editor.tick_params()["which"] == "both"
+    assert tick_editor.tick_params()["direction"] == "in"
+    assert tick_top_button.property("tick_params_value") is True
+    assert tick_labeltop_button.property("tick_params_value") is False
     assert tick_length_edit.text() == "6"
     assert tick_label_size_edit.text() == "8"
     assert tick_colors_edit.text() == "red"

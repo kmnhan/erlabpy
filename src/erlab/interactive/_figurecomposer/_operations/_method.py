@@ -142,10 +142,15 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
+from erlab.interactive._figurecomposer._tick_params import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+    TICK_PARAMS_DEFAULT_KWARGS,
+    TickParamsEditorWidget,
+)
 from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     import xarray as xr
     from matplotlib.axes import Axes
@@ -199,6 +204,7 @@ class MethodControlKind(enum.StrEnum):
     FLOAT_PAIR_KWARG = "float_pair_kwarg"
     TRANSFORM = "transform"
     COLOR_KWARG = "color_kwarg"
+    TICK_PARAMS = "tick_params"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1439,179 +1445,13 @@ AXES_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs ax.tick_params on every selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
-        default_kwargs={"axis": "both", "which": "major"},
+        default_kwargs=TICK_PARAMS_DEFAULT_KWARGS,
         controls=(
-            _kwarg_combo(
-                "axis",
-                "axis",
-                ("both", "x", "y"),
-                "both",
-                "figureComposerAxesMethodTickParamsAxisCombo",
-                "Tick axis direction.",
-            ),
-            _kwarg_combo(
-                "which",
-                "which",
-                ("major", "minor", "both"),
-                "major",
-                "figureComposerAxesMethodTickParamsWhichCombo",
-                "Tick group.",
-            ),
-            _kwarg_combo(
-                "Direction",
-                "direction",
-                ("in", "out", "inout"),
-                None,
-                "figureComposerAxesMethodTickParamsDirectionCombo",
-                "Tick direction.",
-                none_label="Default",
-            ),
-            _optional_bool_kwarg_combo(
-                "Reset",
-                "reset",
-                "figureComposerAxesMethodTickParamsResetCombo",
-                "Reset ticks to defaults before updating them.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Bottom ticks",
-                "bottom",
-                "figureComposerAxesMethodTickParamsBottomCombo",
-                "Show or hide bottom ticks.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Top ticks",
-                "top",
-                "figureComposerAxesMethodTickParamsTopCombo",
-                "Show or hide top ticks.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Left ticks",
-                "left",
-                "figureComposerAxesMethodTickParamsLeftCombo",
-                "Show or hide left ticks.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Right ticks",
-                "right",
-                "figureComposerAxesMethodTickParamsRightCombo",
-                "Show or hide right ticks.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Bottom labels",
-                "labelbottom",
-                "figureComposerAxesMethodTickParamsLabelBottomCombo",
-                "Show or hide bottom tick labels.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Top labels",
-                "labeltop",
-                "figureComposerAxesMethodTickParamsLabelTopCombo",
-                "Show or hide top tick labels.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Left labels",
-                "labelleft",
-                "figureComposerAxesMethodTickParamsLabelLeftCombo",
-                "Show or hide left tick labels.",
-            ),
-            _optional_bool_kwarg_combo(
-                "Right labels",
-                "labelright",
-                "figureComposerAxesMethodTickParamsLabelRightCombo",
-                "Show or hide right tick labels.",
-            ),
-            _float_kwarg(
-                "Length",
-                "length",
-                "figureComposerAxesMethodTickParamsLengthEdit",
-                "Tick length in points.",
-                minimum=0.0,
-            ),
-            _float_kwarg(
-                "Width",
-                "width",
-                "figureComposerAxesMethodTickParamsWidthEdit",
-                "Tick width in points.",
-                minimum=0.0,
-            ),
-            _float_kwarg(
-                "Pad",
-                "pad",
-                "figureComposerAxesMethodTickParamsPadEdit",
-                "Distance between ticks and labels in points.",
-                minimum=0.0,
-            ),
-            _float_kwarg(
-                "Label rotation",
-                "labelrotation",
-                "figureComposerAxesMethodTickParamsLabelRotationEdit",
-                "Tick label rotation in degrees.",
-            ),
-            _literal_kwarg(
-                "Label size",
-                "labelsize",
-                "figureComposerAxesMethodTickParamsLabelSizeEdit",
-                "Tick label font size, such as 8 or 'small'.",
-            ),
-            _text_kwarg(
-                "Label font",
-                "labelfontfamily",
-                "figureComposerAxesMethodTickParamsLabelFontEdit",
-                "Tick label font family.",
-            ),
-            _color_kwarg(
-                "Colors",
-                "colors",
-                "figureComposerAxesMethodTickParamsColorsEdit",
-                "Color applied to both ticks and tick labels.",
-            ),
-            _color_kwarg(
-                "Tick color",
-                "color",
-                "figureComposerAxesMethodTickParamsTickColorEdit",
-                "Tick mark color.",
-            ),
-            _color_kwarg(
-                "Label color",
-                "labelcolor",
-                "figureComposerAxesMethodTickParamsLabelColorEdit",
-                "Tick label color.",
-            ),
-            _float_kwarg(
-                "Z order",
-                "zorder",
-                "figureComposerAxesMethodTickParamsZOrderEdit",
-                "Tick and label drawing order.",
-            ),
-            _color_kwarg(
-                "Grid color",
-                "grid_color",
-                "figureComposerAxesMethodTickParamsGridColorEdit",
-                "Grid line color.",
-            ),
-            _float_kwarg(
-                "Grid alpha",
-                "grid_alpha",
-                "figureComposerAxesMethodTickParamsGridAlphaEdit",
-                "Grid line opacity between 0 and 1.",
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            _float_kwarg(
-                "Grid width",
-                "grid_linewidth",
-                "figureComposerAxesMethodTickParamsGridLineWidthEdit",
-                "Grid line width.",
-                minimum=0.0,
-            ),
-            _kwarg_combo(
-                "Grid style",
-                "grid_linestyle",
-                LINE_STYLE_OPTIONS,
-                None,
-                "figureComposerAxesMethodTickParamsGridLineStyleCombo",
-                "Grid line style.",
-                none_label=LINE_STYLE_DEFAULT_LABEL,
+            MethodControlSpec(
+                kind=MethodControlKind.TICK_PARAMS,
+                label="Ticks",
+                tooltip="Compact editor for ax.tick_params keyword arguments.",
+                object_name="figureComposerAxesMethodTickParamsEditor",
             ),
         ),
     ),
@@ -3076,6 +2916,8 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.PLOT_DATA_ARGS:
             _build_plot_data_args_editor(tool, operation, spec, layout)
+        case MethodControlKind.TICK_PARAMS:
+            _build_tick_params_editor(tool, operation, layout)
         case MethodControlKind.STRING_TUPLE_ARG:
             index = _control_arg_index(control)
             text, mixed = tool._batch_text(
@@ -3607,6 +3449,8 @@ def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
             MethodControlKind.COLOR_KWARG,
         }
     }
+    if any(control.kind == MethodControlKind.TICK_PARAMS for control in spec.controls):
+        keys.update(TICK_PARAMS_CONTROLLED_KWARGS)
     if _method_has_transform_control(spec):
         keys.add("transform")
     return frozenset(keys)
@@ -3638,6 +3482,29 @@ def _update_current_extra_method_kwargs(
         }
         kwargs.update(
             {key: value for key, value in extra_kwargs.items() if key not in controlled}
+        )
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwargs)
+
+
+def _update_current_tick_params_kwargs(
+    tool: FigureComposerTool, tick_kwargs: Mapping[str, typing.Any]
+) -> None:
+    def update_kwargs(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        kwargs = {
+            key: value
+            for key, value in operation.method_kwargs.items()
+            if key not in TICK_PARAMS_CONTROLLED_KWARGS
+        }
+        kwargs.update(
+            {
+                key: value
+                for key, value in tick_kwargs.items()
+                if key in TICK_PARAMS_CONTROLLED_KWARGS
+            }
         )
         return operation.model_copy(update={"method_kwargs": kwargs})
 
@@ -3752,6 +3619,42 @@ def _build_plot_data_args_editor(
         _build_picked_plot_data_args_editor(tool, operation, layout)
         return
     _build_entered_plot_data_args_editor(tool, operation, spec, layout)
+
+
+def _build_tick_params_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    tick_kwargs = {
+        key: value
+        for key, value in operation.method_kwargs.items()
+        if key in TICK_PARAMS_CONTROLLED_KWARGS
+    }
+    mixed = tool._batch_is_mixed(
+        operation,
+        lambda target: {
+            key: value
+            for key, value in target.method_kwargs.items()
+            if key in TICK_PARAMS_CONTROLLED_KWARGS
+        },
+    )
+    editor = TickParamsEditorWidget(
+        {} if mixed else tick_kwargs,
+        parent=layout.parentWidget(),
+    )
+    tool._connect_value_signal(
+        editor,
+        editor.sigTickParamsChanged,
+        lambda kwargs: dict(kwargs),
+        lambda kwargs: _update_current_tick_params_kwargs(tool, kwargs),
+    )
+    tool._add_form_row(
+        layout,
+        "Ticks",
+        tool._mixed_value_widget(editor, mixed=mixed, parent=layout.parentWidget()),
+        "Compact controls for ax.tick_params.",
+    )
 
 
 def _build_entered_plot_data_args_editor(
