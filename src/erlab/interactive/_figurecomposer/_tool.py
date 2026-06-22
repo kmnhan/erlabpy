@@ -1212,27 +1212,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_section_keys: list[str] = []
         step_inspector_layout.addWidget(self.step_navigator)
 
-        self.step_detail_splitter = QtWidgets.QSplitter(
-            QtCore.Qt.Orientation.Horizontal, self.step_inspector
-        )
-        self.step_detail_splitter.setObjectName("figureComposerStepDetailSplitter")
-        self.step_detail_splitter.setChildrenCollapsible(False)
-        step_inspector_layout.addWidget(self.step_detail_splitter, 1)
-
-        self.step_editor_stack = QtWidgets.QStackedWidget(self.step_detail_splitter)
+        self.step_editor_stack = QtWidgets.QStackedWidget(self.step_inspector)
         self.step_editor_stack.setObjectName("figureComposerStepSectionStack")
-        self.step_detail_splitter.addWidget(self.step_editor_stack)
+        step_inspector_layout.addWidget(self.step_editor_stack, 1)
         self._operation_editor_pages: list[QtWidgets.QWidget] = []
-
-        self.source_inspector = SourceInspectorWidget(self.step_detail_splitter)
-        self.source_inspector.setMinimumWidth(260)
-        self.source_inspector.followSelectionChanged.connect(
-            self._source_inspector_follow_changed
-        )
-        self.step_detail_splitter.addWidget(self.source_inspector)
-        self.step_detail_splitter.setStretchFactor(0, 2)
-        self.step_detail_splitter.setStretchFactor(1, 1)
-        self.step_detail_splitter.setSizes((540, 300))
 
         self.step_sources_page = QtWidgets.QWidget(self.step_editor_stack)
         self.step_sources_page.setObjectName("figureComposerStepSourcesPage")
@@ -1311,6 +1294,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
         sources_layout.addWidget(self.source_list, 1)
+        self.source_inspector = SourceInspectorWidget(self.step_sources_page)
+        sources_layout.addWidget(self.source_inspector)
 
         self.target_axes_page = QtWidgets.QWidget(self.step_editor_stack)
         self.target_axes_page.setObjectName("figureComposerTargetAxesPage")
@@ -1955,10 +1940,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current: QtWidgets.QTreeWidgetItem | None,
         _previous: QtWidgets.QTreeWidgetItem | None,
     ) -> None:
-        if (
-            self._updating_source_selection
-            or not self.source_inspector.follows_selection()
-        ):
+        if self._updating_source_selection:
             return
         source_name = self._source_name_from_list_item(current)
         if source_name is None:
@@ -2202,12 +2184,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_list_row_used(item, source_name in used_sources)
         self._refresh_source_inspector()
 
-    @QtCore.Slot(bool)
-    def _source_inspector_follow_changed(self, checked: bool) -> None:
-        if checked:
-            self._source_inspector_target = self._default_source_inspector_target()
-            self._refresh_source_inspector()
-
     def _default_source_inspector_target(self) -> str | None:
         current = self._current_operation()
         source_states = self._source_by_name()
@@ -2229,12 +2205,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not isinstance(inspector, SourceInspectorWidget):
             return
         source_states = self._source_by_name()
-        if inspector.follows_selection():
-            target = self._source_inspector_target
-            if target is None:
-                target = self._default_source_inspector_target()
-        else:
-            target = self._source_inspector_target
+        target = self._source_inspector_target
+        if target is None:
+            target = self._default_source_inspector_target()
         if (
             target is not None
             and target not in self._source_data
@@ -2252,10 +2225,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_name=target,
             source_state=None if target is None else source_states.get(target),
             data=None if target is None else self._source_data.get(target),
-            operation=operation,
             operation_source_names=operation_sources,
-            source_data=self._source_data,
-            source_states=source_states,
         )
 
     def _select_source_list_row_silent(self, source_name: str | None) -> None:
@@ -3492,11 +3462,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 operation_id = self._operation_id_for_item(item)
                 if operation_id is not None:
                     self._set_selected_operation_ids_silent({operation_id})
-        if (
-            isinstance(getattr(self, "source_inspector", None), SourceInspectorWidget)
-            and self.source_inspector.follows_selection()
-        ):
-            self._source_inspector_target = None
+        self._source_inspector_target = None
         self._sync_axes_selector()
         self._update_operation_editor()
 
