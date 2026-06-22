@@ -2672,7 +2672,7 @@ def _build_method_editor(
 
     tool._add_form_section(
         layout,
-        "Call",
+        "Command",
         object_name="figureComposerMethodCallSection",
     )
     family_combo = tool._combo(
@@ -2758,7 +2758,7 @@ def _build_method_editor(
     if has_value_controls:
         tool._add_form_section(
             layout,
-            "Values",
+            "Parameters",
             object_name="figureComposerMethodValuesSection",
         )
 
