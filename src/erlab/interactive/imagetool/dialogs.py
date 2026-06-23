@@ -139,6 +139,7 @@ class _ScalarSelectionControls:
         self._include_width = include_width
 
         dim_size = data.sizes[dim]
+        index_minimum = -dim_size if dim_size > 0 else 0
         coord = np.asarray(data[dim].values)
         try:
             coord_float = np.asarray(coord, dtype=float)
@@ -178,7 +179,7 @@ class _ScalarSelectionControls:
         self.index_spin = erlab.interactive.utils.BetterSpinBox(
             integer=True,
             compact=False,
-            minimum=0,
+            minimum=index_minimum,
             maximum=max(dim_size - 1, 0),
             value=current_index,
         )
@@ -1916,6 +1917,7 @@ class _SelectionRow:
         )
         self._scalar_controls = scalar_controls
         self._coord_ascending = scalar_controls.coord_ascending
+        self._dim_size = data.sizes[dim]
         stop_index = min(current_index + 1, data.sizes[dim] - 1)
         stop_value = float(scalar_controls.coord[stop_index])
 
@@ -1934,7 +1936,7 @@ class _SelectionRow:
         self.index_stop_spin = erlab.interactive.utils.BetterSpinBox(
             integer=True,
             compact=False,
-            minimum=0,
+            minimum=-self._dim_size if self._dim_size > 0 else 0,
             maximum=data.sizes[dim],
             value=min(current_index + 1, data.sizes[dim]),
         )
@@ -2088,6 +2090,18 @@ class _SelectionRow:
             return None
         return int(self.step_spin.value())
 
+    def _isel_slice(self, start: int, stop: int) -> slice:
+        def _normalized_stop(value: int) -> int:
+            if value < 0:
+                return max(value + self._dim_size, 0)
+            return min(value, self._dim_size)
+
+        start_position = _normalized_stop(start)
+        stop_position = _normalized_stop(stop)
+        if start_position <= stop_position:
+            return slice(start, stop, self._step_value())
+        return slice(stop, start, self._step_value())
+
     def indexer(self) -> tuple[Hashable, typing.Any]:
         if self.method == "isel":
             start = int(self.index_start_spin.value())
@@ -2101,11 +2115,7 @@ class _SelectionRow:
             )
             if range_start is None or range_stop is None:
                 return self.dim, slice(range_start, range_stop, self._step_value())
-            return self.dim, slice(
-                min(range_start, range_stop),
-                max(range_start, range_stop),
-                self._step_value(),
-            )
+            return self.dim, self._isel_slice(range_start, range_stop)
 
         start = float(self.value_start_spin.value())
         if self.kind == "point":
