@@ -10,7 +10,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from erlab.interactive._figurecomposer._defaults import _current_options
-from erlab.interactive._figurecomposer._labels import label_context_field_sources
+from erlab.interactive._figurecomposer._labels import (
+    label_context_coord_alias,
+    label_context_field_sources,
+    label_context_original_field_names,
+)
 from erlab.interactive._figurecomposer._norms import _cmap_with_reverse
 
 if typing.TYPE_CHECKING:
@@ -76,17 +80,21 @@ def numeric_context_field_names(
 ) -> tuple[str, ...]:
     names: list[str] = []
     field_sources = label_context_field_sources(contexts)
+    original_names = label_context_original_field_names(contexts)
     for context in contexts:
         for name in context:
             if name in _GENERIC_CONTEXT_FIELDS or name in names:
                 continue
             if field_sources and field_sources.get(name) != "coord":
                 continue
+            coord_name = original_names.get(name, name) or name
+            if coord_name in names:
+                continue
             try:
-                values_from_contexts(contexts, name, item_name="line")
+                values_from_contexts(contexts, coord_name, item_name="line")
             except ValueError:
                 continue
-            names.append(name)
+            names.append(coord_name)
     return tuple(names)
 
 
@@ -100,13 +108,14 @@ def values_from_contexts(
         raise ValueError(f"Choose a coordinate to color {item_name}s")
     values: list[float] = []
     for context in contexts:
-        if coord not in context:
+        field = label_context_coord_alias(context, coord)
+        if field is None:
             raise ValueError(
                 f"Cannot color {item_name}s by {coord!r}: "
                 f"the coordinate is missing for one or more {item_name}s"
             )
         try:
-            value = float(context[coord])
+            value = float(context[field])
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Cannot color {item_name}s by {coord!r}: "

@@ -19,6 +19,7 @@ from erlab.interactive._figurecomposer._code import (
 from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._labels import (
     label_context,
+    label_coord_placeholder_name,
     label_editor_text,
     label_field_names,
     label_fstring_code,
@@ -707,8 +708,6 @@ def _plot_slices_line_label_contexts(
             dim=operation.slice_dim,
             value=value,
         )
-        if operation.slice_dim and value is not None:
-            context[operation.slice_dim] = value
         contexts.append(context)
     return tuple(contexts)
 
@@ -1085,8 +1084,10 @@ def _plot_slices_label_fstring_code(
         field_expressions["dim"] = string_literal_expression(operation.slice_dim)
     if "value" in fields and operation.slice_dim:
         field_expressions["value"] = value_expr
-    if operation.slice_dim in fields:
-        field_expressions[operation.slice_dim] = value_expr
+    if operation.slice_dim:
+        coord_field = label_coord_placeholder_name(operation.slice_dim)
+        if coord_field in fields:
+            field_expressions[coord_field] = value_expr
     return label_fstring_code(operation.line_label_text, field_expressions)
 
 

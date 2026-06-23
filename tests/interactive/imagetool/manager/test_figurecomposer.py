@@ -19289,7 +19289,7 @@ def test_figure_composer_line_label_placeholders_render_and_codegen(qtbot) -> No
     code = tool.generated_code()
     assert expected_labels[0] not in code
     assert expected_labels[1] not in code
-    assert 'profile.coords["eV"].values.item()' in code
+    assert "profile.coords['eV'].values.item()" in code
     assert "profile_labels" not in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
@@ -19320,7 +19320,7 @@ def test_figure_composer_line_label_placeholders_accept_spaced_names(
         update={
             "line_x": "kx",
             "line_iter_dim": "sample temp",
-            "line_label_text": "{sample temp:g} K, {sample label}",
+            "line_label_text": "{sample_temp + 1.5:g} K, {sample_label}",
         }
     )
     tool = FigureComposerTool(
@@ -19333,15 +19333,15 @@ def test_figure_composer_line_label_placeholders_accept_spaced_names(
     )
     qtbot.addWidget(tool)
 
-    expected_labels = ["20 K, annealed", "30 K, annealed"]
+    expected_labels = ["21.5 K, annealed", "31.5 K, annealed"]
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert [line.get_label() for line in tool.figure.axes[0].lines] == expected_labels
 
     code = tool.generated_code()
     assert expected_labels[0] not in code
     assert expected_labels[1] not in code
-    assert 'profile.coords["sample temp"].values.item()' in code
-    assert 'profile.attrs["sample label"]' in code
+    assert "profile.coords['sample temp'].values.item() + 1.5" in code
+    assert "profile.attrs['sample label']" in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
     assert [
@@ -19779,7 +19779,7 @@ def test_figure_composer_line_profile_style_codegen_helper_edges() -> None:
     assert loop_values[2] == "['first', 'second']"
     assert loop_values[3] == "line_colors"
     assert any("line_color_values =" in line for line in lines)
-    assert "label=f'{source}:{index + 1}" in kwargs
+    assert 'label=f"{source}:{index + 1}' in kwargs
     assert "color=color" in kwargs
 
     with pytest.raises(ValueError, match="Choose a coordinate"):
@@ -19882,17 +19882,38 @@ def test_figure_composer_label_helper_edges() -> None:
         dim="sample temp",
         value=np.asarray([20.0]),
     )
+    assert spaced_context["sample_temp"] == 20.0
+    assert spaced_context["sample_label"] == "annealed"
     assert figurecomposer_labels.labels_from_text(
-        "{sample temp:g} K, {sample label}", (spaced_context,)
-    ) == ("20 K, annealed",)
+        "{sample_temp + 1.5:g} K, {sample_label}", (spaced_context,)
+    ) == ("21.5 K, annealed",)
+    with pytest.raises(ValueError, match=r"Use \{sample_temp:g\}"):
+        figurecomposer_labels.labels_from_text("{sample temp:g}", (spaced_context,))
     label_code = figurecomposer_labels.label_fstring_code(
-        "{sample temp:g} K, {sample label}",
+        "{sample_temp + 1.5:g} K, {sample_label}",
         {
-            "sample temp": figurecomposer_labels.coord_value_expression("sample temp"),
-            "sample label": figurecomposer_labels.attr_value_expression("sample label"),
+            "sample_temp": figurecomposer_labels.coord_value_expression("sample temp"),
+            "sample_label": figurecomposer_labels.attr_value_expression("sample label"),
         },
     )
-    assert eval(label_code, {"profile": spaced_profile}) == "20 K, annealed"  # noqa: S307
+    assert eval(label_code, {"profile": spaced_profile}) == "21.5 K, annealed"  # noqa: S307
+    collision_profile = xr.DataArray(
+        [1.0],
+        dims=("x",),
+        coords={
+            "x": [0.0],
+            "sample temp": 20.0,
+            "sample-temp": 30.0,
+            "class": 1.0,
+            "2 theta": 2.0,
+        },
+        name="profile",
+    )
+    collision_context = figurecomposer_labels.label_context(collision_profile, index=0)
+    assert collision_context["sample_temp"] == 20.0
+    assert collision_context["sample_temp_2"] == 30.0
+    assert collision_context["class_"] == 1.0
+    assert collision_context["_2_theta"] == 2.0
     assert figurecomposer_labels.labels_from_text("", (), default="fallback") == ()
     assert figurecomposer_labels.labels_from_text(
         "", (context, context), literal_values=("one",), default=None
@@ -19907,6 +19928,13 @@ def test_figure_composer_label_helper_edges() -> None:
     assert figurecomposer_labels.labels_from_text(
         "{source!r}:{sample_temp:.1f}", (context,)
     ) == ("'map':20.0",)
+    assert figurecomposer_labels.labels_from_text(
+        "{sample_temp + 1.5:.1f}", (context,)
+    ) == ("21.5",)
+    with pytest.raises(ValueError, match="basic operators"):
+        figurecomposer_labels.labels_from_text("{abs(sample_temp)}", (context,))
+    with pytest.raises(ValueError, match="not available"):
+        figurecomposer_labels.labels_from_text("{missing + 1}", (context,))
     with pytest.raises(ValueError, match="not available"):
         figurecomposer_labels.labels_from_text("{missing:g}", (context,))
     with pytest.raises(ValueError, match="Could not format"):
@@ -19918,7 +19946,7 @@ def test_figure_composer_label_helper_edges() -> None:
         figurecomposer_labels.label_fstring_code(
             r"{source}\{missing}", {"source": "source"}
         )
-        == r"f'{source}\\{{missing}}'"
+        == r'f"{source}\\{{missing}}"'
     )
     with pytest.raises(ValueError, match="not available"):
         figurecomposer_labels.label_fstring_code("{missing:g}", {"source": "source"})
@@ -19941,9 +19969,13 @@ def test_figure_composer_label_helper_edges() -> None:
     assert "comma-separated" in figurecomposer_labels.label_text_tooltip(
         (), item_name="profile"
     )
-    assert "Available" in figurecomposer_labels.label_text_tooltip(
-        (context,), item_name="profile"
+    tooltip = figurecomposer_labels.label_text_tooltip(
+        (spaced_context,), item_name="profile"
     )
+    assert "\n\nUse f-string placeholders" in tooltip
+    assert "{value + 1.5:.1f}" in tooltip
+    assert "{sample_temp}" in tooltip
+    assert "sample temp" in tooltip
     assert (
         figurecomposer_labels.label_editor_text(
             FigureOperationState.line(label="line", source="data").model_copy(
@@ -20017,7 +20049,7 @@ def test_figure_composer_plot_slices_line_label_placeholders_accept_spaced_dim(
         axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
         slice_dim="sample temp",
         slice_values=tuple(float(value) for value in sample_temp),
-    ).model_copy(update={"line_label_text": "{sample temp:g} K"})
+    ).model_copy(update={"line_label_text": "{sample_temp + 1.5:g} K"})
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
@@ -20029,7 +20061,7 @@ def test_figure_composer_plot_slices_line_label_placeholders_accept_spaced_dim(
     )
     qtbot.addWidget(tool)
 
-    expected_labels = ["20 K", "30 K"]
+    expected_labels = ["21.5 K", "31.5 K"]
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert [axis.lines[0].get_label() for axis in tool.figure.axes] == expected_labels
 

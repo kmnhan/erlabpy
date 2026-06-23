@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import keyword
 import re
 import typing
 
@@ -27,13 +29,57 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
-_PLACEHOLDER_RE = re.compile(
-    r"\{(?P<name>[^{}!:]+?)(?:!(?P<conversion>[rsa]))?"
-    r"(?::(?P<format>[^{}]*))?\}"
-)
 _GENERIC_PLACEHOLDER_ORDER = ("value", "dim", "number", "index", "source")
 _LABEL_FIELD_SOURCES_KEY = "__figure_composer_label_field_sources__"
-_LABEL_INTERNAL_KEYS = frozenset({_LABEL_FIELD_SOURCES_KEY})
+_LABEL_FIELD_ORIGINAL_NAMES_KEY = "__figure_composer_label_original_names__"
+_LABEL_COORD_ALIASES_KEY = "__figure_composer_label_coord_aliases__"
+_LABEL_ATTR_ALIASES_KEY = "__figure_composer_label_attr_aliases__"
+_LABEL_INTERNAL_KEYS = frozenset(
+    {
+        _LABEL_FIELD_SOURCES_KEY,
+        _LABEL_FIELD_ORIGINAL_NAMES_KEY,
+        _LABEL_COORD_ALIASES_KEY,
+        _LABEL_ATTR_ALIASES_KEY,
+    }
+)
+_FSTRING_ALLOWED_EXPR_NODES = (
+    ast.Add,
+    ast.And,
+    ast.BinOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.Constant,
+    ast.Div,
+    ast.Eq,
+    ast.FloorDiv,
+    ast.Gt,
+    ast.GtE,
+    ast.In,
+    ast.Is,
+    ast.IsNot,
+    ast.Load,
+    ast.Lt,
+    ast.LtE,
+    ast.Mod,
+    ast.Mult,
+    ast.Name,
+    ast.Not,
+    ast.NotEq,
+    ast.NotIn,
+    ast.Or,
+    ast.Pow,
+    ast.Sub,
+    ast.UAdd,
+    ast.USub,
+    ast.UnaryOp,
+)
+
+
+class _ParsedLabelField(typing.NamedTuple):
+    placeholder: str
+    expression: ast.expr
+    conversion: int
+    format_spec: ast.JoinedStr | None
 
 
 class _LabelPlaceholderError(ValueError):
@@ -41,19 +87,19 @@ class _LabelPlaceholderError(ValueError):
 
 
 def _field_names(text: str) -> set[str]:
-    return {match.group("name") for match in _PLACEHOLDER_RE.finditer(text)}
+    names: set[str] = set()
+    for chunk in _iter_label_chunks(text):
+        if isinstance(chunk, _ParsedLabelField):
+            names.update(_field_names_from_parsed_field(chunk))
+    return names
 
 
 def _explicit_field_names(text: str) -> set[str]:
-    return {
-        match.group("name")
-        for match in _PLACEHOLDER_RE.finditer(text)
-        if _placeholder_is_explicit(match)
-    }
-
-
-def _placeholder_is_explicit(match: re.Match[str]) -> bool:
-    return bool(match.group("conversion") or match.group("format") is not None)
+    names: set[str] = set()
+    for chunk in _iter_label_chunks(text):
+        if isinstance(chunk, _ParsedLabelField) and _placeholder_is_explicit(chunk):
+            names.update(_field_names_from_parsed_field(chunk))
+    return names
 
 
 def _available_field_names(
@@ -77,6 +123,57 @@ def _scalar_value(value: typing.Any) -> typing.Any | None:
         return None
 
 
+def _label_identifier(name: str) -> str:
+    identifier = re.sub(r"\W+", "_", str(name).strip(), flags=re.UNICODE).strip("_")
+    if not identifier:
+        identifier = "field"
+    if identifier[0].isdigit():
+        identifier = f"_{identifier}"
+    if keyword.iskeyword(identifier):
+        identifier = f"{identifier}_"
+    if not identifier.isidentifier():
+        identifier = "field"
+    return identifier
+
+
+def _unique_label_identifier(name: str, used: set[str]) -> str:
+    base = _label_identifier(name)
+    if base not in used:
+        return base
+    index = 2
+    while f"{base}_{index}" in used:
+        index += 1
+    return f"{base}_{index}"
+
+
+def label_coord_placeholder_name(coord_name: str) -> str:
+    return _unique_label_identifier(coord_name, set(_GENERIC_PLACEHOLDER_ORDER))
+
+
+def _add_label_field(
+    context: dict[str, typing.Any],
+    *,
+    original_name: str,
+    value: typing.Any,
+    source: typing.Literal["coord", "attr"],
+    used: set[str],
+    field_sources: dict[str, str],
+    original_names: dict[str, str],
+    coord_aliases: dict[str, str],
+    attr_aliases: dict[str, str],
+) -> str:
+    alias = _unique_label_identifier(original_name, used)
+    used.add(alias)
+    context[alias] = value
+    field_sources[alias] = source
+    original_names[alias] = original_name
+    if source == "coord":
+        coord_aliases.setdefault(original_name, alias)
+    else:
+        attr_aliases.setdefault(original_name, alias)
+    return alias
+
+
 def label_context(
     profile: xr.DataArray | None = None,
     *,
@@ -89,31 +186,69 @@ def label_context(
         "index": index,
         "number": index + 1,
     }
+    used = set(context)
     if source is not None:
         context["source"] = source
+        used.add("source")
     if dim is not None:
         context["dim"] = dim
+        used.add("dim")
     if value is not None:
         scalar = _scalar_value(value)
         context["value"] = value if scalar is None else scalar
+        used.add("value")
+    field_sources: dict[str, str] = {}
+    original_names: dict[str, str] = {}
+    coord_aliases: dict[str, str] = {}
+    attr_aliases: dict[str, str] = {}
     if profile is not None:
-        field_sources: dict[str, str] = {}
         for name, coord in profile.coords.items():
             scalar = _scalar_value(coord.values)
             if scalar is not None:
-                field = str(name)
-                context[field] = scalar
-                field_sources[field] = "coord"
+                _add_label_field(
+                    context,
+                    original_name=str(name),
+                    value=scalar,
+                    source="coord",
+                    used=used,
+                    field_sources=field_sources,
+                    original_names=original_names,
+                    coord_aliases=coord_aliases,
+                    attr_aliases=attr_aliases,
+                )
         for name, value in profile.attrs.items():
-            field = str(name)
-            if field in context:
-                continue
             scalar = _scalar_value(value)
             if scalar is not None:
-                context[field] = scalar
-                field_sources[field] = "attr"
-        if field_sources:
-            context[_LABEL_FIELD_SOURCES_KEY] = field_sources
+                _add_label_field(
+                    context,
+                    original_name=str(name),
+                    value=scalar,
+                    source="attr",
+                    used=used,
+                    field_sources=field_sources,
+                    original_names=original_names,
+                    coord_aliases=coord_aliases,
+                    attr_aliases=attr_aliases,
+                )
+    if dim is not None and value is not None and dim not in coord_aliases:
+        scalar = _scalar_value(value)
+        if scalar is not None:
+            _add_label_field(
+                context,
+                original_name=dim,
+                value=scalar,
+                source="coord",
+                used=used,
+                field_sources=field_sources,
+                original_names=original_names,
+                coord_aliases=coord_aliases,
+                attr_aliases=attr_aliases,
+            )
+    if field_sources:
+        context[_LABEL_FIELD_SOURCES_KEY] = field_sources
+        context[_LABEL_FIELD_ORIGINAL_NAMES_KEY] = original_names
+        context[_LABEL_COORD_ALIASES_KEY] = coord_aliases
+        context[_LABEL_ATTR_ALIASES_KEY] = attr_aliases
     return context
 
 
@@ -132,10 +267,8 @@ def labels_from_text(
     if not stripped:
         return _literal_label_values(literal_values, count, default=default)
 
-    fields = _field_names(text)
     available_fields = _available_field_names(contexts)
-    recognized_fields = fields & available_fields
-    if recognized_fields or _explicit_field_names(text):
+    if _text_uses_placeholders(text, available_fields=available_fields):
         labels: list[str] = []
         for context in contexts:
             try:
@@ -164,11 +297,8 @@ def label_text_uses_placeholders(
     stripped = text.strip()
     if not stripped:
         return False
-    fields = _field_names(text)
-    if not fields:
-        return False
     available_fields = _available_field_names(contexts)
-    return bool((fields & available_fields) or _explicit_field_names(text))
+    return _text_uses_placeholders(text, available_fields=available_fields)
 
 
 def label_field_names(text: str) -> set[str]:
@@ -176,31 +306,27 @@ def label_field_names(text: str) -> set[str]:
 
 
 def label_fstring_code(text: str, field_expressions: Mapping[str, str]) -> str:
-    parts = ["f'"]
-    previous_end = 0
-    for match in _PLACEHOLDER_RE.finditer(text):
-        parts.append(_fstring_literal(text[previous_end : match.start()]))
-        name = match.group("name")
-        if name not in field_expressions:
-            if _placeholder_is_explicit(match):
-                raise _unavailable_placeholder_error(
-                    match,
-                    set(field_expressions),
-                    item_name="generated code",
-                )
-            parts.append(_fstring_literal(match.group(0)))
-            previous_end = match.end()
+    parts = ['f"']
+    for chunk in _iter_label_chunks(text):
+        if isinstance(chunk, str):
+            parts.append(_fstring_literal(chunk))
             continue
-        field_code = "{" + field_expressions[name]
-        if conversion := match.group("conversion"):
-            field_code += f"!{conversion}"
-        if format_spec := match.group("format"):
-            field_code += f":{format_spec}"
-        field_code += "}"
-        parts.append(field_code)
-        previous_end = match.end()
-    parts.append(_fstring_literal(text[previous_end:]))
-    parts.append("'")
+        fields = _field_names_from_parsed_field(chunk)
+        if not fields and _placeholder_is_literal_when_missing(chunk):
+            parts.append(_fstring_literal(chunk.placeholder))
+            continue
+        missing = fields - set(field_expressions)
+        if missing:
+            if _placeholder_is_literal_when_missing(chunk):
+                parts.append(_fstring_literal(chunk.placeholder))
+                continue
+            raise _unavailable_placeholder_error(
+                chunk.placeholder,
+                set(field_expressions),
+                item_name="generated code",
+            )
+        parts.append(_field_fstring_code(chunk, field_expressions))
+    parts.append('"')
     return "".join(parts)
 
 
@@ -228,8 +354,199 @@ def label_context_field_sources(
     return field_sources
 
 
+def label_context_original_field_names(
+    contexts: Sequence[Mapping[str, typing.Any]],
+) -> dict[str, str]:
+    original_names: dict[str, str] = {}
+    for context in contexts:
+        names = context.get(_LABEL_FIELD_ORIGINAL_NAMES_KEY, {})
+        if not isinstance(names, dict):
+            continue
+        for alias, original_name in names.items():
+            original = str(original_name)
+            if alias in original_names and original_names[alias] != original:
+                original_names[alias] = ""
+            else:
+                original_names[alias] = original
+    return original_names
+
+
+def label_context_coord_alias(
+    context: Mapping[str, typing.Any], coord_name: str
+) -> str | None:
+    aliases = context.get(_LABEL_COORD_ALIASES_KEY, {})
+    if isinstance(aliases, dict):
+        alias = aliases.get(coord_name)
+        if isinstance(alias, str):
+            return alias
+    if coord_name in context:
+        return coord_name
+    return None
+
+
 def string_literal_expression(value: str) -> str:
     return json.dumps(value)
+
+
+def _text_uses_placeholders(text: str, *, available_fields: set[str]) -> bool:
+    for chunk in _iter_label_chunks(text, available_fields=available_fields):
+        if not isinstance(chunk, _ParsedLabelField):
+            continue
+        fields = _field_names_from_parsed_field(chunk)
+        if fields & available_fields or _placeholder_is_explicit(chunk):
+            return True
+    return False
+
+
+def _iter_label_chunks(
+    text: str,
+    *,
+    available_fields: set[str] | None = None,
+    item_name: str = "profile",
+) -> typing.Iterator[str | _ParsedLabelField]:
+    literal_parts: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "{" and index + 1 < length and text[index + 1] == "{":
+            literal_parts.append("{")
+            index += 2
+            continue
+        if char == "}" and index + 1 < length and text[index + 1] == "}":
+            literal_parts.append("}")
+            index += 2
+            continue
+        if char != "{":
+            literal_parts.append(char)
+            index += 1
+            continue
+        end = text.find("}", index + 1)
+        if end < 0:
+            literal_parts.append(text[index:])
+            break
+        if literal_parts:
+            yield "".join(literal_parts)
+            literal_parts.clear()
+        placeholder = text[index : end + 1]
+        field_text = text[index + 1 : end]
+        parsed = _parse_label_field(
+            placeholder,
+            field_text,
+            available_fields=available_fields or set(),
+            item_name=item_name,
+        )
+        if parsed is None:
+            yield placeholder
+        else:
+            yield parsed
+        index = end + 1
+    if literal_parts:
+        yield "".join(literal_parts)
+
+
+def _parse_label_field(
+    placeholder: str,
+    field_text: str,
+    *,
+    available_fields: set[str],
+    item_name: str,
+) -> _ParsedLabelField | None:
+    if not field_text:
+        return None
+    try:
+        expression = ast.parse("f" + repr(placeholder), mode="eval")
+    except SyntaxError as exc:
+        if _invalid_placeholder_is_literal(field_text, available_fields):
+            return None
+        raise _invalid_placeholder_error(
+            placeholder, field_text, available_fields, item_name=item_name
+        ) from exc
+    if not isinstance(expression.body, ast.JoinedStr):
+        return None
+    fields = [
+        value
+        for value in expression.body.values
+        if isinstance(value, ast.FormattedValue)
+    ]
+    if len(fields) != 1:
+        return None
+    field = fields[0]
+    format_spec = field.format_spec
+    if format_spec is not None and not isinstance(format_spec, ast.JoinedStr):
+        return None
+    return _ParsedLabelField(
+        placeholder=placeholder,
+        expression=field.value,
+        conversion=field.conversion,
+        format_spec=format_spec,
+    )
+
+
+def _invalid_placeholder_is_literal(
+    field_text: str, available_fields: set[str]
+) -> bool:
+    if ":" in field_text or "!" in field_text:
+        return False
+    normalized = _label_identifier(field_text)
+    return normalized not in available_fields
+
+
+def _invalid_placeholder_error(
+    placeholder: str,
+    field_text: str,
+    available_fields: set[str],
+    *,
+    item_name: str,
+) -> _LabelPlaceholderError:
+    message = (
+        f"Legend label placeholder {placeholder!r} is not valid f-string syntax "
+        f"for this {item_name}"
+    )
+    normalized = _label_identifier(field_text.split("!", 1)[0].split(":", 1)[0])
+    if normalized in available_fields:
+        suffix = field_text[len(field_text.split("!", 1)[0].split(":", 1)[0]) :]
+        message += f". Use {{{normalized}{suffix}}} instead"
+    available = _format_available_placeholders(available_fields)
+    if available:
+        message += f". Available placeholders: {available}"
+    return _LabelPlaceholderError(message)
+
+
+def _field_names_from_parsed_field(field: _ParsedLabelField) -> set[str]:
+    names = _field_names_from_expression(field.expression)
+    if field.format_spec is not None:
+        names.update(_field_names_from_joined_str(field.format_spec))
+    return names
+
+
+def _field_names_from_joined_str(joined: ast.JoinedStr) -> set[str]:
+    names: set[str] = set()
+    for value in joined.values:
+        if isinstance(value, ast.FormattedValue):
+            names.update(_field_names_from_expression(value.value))
+            if isinstance(value.format_spec, ast.JoinedStr):
+                names.update(_field_names_from_joined_str(value.format_spec))
+    return names
+
+
+def _field_names_from_expression(expression: ast.AST) -> set[str]:
+    return {node.id for node in ast.walk(expression) if isinstance(node, ast.Name)}
+
+
+def _placeholder_is_explicit(field: _ParsedLabelField) -> bool:
+    return not _placeholder_is_literal_when_missing(field)
+
+
+def _placeholder_is_literal_when_missing(field: _ParsedLabelField) -> bool:
+    return (
+        (
+            isinstance(field.expression, ast.Name)
+            or not _field_names_from_expression(field.expression)
+        )
+        and field.conversion == -1
+        and field.format_spec is None
+    )
 
 
 def _format_label_text(
@@ -240,43 +557,106 @@ def _format_label_text(
     item_name: str,
 ) -> str:
     parts: list[str] = []
-    previous_end = 0
-    for match in _PLACEHOLDER_RE.finditer(text):
-        parts.append(text[previous_end : match.start()])
-        name = match.group("name")
-        if name not in context:
-            if _placeholder_is_explicit(match):
-                raise _unavailable_placeholder_error(
-                    match, available_fields, item_name=item_name
-                )
-            parts.append(match.group(0))
-            previous_end = match.end()
+    for chunk in _iter_label_chunks(
+        text, available_fields=available_fields, item_name=item_name
+    ):
+        if isinstance(chunk, str):
+            parts.append(chunk)
             continue
-        value = context[name]
-        if conversion := match.group("conversion"):
-            converters: dict[str, typing.Callable[[typing.Any], str]] = {
-                "a": ascii,
-                "r": repr,
-                "s": str,
-            }
-            value = converters[conversion](value)
-        format_spec = match.group("format") or ""
+        if not _field_names_from_parsed_field(
+            chunk
+        ) and _placeholder_is_literal_when_missing(chunk):
+            parts.append(chunk.placeholder)
+            continue
         try:
-            parts.append(format(value, format_spec))
+            parts.append(_format_label_field(chunk, context, item_name=item_name))
+        except NameError:
+            if _placeholder_is_literal_when_missing(chunk):
+                parts.append(chunk.placeholder)
+                continue
+            raise _unavailable_placeholder_error(
+                chunk.placeholder, available_fields, item_name=item_name
+            ) from None
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"Could not format legend label placeholder {match.group(0)!r} "
+                f"Could not format legend label placeholder {chunk.placeholder!r} "
                 f"for this {item_name}"
             ) from exc
-        previous_end = match.end()
-    parts.append(text[previous_end:])
     return "".join(parts)
 
 
+def _format_label_field(
+    field: _ParsedLabelField,
+    context: Mapping[str, typing.Any],
+    *,
+    item_name: str,
+) -> str:
+    _validate_label_expression(field.expression, item_name=item_name)
+    value = _evaluate_label_expression(field.expression, context)
+    if field.conversion != -1:
+        converters: dict[int, typing.Callable[[typing.Any], str]] = {
+            ord("a"): ascii,
+            ord("r"): repr,
+            ord("s"): str,
+        }
+        if field.conversion not in converters:
+            raise ValueError(f"Unsupported f-string conversion {field.conversion!r}")
+        value = converters[field.conversion](value)
+    format_spec = ""
+    if field.format_spec is not None:
+        format_spec = _evaluate_format_spec(
+            field.format_spec, context, item_name=item_name
+        )
+    return format(value, format_spec)
+
+
+def _evaluate_format_spec(
+    joined: ast.JoinedStr,
+    context: Mapping[str, typing.Any],
+    *,
+    item_name: str,
+) -> str:
+    parts: list[str] = []
+    for value in joined.values:
+        if isinstance(value, ast.Constant):
+            parts.append(str(value.value))
+        elif isinstance(value, ast.FormattedValue):
+            nested = _ParsedLabelField(
+                placeholder="format spec",
+                expression=value.value,
+                conversion=value.conversion,
+                format_spec=value.format_spec
+                if isinstance(value.format_spec, ast.JoinedStr)
+                else None,
+            )
+            parts.append(_format_label_field(nested, context, item_name=item_name))
+    return "".join(parts)
+
+
+def _validate_label_expression(expression: ast.AST, *, item_name: str) -> None:
+    for node in ast.walk(expression):
+        if isinstance(node, _FSTRING_ALLOWED_EXPR_NODES):
+            continue
+        raise ValueError(
+            "Legend label expressions support scalar placeholders and basic "
+            f"operators only for this {item_name}"
+        )
+
+
+def _evaluate_label_expression(
+    expression: ast.expr, context: Mapping[str, typing.Any]
+) -> typing.Any:
+    compiled = compile(
+        ast.Expression(expression),
+        "<figure-composer-label>",
+        "eval",
+    )
+    return eval(compiled, {"__builtins__": {}}, dict(context))  # noqa: S307
+
+
 def _unavailable_placeholder_error(
-    match: re.Match[str], available_fields: set[str], *, item_name: str
+    placeholder: str, available_fields: set[str], *, item_name: str
 ) -> _LabelPlaceholderError:
-    placeholder = match.group(0)
     available = _format_available_placeholders(available_fields)
     message = (
         f"Legend label placeholder {placeholder!r} is not available for this "
@@ -294,13 +674,67 @@ def _format_available_placeholders(fields: set[str]) -> str:
     return ", ".join(f"{{{name}}}" for name in ordered)
 
 
+def _field_fstring_code(
+    field: _ParsedLabelField, field_expressions: Mapping[str, str]
+) -> str:
+    _validate_label_expression(field.expression, item_name="generated code")
+    expression = _expression_code(field.expression, field_expressions)
+    code = "{" + expression
+    if field.conversion != -1:
+        code += f"!{chr(field.conversion)}"
+    if field.format_spec is not None:
+        code += ":" + _format_spec_code(field.format_spec, field_expressions)
+    return code + "}"
+
+
+def _expression_code(expression: ast.expr, field_expressions: Mapping[str, str]) -> str:
+    transformed = _FieldExpressionSubstituter(field_expressions).visit(
+        typing.cast("ast.AST", expression)
+    )
+    ast.fix_missing_locations(transformed)
+    return ast.unparse(transformed)
+
+
+def _format_spec_code(
+    joined: ast.JoinedStr, field_expressions: Mapping[str, str]
+) -> str:
+    parts: list[str] = []
+    for value in joined.values:
+        if isinstance(value, ast.Constant):
+            parts.append(str(value.value).replace("{", "{{").replace("}", "}}"))
+        elif isinstance(value, ast.FormattedValue):
+            nested = _ParsedLabelField(
+                placeholder="format spec",
+                expression=value.value,
+                conversion=value.conversion,
+                format_spec=value.format_spec
+                if isinstance(value.format_spec, ast.JoinedStr)
+                else None,
+            )
+            parts.append(_field_fstring_code(nested, field_expressions))
+    return "".join(parts)
+
+
+class _FieldExpressionSubstituter(ast.NodeTransformer):
+    def __init__(self, field_expressions: Mapping[str, str]) -> None:
+        super().__init__()
+        self._field_expressions = field_expressions
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        expression = self._field_expressions.get(node.id)
+        if expression is None:
+            return node
+        replacement = ast.parse(expression, mode="eval").body
+        return ast.copy_location(replacement, node)
+
+
 def _fstring_literal(text: str) -> str:
     return (
         text.replace("\\", "\\\\")
         .replace("\n", "\\n")
         .replace("\r", "\\r")
         .replace("\t", "\\t")
-        .replace("'", "\\'")
+        .replace('"', '\\"')
         .replace("{", "{{")
         .replace("}", "}}")
     )
@@ -334,7 +768,10 @@ def default_label_text(
     source_count: int = 1,
 ) -> str:
     if dim:
-        direct_field = f"{{{dim}:g}}" if _values_are_numeric(values) else f"{{{dim}}}"
+        field = label_coord_placeholder_name(dim)
+        direct_field = (
+            f"{{{field}:g}}" if _values_are_numeric(values) else f"{{{field}}}"
+        )
         label = _property_label_template(dim, direct_field)
     else:
         label = fallback
@@ -369,14 +806,48 @@ def label_text_tooltip(
     *,
     item_name: str,
 ) -> str:
-    available = _format_available_placeholders(_available_field_names(contexts))
+    available_fields = _available_field_names(contexts)
+    available = _format_available_placeholders(available_fields)
     if not available:
-        return f"Enter one label or comma-separated {item_name} labels."
-    return (
-        f"Enter labels or placeholders. Available: {available}.\n"
-        "Numeric placeholders can use formats such as {value:g}.\n"
-        "Plain text and LaTeX braces are kept as typed."
-    )
+        return (
+            f"Enter one label for all {item_name}s, or one comma-separated label "
+            f"per {item_name}."
+        )
+    alias_lines = _format_alias_tooltip_lines(contexts)
+    lines = [
+        f"Enter one label for all {item_name}s, or comma-separated labels.",
+        "",
+        "Use f-string placeholders:",
+        "  {value:g}",
+        "  {value + 1.5:.1f}",
+        "  {source}, {number}",
+        "",
+        f"Available: {available}",
+    ]
+    if alias_lines:
+        lines.append("")
+        lines.append("Data names:")
+        lines.extend(alias_lines)
+    lines.extend(("", "Plain text and LaTeX braces are kept as typed."))
+    return "\n".join(lines)
+
+
+def _format_alias_tooltip_lines(
+    contexts: Sequence[Mapping[str, typing.Any]], *, limit: int = 8
+) -> list[str]:
+    field_sources = label_context_field_sources(contexts)
+    original_names = label_context_original_field_names(contexts)
+    lines: list[str] = []
+    for alias in sorted(original_names):
+        original = original_names[alias]
+        if not original or original == alias:
+            continue
+        source = field_sources.get(alias, "field")
+        lines.append(f"  {{{alias}}} = {source} {original!r}")
+    if len(lines) > limit:
+        remaining = len(lines) - limit
+        return [*lines[:limit], f"  ... plus {remaining} more"]
+    return lines
 
 
 def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:

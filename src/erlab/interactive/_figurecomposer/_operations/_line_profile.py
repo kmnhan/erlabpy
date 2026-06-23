@@ -22,6 +22,7 @@ from erlab.interactive._figurecomposer._labels import (
     default_label_text,
     label_context,
     label_context_field_sources,
+    label_context_original_field_names,
     label_editor_text,
     label_field_names,
     label_fstring_code,
@@ -1755,15 +1756,22 @@ def _line_label_fstring_code(
         field_expressions["value"] = coord_value_expression(operation.line_iter_dim)
 
     field_sources = label_context_field_sources(contexts)
+    original_names = label_context_original_field_names(contexts)
     for context in contexts:
         for name in context:
             if name in {"index", "number", "source", "dim", "value"}:
                 continue
             if name in fields:
+                original_name = original_names.get(name, name)
+                if not original_name:
+                    raise ValueError(
+                        f"Legend label placeholder {{{name}}} is not consistently "
+                        "available from the same coordinate or attribute"
+                    )
                 if field_sources.get(name) == "attr":
-                    field_expressions[name] = attr_value_expression(name)
+                    field_expressions[name] = attr_value_expression(original_name)
                 elif field_sources.get(name) == "coord":
-                    field_expressions[name] = coord_value_expression(name)
+                    field_expressions[name] = coord_value_expression(original_name)
                 elif field_sources.get(name) == "mixed":
                     raise ValueError(
                         f"Legend label placeholder {{{name}}} is not consistently "
