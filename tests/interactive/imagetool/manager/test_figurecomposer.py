@@ -68,6 +68,9 @@ from erlab.interactive._figurecomposer import (
     _line_transform,
 )
 from erlab.interactive._figurecomposer import (
+    _source_inspector as figurecomposer_source_inspector,
+)
+from erlab.interactive._figurecomposer import (
     _subplot_adjust as figurecomposer_subplot_adjust,
 )
 from erlab.interactive._figurecomposer import (
@@ -2092,6 +2095,72 @@ def test_figure_composer_source_inspector_updates_without_render_or_history(
     assert tool.source_inspector.source_name() == "y"
     assert tool.source_inspector.property("figureComposerSourceUsedByStep") is True
     assert tool.source_inspector.property("figureComposerSourceAlias") == "y"
+
+
+def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
+    data = xr.DataArray(
+        [1.0, 2.0],
+        dims=("x",),
+        coords={"x": [0.0, 1.0], 7: ("x", [10.0, 20.0])},
+        attrs={"note": "kept"},
+        name="source",
+    )
+    source = FigureSourceState(name="data", label="display")
+
+    missing_metadata = figurecomposer_source_inspector.source_metadata_tooltip(
+        source, "data", None
+    )
+    assert "Alias: data" in missing_metadata
+    assert "unavailable" in missing_metadata
+
+    metadata = figurecomposer_source_inspector.source_metadata_tooltip(
+        source, "data", data
+    )
+    assert "Dims: x: 2" in metadata
+    assert "Shape: 2" in metadata
+    assert "Dtype: float64" in metadata
+
+    assert "source is missing" in figurecomposer_source_inspector.source_value_tooltip(
+        None, ("data", None), axis="x"
+    )
+    assert "Use DataArray values" in (
+        figurecomposer_source_inspector.source_value_tooltip(
+            data, ("data", None), axis="y"
+        )
+    )
+    assert "Coordinate 'missing' is not available" in (
+        figurecomposer_source_inspector.source_value_tooltip(
+            data, ("coord", "missing"), axis="x"
+        )
+    )
+    numeric_coord_tooltip = figurecomposer_source_inspector.source_value_tooltip(
+        data, ("coord", "7"), axis="x"
+    )
+    assert "Coord dims: x" in numeric_coord_tooltip
+
+    inspector = figurecomposer_source_inspector.SourceInspectorWidget()
+    qtbot.addWidget(inspector)
+    inspector.set_context(
+        source_name=None,
+        source_state=None,
+        data=None,
+        operation_source_names=(),
+    )
+    assert inspector.source_name() is None
+    assert inspector.property("figureComposerSourceDims") == ()
+    assert inspector.property("figureComposerSourceUsedByStep") is False
+    assert not inspector.details_button.isEnabled()
+
+    inspector.set_context(
+        source_name="data",
+        source_state=source,
+        data=None,
+        operation_source_names=("data",),
+    )
+    assert inspector.source_name() == "data"
+    assert inspector.property("figureComposerSourceUsedByStep") is True
+    assert inspector.property("figureComposerSourceDims") == ()
+    assert not inspector.details_button.isEnabled()
 
 
 def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None:
@@ -15192,6 +15261,329 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
     )
 
 
+def test_figure_composer_axes_plot_data_helper_edges() -> None:
+    source = xr.DataArray(
+        np.arange(6.0).reshape(1, 6),
+        dims=("scan", "point"),
+        coords={"scan": [0], "point": np.linspace(0.0, 1.0, 6)},
+        name="source",
+    )
+    coord_grid = xr.DataArray(
+        np.ones((1, 6)),
+        dims=("scan", "point"),
+        coords=source.coords,
+        name="coord_grid",
+    )
+    source_with_grid_coord = source.assign_coords(grid=coord_grid)
+    source_with_2d_coord = xr.DataArray(
+        np.ones((2, 6)),
+        dims=("scan", "point"),
+        coords={"scan": [0, 1], "point": np.linspace(0.0, 1.0, 6)},
+        name="source_with_2d_coord",
+    ).assign_coords(
+        grid=(
+            ("scan", "point"),
+            np.arange(12.0).reshape(2, 6),
+        )
+    )
+    tool = types.SimpleNamespace(
+        _source_data={"source": source_with_grid_coord},
+        _source_display_name=lambda name: f"display {name}",
+        _source_names=lambda: ("source",),
+        _source_tooltip=lambda name: f"tooltip {name}",
+    )
+
+    assert figurecomposer_method._plot_data_mode_text("unknown") == "Enter values"
+    assert figurecomposer_method._plot_value_display(None) == "Choose values"
+    assert figurecomposer_method._plot_value_options(tool, None) == ()
+    assert figurecomposer_method._plot_value_options(tool, "missing") == ()
+    option_tool = types.SimpleNamespace(
+        _source_data={"source": source_with_2d_coord},
+        _source_display_name=lambda name: f"display {name}",
+        _source_names=lambda: ("source",),
+        _source_tooltip=lambda name: f"tooltip {name}",
+    )
+    assert ("coord", "grid") not in {
+        value
+        for _text, value in figurecomposer_method._plot_value_options(
+            option_tool, "source"
+        )
+    }
+    assert figurecomposer_method._plot_coord_by_name(source, "point") is not None
+    assert figurecomposer_method._plot_source_combo_tooltip("x", has_sources=False)
+    assert figurecomposer_method._plot_values_combo_tooltip(
+        "y", source="source", value_options_match=False
+    )
+    with pytest.raises(ValueError, match="Unknown plot value selection"):
+        figurecomposer_method._plot_value_combo_data_parts(("bad", None))
+
+    data_state = FigureMethodPlotValueState(source="source", kind="data")
+    code, value = figurecomposer_method._plot_value_code_and_data(tool, data_state)
+    assert str(code) == "source.squeeze(drop=True).values"
+    assert value.dims == ("point",)
+
+    coord_state = FigureMethodPlotValueState(
+        source="source", kind="coord", name="point"
+    )
+    coord_code, coord_value = figurecomposer_method._plot_value_code_and_data(
+        tool, coord_state
+    )
+    assert str(coord_code) == 'source.coords["point"].values'
+    assert coord_value.dims == ("point",)
+
+    with pytest.raises(ValueError, match="Choose a coordinate"):
+        figurecomposer_method._plot_value_data(
+            tool, FigureMethodPlotValueState(source="source", kind="coord")
+        )
+    with pytest.raises(ValueError, match="one-dimensional"):
+        figurecomposer_method._plot_value_data(
+            option_tool,
+            FigureMethodPlotValueState(source="source", kind="coord", name="grid"),
+        )
+    with pytest.raises(ValueError, match="Choose Y values"):
+        figurecomposer_method._picked_plot_args(
+            tool,
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="plot",
+            ).model_copy(update={"method_plot_data_mode": "from_data"}),
+        )
+
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(
+        update={
+            "method_plot_data_mode": "from_data",
+            "method_plot_y": data_state,
+        }
+    )
+    args = figurecomposer_method._picked_plot_args(tool, operation)
+    assert len(args) == 1
+    np.testing.assert_allclose(args[0], source.values.reshape(-1))
+    code_args = figurecomposer_method._picked_plot_code_args(tool, operation)
+    assert tuple(str(arg) for arg in code_args) == ("source.squeeze(drop=True).values",)
+
+
+def test_figure_composer_axes_plot_data_update_helpers() -> None:
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(
+        update={
+            "method_plot_data_mode": "entered",
+            "method_plot_x": FigureMethodPlotValueState(source="old", kind="data"),
+        }
+    )
+    data = xr.DataArray([1.0, 2.0], dims=("x",), name="data")
+    calls: list[bool] = []
+
+    class UpdateTool:
+        def __init__(self) -> None:
+            self._source_data = {"data": data}
+            self.operation = operation
+
+        def _source_names(self) -> tuple[str, ...]:
+            return ("data",)
+
+        def _update_operations(
+            self,
+            updater: Callable[[int, FigureOperationState], FigureOperationState],
+            *,
+            rebuild_editor: bool = False,
+        ) -> None:
+            calls.append(rebuild_editor)
+            self.operation = updater(0, self.operation)
+
+    tool = UpdateTool()
+    figurecomposer_method._update_current_plot_data_mode(tool, "invalid")
+    assert calls == []
+
+    figurecomposer_method._update_current_plot_data_mode(tool, "from_data")
+    assert calls[-1] is True
+    assert tool.operation.method_plot_data_mode == "from_data"
+    assert tool.operation.method_plot_y == FigureMethodPlotValueState(
+        source="data", kind="data"
+    )
+
+    figurecomposer_method._update_current_plot_value_source(tool, "x", None)
+    assert tool.operation.method_plot_x is None
+    figurecomposer_method._update_current_plot_value_source(tool, "x", "data")
+    assert tool.operation.method_plot_x == FigureMethodPlotValueState(
+        source="data", kind="data"
+    )
+    figurecomposer_method._update_current_plot_value_selection(
+        tool, "x", ("coord", "x")
+    )
+    assert tool.operation.method_plot_x == FigureMethodPlotValueState(
+        source="data", kind="coord", name="x"
+    )
+    figurecomposer_method._update_current_plot_value_selection(tool, "x", None)
+    assert tool.operation.method_plot_x is None
+
+    assert (
+        figurecomposer_method._source_names(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="missing",
+            )
+        )
+        == ()
+    )
+
+
+def test_figure_composer_axes_plot_combo_helper_edges(qtbot) -> None:
+    source = xr.DataArray(
+        np.arange(6.0).reshape(1, 6),
+        dims=("scan", "point"),
+        coords={
+            "scan": [0],
+            "point": np.linspace(0.0, 1.0, 6),
+            "scan_coord": ("scan", [10.0]),
+            "row_coord": (("scan", "point"), np.arange(6.0).reshape(1, 6)),
+        },
+        name="source",
+    )
+
+    class ComboTool:
+        def __init__(self) -> None:
+            self._source_data = {"source": source}
+            self.operation_editor = QtWidgets.QWidget()
+            self.operation = FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="plot",
+            )
+
+        def _mark_editor_control(self, _widget: QtWidgets.QWidget) -> None:
+            return None
+
+        def _connect_editor_signal(
+            self,
+            _widget: QtWidgets.QWidget,
+            signal: typing.Any,
+            callback: Callable[..., None],
+        ) -> None:
+            signal.connect(callback)
+
+        def _source_names(self) -> tuple[str, ...]:
+            return ("source",)
+
+        def _source_display_name(self, name: str) -> str:
+            return f"display {name}"
+
+        def _source_tooltip(self, name: str) -> str:
+            return f"tooltip {name}"
+
+        def _update_operations(
+            self,
+            updater: Callable[[int, FigureOperationState], FigureOperationState],
+        ) -> None:
+            self.operation = updater(0, self.operation)
+
+    tool = ComboTool()
+    qtbot.addWidget(tool.operation_editor)
+    changed: list[object] = []
+
+    mode_combo = figurecomposer_method._plot_data_mode_combo(
+        tool,
+        current=None,
+        changed=changed.append,
+        parent=tool.operation_editor,
+        mixed=True,
+    )
+    assert mode_combo.currentData() is _editor_controls.MIXED_VALUE
+    assert not typing.cast("typing.Any", mode_combo.model()).item(0).isEnabled()
+
+    source_combo = figurecomposer_method._plot_source_combo(
+        tool,
+        current=None,
+        changed=changed.append,
+        axis="y",
+        parent=tool.operation_editor,
+        allow_none=False,
+        mixed=True,
+    )
+    assert source_combo.currentData() is _editor_controls.MIXED_VALUE
+    assert not typing.cast("typing.Any", source_combo.model()).item(0).isEnabled()
+
+    values_combo = figurecomposer_method._plot_values_combo(
+        tool,
+        source="source",
+        current=None,
+        changed=changed.append,
+        axis="y",
+        parent=tool.operation_editor,
+        allow_none=False,
+        mixed=True,
+    )
+    assert values_combo.currentData() is _editor_controls.MIXED_VALUE
+    assert not typing.cast("typing.Any", values_combo.model()).item(0).isEnabled()
+
+    no_source_values = figurecomposer_method._plot_values_combo(
+        tool,
+        source=None,
+        current=None,
+        changed=changed.append,
+        axis="y",
+        parent=tool.operation_editor,
+        allow_none=False,
+    )
+    assert no_source_values.itemData(0) is None
+    assert not no_source_values.isEnabled()
+    assert figurecomposer_method._plot_values_combo_tooltip(
+        "y", source=None, value_options_match=True
+    )
+
+    squeezed_coord_state = FigureMethodPlotValueState(
+        source="source", kind="coord", name="row_coord"
+    )
+    code, value = figurecomposer_method._plot_value_code_and_data(
+        tool, squeezed_coord_state
+    )
+    assert str(code) == 'source.coords["row_coord"].squeeze(drop=True).values'
+    assert value.dims == ("point",)
+
+    with pytest.raises(ValueError, match="Choose a coordinate"):
+        figurecomposer_method._plot_value_code_and_data(
+            tool, FigureMethodPlotValueState(source="source", kind="coord")
+        )
+    with pytest.raises(ValueError, match="one-dimensional"):
+        figurecomposer_method._plot_value_code_and_data(
+            tool,
+            FigureMethodPlotValueState(
+                source="source", kind="coord", name="scan_coord"
+            ),
+        )
+    with pytest.raises(ValueError, match="Choose Y values"):
+        figurecomposer_method._picked_plot_code_args(
+            tool,
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="plot",
+            ).model_copy(update={"method_plot_data_mode": "from_data"}),
+        )
+
+    callback = figurecomposer_method._method_optional_bool_kwarg_callback(
+        tool, "visible"
+    )
+    callback(None)
+    assert "visible" not in tool.operation.method_kwargs
+    callback("True")
+    assert tool.operation.method_kwargs["visible"] is True
+
+    optional_bool_control = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
+        label="Visible",
+        tooltip="",
+        object_name="visible",
+    )
+    assert figurecomposer_method._control_accepts_value(optional_bool_control, None)
+    assert figurecomposer_method._control_accepts_value(optional_bool_control, False)
+    assert not figurecomposer_method._control_accepts_value(
+        optional_bool_control, "False"
+    )
+
+
 @pytest.mark.parametrize(
     ("mode", "code_fragment"),
     [
@@ -18833,6 +19225,173 @@ def test_figure_composer_line_colormap_rejects_invalid_trim() -> None:
     ) == (0.0, 0.0)
 
 
+def test_figure_composer_line_colormap_helper_edges() -> None:
+    contexts = (
+        {"numeric": 1.0, "text": "a", "nan": np.nan, "index": 0},
+        {"numeric": 2.0, "text": "b", "nan": 1.0, "index": 1},
+    )
+    assert figurecomposer_line_colormap.numeric_context_field_names(contexts) == (
+        "numeric",
+    )
+    assert figurecomposer_line_colormap.values_from_contexts(
+        contexts, "numeric", item_name="line"
+    ) == (1.0, 2.0)
+    with pytest.raises(ValueError, match="Choose a coordinate"):
+        figurecomposer_line_colormap.values_from_contexts(
+            contexts, None, item_name="line"
+        )
+    with pytest.raises(ValueError, match="missing"):
+        figurecomposer_line_colormap.values_from_contexts(
+            contexts, "missing", item_name="line"
+        )
+    with pytest.raises(ValueError, match="numeric scalars"):
+        figurecomposer_line_colormap.values_from_contexts(
+            contexts, "text", item_name="line"
+        )
+    with pytest.raises(ValueError, match="finite numeric scalars"):
+        figurecomposer_line_colormap.values_from_contexts(
+            contexts, "nan", item_name="line"
+        )
+    assert figurecomposer_line_colormap.colors_from_values((), "viridis") == ()
+    assert figurecomposer_line_colormap.colormap_code_lines("[0.0, 1.0]", "viridis")[
+        -2:
+    ] == ["else:", "    line_colors = []"]
+
+
+def test_figure_composer_line_profile_helper_edges() -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={
+            "eV": [0.1, 0.2],
+            "kx": [-1.0, 0.0, 1.0],
+            "offset": ("eV", [10.0, 20.0]),
+        },
+        name="data",
+    )
+    tool = types.SimpleNamespace(_source_data={"data": data})
+    operation = FigureOperationState.line(label="profiles", source="data").model_copy(
+        update={"line_iter_dim": "eV", "line_x": "kx"}
+    )
+
+    assert figurecomposer_line_profile._line_reduce_text("unknown") == "Disabled"
+    assert figurecomposer_line_profile._line_reduce_from_text("unknown") == "disabled"
+    assert figurecomposer_line_profile._line_color_mode_text(
+        "unknown"
+    ) == figurecomposer_line_profile._line_color_mode_text("manual")
+    assert (
+        figurecomposer_line_profile._line_color_mode_from_text("By coordinate")
+        == "coordinate"
+    )
+    assert figurecomposer_line_profile._line_color_mode_from_text("Manual") == "manual"
+    assert (
+        figurecomposer_line_profile._available_line_value_names(
+            tool, operation.model_copy(update={"line_source": None})
+        )
+        == []
+    )
+    assert (
+        figurecomposer_line_profile._available_line_value_names(
+            tool, operation.model_copy(update={"line_source": "missing"})
+        )
+        == []
+    )
+    assert set(
+        figurecomposer_line_profile._available_line_coordinate_names(tool, operation)
+    ) >= {"kx"}
+    assert figurecomposer_line_profile._available_line_offset_coords(
+        tool, operation
+    ) == ["offset"]
+
+    updates: list[dict[str, object]] = []
+    cmap_tool = types.SimpleNamespace(
+        _updating_controls=True,
+        _update_current_operation=lambda **kwargs: updates.append(kwargs),
+    )
+    figurecomposer_line_profile._update_current_line_color_cmap(
+        cmap_tool, "viridis", True
+    )
+    assert updates == []
+    cmap_tool._updating_controls = False
+    figurecomposer_line_profile._update_current_line_color_cmap(
+        cmap_tool, "viridis_r", True
+    )
+    assert updates == [{"line_color_cmap": "viridis", "line_color_cmap_reverse": True}]
+
+
+def test_figure_composer_line_profile_style_codegen_helper_edges() -> None:
+    profiles = [
+        xr.DataArray(
+            [1.0, 2.0],
+            dims=("kx",),
+            coords={"kx": [0.0, 1.0], "eV": value},
+            name="profile",
+        )
+        for value in (0.1, 0.2)
+    ]
+    sources = ["first", "second"]
+    operation = FigureOperationState.line(label="profiles", source="data").model_copy(
+        update={
+            "line_iter_dim": "eV",
+            "line_label_text": "{source}:{number}:{dim}:{value:g}:{eV:g}",
+            "line_color_mode": "coordinate",
+            "line_color_cmap": "plasma",
+            "line_color_cmap_trim_lower": 0.1,
+            "line_color_cmap_trim_upper": 0.2,
+        }
+    )
+    loop_names = ["profile"]
+    loop_values = ["profiles"]
+    lines, kwargs = figurecomposer_line_profile._line_style_code(
+        operation,
+        profiles=profiles,
+        sources=sources,
+        loop_names=loop_names,
+        loop_values=loop_values,
+    )
+    assert loop_names == ["profile", "index", "source", "color"]
+    assert loop_values[1] == "range(len(profiles))"
+    assert loop_values[2] == "['first', 'second']"
+    assert loop_values[3] == "line_colors"
+    assert any("line_color_values =" in line for line in lines)
+    assert "label=f'{source}:{index + 1}" in kwargs
+    assert "color=color" in kwargs
+
+    with pytest.raises(ValueError, match="Choose a coordinate"):
+        figurecomposer_line_profile._line_style_code(
+            operation.model_copy(update={"line_iter_dim": None, "line_label_text": ""}),
+            profiles=profiles,
+            sources=sources,
+            loop_names=["profile"],
+            loop_values=["profiles"],
+        )
+
+    single_color_operation = FigureOperationState.line(
+        label="profiles", source="data"
+    ).model_copy(update={"line_colors": ("red",)})
+    _lines, single_kwargs = figurecomposer_line_profile._line_style_code(
+        single_color_operation,
+        profiles=profiles,
+        sources=sources,
+        loop_names=["profile"],
+        loop_values=["profiles"],
+    )
+    assert "color='red'" in single_kwargs
+
+    multi_color_loop_names = ["profile"]
+    multi_color_loop_values = ["profiles"]
+    _lines, multi_kwargs = figurecomposer_line_profile._line_style_code(
+        single_color_operation.model_copy(update={"line_colors": ("red", "blue")}),
+        profiles=profiles,
+        sources=sources,
+        loop_names=multi_color_loop_names,
+        loop_values=multi_color_loop_values,
+    )
+    assert multi_color_loop_names == ["profile", "color"]
+    assert multi_color_loop_values[1] == "['red', 'blue']"
+    assert "color=color" in multi_kwargs
+
+
 def test_figure_composer_default_line_labels_use_property_labels() -> None:
     from erlab.interactive._figurecomposer import _labels as figurecomposer_labels
 
@@ -18863,6 +19422,87 @@ def test_figure_composer_default_line_labels_use_property_labels() -> None:
         phase_label,
         ({"phase": "A", "index": 0, "number": 1},),
     ) == (r"$phase = A$",)
+
+
+def test_figure_composer_label_helper_edges() -> None:
+    from erlab.interactive._figurecomposer import _labels as figurecomposer_labels
+
+    profile = xr.DataArray(
+        [1.0],
+        dims=("x",),
+        coords={"x": [0.0], "sample_temp": 20.0},
+        name="profile",
+    )
+    context = figurecomposer_labels.label_context(
+        profile,
+        index=2,
+        source="map",
+        dim="sample_temp",
+        value=np.asarray([20.0]),
+    )
+    assert context["number"] == 3
+    assert context["source"] == "map"
+    assert context["sample_temp"] == 20.0
+    assert context["value"] == 20.0
+    assert figurecomposer_labels.labels_from_text("", (), default="fallback") == ()
+    assert figurecomposer_labels.labels_from_text(
+        "", (context, context), literal_values=("one",), default=None
+    ) == ("one", "one")
+    with pytest.raises(ValueError, match="one value per profile"):
+        figurecomposer_labels.labels_from_text(
+            "", (context, context), literal_values=("a", "b", "c")
+        )
+    assert figurecomposer_labels.labels_from_text(
+        "$k_{F}$", (context,), default=None
+    ) == (r"$k_{F}$",)
+    assert figurecomposer_labels.labels_from_text(
+        "{source!r}:{sample_temp:.1f}", (context,)
+    ) == ("'map':20.0",)
+    with pytest.raises(ValueError, match="not available"):
+        figurecomposer_labels.labels_from_text("{missing:g}", (context,))
+    with pytest.raises(ValueError, match="Could not format"):
+        figurecomposer_labels.labels_from_text("{source:g}", (context,))
+
+    assert not figurecomposer_labels.label_text_uses_placeholders("", (context,))
+    assert not figurecomposer_labels.label_text_uses_placeholders("plain", (context,))
+    assert (
+        figurecomposer_labels.label_fstring_code(
+            r"{source}\{missing}", {"source": "source"}
+        )
+        == r"f'{source}\\{{missing}}'"
+    )
+    with pytest.raises(ValueError, match="not available"):
+        figurecomposer_labels.label_fstring_code("{missing:g}", {"source": "source"})
+    assert figurecomposer_labels.coord_value_expression("sample_temp") == (
+        'profile.coords["sample_temp"].values.item()'
+    )
+    assert figurecomposer_labels.string_literal_expression("a'b") == '"a\'b"'
+    assert (
+        figurecomposer_labels.default_label_text(
+            None, fallback="profile {number}", source_count=2
+        )
+        == "{source}, profile {number}"
+    )
+    assert (
+        figurecomposer_labels.default_label_text(
+            "phase", ("A",), fallback="profile {number}", source_count=2
+        )
+        == r"{source}, $phase = {phase}$"
+    )
+    assert "comma-separated" in figurecomposer_labels.label_text_tooltip(
+        (), item_name="profile"
+    )
+    assert "Available" in figurecomposer_labels.label_text_tooltip(
+        (context,), item_name="profile"
+    )
+    assert (
+        figurecomposer_labels.label_editor_text(
+            FigureOperationState.line(label="line", source="data").model_copy(
+                update={"line_labels": ("A", "B")}
+            )
+        )
+        == "A, B"
+    )
 
 
 def test_figure_composer_plot_slices_line_label_placeholders_codegen(
@@ -19047,6 +19687,328 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     assert tool.tool_status.operations[0].line_color_cmap_trim_upper == pytest.approx(
         0.25
     )
+
+
+def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(5, 3),
+        dims=("eV", "kx"),
+        coords={"eV": np.linspace(-0.2, 0.2, 5), "kx": [-1.0, 0.0, 1.0]},
+        name="data",
+    )
+    tool = types.SimpleNamespace(
+        _source_data={"data": data},
+        _source_display_name=lambda name: name,
+        _editable_operations=lambda: (),
+    )
+    operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("data",),
+    ).model_copy(update={"slice_values_mode": "all"})
+
+    assert (
+        figurecomposer_plot_slices._slice_values_mode_from_text("not a mode")
+        == "manual"
+    )
+    assert (
+        figurecomposer_plot_slices._line_color_mode_from_text("By coordinate")
+        == "coordinate"
+    )
+    assert figurecomposer_plot_slices._line_color_mode_from_text("Manual") == "manual"
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_error(
+            tool, operation, data.dims
+        )
+        == "Choose a dimension before using all coordinate values."
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(tool, operation)
+        == "Choose a dimension."
+    )
+
+    missing_dim = operation.model_copy(update={"slice_dim": "missing"})
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values(tool, missing_dim) == ()
+    )
+    assert "'missing' is not an input dimension" in (
+        figurecomposer_plot_slices._all_coordinate_slice_values_error(
+            tool, missing_dim, data.dims
+        )
+    )
+    assert "'missing' is not an input dimension" in (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
+            tool, missing_dim
+        )
+    )
+
+    missing_source_tool = types.SimpleNamespace(
+        _source_data={},
+        _source_display_name=lambda name: name,
+        _editable_operations=lambda: (),
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
+            missing_source_tool, missing_dim
+        )
+        == "Select at least one valid source."
+    )
+
+    string_coord = xr.DataArray(
+        np.ones((2, 3)),
+        dims=("label", "kx"),
+        coords={"label": ["a", "b"], "kx": [-1.0, 0.0, 1.0]},
+        name="string_coord",
+    )
+    string_tool = types.SimpleNamespace(
+        _source_data={"data": string_coord},
+        _source_display_name=lambda name: name,
+        _editable_operations=lambda: (),
+    )
+    string_operation = operation.model_copy(update={"slice_dim": "label"})
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values(
+            string_tool, string_operation
+        )
+        == ()
+    )
+    assert "numeric and non-empty" in (
+        figurecomposer_plot_slices._all_coordinate_slice_values_error(
+            string_tool, string_operation, string_coord.dims
+        )
+    )
+    assert "numeric and non-empty" in (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
+            string_tool, string_operation
+        )
+    )
+
+    thinned = operation.model_copy(update={"slice_dim": "eV", "slice_values_thin": 2})
+    assert figurecomposer_plot_slices._all_coordinate_slice_values(
+        tool, thinned
+    ) == pytest.approx(tuple(data.thin({"eV": 2}).coords["eV"].values))
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(tool, thinned)
+        == "eV: 5 values, 3 plotted"
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_code(thinned)
+        == 'data.thin({"eV": 2}).coords["eV"].values'
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_code(
+            thinned.model_copy(update={"slice_values_thin": 1})
+        )
+        == 'data.coords["eV"].values'
+    )
+
+
+def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
+    operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("a", "b"),
+        slice_dim="eV",
+        slice_values=(0.1, 0.2),
+    ).model_copy(update={"line_label_text": "{source}:{number}:{eV:g}"})
+    fields = {"source", "number", "eV"}
+    single_key = (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "A"),)
+    by_slice_keys = tuple(
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, index, f"A {index}")
+        for index in range(2)
+    )
+    by_source_keys = tuple(
+        figurecomposer_plot_slices._PlotSlicesPanelKey(index, 0, f"S {index}")
+        for index in range(2)
+    )
+    grid_keys = tuple(
+        figurecomposer_plot_slices._PlotSlicesPanelKey(map_index, slice_index, "")
+        for map_index in range(2)
+        for slice_index in range(2)
+    )
+    namespace = {"slice_values": [0.1, 0.2]}
+
+    single = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+        operation, single_key, ("alpha",), "slice_values", fields
+    )
+    assert eval(single, {}, namespace) == {"label": "alpha:1:0.1"}  # noqa: S307
+
+    by_slice = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+        operation, by_slice_keys, ("alpha",), "slice_values", fields
+    )
+    assert eval(by_slice, {}, namespace) == [  # noqa: S307
+        {"label": "alpha:1:0.1"},
+        {"label": "alpha:2:0.2"},
+    ]
+
+    by_source = (
+        figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+            operation, by_source_keys, ("alpha", "beta"), "slice_values", fields
+        )
+    )
+    assert eval(by_source, {}, namespace) == [  # noqa: S307
+        {"label": "alpha:1:0.1"},
+        {"label": "beta:2:0.1"},
+    ]
+
+    grid = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+        operation, grid_keys, ("alpha", "beta"), "slice_values", fields
+    )
+    assert eval(grid, {}, namespace) == [  # noqa: S307
+        [{"label": "alpha:1:0.1"}, {"label": "alpha:2:0.2"}],
+        [{"label": "beta:3:0.1"}, {"label": "beta:4:0.2"}],
+    ]
+
+    fortran_grid = (
+        figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+            operation.model_copy(update={"order": "F"}),
+            grid_keys,
+            ("alpha", "beta"),
+            "slice_values",
+            fields,
+        )
+    )
+    assert eval(fortran_grid, {}, namespace) == [  # noqa: S307
+        [{"label": "alpha:1:0.1"}, {"label": "beta:2:0.1"}],
+        [{"label": "alpha:3:0.2"}, {"label": "beta:4:0.2"}],
+    ]
+
+    styled = figurecomposer_plot_slices._plot_slices_styled_label_line_kw_code(
+        operation.model_copy(
+            update={
+                "line_kw": {"linewidth": 1.5},
+                "panel_styles": (
+                    FigurePlotSlicesPanelStyleState(
+                        map_index=1, slice_index=1, line_kw={"color": "red"}
+                    ),
+                ),
+            }
+        ),
+        grid_keys,
+        ("alpha", "beta"),
+        "slice_values",
+        {
+            (1, 1): FigurePlotSlicesPanelStyleState(
+                map_index=1, slice_index=1, line_kw={"color": "red"}
+            )
+        },
+        fields,
+    )
+    styled_value = eval(styled, {}, namespace)  # noqa: S307
+    assert styled_value[1][1]["label"] == "beta:4:0.2"
+    assert styled_value[1][1]["color"] == "red"
+    assert styled_value[0][0]["linewidth"] == 1.5
+
+    assert (
+        figurecomposer_plot_slices._plot_slices_panel_index_expr(
+            "F",
+            map_count=2,
+            slice_count=3,
+            map_index_expr="map_index",
+            slice_index_expr="slice_index",
+        )
+        == "slice_index * 2 + map_index"
+    )
+    assert (
+        figurecomposer_plot_slices._line_kw_dict_code({"alpha": 0.5}, "label_code")
+        == "{**{'alpha': 0.5}, 'label': label_code}"
+    )
+
+
+def test_figure_composer_plot_slices_line_color_codegen_helper_variants() -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.1, 0.2], "kx": [-1.0, 0.0, 1.0]},
+        name="data",
+    )
+    tool = types.SimpleNamespace(
+        _source_data={
+            "a": data,
+            "b": data + 10.0,
+            "line": xr.DataArray([1.0, 2.0], dims=("kx",), name="line"),
+        },
+        _source_display_name=lambda name: name.upper(),
+        _editable_operations=lambda: (),
+    )
+
+    assert (
+        figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool,
+            FigureOperationState.plot_slices(
+                label="manual",
+                sources=("a",),
+                slice_dim="eV",
+                slice_values=(0.1,),
+            ),
+        )
+        == []
+    )
+
+    with pytest.raises(ValueError, match="Choose a coordinate"):
+        figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool,
+            FigureOperationState.plot_slices(
+                label="missing", sources=("line",)
+            ).model_copy(update={"line_color_mode": "coordinate"}),
+        )
+    with pytest.raises(ValueError, match="Cannot color slices"):
+        figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool,
+            FigureOperationState.plot_slices(
+                label="bad",
+                sources=("a",),
+                slice_dim="eV",
+                slice_values=(0.1,),
+            ).model_copy(
+                update={"line_color_mode": "coordinate", "line_color_coord": "kx"}
+            ),
+        )
+
+    one_slice = FigureOperationState.plot_slices(
+        label="one",
+        sources=("a", "b"),
+        slice_dim="eV",
+        slice_values=(0.1,),
+    ).model_copy(update={"line_color_mode": "coordinate"})
+    assert any(
+        "for _ in range(2)" in line
+        for line in figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool, one_slice
+        )
+    )
+
+    fortran = one_slice.model_copy(update={"slice_values": (0.1, 0.2), "order": "F"})
+    assert any(
+        "for slice_value in [0.1, 0.2] for _ in range(2)" in line
+        for line in figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool, fortran
+        )
+    )
+
+    c_order = fortran.model_copy(update={"order": "C"})
+    assert any(
+        "for _ in range(2) for slice_value in [0.1, 0.2]" in line
+        for line in figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool, c_order
+        )
+    )
+
+    label_operation = FigureOperationState.plot_slices(
+        label="labels",
+        sources=("a",),
+        slice_dim="eV",
+        slice_values=(0.1,),
+    ).model_copy(
+        update={
+            "line_color_mode": "coordinate",
+            "line_labels": ("literal",),
+        }
+    )
+    label_line_kw_code = figurecomposer_plot_slices._plot_slices_line_kw_code(
+        tool, label_operation
+    )
+    assert label_line_kw_code is not None
+    assert "'label': 'literal'" in label_line_kw_code
+    assert "'color': line_colors[0]" in label_line_kw_code
 
 
 def test_figure_composer_line_coordinate_colormap_rejects_bad_values(qtbot) -> None:
