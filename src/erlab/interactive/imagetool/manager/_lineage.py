@@ -242,7 +242,12 @@ class _LineageController:
         if isinstance(node, _ImageToolWrapper):
             label = f"ImageTool {node.index}"
         else:
-            label = node.display_text
+            fallback_label = (
+                "ImageTool child"
+                if node.is_imagetool
+                else node.type_badge_text or "Tool"
+            )
+            label = node.display_text or fallback_label
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
         if node.uid == detached_input_uid:
@@ -346,8 +351,15 @@ class _LineageController:
             and not self._manager._script_provenance_inputs_current(spec)
         ):
             return None
+        data = node.current_source_data()
+        if node.imagetool is not None:
+            # Console script inputs are captured from ToolNamespace.data, which is
+            # the public ImageTool view. Keep reload on the same public contract
+            # so internal layout dimensions such as promoted 1D stack_dim do not
+            # leak into replayed code.
+            data = node.imagetool.slicer_area.displayed_data
         return (
-            node.current_source_data(),
+            data,
             self._manager._script_input_for_node(node).model_copy(
                 update={"name": script_input.name}
             ),

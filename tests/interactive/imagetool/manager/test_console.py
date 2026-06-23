@@ -1912,6 +1912,96 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         InteractiveShell.clear_instance()
 
 
+def test_manager_reload_script_input_uses_public_nested_1d_child_data(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
+        tool_name = "ftool"
+
+    x = np.arange(3.0)
+    eV = np.arange(5.0)
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": x, "eV": eV},
+        name="cut",
+    )
+    shift = xr.DataArray(
+        [0.1, -0.1, 0.0],
+        dims=("x",),
+        coords={"x": x},
+        name="fit_shift",
+    )
+    updated_shift = shift + xr.DataArray(
+        [0.1, 0.1, -0.1],
+        dims=("x",),
+        coords={"x": x},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        intermediate_tool = _ConsoleTreeTool()
+        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        manager._child_node(intermediate_uid).name = "Fit"
+        child_tool = itool(shift, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool, intermediate_uid, show=False
+        )
+        manager._child_node(child_uid).name = "fit_shift"
+
+        tools = manager_console.ToolsNamespace(manager)
+        source = tools[0]
+        shift_handle = source.children[0].children[0]
+        assert shift_handle.data.dims == ("x",)
+        assert child_tool.slicer_area.data.dims == ("x", "stack_dim")
+
+        era_proxy = manager_console._ConsoleModuleProxy(erlab.analysis, "era")
+        shifted = era_proxy.transform.shift(
+            source,
+            -shift_handle,
+            along="eV",
+            shift_coords=True,
+        )
+        assert isinstance(shifted, manager_console._DerivedDataNamespace)
+        spec = shifted._console_provenance_spec(
+            active_name="derived",
+            label="Shift with fit result",
+        )
+        assert spec is not None
+
+        shifted_tool = itool(shifted.data, manager=False, execute=False)
+        assert isinstance(shifted_tool, erlab.interactive.imagetool.ImageTool)
+        shifted_index = manager.add_imagetool(
+            shifted_tool,
+            show=False,
+            provenance_spec=spec,
+        )
+
+        child_tool.slicer_area.replace_source_data(updated_shift)
+
+        rebuilt = manager._rebuild_script_provenance(
+            spec,
+            target_node_uid=manager._tool_graph.root_wrappers[shifted_index].uid,
+        )
+        assert "stack_dim" not in rebuilt.data.dims
+        xr.testing.assert_identical(
+            rebuilt.data,
+            erlab.analysis.transform.shift(
+                data,
+                -updated_shift,
+                along="eV",
+                shift_coords=True,
+            ),
+        )
+
+
 def test_manager_console_structures_erlab_and_xarray_calls(
     qtbot,
     manager_context: Callable[
