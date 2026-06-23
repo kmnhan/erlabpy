@@ -5420,6 +5420,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return self._source_reference_payload(self._recipe.primary_source)
         return self._source_reference_payload(variable_name)
 
+    @classmethod
+    def _missing_saved_tool_data_reference_optional(
+        cls,
+        variable_name: str,
+        reference: Mapping[str, typing.Any],
+        ds: xr.Dataset,
+    ) -> bool:
+        del ds
+        return (
+            variable_name != erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            and reference.get("kind") == "manager_node"
+        )
+
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self.tool_data}
         for source_name, data in self._source_data.items():
@@ -5450,6 +5463,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_data[source.name] = source_data_item
             changed = True
         if not changed:
+            self._restore_persisted_preview_cache(ds)
+            self._queue_post_restore_redraw_if_needed(ds)
             return
         self.set_source_data(source_data)
         self._apply_recipe_to_controls()

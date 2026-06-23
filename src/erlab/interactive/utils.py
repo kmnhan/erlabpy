@@ -917,6 +917,10 @@ _STALE_TOOL_DATA_ENCODING_KEYS = frozenset(
 )
 
 
+class _MissingSavedToolDataReferenceError(ValueError):
+    """Raised when a saved tool-data reference cannot be resolved."""
+
+
 def _tool_data_placeholder() -> xr.DataArray:
     return xr.DataArray(
         np.empty((0,), dtype=np.uint8),
@@ -4894,26 +4898,37 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         kind = reference.get("kind")
         if kind == "parent_source":
             if source_parent_data is None:
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references parent ImageTool data, but the "
                     "parent data is unavailable."
                 )
             return cls._saved_source_spec_from_attrs(ds).apply(source_parent_data)
         if kind == "manager_node":
             if reference_resolver is None:
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references another manager node, but no "
                     "manager-node resolver is available."
                 )
             resolved = reference_resolver(reference)
             if resolved is None:
                 node_uid = reference.get("node_uid")
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references a manager node that could not be "
                     f"resolved: {node_uid!r}"
                 )
             return resolved
         raise ValueError(f"Unsupported saved tool data reference kind: {kind!r}")
+
+    @classmethod
+    def _missing_saved_tool_data_reference_optional(
+        cls,
+        variable_name: str,
+        reference: Mapping[str, typing.Any],
+        ds: xr.Dataset,
+    ) -> bool:
+        """Return whether an unresolved saved data reference can be skipped."""
+        del variable_name, reference, ds
+        return False
 
     @classmethod
     def _tool_data_items_from_dataset(
@@ -4927,12 +4942,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         references = cls._saved_tool_data_references(ds)
         data_items: dict[str, xr.DataArray] = {}
         for variable_name, reference in references.items():
-            data_items[variable_name] = cls._resolve_saved_tool_data_reference(
-                reference,
-                ds,
-                source_parent_data=source_parent_data,
-                reference_resolver=reference_resolver,
-            )
+            try:
+                data_items[variable_name] = cls._resolve_saved_tool_data_reference(
+                    reference,
+                    ds,
+                    source_parent_data=source_parent_data,
+                    reference_resolver=reference_resolver,
+                )
+            except _MissingSavedToolDataReferenceError:
+                if cls._missing_saved_tool_data_reference_optional(
+                    variable_name, reference, ds
+                ):
+                    continue
+                raise
 
         for variable_name, data_array in ds.data_vars.items():
             if variable_name in data_items:

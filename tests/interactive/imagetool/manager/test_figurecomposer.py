@@ -24090,6 +24090,70 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
     assert not thumbnail.isNull()
 
 
+def test_figure_composer_restore_skips_missing_nonprimary_source_reference(
+    qtbot, monkeypatch
+) -> None:
+    primary = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="primary",
+    )
+    stale = xr.DataArray(
+        np.arange(4.0, 8.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="stale",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"primary": primary, "stale": stale},
+        sources=(
+            FigureSourceState(name="primary", label="Primary", node_uid="n-primary"),
+            FigureSourceState(name="stale", label="Stale", node_uid="n-stale"),
+        ),
+        operations=(FigureOperationState.line(label="line", source="primary"),),
+        primary_source="primary",
+    )
+    qtbot.addWidget(tool)
+    assert tool.refresh_preview_pixmap(allow_offscreen=True) is not None
+
+    with tool._save_tool_data_reference_context({"n-primary", "n-stale"}):
+        ds = tool.to_dataset()
+
+    references = json.loads(
+        ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+    )
+    assert references["stale"]["node_uid"] == "n-stale"
+    assert ds["stale"].size == 0
+
+    with pytest.raises(ValueError, match="'n-primary'"):
+        erlab.interactive.utils.ToolWindow.from_dataset(
+            ds,
+            _tool_data_reference_resolver=lambda _reference: None,
+        )
+
+    def fail_render(*_args, **_kwargs) -> None:
+        pytest.fail("restoring a cached figure preview must not render the recipe")
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", fail_render)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _tool_data_reference_resolver=lambda reference: (
+            primary if reference.get("node_uid") == "n-primary" else None
+        ),
+    )
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, FigureComposerTool)
+    source_data = restored.source_data()
+    xr.testing.assert_identical(source_data["primary"], primary)
+    assert "stale" not in source_data
+    assert any(source.name == "stale" for source in restored.tool_status.sources)
+    assert restored.preview_pixmap is not None
+    assert not restored.preview_pixmap_stale
+
+
 def test_figure_composer_visible_restore_queues_auto_redraw(
     qtbot,
     monkeypatch,
