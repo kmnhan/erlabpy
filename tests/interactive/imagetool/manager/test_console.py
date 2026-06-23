@@ -3777,7 +3777,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_spec=file_spec,
             displayed_provenance_spec=file_spec,
             display_text="Child node",
+            is_imagetool=False,
             snapshot_token=child_marker,
+            type_badge_text="tool",
         )
         script_input = manager._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")

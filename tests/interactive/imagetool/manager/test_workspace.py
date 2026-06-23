@@ -9279,10 +9279,6 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         tool = DerivativeTool(data)
         tool_uid = manager.add_childtool(tool, 0, show=False)
 
-        expect_title_placeholder = sys.platform != "darwin"
-        assert ("[*]" in root.windowTitle()) is expect_title_placeholder
-        assert ("[*]" in tool.windowTitle()) is expect_title_placeholder
-
         root.setWindowTitle("stale root title[*]")
         manager._tool_graph.root_wrappers[0].update_title()
         assert "stale root title" not in manager._tool_graph.root_wrappers[0].label_text
@@ -9293,6 +9289,9 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         manager._set_node_window_modified(root_uid, True)
         manager._set_node_window_modified(tool_uid, True)
 
+        expect_title_placeholder = sys.platform != "darwin"
+        assert ("[*]" in root.windowTitle()) is expect_title_placeholder
+        assert ("[*]" in tool.windowTitle()) is expect_title_placeholder
         assert (
             root.windowTitle()
             == manager_widgets._window_title_with_modified_placeholder(
