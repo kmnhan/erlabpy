@@ -28,10 +28,12 @@ if typing.TYPE_CHECKING:
 
 
 _PLACEHOLDER_RE = re.compile(
-    r"\{(?P<name>[A-Za-z_]\w*)(?:!(?P<conversion>[rsa]))?"
+    r"\{(?P<name>[^{}!:]+?)(?:!(?P<conversion>[rsa]))?"
     r"(?::(?P<format>[^{}]*))?\}"
 )
 _GENERIC_PLACEHOLDER_ORDER = ("value", "dim", "number", "index", "source")
+_LABEL_FIELD_SOURCES_KEY = "__figure_composer_label_field_sources__"
+_LABEL_INTERNAL_KEYS = frozenset({_LABEL_FIELD_SOURCES_KEY})
 
 
 class _LabelPlaceholderError(ValueError):
@@ -57,7 +59,12 @@ def _placeholder_is_explicit(match: re.Match[str]) -> bool:
 def _available_field_names(
     contexts: Sequence[Mapping[str, typing.Any]],
 ) -> set[str]:
-    return set().union(*(context.keys() for context in contexts))
+    return set().union(
+        *(
+            {name for name in context if name not in _LABEL_INTERNAL_KEYS}
+            for context in contexts
+        )
+    )
 
 
 def _scalar_value(value: typing.Any) -> typing.Any | None:
@@ -90,10 +97,23 @@ def label_context(
         scalar = _scalar_value(value)
         context["value"] = value if scalar is None else scalar
     if profile is not None:
+        field_sources: dict[str, str] = {}
         for name, coord in profile.coords.items():
             scalar = _scalar_value(coord.values)
             if scalar is not None:
-                context[str(name)] = scalar
+                field = str(name)
+                context[field] = scalar
+                field_sources[field] = "coord"
+        for name, value in profile.attrs.items():
+            field = str(name)
+            if field in context:
+                continue
+            scalar = _scalar_value(value)
+            if scalar is not None:
+                context[field] = scalar
+                field_sources[field] = "attr"
+        if field_sources:
+            context[_LABEL_FIELD_SOURCES_KEY] = field_sources
     return context
 
 
@@ -186,6 +206,26 @@ def label_fstring_code(text: str, field_expressions: Mapping[str, str]) -> str:
 
 def coord_value_expression(coord_name: str, *, profile_name: str = "profile") -> str:
     return f"{profile_name}.coords[{json.dumps(coord_name)}].values.item()"
+
+
+def attr_value_expression(attr_name: str, *, profile_name: str = "profile") -> str:
+    return f"{profile_name}.attrs[{json.dumps(attr_name)}]"
+
+
+def label_context_field_sources(
+    contexts: Sequence[Mapping[str, typing.Any]],
+) -> dict[str, str]:
+    field_sources: dict[str, str] = {}
+    for context in contexts:
+        sources = context.get(_LABEL_FIELD_SOURCES_KEY, {})
+        if not isinstance(sources, dict):
+            continue
+        for name, source in sources.items():
+            if name in field_sources and field_sources[name] != source:
+                field_sources[name] = "mixed"
+            else:
+                field_sources[name] = source
+    return field_sources
 
 
 def string_literal_expression(value: str) -> str:

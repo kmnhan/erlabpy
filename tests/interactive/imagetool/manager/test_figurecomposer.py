@@ -19244,6 +19244,57 @@ def test_figure_composer_line_label_placeholders_render_and_codegen(qtbot) -> No
     ] == expected_labels
 
 
+def test_figure_composer_line_label_placeholders_accept_spaced_names(
+    qtbot,
+) -> None:
+    sample_temp = np.array([20.0, 30.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(sample_temp.size * kx.size, dtype=float).reshape(
+            sample_temp.size, kx.size
+        ),
+        dims=("sample temp", "kx"),
+        coords={"sample temp": sample_temp, "kx": kx},
+        attrs={"sample label": "annealed"},
+        name="data",
+    )
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_iter_dim": "sample temp",
+            "line_label_text": "{sample temp:g} K, {sample label}",
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    expected_labels = ["20 K, annealed", "30 K, annealed"]
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert [line.get_label() for line in tool.figure.axes[0].lines] == expected_labels
+
+    code = tool.generated_code()
+    assert expected_labels[0] not in code
+    assert expected_labels[1] not in code
+    assert 'profile.coords["sample temp"].values.item()' in code
+    assert 'profile.attrs["sample label"]' in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert [
+        line.get_label() for line in namespace["fig"].axes[0].lines
+    ] == expected_labels
+
+
 def test_figure_composer_line_label_missing_placeholder_errors(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -19764,6 +19815,30 @@ def test_figure_composer_label_helper_edges() -> None:
     assert context["source"] == "map"
     assert context["sample_temp"] == 20.0
     assert context["value"] == 20.0
+    spaced_profile = xr.DataArray(
+        [1.0],
+        dims=("x",),
+        coords={"x": [0.0], "sample temp": 20.0},
+        attrs={"sample label": "annealed"},
+        name="profile",
+    )
+    spaced_context = figurecomposer_labels.label_context(
+        spaced_profile,
+        index=0,
+        dim="sample temp",
+        value=np.asarray([20.0]),
+    )
+    assert figurecomposer_labels.labels_from_text(
+        "{sample temp:g} K, {sample label}", (spaced_context,)
+    ) == ("20 K, annealed",)
+    label_code = figurecomposer_labels.label_fstring_code(
+        "{sample temp:g} K, {sample label}",
+        {
+            "sample temp": figurecomposer_labels.coord_value_expression("sample temp"),
+            "sample label": figurecomposer_labels.attr_value_expression("sample label"),
+        },
+    )
+    assert eval(label_code, {"profile": spaced_profile}) == "20 K, annealed"  # noqa: S307
     assert figurecomposer_labels.labels_from_text("", (), default="fallback") == ()
     assert figurecomposer_labels.labels_from_text(
         "", (context, context), literal_values=("one",), default=None
@@ -19855,6 +19930,52 @@ def test_figure_composer_plot_slices_line_label_placeholders_codegen(
     qtbot.addWidget(tool)
 
     expected_labels = [r"$E-E_F = -0.1$ eV", r"$E-E_F = 0.2$ eV"]
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert [axis.lines[0].get_label() for axis in tool.figure.axes] == expected_labels
+
+    code = tool.generated_code()
+    assert expected_labels[0] not in code
+    assert expected_labels[1] not in code
+    assert "slice_value" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert [
+        axis.lines[0].get_label() for axis in namespace["fig"].axes
+    ] == expected_labels
+
+
+def test_figure_composer_plot_slices_line_label_placeholders_accept_spaced_dim(
+    qtbot,
+) -> None:
+    sample_temp = np.array([20.0, 30.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(sample_temp.size * kx.size, dtype=float).reshape(
+            sample_temp.size, kx.size
+        ),
+        dims=("sample temp", "kx"),
+        coords={"sample temp": sample_temp, "kx": kx},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        slice_dim="sample temp",
+        slice_values=tuple(float(value) for value in sample_temp),
+    ).model_copy(update={"line_label_text": "{sample temp:g} K"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    expected_labels = ["20 K", "30 K"]
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert [axis.lines[0].get_label() for axis in tool.figure.axes] == expected_labels
 

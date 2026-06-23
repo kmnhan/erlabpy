@@ -17,9 +17,11 @@ from erlab.interactive._figurecomposer._code import (
 )
 from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._labels import (
+    attr_value_expression,
     coord_value_expression,
     default_label_text,
     label_context,
+    label_context_field_sources,
     label_editor_text,
     label_field_names,
     label_fstring_code,
@@ -1752,12 +1754,21 @@ def _line_label_fstring_code(
     if "value" in fields and operation.line_iter_dim is not None:
         field_expressions["value"] = coord_value_expression(operation.line_iter_dim)
 
+    field_sources = label_context_field_sources(contexts)
     for context in contexts:
         for name in context:
             if name in {"index", "number", "source", "dim", "value"}:
                 continue
             if name in fields:
-                field_expressions[name] = coord_value_expression(name)
+                if field_sources.get(name) == "attr":
+                    field_expressions[name] = attr_value_expression(name)
+                elif field_sources.get(name) == "coord":
+                    field_expressions[name] = coord_value_expression(name)
+                elif field_sources.get(name) == "mixed":
+                    raise ValueError(
+                        f"Legend label placeholder {{{name}}} is not consistently "
+                        "a coordinate or attribute for these profiles"
+                    )
     return label_fstring_code(operation.line_label_text, field_expressions)
 
 
