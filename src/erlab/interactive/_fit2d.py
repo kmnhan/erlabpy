@@ -7,6 +7,7 @@ import enum
 import functools
 import logging
 import os
+import time
 import typing
 import urllib.parse
 
@@ -43,6 +44,7 @@ else:
 logger = logging.getLogger(__name__)
 
 _P = typing.ParamSpec("_P")
+_FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.25
 _R = typing.TypeVar("_R")
 
 
@@ -429,6 +431,8 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_direction: typing.Literal["down", "up"] | None = None
         self._fit_2d_start_idx: int = 0
         self._fit_2d_initial_range: tuple[int, int] | None = None
+        self._fit_2d_last_live_refresh: float = 0.0
+        self._fit_2d_param_plot_refresh_pending: bool = False
 
     @staticmethod
     def _data_with_saved_dims(
@@ -465,14 +469,50 @@ class Fit2DTool(Fit1DTool):
     def _update_params_full(self) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
+        if self._fit_2d_sequence_active():
+            self._fit_2d_param_plot_refresh_pending = True
+            return
         self._update_param_plot()
 
     def _sync_fit_result_state(self) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
+        if self._fit_2d_sequence_active():
+            self._fit_2d_param_plot_refresh_pending = True
+            return
         self._update_param_plot_options()
         self._update_param_plot()
+
+    def _fit_2d_sequence_active(self) -> bool:
+        return self._fit_2d_total > 0
+
+    def _fit_2d_live_refresh_due(self) -> bool:
+        now = time.monotonic()
+        if (
+            self._fit_2d_last_live_refresh <= 0.0
+            or now - self._fit_2d_last_live_refresh
+            >= _FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S
+        ):
+            self._fit_2d_last_live_refresh = now
+            return True
+        return False
+
+    def _flush_fit_2d_sequence_param_plot(self, *, force: bool = False) -> None:
+        if not (force or self._fit_2d_param_plot_refresh_pending):
+            return
+        self._fit_2d_param_plot_refresh_pending = False
+        self._update_param_plot_options()
+        self._update_param_plot()
+
+    def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
+        if not self._fit_2d_sequence_active():
+            super()._defer_next_fit_step(callback)
+            return
+        if self._fit_2d_live_refresh_due():
+            self._flush_fit_2d_sequence_param_plot()
+            self._request_fit_step_paint()
+        erlab.interactive.utils.single_shot(self, 0, callback)
 
     def _build_ui(self) -> None:
         super()._build_ui()
@@ -1623,6 +1663,8 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_total = len(self._fit_2d_indices)
         self._fit_2d_direction = direction
         self._fit_2d_start_idx = start_idx
+        self._fit_2d_last_live_refresh = 0.0
+        self._fit_2d_param_plot_refresh_pending = False
         if self._fit_2d_indices:
             self._start_next_fit_2d()
 
@@ -1710,8 +1752,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_direction = None
         self._fit_2d_initial_range = None
         self._update_full_fit_saveable()
-        self._update_param_plot_options()
-        self._update_param_plot()
+        self._flush_fit_2d_sequence_param_plot(force=True)
 
     def _y_values(self) -> np.ndarray:
         if self._y_values_cache is not None:

@@ -12,6 +12,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive._fit2d as fit2d_module
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import provenance
 from tests._qt_helpers import signal_receiver_count
@@ -1042,6 +1043,67 @@ def test_fit2d_paints_once_between_finished_step_and_next_worker(
     qtbot.waitUntil(lambda: events[-1:] == ["start-2"], timeout=1000)
 
     assert events == ["start-1", "paint", "start-2"]
+
+
+def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+    clock_values = [100.0, 100.05, 100.10]
+
+    def _monotonic() -> float:
+        return clock_values.pop(0) if clock_values else 100.10
+
+    monkeypatch.setattr(fit2d_module.time, "monotonic", _monotonic)
+    monkeypatch.setattr(
+        win, "_update_param_plot_options", lambda: events.append("options")
+    )
+    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        events.append(f"start-{step}")
+        win._fit_start_time = 0.0
+        on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    events.clear()
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
+        timeout=1000,
+    )
+
+    assert events == [
+        "start-1",
+        "options",
+        "plot",
+        "paint",
+        "start-2",
+        "start-3",
+        "options",
+        "plot",
+    ]
 
 
 def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
