@@ -58,9 +58,8 @@ def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.Dataset | xr.DataTree
     xarray.DataArray, xarray.Dataset, or xarray.DataTree
         A data array containing the compiled payload stack for BCS files with one
         payload column. If a file contains multiple payload columns, each payload stream
-        is loaded into a separate child node of a data tree. Legacy tabular BCS scans
-        without payload columns are returned as a dataset with one data variable per
-        measured channel.
+        is loaded into a separate child node of a data tree. BCS scans without payload
+        columns are returned as a dataset with one data variable per measured channel.
     """
     path = pathlib.Path(path)
     lines = path.read_text(encoding="utf-8-sig").splitlines()
@@ -72,7 +71,7 @@ def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.Dataset | xr.DataTree
 
     payload_columns = _find_payload_columns(columns, rows)
     if not payload_columns:
-        raise ValueError(f"{path} contains no BCS payload columns")
+        return _load_modern_bcs_table(path, header, columns, rows)
 
     payload_kinds = {column: _payload_kind(column, rows) for column in payload_columns}
     numeric_columns = _numeric_columns(columns, rows, payload_columns)
@@ -145,6 +144,56 @@ def _parse_bcs_table(
         raise ValueError(f"{path} contains no BCS data rows")
 
     return header, columns, rows
+
+
+def _load_modern_bcs_table(
+    path: pathlib.Path,
+    header: _BCSHeader,
+    columns: list[str],
+    rows: list[_BCSRow],
+) -> xr.Dataset:
+    numeric_columns = _modern_numeric_columns(path, columns, rows)
+    scan_dim, scan_values, goal_column = _scan_axis(header, numeric_columns, rows)
+    coords, attrs = _attach_bcs_metadata(
+        {scan_dim: scan_values}, header, scan_dim, {}, {}
+    )
+
+    existing_names = set(coords)
+    data_vars = {}
+    for column in columns:
+        if column == goal_column:
+            continue
+
+        data_vars[_unique_name(column, existing_names)] = (
+            scan_dim,
+            numeric_columns[column],
+        )
+
+    return xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
+
+
+def _modern_numeric_columns(
+    path: pathlib.Path, columns: list[str], rows: list[_BCSRow]
+) -> dict[str, _FloatArray]:
+    numeric_columns: dict[str, _FloatArray] = {}
+    for row in rows:
+        if None in row or any(row.get(column) is None for column in columns):
+            raise ValueError(f"{path} contains ragged BCS data rows")
+
+    for column in columns:
+        values: list[float] = []
+        for row in rows:
+            value = row[column]
+            if value == "":
+                raise ValueError(f"{path} contains non-numeric BCS data rows")
+            try:
+                values.append(float(value))
+            except ValueError as err:
+                raise ValueError(f"{path} contains non-numeric BCS data rows") from err
+
+        numeric_columns[column] = np.asarray(values, dtype=np.float64)
+
+    return numeric_columns
 
 
 def _has_modern_bcs_markers(lines: list[str]) -> bool:
