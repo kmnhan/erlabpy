@@ -2896,7 +2896,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _batch_options_match(
         self,
         operation: FigureOperationState,
-        options_getter: Callable[[FigureOperationState], Sequence[str]],
+        options_getter: Callable[[FigureOperationState], Sequence[typing.Any]],
     ) -> bool:
         editable = self._editable_operations()
         if len(editable) <= 1:
@@ -5502,7 +5502,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         finally:
             buffer.close()
 
-        png_bytes = bytes(data)
+        png_bytes = data.data()
         if len(png_bytes) > _PERSISTED_PREVIEW_CACHE_MAX_BYTES:
             return ds
 

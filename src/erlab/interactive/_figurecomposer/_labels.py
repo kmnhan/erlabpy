@@ -214,7 +214,12 @@ def _format_label_text(
             continue
         value = context[name]
         if conversion := match.group("conversion"):
-            value = {"a": ascii, "r": repr, "s": str}[conversion](value)
+            converters: dict[str, typing.Callable[[typing.Any], str]] = {
+                "a": ascii,
+                "r": repr,
+                "s": str,
+            }
+            value = converters[conversion](value)
         format_spec = match.group("format") or ""
         try:
             parts.append(format(value, format_spec))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import logging
 import re
@@ -2051,7 +2052,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         self._queue_idle_work(
             ("figure-gallery-icon", uid),
-            lambda uid=uid: self._update_figure_gallery_icon(uid),
+            functools.partial(self._update_figure_gallery_icon, uid),
         )
 
     def _figure_uid_from_item(

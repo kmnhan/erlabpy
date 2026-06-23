@@ -2536,8 +2536,9 @@ def _line_color_trim_spin(
     spin.setKeyboardTracking(False)
     spin.setValue(value)
     spin.setToolTip(tooltip)
-    if spin.lineEdit() is not None:
-        spin.lineEdit().setToolTip(tooltip)
+    line_edit = spin.lineEdit()
+    if line_edit is not None:
+        line_edit.setToolTip(tooltip)
     return spin
 
 

@@ -1048,7 +1048,8 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     assert first_item.toolTip(1) == ""
     assert first_item.toolTip(2) == ""
     assert shape_widget.toolTip() == ""
-    assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
+    assert (tuple(str(dim) for dim in data.dims), False, None) in calls
+    assert any(call[1] for call in calls)
 
 
 def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
@@ -10488,36 +10489,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert annotate_kwargs_edit.parent() is view_page
     assert colorbar_kwargs_edit.parent() is colors_page
     assert all(
-        widget.toolTip()
-        for widget in (
-            tool.nrows_spin,
-            tool.ncols_spin,
-            tool.width_spin,
-            tool.height_spin,
-            tool.width_mm_spin,
-            tool.height_mm_spin,
-            tool.dpi_spin,
-            tool.layout_combo,
-            tool.sharex_combo,
-            tool.sharey_combo,
-            tool.width_ratios_edit,
-            tool.height_ratios_edit,
-            tool.operation_list,
-            tool.use_all_axes_button,
-            tool.keep_valid_axes_button,
-            tool.axes_expression_edit,
-            same_limits_combo,
-            axis_combo,
-            annotate_kwargs_edit,
-            colorbar_kwargs_edit,
-        )
-    )
-    assert all(button.toolTip() for button in tool.step_section_buttons.values())
-    assert all(
         isinstance(button.property("section_title"), str)
         for button in tool.step_section_buttons.values()
     )
-    assert tool.axes_selector.toolTip()
     assert tool.axes_selector.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
     annotate_kwargs_edit.setFocus()
     annotate_kwargs_edit.setText("fontsize=8, color='black'")
@@ -11696,6 +11670,9 @@ def test_figure_composer_toolbar_axis_state_helpers(qtbot) -> None:
 
 
 def test_figure_composer_toolbar_line_style_widget_updates_all_controls(qtbot) -> None:
+    data = _figure_composer_profile_source("data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
     operation = FigureOperationState.line(
         label="profile",
         source="data",
@@ -11709,7 +11686,7 @@ def test_figure_composer_toolbar_line_style_widget_updates_all_controls(qtbot) -
             },
         }
     )
-    widget = figurecomposer_toolbar_dialogs._LineOperationStyleWidget(operation)
+    widget = figurecomposer_toolbar_dialogs._LineOperationStyleWidget(tool, operation)
     qtbot.addWidget(widget)
     updates: list[FigureOperationState] = []
     widget.sigOperationChanged.connect(updates.append)

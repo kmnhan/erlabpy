@@ -7,6 +7,7 @@ import typing
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
 
 from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._norms import _cmap_with_reverse
@@ -131,11 +132,14 @@ def colors_from_values(
         norm = mcolors.Normalize(vmin=vmin - 0.5, vmax=vmax + 0.5)
     else:
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    normalized = norm(values)
+    normalized = np.asarray(norm(values), dtype=float)
     if trim_lower or trim_upper:
         normalized = trim_lower + (1.0 - trim_lower - trim_upper) * normalized
-    mapped = plt.get_cmap(cmap)(normalized)
-    return tuple(tuple(float(channel) for channel in color) for color in mapped)
+    mapped = np.asarray(plt.get_cmap(cmap)(normalized), dtype=float)
+    return tuple(
+        (float(color[0]), float(color[1]), float(color[2]), float(color[3]))
+        for color in mapped
+    )
 
 
 def colormap_code_lines(

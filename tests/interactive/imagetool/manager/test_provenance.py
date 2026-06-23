@@ -141,6 +141,22 @@ def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
     )
 
 
+def _fit2d_param_result_dataset(params: typing.Any) -> xr.Dataset:
+    class _Result:
+        def __init__(self) -> None:
+            self.params = params.copy()
+
+    return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
+
+
+def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -> None:
+    child._params_full = [params.copy() for params in params_list]
+    child._result_ds_full = [
+        _fit2d_param_result_dataset(params) for params in params_list
+    ]
+    child._update_param_plot_options()
+
+
 def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
     load_source = provenance.FileLoadSource(
         path="scan.h5",
@@ -5832,15 +5848,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             lambda: (_ for _ in ()).throw(AssertionError("prompt should not open")),
         )
 
-        param_names = [
-            child.param_plot_combo.itemText(index)
-            for index in range(child.param_plot_combo.count())
-        ]
-        first_param_name, second_param_name = param_names[:2]
-        first_param_index = child.param_plot_combo.findText(first_param_name)
-        second_param_index = child.param_plot_combo.findText(second_param_name)
-        assert first_param_index >= 0
-        assert second_param_index >= 0
+        first_param_name, second_param_name = list(child._params.keys())[:2]
         params_full = []
         for index in range(len(child._params_full)):
             params = child._params.copy()
@@ -5849,8 +5857,12 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             params[second_param_name].set(value=10.0 + index)
             params[second_param_name].stderr = 0.1 + index
             params_full.append(params)
-        child._params_full = params_full
-        child._result_ds_full = [xr.Dataset() for _ in params_full]
+        _seed_fit2d_param_results(child, params_full)
+
+        first_param_index = child.param_plot_combo.findText(first_param_name)
+        second_param_index = child.param_plot_combo.findText(second_param_name)
+        assert first_param_index >= 0
+        assert second_param_index >= 0
 
         child.param_plot_combo.setCurrentIndex(first_param_index)
         assert child.param_plot_combo.currentText() == first_param_name

@@ -1159,7 +1159,15 @@ class ItoolPlotItem(pg.PlotItem):
         if not data_name:
             data_name = placeholder
         sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
-        return f"{data_name}{sel_code}"
+        selection_expr = f"{data_name}{sel_code}"
+        if not selection_expr:
+            return ""
+        if self.array_slicer._nonuniform_axes:
+            restore_func = "erlab.interactive.imagetool.slicer.restore_nonuniform_dims"
+            if data_name:
+                return f"{restore_func}({selection_expr})"
+            return f"{sel_code}.pipe({restore_func})"
+        return selection_expr
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
@@ -1742,9 +1750,11 @@ class ItoolPlotItem(pg.PlotItem):
         qsel_kwargs: dict[Hashable, float] = {}
         avg_nonuniform_dims: list[Hashable] = []
         binned = self.array_slicer.get_binned(cursor)
+        uses_nonuniform_axes = False
 
         for axis in non_display_axes:
             if axis in self.array_slicer._nonuniform_axes:
+                uses_nonuniform_axes = True
                 dim_name = self._selection_dim_name(axis)
                 isel_kwargs[dim_name] = self.array_slicer._bin_slice(
                     cursor, axis, int_if_one=True
@@ -1760,7 +1770,11 @@ class ItoolPlotItem(pg.PlotItem):
             )
             qsel_kwargs.update(self.array_slicer.qsel_args(cursor, disp_for_axis))
 
-        selected = data_name
+        selected = (
+            f"erlab.interactive.imagetool.slicer.restore_nonuniform_dims({data_name})"
+            if uses_nonuniform_axes
+            else data_name
+        )
         if isel_kwargs:
             selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
         if qsel_kwargs:

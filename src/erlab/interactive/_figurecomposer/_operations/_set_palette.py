@@ -67,9 +67,10 @@ class _PalettePreviewWidget(QtWidgets.QWidget):
         layout.setSpacing(3)
 
     def set_colors(self, colors: typing.Sequence[typing.Any]) -> None:
-        layout = self.layout()
-        if layout is None:  # pragma: no cover
+        base_layout = self.layout()
+        if base_layout is None:  # pragma: no cover
             return
+        layout = typing.cast("QtWidgets.QHBoxLayout", base_layout)
         while layout.count():
             item = layout.takeAt(0)
             if item is not None and (widget := item.widget()) is not None:
@@ -247,14 +248,15 @@ def _editor_sections(
             "This step needs seaborn in the active Python environment.",
         )
 
+    def update_palette_name(text: str) -> None:
+        refresh_preview(palette_name=text)
+        tool._update_current_operation(palette_name=text)
+
     palette_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_name)
     palette_combo = tool._combo(
         _palette_options(operation),
         None if palette_mixed else operation.palette_name,
-        lambda text: (
-            refresh_preview(palette_name=text),
-            tool._update_current_operation(palette_name=text),
-        ),
+        update_palette_name,
         parent=page,
         mixed=palette_mixed,
         enabled=available,
@@ -276,16 +278,17 @@ def _editor_sections(
     count_spin.setSpecialValueText("Auto")
     count_spin.setValue(operation.palette_n_colors or 0)
     count_spin.setEnabled(available)
+
+    def update_count(value: typing.Any) -> None:
+        n_colors = None if value == 0 else int(value)
+        refresh_preview(n_colors=n_colors)
+        tool._update_current_operation(palette_n_colors=n_colors)
+
     tool._connect_value_signal(
         count_spin,
         count_spin.valueChanged,
         lambda *_args: count_spin.value(),
-        lambda value: (
-            refresh_preview(n_colors=None if value == 0 else int(value)),
-            tool._update_current_operation(
-                palette_n_colors=None if value == 0 else int(value)
-            ),
-        ),
+        update_count,
     )
 
     desat_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_desat)
@@ -301,16 +304,17 @@ def _editor_sections(
         else operation.palette_desat
     )
     desat_spin.setEnabled(available)
+
+    def update_desat(value: typing.Any) -> None:
+        desat = None if value <= _DESAT_AUTO_VALUE else float(value)
+        refresh_preview(desat=desat)
+        tool._update_current_operation(palette_desat=desat)
+
     tool._connect_value_signal(
         desat_spin,
         desat_spin.valueChanged,
         lambda *_args: desat_spin.value(),
-        lambda value: (
-            refresh_preview(desat=None if value <= _DESAT_AUTO_VALUE else float(value)),
-            tool._update_current_operation(
-                palette_desat=None if value <= _DESAT_AUTO_VALUE else float(value)
-            ),
-        ),
+        update_desat,
     )
 
     tool._add_compound_form_row(

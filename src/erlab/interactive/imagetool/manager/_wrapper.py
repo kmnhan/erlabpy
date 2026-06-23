@@ -6,6 +6,7 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 
 import contextlib
 import datetime
+import functools
 import keyword
 import logging
 import pathlib
@@ -1190,7 +1191,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         self.manager._queue_idle_work(
             ("tool-data-refresh", self.uid),
-            lambda uid=self.uid: self._flush_tool_data_changed(uid),
+            functools.partial(self._flush_tool_data_changed, self.uid),
         )
 
     def _flush_tool_data_changed(self, uid: str) -> None:

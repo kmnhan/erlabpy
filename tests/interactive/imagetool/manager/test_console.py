@@ -113,10 +113,14 @@ def test_manager_console(
         # Select all
         select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
         manager.console._console_widget.execute("tools.selected_data")
-        assert _get_last_output_contents() == [
+        selected_data = _get_last_output_contents()
+        expected_data = [
             wrapper.imagetool.slicer_area._data
             for wrapper in manager._tool_graph.root_wrappers.values()
         ]
+        assert len(selected_data) == len(expected_data)
+        for result, expected in zip(selected_data, expected_data, strict=True):
+            xr.testing.assert_identical(result, expected)
 
         # Test storing with ipython
         accept_dialog(manager.store_action.trigger)

@@ -2787,6 +2787,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unavailable: list[str] = []
             self.removed: list[str] = []
             self.figure_gallery_updates: list[str] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
 
         def _update_info(self, *, uid: str) -> None:
@@ -2815,6 +2818,29 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
 
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
+
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
 
@@ -2823,6 +2849,12 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _update_figure_gallery_icon(self, uid: str) -> None:
             self.figure_gallery_updates.append(uid)
+
+        def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
+            self._queue_idle_work(
+                ("figure-gallery-icon", uid),
+                lambda: self._update_figure_gallery_icon(uid),
+            )
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)
@@ -2994,6 +3026,9 @@ def test_managed_tool_window_node_detached_update_branches(
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
@@ -3030,6 +3065,29 @@ def test_managed_tool_window_node_detached_update_branches(
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
+
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
 
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
@@ -3205,6 +3263,9 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -3232,6 +3293,29 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
+
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
 
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return

@@ -3791,7 +3791,11 @@ def _default_plot_value_state(
     options = _plot_value_options(tool, source)
     if options:
         kind, name = options[0][1]
-        return FigureMethodPlotValueState(source=source, kind=kind, name=name)
+        return FigureMethodPlotValueState(
+            source=source,
+            kind=typing.cast("typing.Literal['data', 'coord']", kind),
+            name=name,
+        )
     return FigureMethodPlotValueState(source=source, kind="data")
 
 

@@ -1478,8 +1478,12 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
 
     expr = image_plot._selection_expr_for_cursor("data", 0, (0, 2))
     assert ".qsel.mean((" in expr
-    assert "'a\"b'" in expr
-    assert '"c"' in expr
+    result = _exec_data_fragment(win.slicer_area.data, expr)
+    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        win.slicer_area.data.copy(deep=False)
+    ).isel({'a"b': slice(1, 4), "c": slice(1, 4)})
+    expected = expected.qsel.mean(('a"b', "c"))
+    xarray.testing.assert_identical(result, expected)
 
     win.close()
 

@@ -697,6 +697,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
         _refresh_figure_source_controls=lambda: refresh_calls.append(None),
+        _workspace_state=types.SimpleNamespace(closing_document=False),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),

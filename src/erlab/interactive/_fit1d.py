@@ -2297,22 +2297,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     ) -> list[tuple[typing.Any, ...]]:
         return [p.__getstate__() for p in params.values()]
 
-    @typing.overload
-    @staticmethod
-    def _deserialize_params(
-        state: None,
-        *,
-        repaired_bounds: list[str] | None = None,
-    ) -> None: ...
-
-    @typing.overload
-    @staticmethod
-    def _deserialize_params(
-        state: list[tuple[typing.Any, ...]],
-        *,
-        repaired_bounds: list[str] | None = None,
-    ) -> lmfit.Parameters: ...
-
     @staticmethod
     def _repair_equal_bound_param_state(
         pstate: tuple[typing.Any, ...],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import json
 import logging
 import os
@@ -199,7 +200,9 @@ class _WorkspaceIOController:
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
         self._workspace_window_state_applied: tuple[str, str, bool] | None = None
-        self._node_window_state_applied: dict[str, tuple[tuple[int, str], bool]] = {}
+        self._node_window_state_applied: dict[
+            str, tuple[tuple[tuple[int, str], ...], bool]
+        ] = {}
         self._pending_node_window_modified: dict[str, bool] = {}
 
     def _record_missing_workspace_colormap(
@@ -698,7 +701,7 @@ class _WorkspaceIOController:
         self._pending_node_window_modified[uid] = modified
         self._manager._queue_idle_work(
             ("node-window", uid),
-            lambda uid=uid: self._flush_pending_node_window_modified(uid),
+            functools.partial(self._flush_pending_node_window_modified, uid),
         )
 
     def _flush_pending_node_window_modified(self, uid: str) -> None:
@@ -740,7 +743,11 @@ class _WorkspaceIOController:
             ),
             modified,
         )
-        if self._node_window_state_applied.get(uid) == target_state:
+        if self._node_window_state_applied.get(uid) == target_state and all(
+            target_window.windowTitle()
+            == _window_title_with_modified_placeholder(target_title)
+            for target_window, target_title in valid_windows
+        ):
             return
         for target_window, target_title in valid_windows:
             title = _window_title_with_modified_placeholder(target_title)
