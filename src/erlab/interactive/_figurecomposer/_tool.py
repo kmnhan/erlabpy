@@ -5445,6 +5445,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             items[source_name] = data
         return items
 
+    def _persistence_reference_node_uids(self) -> frozenset[str]:
+        return frozenset(
+            source.node_uid
+            for source in self._recipe.sources
+            if source.node_uid is not None
+        )
+
+    def _saved_tool_status(self) -> FigureRecipeState:
+        status = self.tool_status
+        allowed_uids = self._save_tool_data_reference_node_uids
+        if allowed_uids is None:
+            return status
+        sources = tuple(
+            source.model_copy(update={"node_uid": None, "node_snapshot_token": None})
+            if source.node_uid is not None and source.node_uid not in allowed_uids
+            else source
+            for source in status.sources
+        )
+        if sources == status.sources:
+            return status
+        return status.model_copy(update={"sources": sources})
+
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:

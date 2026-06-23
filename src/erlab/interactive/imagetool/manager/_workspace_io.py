@@ -2430,6 +2430,37 @@ class _WorkspaceIOController:
                 roots.append(uid)
         return roots
 
+    @staticmethod
+    def _workspace_manifest_node_uids(
+        root_attrs: Mapping[str, typing.Any],
+    ) -> frozenset[str]:
+        manifest = _manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        nodes = manifest.get("nodes", ())
+        if not isinstance(nodes, list):
+            return frozenset()
+        uids: set[str] = set()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            uid = node.get("uid")
+            if uid is not None:
+                uids.add(str(uid))
+        return frozenset(uids)
+
+    def _workspace_stale_reference_rewrite_uids(
+        self, available_uids: frozenset[str]
+    ) -> list[str]:
+        rewrite_uids: list[str] = []
+        for uid, node in self._manager._tool_graph.nodes.items():
+            if node.is_imagetool:
+                continue
+            tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
+            if not tool.can_save_and_load():
+                continue
+            if tool._persistence_reference_node_uids() - available_uids:
+                rewrite_uids.append(uid)
+        return sorted(rewrite_uids, key=self._manager._workspace_node_path)
+
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
         delta_save_count = self._manager._workspace_state.delta_save_count + 1
         snapshot = self._manager._workspace_delta_save_snapshot(
@@ -2863,6 +2894,14 @@ class _WorkspaceIOController:
         rewrite_groups: list[tuple[str, dict[str, xr.Dataset]]] = []
         rewritten_uids: set[str] = set()
         for uid in self._manager._workspace_highest_dirty_data_roots():
+            rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
+            rewritten_uids.add(uid)
+            rewritten_uids.update(self._manager._iter_descendant_uids(uid))
+
+        manifest_uids = self._workspace_manifest_node_uids(root_attrs)
+        for uid in self._workspace_stale_reference_rewrite_uids(manifest_uids):
+            if uid in rewritten_uids:
+                continue
             rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._manager._iter_descendant_uids(uid))

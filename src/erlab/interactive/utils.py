@@ -4692,7 +4692,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if data_name is None:
             data_name = "<none-value>"
         attrs: dict[str, typing.Any] = {
-            "tool_state": self.tool_status.model_dump_json(),
+            "tool_state": self._saved_tool_status().model_dump_json(),
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
@@ -4713,6 +4713,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 input_provenance.model_dump(mode="json")
             )
         return attrs
+
+    def _saved_tool_status(self) -> M:
+        """Return the state model to serialize for this tool."""
+        return self.tool_status
 
     @classmethod
     def can_save_and_load(cls) -> bool:
@@ -4736,6 +4740,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         """Return named data artifacts that belong to this saved tool window."""
         return {_SAVED_TOOL_DATA_NAME: self.tool_data}
+
+    def _persistence_reference_node_uids(self) -> frozenset[str]:
+        """Return manager node UIDs that saved data references may point to."""
+        return frozenset()
 
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset

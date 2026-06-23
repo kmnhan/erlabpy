@@ -25142,6 +25142,93 @@ def test_manager_workspace_figure_sources_save_as_references(
         xr.testing.assert_identical(source_data["data_1"], second)
 
 
+def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_references(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    first = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(9.0, 18.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]},
+        name="second",
+    )
+
+    with manager_context() as manager:
+        for data in (first, second):
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = typing.cast(
+            "FigureComposerTool", manager._child_node(figure_uid).tool_window
+        )
+        tree = manager._to_datatree()
+        try:
+            saved_ds = typing.cast(
+                "xr.DataTree", tree[f"figures/{figure_uid}/tool"]
+            ).to_dataset(inherit=False)
+            saved_refs = json.loads(
+                saved_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+            )
+            assert "data_1" in saved_refs
+            assert saved_ds["data_1"].size == 0
+        finally:
+            tree.close()
+
+        stale_uid = "missing-source-node"
+        current_recipe = figure_tool.tool_status
+        figure_tool._recipe = current_recipe.model_copy(
+            update={
+                "sources": tuple(
+                    source.model_copy(update={"node_uid": stale_uid})
+                    if source.name == "data_1"
+                    else source
+                    for source in current_recipe.sources
+                )
+            }
+        )
+        manager._mark_workspace_layout_dirty()
+
+        snapshot = manager._workspace_delta_save_snapshot(
+            manager._workspace_state.dirty_generation,
+            manager._workspace_root_attrs_payload(delta_save_count=1),
+            1,
+        )
+        try:
+            rewrite_map = dict(snapshot.rewrite_groups)
+            constructor = rewrite_map[f"figures/{figure_uid}"]
+            rewritten_ds = constructor[f"figures/{figure_uid}/tool"]
+            rewritten_refs = json.loads(
+                rewritten_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+            )
+            assert all(
+                reference.get("node_uid") != stale_uid
+                for reference in rewritten_refs.values()
+            )
+            assert "data_1" not in rewritten_refs
+            assert rewritten_ds["data_1"].size > 0
+            rewritten_state = FigureRecipeState.model_validate_json(
+                rewritten_ds.attrs["tool_state"]
+            )
+            rewritten_source = next(
+                source for source in rewritten_state.sources if source.name == "data_1"
+            )
+            assert rewritten_source.node_uid is None
+            assert rewritten_source.node_snapshot_token is None
+        finally:
+            snapshot.close()
+
+
 def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None:
     operation = FigureOperationState.plot_slices(
         label="plot_slices",
