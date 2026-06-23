@@ -5814,6 +5814,60 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
+def test_figure_display_window_show_for_setup_recalls_hidden_states(
+    qtbot, monkeypatch
+) -> None:
+    class _FakeScreen:
+        def availableGeometry(self) -> QtCore.QRect:
+            return QtCore.QRect(0, 0, 800, 600)
+
+    class _MovedDisplayWindow(figurecomposer_widgets._FigureComposerDisplayWindow):
+        def __init__(self) -> None:
+            super().__init__(FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0))
+            self._test_frame = QtCore.QRect(5000, 5000, 120, 120)
+            self.moved_to: list[QtCore.QPoint] = []
+
+        def frameGeometry(self) -> QtCore.QRect:
+            return QtCore.QRect(self._test_frame)
+
+        def move(self, point: QtCore.QPoint) -> None:
+            self.moved_to.append(QtCore.QPoint(point))
+            self._test_frame.moveTopLeft(point)
+
+        def screen(self) -> _FakeScreen:
+            return _FakeScreen()
+
+    minimized = figurecomposer_widgets._FigureComposerDisplayWindow(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+    )
+    show_calls: list[str] = []
+    monkeypatch.setattr(minimized, "isMinimized", lambda: True)
+    monkeypatch.setattr(minimized, "showNormal", lambda: show_calls.append("normal"))
+    monkeypatch.setattr(minimized, "show", lambda: show_calls.append("show"))
+
+    minimized.show_for_setup(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
+        "minimized",
+        activate=False,
+    )
+
+    assert show_calls == ["normal"]
+    minimized.close_from_owner()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    offscreen = _MovedDisplayWindow()
+    offscreen.show_for_setup(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
+        "offscreen",
+        activate=False,
+    )
+
+    assert offscreen.moved_to
+    assert _FakeScreen().availableGeometry().intersects(offscreen.frameGeometry())
+    offscreen.close_from_owner()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+
 def test_figure_composer_managed_display_window_configures_save_shortcut(
     qtbot, monkeypatch
 ) -> None:

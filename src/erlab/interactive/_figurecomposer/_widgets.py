@@ -1238,6 +1238,31 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             return
         self._suppress_resize_signal = False
 
+    def _ensure_recallable_geometry(self) -> None:
+        frame = self.frameGeometry()
+        if frame.isEmpty():
+            return
+        screen_geometries = tuple(
+            geometry
+            for screen in QtGui.QGuiApplication.screens()
+            if screen is not None
+            for geometry in (screen.availableGeometry(),)
+            if not geometry.isEmpty()
+        )
+        if not screen_geometries or any(
+            geometry.intersects(frame) for geometry in screen_geometries
+        ):
+            return
+        target_screen = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        if target_screen is None:
+            target_geometry = screen_geometries[0]
+        else:
+            target_geometry = target_screen.availableGeometry()
+            if target_geometry.isEmpty():
+                target_geometry = screen_geometries[0]
+        frame.moveCenter(target_geometry.center())
+        self.move(frame.topLeft())
+
     def show_for_setup(
         self, setup: FigureSubplotsState, title: str, *, activate: bool
     ) -> None:
@@ -1246,11 +1271,14 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self.setAttribute(
             QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, not activate
         )
-        if not self.isVisible():
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
             self.show()
+        self._ensure_recallable_geometry()
         if activate:
-            self.activateWindow()
             self.raise_()
+            self.activateWindow()
 
     def close_from_owner(self) -> None:
         self._closing_from_owner = True
