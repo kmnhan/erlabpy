@@ -2434,7 +2434,9 @@ class _WorkspaceIOController:
     def _workspace_manifest_node_uids(
         root_attrs: Mapping[str, typing.Any],
     ) -> frozenset[str]:
-        manifest = _manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        manifest = _manager_workspace._workspace_manifest_from_attrs(
+            typing.cast("Mapping[Hashable, typing.Any]", root_attrs)
+        )
         nodes = manifest.get("nodes", ())
         if not isinstance(nodes, list):
             return frozenset()

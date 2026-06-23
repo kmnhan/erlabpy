@@ -1245,7 +1245,6 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         screen_geometries = tuple(
             geometry
             for screen in QtGui.QGuiApplication.screens()
-            if screen is not None
             for geometry in (screen.availableGeometry(),)
             if not geometry.isEmpty()
         )
