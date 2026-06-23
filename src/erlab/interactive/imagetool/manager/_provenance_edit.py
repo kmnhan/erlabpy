@@ -997,6 +997,7 @@ class _ProvenanceEditController:
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
             and active_filter_ref != row.edit_ref
+            and node.detached_live_parent_data is None
         ):
             return False, "This live row needs a parent source to replay."
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
@@ -1885,10 +1886,13 @@ class _ProvenanceEditController:
         if spec.kind == "file":
             return self._replay_file_candidate(spec), spec
         if spec.kind in {"full_data", "public_data", "selection"}:
-            if scope != "source" or node.parent_uid is None:
+            if scope == "source" and node.parent_uid is not None:
+                parent = self._manager._parent_node(node)
+                return spec.apply(parent.current_source_data()), spec
+            parent_data = node.detached_live_parent_data
+            if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            parent = self._manager._parent_node(node)
-            return spec.apply(parent.current_source_data()), spec
+            return spec.apply(parent_data), spec
         if spec.kind == "script":
             result = self._manager._rebuild_script_provenance(
                 spec,
@@ -1951,10 +1955,14 @@ class _ProvenanceEditController:
                 preserve_filter=preserve_filter,
             )
             return
+        live_parent_data = None
+        if spec.kind in {"full_data", "public_data", "selection"}:
+            live_parent_data = node.detached_live_parent_data
         node.replace_with_detached_data(
             data,
             spec,
             preserve_filter=preserve_filter,
+            live_parent_data=live_parent_data,
         )
 
     def _active_filter_ref(

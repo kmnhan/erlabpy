@@ -677,6 +677,8 @@ class DataTransformDialog(_DataManipulationDialog):
         target: int | str,
         new_name: str,
         fallback_spec: provenance.ToolProvenanceSpec | None,
+        *,
+        live_parent_data: xr.DataArray | None = None,
     ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
@@ -692,12 +694,21 @@ class DataTransformDialog(_DataManipulationDialog):
             return True
         displayed_provenance = node.displayed_provenance_spec
         if displayed_provenance is not None:
+            existing_parent_data = node.detached_live_parent_data
             node.set_detached_provenance(
-                self._compose_replace_source_spec(displayed_provenance, new_name)
+                self._compose_replace_source_spec(displayed_provenance, new_name),
+                live_parent_data=(
+                    existing_parent_data
+                    if existing_parent_data is not None
+                    else live_parent_data
+                ),
             )
             return True
         if fallback_spec is not None:
-            node.set_detached_provenance(fallback_spec)
+            node.set_detached_provenance(
+                fallback_spec,
+                live_parent_data=live_parent_data,
+            )
             return True
         return False
 
@@ -874,7 +885,10 @@ class DataTransformDialog(_DataManipulationDialog):
                     and manager._is_imagetool_target(target)
                 ):
                     self._rewrite_target_provenance(
-                        target, new_name, detached_provenance_spec
+                        target,
+                        new_name,
+                        detached_provenance_spec,
+                        live_parent_data=self.slicer_area.data,
                     )
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)

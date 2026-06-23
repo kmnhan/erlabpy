@@ -5743,6 +5743,88 @@ def test_manager_selection_dialog_opens_child_with_source_spec(
         )
 
 
+def test_manager_batch_selection_replace_qsel_remains_editable(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 2, dtype=float).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={
+            "x": [0.0, 1.0, 2.0],
+            "y": np.arange(4, dtype=float),
+            "z": np.arange(2, dtype=float),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        first = itool(data, manager=False, execute=False)
+        second = itool(data + 100.0, manager=False, execute=False)
+        assert isinstance(first, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(first, show=False)
+        manager.add_imagetool(second, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        select_tools(manager, [0, 1])
+        dialog = SelectionDialog(first.slicer_area, batch_manager=manager)
+        row = dialog.rows[0]
+        row.use_check.setChecked(True)
+        row.value_start_spin.setValue(1.0)
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=1.0).rename(None),
+        )
+
+        select_tools(manager, [0, 1])
+        dialog = SelectionDialog(first.slicer_area, batch_manager=manager)
+        row = dialog.rows[0]
+        row.use_check.setChecked(True)
+        row.kind_combo.setCurrentIndex(
+            row.kind_combo.findData("range", QtCore.Qt.ItemDataRole.UserRole)
+        )
+        row.value_start_spin.setValue(1.0)
+        row.value_stop_spin.setValue(3.0)
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=1.0).qsel(y=slice(1.0, 3.0)).rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        selected_row = manager._selected_derivation_row()
+        assert selected_row is not None
+        assert manager._provenance_edit_controller.can_edit_row(selected_row) == (
+            True,
+            "",
+        )
+
+        def _edit_qsel(dialog: QtWidgets.QDialog) -> None:
+            kwargs_edit = _recorded_operation_field_edit(dialog, 0, "kwargs")
+            kwargs_edit.setText("{'x': 2.0}")
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_qsel)
+
+        assert first.slicer_area._data.sizes["z"] == data.sizes["z"]
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=2.0).qsel(y=slice(1.0, 3.0)).rename(None),
+        )
+
+
 @pytest.mark.parametrize(
     ("output_id", "expected_name"),
     [

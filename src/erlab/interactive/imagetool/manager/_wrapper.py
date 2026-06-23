@@ -319,6 +319,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_spec: provenance.ToolProvenanceSpec | None = None
         self._source_binding: provenance.ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: provenance.ToolProvenanceSpec | None = None
+        self._detached_live_parent_data: xr.DataArray | None = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
         self._output_id: str | None = None
@@ -851,6 +852,28 @@ class _ManagedWindowNode(QtCore.QObject):
     def snapshot_token(self) -> str:
         return self._snapshot_token
 
+    @staticmethod
+    def _is_live_source_spec(
+        spec: provenance.ToolProvenanceSpec | None,
+    ) -> bool:
+        with contextlib.suppress(TypeError):
+            return provenance.require_live_source_spec(spec) is not None
+        return False
+
+    @property
+    def detached_live_parent_data(self) -> xr.DataArray | None:
+        return self._detached_live_parent_data
+
+    def _set_detached_live_parent_data(
+        self,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
+        parent_data: xr.DataArray | None,
+    ) -> None:
+        if parent_data is None or not self._is_live_source_spec(provenance_spec):
+            self._detached_live_parent_data = None
+            return
+        self._detached_live_parent_data = parent_data.copy(deep=False)
+
     def _advance_snapshot_token(self) -> None:
         if self._suspend_snapshot_token_updates:
             return
@@ -893,6 +916,7 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = provenance.parse_tool_provenance_spec(provenance_spec)
+        self._detached_live_parent_data = None
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -993,6 +1017,7 @@ class _ManagedWindowNode(QtCore.QObject):
             source_spec = source_binding.materialize(
                 self.manager._parent_node(self).current_source_data()
             )
+        self._detached_live_parent_data = None
         self._source_spec = provenance.require_live_source_spec(source_spec)
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
@@ -1045,6 +1070,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._source_binding = None
+        self._detached_live_parent_data = None
         self._source_auto_update = bool(auto_update)
         self._output_id = output_id
         if provenance_spec is not None:
@@ -1055,6 +1081,8 @@ class _ManagedWindowNode(QtCore.QObject):
     def set_detached_provenance(
         self,
         provenance_spec: provenance.ToolProvenanceSpec | None,
+        *,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         if provenance_spec is not None and not isinstance(
             provenance_spec,
@@ -1069,6 +1097,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update = False
         self._output_id = None
         self.set_displayed_provenance(provenance_spec)
+        self._set_detached_live_parent_data(provenance_spec, live_parent_data)
         self._set_source_state("fresh")
         self.manager._mark_node_state_dirty(self.uid)
 
@@ -1130,6 +1159,7 @@ class _ManagedWindowNode(QtCore.QObject):
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
         preserve_filter: bool = False,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         accepted_filter_operation = None
         filtered = None
@@ -1154,6 +1184,7 @@ class _ManagedWindowNode(QtCore.QObject):
                     accept=True,
                 )
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
+        self._set_detached_live_parent_data(provenance_spec, live_parent_data)
         self._advance_snapshot_token()
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
@@ -1170,6 +1201,7 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         propagate_descendants: bool = True,
         preserve_filter: bool = False,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
         self._source_spec = None
@@ -1181,6 +1213,7 @@ class _ManagedWindowNode(QtCore.QObject):
             state="fresh",
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
+            live_parent_data=live_parent_data,
         )
 
     def _handle_tool_data_changed(self) -> None:
