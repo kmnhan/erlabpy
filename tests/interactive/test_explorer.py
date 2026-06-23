@@ -879,6 +879,67 @@ def test_explorer_filesystem_read_error_stays_empty(
     assert file_system.children_error is read_error
 
 
+def test_explorer_filesystem_directory_probe_error_is_cached(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    stale_path = tmp_path / "stale-volume"
+    probe_error = TimeoutError(60, "Operation timed out", str(stale_path))
+    original_is_dir = pathlib.Path.is_dir
+    probe_count = 0
+
+    def _is_dir(path: pathlib.Path) -> bool:
+        nonlocal probe_count
+        if path == stale_path:
+            probe_count += 1
+            raise probe_error
+        return original_is_dir(path)
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", _is_dir)
+
+    file_system = _FileSystem(stale_path)
+
+    assert file_system.has_children is False
+    assert file_system.can_fetch_children is False
+    assert file_system.children == []
+    assert file_system.children_error is probe_error
+
+    assert file_system.has_children is False
+    assert probe_count == 1
+
+
+def test_explorer_model_directory_probe_error_does_not_raise(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="example")
+    qtbot.addWidget(explorer)
+    stale_path = tmp_path / "stale-volume"
+    probe_error = TimeoutError(60, "Operation timed out", str(stale_path))
+    original_is_dir = pathlib.Path.is_dir
+    probe_count = 0
+
+    def _is_dir(path: pathlib.Path) -> bool:
+        nonlocal probe_count
+        if path == stale_path:
+            probe_count += 1
+            raise probe_error
+        return original_is_dir(path)
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", _is_dir)
+
+    model = explorer._fs_model
+    stale_item = _FileSystem(stale_path)
+    index = model.createIndex(0, 0, stale_item)
+
+    assert model.hasChildren(index) is False
+    assert model.canFetchMore(index) is False
+    assert model.hasChildren(index) is False
+    assert probe_count == 1
+
+
 def test_explorer_metadata_helpers_handle_edge_paths(
     qtbot,
     example_loader,
