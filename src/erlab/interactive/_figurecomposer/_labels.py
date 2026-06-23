@@ -284,7 +284,8 @@ def labels_from_text(
                 raise
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"Could not format legend label {text!r} for this {item_name}"
+                    f"Could not format legend label {text!r} for this {item_name}: "
+                    f"{exc}"
                 ) from exc
         return tuple(labels)
 
@@ -580,7 +581,7 @@ def _format_label_text(
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Could not format legend label placeholder {chunk.placeholder!r} "
-                f"for this {item_name}"
+                f"for this {item_name}: {exc}"
             ) from exc
     return "".join(parts)
 
