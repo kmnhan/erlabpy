@@ -2163,6 +2163,118 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
     assert not inspector.details_button.isEnabled()
 
 
+def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    render_calls: list[dict[str, object]] = []
+    single_shot_calls: list[tuple[int, Callable[[], None]]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda _tool, **kwargs: render_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda _owner, delay, callback: single_shot_calls.append((delay, callback)),
+    )
+
+    tool.auto_redraw_check.setChecked(False)
+    assert not tool._maybe_redraw_plot(show_window=True)
+    assert tool._auto_redraw_dirty
+    assert tool._preview_pixmap_stale
+    assert render_calls == []
+
+    tool._queue_preview_render_update()
+    assert tool._auto_redraw_dirty
+    assert single_shot_calls == []
+
+    tool._run_queued_preview_render_update(tool._preview_render_update_generation)
+    assert tool._auto_redraw_dirty
+    assert tool._preview_pixmap_stale
+    assert render_calls == []
+
+    tool.auto_redraw_check.setChecked(True)
+    assert render_calls == [{}]
+    assert not tool._auto_redraw_dirty
+
+    tool._redraw_plot_requested()
+    assert render_calls[-1] == {}
+
+    assert not tool._saved_tool_window_visible(xr.Dataset())
+    assert tool._saved_tool_window_visible(xr.Dataset(attrs={"tool_visible": True}))
+
+    tool.auto_redraw_check.setChecked(False)
+    visible_ds = xr.Dataset(attrs={"tool_visible": True})
+    tool._queue_post_restore_redraw_if_needed(visible_ds)
+    assert single_shot_calls == []
+    tool.auto_redraw_check.setChecked(True)
+    tool._queue_post_restore_redraw_if_needed(visible_ds)
+    assert single_shot_calls[-1][0] == 0
+    single_shot_calls[-1][1]()
+    assert render_calls[-1] == {"show_window": True}
+
+    assert tool._persisted_preview_cache_pixmap() is None
+    preview = QtGui.QPixmap(
+        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width() + 20,
+        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.height() + 20,
+    )
+    preview.fill(QtGui.QColor("red"))
+    tool._preview_pixmap_cache = preview
+    persisted = tool._persisted_preview_cache_pixmap()
+    assert persisted is not None
+    assert (
+        persisted.width()
+        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width()
+    )
+    saved = tool._append_persistence_payload(xr.Dataset())
+    assert figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_ATTR in saved.attrs
+
+    restored = FigureComposerTool(data)
+    qtbot.addWidget(restored)
+    restored._restore_persisted_preview_cache(
+        xr.Dataset(
+            attrs={figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_ATTR: "bad"}
+        )
+    )
+    assert restored._preview_pixmap_cache is None
+    restored._restore_persisted_preview_cache(saved)
+    assert restored._preview_pixmap_cache is not None
+    assert (
+        restored._preview_pixmap_stale
+        == saved.attrs[figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_STALE_ATTR]
+    )
+
+
+def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
+    data = xr.DataArray([1.0, 2.0], dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="saved", label="Saved"),),
+            primary_source="missing",
+        ),
+        source_data={},
+    )
+    qtbot.addWidget(tool)
+
+    tool._source_data.clear()
+    tool._select_source_list_row_silent(None)
+    assert tool._default_source_inspector_target() == "saved"
+    tool._refresh_source_inspector()
+    assert tool.source_inspector.source_name() == "saved"
+
+    tool._select_source_list_row_silent(None)
+    assert tool.source_list.currentItem() is None
+
+
 def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None:
     public = xr.DataArray(
         np.arange(8.0).reshape(4, 2),
@@ -15432,6 +15544,82 @@ def test_figure_composer_axes_plot_data_update_helpers() -> None:
     )
 
 
+def test_figure_composer_axes_plot_optional_bool_editor_branch(qtbot) -> None:
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="tick_params",
+        kwargs={"reset": True},
+    )
+    layout_parent = QtWidgets.QWidget()
+    qtbot.addWidget(layout_parent)
+    layout = QtWidgets.QFormLayout(layout_parent)
+    updates: list[FigureOperationState] = []
+
+    class EditorTool:
+        def _batch_is_mixed(
+            self,
+            _operation: FigureOperationState,
+            _getter: Callable[[FigureOperationState], object],
+        ) -> bool:
+            return False
+
+        def _optional_name_combo(
+            self,
+            names: Sequence[str],
+            current: str | None,
+            none_label: str,
+            callback: Callable[[str | None], None],
+            *,
+            parent: QtWidgets.QWidget | None = None,
+            mixed: bool = False,
+        ) -> QtWidgets.QComboBox:
+            combo = QtWidgets.QComboBox(parent)
+            combo.addItem(none_label, None)
+            for name in names:
+                combo.addItem(name, name)
+            if current is not None:
+                combo.setCurrentText(current)
+            combo.setProperty("figureComposerMixedValue", mixed)
+            combo.activated.connect(lambda _index: callback(combo.currentData()))
+            return combo
+
+        def _add_form_row(
+            self,
+            form: QtWidgets.QFormLayout,
+            _label: str,
+            widget: QtWidgets.QWidget,
+            _tooltip: str,
+        ) -> None:
+            form.addRow(widget)
+
+        def _update_operations(
+            self,
+            updater: Callable[[int, FigureOperationState], FigureOperationState],
+        ) -> None:
+            updates.append(updater(0, operation))
+
+    control = figurecomposer_method._optional_bool_kwarg_combo(
+        "Reset",
+        "reset",
+        "figureComposerTestResetCombo",
+        "tooltip",
+    )
+    figurecomposer_method._add_method_control_row(
+        EditorTool(),
+        layout,
+        operation,
+        figurecomposer_method.AXES_METHODS["tick_params"],
+        control,
+    )
+    combo = layout_parent.findChild(QtWidgets.QComboBox, "figureComposerTestResetCombo")
+    assert combo is not None
+    assert combo.currentText() == "True"
+
+    combo.setCurrentText("False")
+    combo.activated.emit(combo.currentIndex())
+    assert updates[-1].method_kwargs["reset"] is False
+
+
 def test_figure_composer_axes_plot_combo_helper_edges(qtbot) -> None:
     source = xr.DataArray(
         np.arange(6.0).reshape(1, 6),
@@ -19258,6 +19446,138 @@ def test_figure_composer_line_colormap_helper_edges() -> None:
     ] == ["else:", "    line_colors = []"]
 
 
+def test_figure_composer_line_color_mode_widget_updates_state(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.1, 0.2], "kx": [-1.0, 0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+    ).model_copy(
+        update={
+            "line_iter_dim": "eV",
+            "line_color_mode": "manual",
+            "line_color_coord": "missing",
+            "line_color_cmap": "viridis_r",
+        }
+    )
+    widget = figurecomposer_toolbar_dialogs._LineColorModeWidget(
+        tool, operation, line_kind="profile"
+    )
+    qtbot.addWidget(widget)
+    emitted: list[FigureOperationState] = []
+    widget.sigOperationChanged.connect(emitted.append)
+
+    assert widget._mode_from_text("By coordinate") == "manual"
+    widget.mode_combo.setItemData(widget.mode_combo.currentIndex(), None)
+    assert widget._mode_from_text("By coordinate") == "coordinate"
+    widget.mode_combo.setItemData(widget.mode_combo.currentIndex(), "manual")
+
+    widget.mode_combo.setCurrentIndex(widget.mode_combo.findData("coordinate"))
+    widget.mode_combo.activated.emit(widget.mode_combo.currentIndex())
+    assert emitted[-1].line_color_mode == "coordinate"
+    assert emitted[-1].line_color_coord == "missing"
+    assert not widget.coordinate_page.isHidden()
+
+    widget.coord_combo.setCurrentIndex(widget.coord_combo.findData("eV"))
+    widget.coord_combo.activated.emit(widget.coord_combo.currentIndex())
+    assert emitted[-1].line_color_coord == "eV"
+
+    widget.cmap_combo.setCurrentText("plasma")
+    widget.cmap_combo.activated.emit(widget.cmap_combo.currentIndex())
+    assert emitted[-1].line_color_cmap == "plasma"
+    assert emitted[-1].line_color_cmap_reverse is True
+
+    widget.reverse_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert emitted[-1].line_color_cmap_reverse is False
+    widget.trim_lower_spin.setValue(0.1)
+    widget.trim_upper_spin.setValue(0.2)
+    assert emitted[-1].line_color_cmap_trim_lower == pytest.approx(0.1)
+    assert emitted[-1].line_color_cmap_trim_upper == pytest.approx(0.2)
+
+    emitted.clear()
+    widget._updating = True
+    widget._mode_changed(0)
+    widget._coord_changed(0)
+    widget._cmap_changed(0)
+    widget._reverse_changed(QtCore.Qt.CheckState.Checked.value)
+    widget._trim_lower_changed(0.3)
+    widget._trim_upper_changed(0.4)
+    assert emitted == []
+    widget._updating = False
+
+    plot_slices_operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.1, 0.2),
+    ).model_copy(update={"line_color_mode": "manual"})
+    plot_slices_widget = figurecomposer_toolbar_dialogs._LineColorModeWidget(
+        tool, plot_slices_operation, line_kind="plot_slices"
+    )
+    qtbot.addWidget(plot_slices_widget)
+    plot_slices_widget.mode_combo.setItemData(
+        plot_slices_widget.mode_combo.currentIndex(), None
+    )
+    assert plot_slices_widget._mode_from_text("By coordinate") == "coordinate"
+
+
+def test_figure_composer_image_operation_style_widget_updates_state(qtbot) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(
+        update={"cmap": "viridis_r", "norm_name": "PowerNorm", "norm_gamma": 0.5}
+    )
+    widget = figurecomposer_toolbar_dialogs._ImageOperationStyleWidget(operation)
+    qtbot.addWidget(widget)
+    emitted: list[FigureOperationState] = []
+    widget.sigOperationChanged.connect(emitted.append)
+
+    widget.cmap_combo.setCurrentText("magma")
+    widget.cmap_combo.activated.emit(widget.cmap_combo.currentIndex())
+    assert emitted[-1].cmap == "magma_r"
+
+    widget.cmap_reverse_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert emitted[-1].cmap == "magma"
+
+    widget.norm_combo.setCurrentText("Normalize")
+    widget.norm_combo.activated.emit(widget.norm_combo.currentIndex())
+    assert emitted[-1].norm_name == "Normalize"
+
+    widget.vmin_edit.setText("2.5")
+    widget.vmin_edit.editingFinished.emit()
+    assert emitted[-1].vmin == pytest.approx(2.5)
+
+    widget.vmin_edit.setText("")
+    widget.vmin_edit.editingFinished.emit()
+    assert emitted[-1].vmin is None
+
+    widget.clip_combo.setCurrentText("True")
+    widget.clip_combo.activated.emit(widget.clip_combo.currentIndex())
+    assert emitted[-1].norm_clip is True
+
+    widget.norm_kwargs_edit.setText("{'vmin': -1.0}")
+    widget.norm_kwargs_edit.editingFinished.emit()
+    assert emitted[-1].norm_kwargs == {"vmin": -1.0}
+
+    emitted.clear()
+    widget._updating = True
+    widget._cmap_changed(0)
+    widget._cmap_reverse_changed(QtCore.Qt.CheckState.Checked.value)
+    widget._norm_changed(0)
+    widget._number_changed("vmin", widget.vmin_edit)
+    widget._clip_changed(0)
+    widget._norm_kwargs_changed()
+    assert emitted == []
+    widget._updating = False
+
+
 def test_figure_composer_line_profile_helper_edges() -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -19707,6 +20027,12 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
     ).model_copy(update={"slice_values_mode": "all"})
 
     assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values(tool, operation) == ()
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_code(operation) is None
+    )
+    assert (
         figurecomposer_plot_slices._slice_values_mode_from_text("not a mode")
         == "manual"
     )
@@ -19745,6 +20071,12 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         _source_data={},
         _source_display_name=lambda name: name,
         _editable_operations=lambda: (),
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values(
+            missing_source_tool, operation.model_copy(update={"slice_dim": "eV"})
+        )
+        == ()
     )
     assert (
         figurecomposer_plot_slices._all_coordinate_slice_values_summary(
@@ -19800,6 +20132,127 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         )
         == 'data.coords["eV"].values'
     )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
+            tool, thinned.model_copy(update={"slice_values_thin": 1})
+        )
+        == "eV: 5 values"
+    )
+    assert (
+        figurecomposer_plot_slices._plot_slices_slice_values_code(
+            tool, operation.model_copy(update={"slice_values_mode": "manual"})
+        )
+        == "[None]"
+    )
+    assert (
+        figurecomposer_plot_slices._plot_slices_slice_values_code(
+            tool,
+            operation.model_copy(
+                update={
+                    "slice_values_mode": "manual",
+                    "slice_dim": "eV",
+                    "slice_values": (0.1,),
+                }
+            ),
+        )
+        == "[0.1]"
+    )
+    assert figurecomposer_plot_slices._plot_slices_panel_qsel_kwargs(
+        operation.model_copy(
+            update={"slice_dim": "eV", "slice_values": (0.1,), "slice_width": 0.2}
+        ),
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, ""),
+    ) == {"eV": 0.1, "eV_width": 0.2}
+
+
+def test_figure_composer_tick_params_editor_edge_commits(qtbot) -> None:
+    editor = figurecomposer_tick_params.TickParamsEditorWidget(
+        {"length": 1.0, "grid_alpha": 0.5, "grid_linestyle": "--"}
+    )
+    qtbot.addWidget(editor)
+    emitted: list[dict[str, typing.Any]] = []
+    editor.sigTickParamsChanged.connect(emitted.append)
+
+    editor.setToolTip("ignored")
+    assert editor.toolTip() == ""
+
+    _finish_tick_params_edit(editor, "figureComposerAxesMethodTickParamsLengthEdit", "")
+    assert "length" not in editor.tick_params()
+    assert emitted[-1]["grid_alpha"] == 0.5
+
+    emitted.clear()
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsWidthEdit", "not-a-number"
+    )
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsWidthEdit", "-1"
+    )
+    assert emitted == []
+
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsWidthEdit", "2.5"
+    )
+    assert emitted[-1]["width"] == pytest.approx(2.5)
+
+    emitted.clear()
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsGridAlphaEdit", "2"
+    )
+    assert emitted == []
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsGridAlphaEdit", "0.25"
+    )
+    assert emitted[-1]["grid_alpha"] == pytest.approx(0.25)
+
+    emitted.clear()
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsLabelSizeEdit", "not valid("
+    )
+    assert emitted == []
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsLabelSizeEdit", "'small'"
+    )
+    assert emitted[-1]["labelsize"] == "small"
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsLabelSizeEdit", ""
+    )
+    assert "labelsize" not in emitted[-1]
+
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsLabelFontEdit", "Arial"
+    )
+    assert emitted[-1]["labelfontfamily"] == "Arial"
+    _finish_tick_params_edit(
+        editor, "figureComposerAxesMethodTickParamsLabelFontEdit", ""
+    )
+    assert "labelfontfamily" not in emitted[-1]
+
+    colors_edit = editor.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTickParamsColorsEdit"
+    )
+    assert colors_edit is not None
+    colors_edit.setText("")
+    colors_edit.editingFinished.emit()
+    assert "colors" not in emitted[-1]
+
+    combo = editor.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTickParamsGridLineStyleCombo"
+    )
+    assert combo is not None
+    figurecomposer_tick_params.TickParamsEditorWidget._set_combo_value(
+        combo, "not-present"
+    )
+    assert combo.currentIndex() == 0
+
+    editor._updating = True
+    editor._set_kwarg("axis", "x")
+    assert emitted[-1].get("axis") != "x"
+    editor._updating = False
+
+    tristate = figurecomposer_tick_params._TriStateCheckBox("test")
+    qtbot.addWidget(tristate)
+    tristate.set_value("bad")
+    assert tristate.value() is None
 
 
 def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
