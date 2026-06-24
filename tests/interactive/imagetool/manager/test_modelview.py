@@ -466,8 +466,6 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._tool_metadata_queue.set_interval(1)
-
         child_node = manager._child_node(uid)
         tool._info_text = "updated child info"
         child_node._handle_tool_info_changed()
@@ -478,8 +476,11 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
 
         assert "updated child info" not in manager.text_box.toPlainText()
         assert metadata_updates == []
-        assert manager._tool_metadata_queue.pending_uids == frozenset({uid})
-        manager._tool_metadata_queue.flush()
+        assert (
+            manager._interaction_gate.pending_keys.count(("tool-info-refresh", uid))
+            == 1
+        )
+        manager._flush_idle_work(force=True)
         assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
 
@@ -527,6 +528,65 @@ def test_manager_idle_queue_stops_when_activity_resumes(
 
         assert calls == ["first", "second"]
         assert manager._interaction_gate.pending_keys == ()
+
+
+def test_childtool_data_changed_deduplicates_descendant_refresh(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        manager._mark_workspace_clean()
+
+        propagated_uids: list[str] = []
+        refreshed_uids: list[str | None] = []
+        monkeypatch.setattr(
+            manager,
+            "_propagate_source_change_from_uid",
+            lambda changed_uid: propagated_uids.append(changed_uid),
+        )
+        monkeypatch.setattr(
+            manager.tree_view,
+            "refresh",
+            lambda target_uid=None: refreshed_uids.append(target_uid),
+        )
+
+        child_node = manager._child_node(uid)
+        child_node._handle_tool_data_changed()
+        child_node._handle_tool_data_changed()
+        child_node._handle_tool_data_changed()
+
+        assert manager._workspace_state.dirty_data == {uid}
+        assert propagated_uids == []
+        assert refreshed_uids == []
+        assert (
+            manager._interaction_gate.pending_keys.count(
+                ("snapshot-token-refresh", uid)
+            )
+            == 1
+        )
+        assert (
+            manager._interaction_gate.pending_keys.count(("tool-data-refresh", uid))
+            == 1
+        )
+
+        manager._flush_idle_work(force=True)
+
+        assert propagated_uids == [uid]
+        assert refreshed_uids == [uid, uid]
 
 
 def test_manager_interaction_gate_tracks_key_and_editor_focus_events(

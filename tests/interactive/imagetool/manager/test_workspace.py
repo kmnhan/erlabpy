@@ -5454,8 +5454,8 @@ def test_manager_repeated_tool_dirty_event_defers_document_metadata_until_idle(
         )
 
         manager._note_interaction_activity()
-        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
-        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        assert manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        assert not manager._mark_workspace_dirty(uid="n1", **dirty_kw)
 
         assert manager.is_workspace_modified
         assert file_path_calls == []
@@ -5467,6 +5467,23 @@ def test_manager_repeated_tool_dirty_event_defers_document_metadata_until_idle(
 
         assert file_path_calls == [str(workspace)]
         assert node_modified_calls == []
+
+
+def test_manager_tool_dirty_event_escalates_state_to_data(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        assert manager._mark_workspace_dirty(uid="n1", state=True)
+        assert manager._mark_workspace_dirty(uid="n1", data=True)
+
+        assert manager._workspace_state.dirty_state == {"n1"}
+        assert manager._workspace_state.dirty_data == {"n1"}
+        assert [event.uid for event in manager._workspace_state.dirty_events] == [
+            "n1",
+            "n1",
+        ]
 
 
 def test_manager_workspace_window_title_clears_file_path_without_workspace(

@@ -772,12 +772,12 @@ class _WorkspaceIOController:
         added: bool = False,
         removed: str | None = None,
         structure: str | None = None,
-    ) -> None:
+    ) -> bool:
         if (
             self._manager._workspace_state.loading_depth > 0
             or self._manager._workspace_state.saving_depth > 0
         ):
-            return
+            return False
         event = _manager_workspace._WorkspaceDirtyEvent(
             generation=self._manager._workspace_state.dirty_generation + 1,
             uid=uid,
@@ -799,27 +799,29 @@ class _WorkspaceIOController:
             and not node_was_modified
         ):
             self._queue_node_window_modified(event.uid, True)
-        self._manager._workspace_state.mark_dirty(event)
+        dirty_changed = self._manager._workspace_state.mark_dirty(event)
         if not was_modified and self._manager.is_workspace_modified:
             self._manager._update_workspace_window_title(force=False)
+        return dirty_changed
 
-    def _mark_node_added(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(
+    def _mark_node_added(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(
             uid=uid, added=True, structure="Added window"
         )
 
-    def _mark_node_data_dirty(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(uid=uid, data=True)
+    def _mark_node_data_dirty(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(uid=uid, data=True)
 
-    def _mark_node_state_dirty(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(uid=uid, state=True)
+    def _mark_node_state_dirty(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(uid=uid, state=True)
 
-    def _mark_tool_info_dirty(self, uid: str) -> None:
+    def _mark_tool_info_dirty(self, uid: str) -> bool:
         if uid not in self._manager._workspace_state.dirty_state:
-            self._manager._mark_node_state_dirty(uid)
+            return self._manager._mark_node_state_dirty(uid)
+        return False
 
-    def _mark_workspace_structure_dirty(self, reason: str) -> None:
-        self._manager._mark_workspace_dirty(structure=reason)
+    def _mark_workspace_structure_dirty(self, reason: str) -> bool:
+        return self._manager._mark_workspace_dirty(structure=reason)
 
     def _mark_workspace_layout_dirty(self) -> None:
         if (

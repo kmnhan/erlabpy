@@ -3408,8 +3408,8 @@ class ImageToolManager(_ImageToolManagerBase):
         added: bool = False,
         removed: str | None = None,
         structure: str | None = None,
-    ) -> None:
-        self._workspace_controller._mark_workspace_dirty(
+    ) -> bool:
+        return self._workspace_controller._mark_workspace_dirty(
             uid=uid,
             data=data,
             state=state,
@@ -3418,20 +3418,20 @@ class ImageToolManager(_ImageToolManagerBase):
             structure=structure,
         )
 
-    def _mark_node_added(self, uid: str) -> None:
-        self._workspace_controller._mark_node_added(uid)
+    def _mark_node_added(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_added(uid)
 
-    def _mark_node_data_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_node_data_dirty(uid)
+    def _mark_node_data_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_data_dirty(uid)
 
-    def _mark_node_state_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_node_state_dirty(uid)
+    def _mark_node_state_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_state_dirty(uid)
 
-    def _mark_tool_info_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_tool_info_dirty(uid)
+    def _mark_tool_info_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_tool_info_dirty(uid)
 
-    def _mark_workspace_structure_dirty(self, reason: str) -> None:
-        self._workspace_controller._mark_workspace_structure_dirty(reason)
+    def _mark_workspace_structure_dirty(self, reason: str) -> bool:
+        return self._workspace_controller._mark_workspace_structure_dirty(reason)
 
     def _mark_workspace_clean(self) -> None:
         self._workspace_controller._mark_workspace_clean()

@@ -874,14 +874,30 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         self._detached_live_parent_data = parent_data.copy(deep=False)
 
-    def _advance_snapshot_token(self) -> None:
+    def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
             return
         self._snapshot_token = uuid.uuid4().hex
-        self.manager.tree_view.refresh(self.uid)
-        self.manager._update_info(uid=self.uid)
-        self.manager._refresh_dependency_dependents(self.uid)
-        self.manager._mark_node_state_dirty(self.uid)
+        if defer_refresh:
+            self.manager._queue_idle_work(
+                ("snapshot-token-refresh", self.uid),
+                functools.partial(self._flush_snapshot_token_refresh, self.uid),
+            )
+            return
+        self._flush_snapshot_token_refresh(self.uid)
+
+    def _flush_snapshot_token_refresh(self, uid: str) -> None:
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager.tree_view.refresh(self.uid)
+        manager._update_info(uid=self.uid)
+        manager._refresh_dependency_dependents(self.uid)
+        manager._mark_node_state_dirty(self.uid)
 
     @property
     def source_state(self) -> _source_state_type:
@@ -1219,7 +1235,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _handle_tool_data_changed(self) -> None:
         self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
+        self._advance_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
             return
         self.manager._queue_idle_work(
@@ -1383,8 +1399,21 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         manager._note_interaction_activity()
         manager._mark_tool_info_dirty(self.uid)
-        manager._schedule_figure_gallery_icon_update(self.uid)
-        manager._schedule_tool_metadata_update(self.uid)
+        manager._queue_idle_work(
+            ("tool-info-refresh", self.uid),
+            functools.partial(self._flush_tool_info_changed, self.uid),
+        )
+
+    def _flush_tool_info_changed(self, uid: str) -> None:
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._update_figure_gallery_icon(self.uid)
+        manager._update_info(uid=self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
@@ -1397,16 +1426,13 @@ class _ManagedWindowNode(QtCore.QObject):
     def _handle_imagetool_data_edited(self) -> None:
         self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
+        self._advance_snapshot_token(defer_refresh=True)
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
         self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
-        self.manager._queue_idle_work(
-            ("node-info-refresh", self.uid), self._refresh_node_info
-        )
+        self._advance_snapshot_token(defer_refresh=True)
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
