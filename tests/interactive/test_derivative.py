@@ -200,6 +200,7 @@ def test_dtool_undo_redo_state_change(qtbot) -> None:
 
     win.nx_spin.setValue(initial.nx_value + 2)
 
+    assert win._flush_pending_history_write()
     assert win.undoable
     assert win.tool_status.nx_value == initial.nx_value + 2
 

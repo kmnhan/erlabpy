@@ -3385,6 +3385,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history or self._restoring_from_dataset:
             return
+        if not self._prev_states:
+            self._prev_states.append(self.tool_status)
+            self._update_history_actions()
+            return
         self._history_write_pending = True
         self._history_write_timer.start()
 

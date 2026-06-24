@@ -2003,6 +2003,7 @@ def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
 
     win.gamma_widget.setValue(initial.cmap_gamma + 0.1)
 
+    assert win._flush_pending_history_write()
     assert win.undoable
     assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
 

@@ -99,7 +99,9 @@ class LegendLabelHelpDialog(QtWidgets.QDialog):
         table = QtWidgets.QTableWidget(len(rows), 3, self)
         table.setObjectName("figureComposerLegendLabelsHelpTable")
         table.setHorizontalHeaderLabels(("Placeholder", "Kind", "Meaning"))
-        table.verticalHeader().setVisible(False)
+        vertical_header = table.verticalHeader()
+        if vertical_header is not None:
+            vertical_header.setVisible(False)
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
@@ -109,7 +111,9 @@ class LegendLabelHelpDialog(QtWidgets.QDialog):
             self._set_table_item(table, row_index, 1, _display_kind(row.kind), row)
             self._set_table_item(table, row_index, 2, row.description, row)
         table.resizeColumnsToContents()
-        table.horizontalHeader().setStretchLastSection(True)
+        horizontal_header = table.horizontalHeader()
+        if horizontal_header is not None:
+            horizontal_header.setStretchLastSection(True)
         table.setMaximumHeight(min(220, 34 + 24 * max(1, len(rows))))
         return table
 

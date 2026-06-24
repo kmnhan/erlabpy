@@ -6,6 +6,7 @@ import typing
 import warnings
 from collections.abc import Callable
 
+import lmfit
 import numpy as np
 import pydantic
 import pytest
@@ -169,11 +170,23 @@ def _set_provenance_steps_clipboard(
 
 
 def _fit2d_param_result_dataset(params: typing.Any) -> xr.Dataset:
-    class _Result:
-        def __init__(self) -> None:
-            self.params = params.copy()
-
-    return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
+    params = params.copy()
+    param_args = ", ".join(("x", *params.keys()))
+    namespace = {"np": np}
+    exec(  # noqa: S102
+        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
+        namespace,
+    )
+    result = lmfit.model.ModelResult(
+        lmfit.Model(namespace["_model_func"]),
+        params,
+        data=np.zeros(3),
+        fcn_args=(np.arange(3, dtype=float),),
+        max_nfev=1,
+    )
+    result.params = params.copy()
+    result.nfev = 1
+    return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
 
 
 def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -> None:
@@ -8890,18 +8903,35 @@ def test_manager_copy_selected_derivation_code_fallbacks(
 
 def test_manager_derivation_context_menu_ignores_empty_space(
     qtbot,
+    monkeypatch,
 ) -> None:
     list_widget = QtWidgets.QListWidget()
     qtbot.addWidget(list_widget)
+    calls: list[bool] = []
+    menus: list[QtWidgets.QMenu] = []
+    exec_positions: list[QtCore.QPoint] = []
+
+    def build_menu(*, include_row_actions: bool) -> QtWidgets.QMenu:
+        calls.append(include_row_actions)
+        menu = QtWidgets.QMenu()
+        menus.append(menu)
+        return menu
+
+    monkeypatch.setattr(
+        QtWidgets.QMenu, "exec", lambda _self, pos: exec_positions.append(pos)
+    )
     manager = types.SimpleNamespace(
         metadata_derivation_list=list_widget,
-        _build_metadata_derivation_menu=lambda: pytest.fail("unexpected menu"),
+        _build_metadata_derivation_menu=build_menu,
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
     )
 
     controller._show_metadata_derivation_menu(QtCore.QPoint(10, 10))
+
+    assert calls == [False]
+    assert len(exec_positions) == 1
 
 
 def test_manager_paste_steps_validation_error_branches(

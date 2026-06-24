@@ -199,6 +199,7 @@ def test_fit1d_undo_redo(qtbot, exp_decay_model) -> None:
     assert win.param_model.setData(
         index, f"{updated_value}", QtCore.Qt.ItemDataRole.EditRole
     )
+    assert win._flush_pending_history_write()
     assert win.undoable
 
     win.undo()
@@ -240,6 +241,7 @@ def test_fit1d_undo_redo_repairs_equal_bound_params(
         lambda title, text: warnings.append((title, text)),
     )
 
+    win._flush_pending_history_write()
     win._prev_states.clear()
     win._prev_states.extend([good_status, bad_status, current_status])
     win._next_states.clear()
