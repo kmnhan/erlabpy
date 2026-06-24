@@ -706,6 +706,12 @@ def test_parameter_table_model_rejects_invalid_bounds() -> None:
     assert params["amp"].max == pytest.approx(0.5)
     assert len(changed) == 1
 
+    params["amp"].set(value=0.0, min=-1.0, max=2.0)
+    assert model.setData(min_index, "0.5", QtCore.Qt.ItemDataRole.EditRole)
+    assert params["amp"].value == pytest.approx(0.5)
+    assert params["amp"].min == pytest.approx(0.5)
+    assert params["amp"].max == pytest.approx(2.0)
+
 
 def test_fit1d_invalid_bound_edit_warns_without_history(qtbot, monkeypatch) -> None:
     data = _make_1d_data()
@@ -1129,6 +1135,55 @@ def test_fit1d_fit_step_paint_widgets_skip_invalid_entries(qtbot) -> None:
     assert sum(widget is duplicate for widget in widgets) == 1
 
 
+def test_fit1d_fit_progress_paint_widgets_skip_invalid_entries(qtbot) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    win.redchi_value = object()
+    duplicate = win.bic_value
+    win.fit_multi_button = duplicate
+
+    widgets = win._fit_progress_paint_widgets()
+
+    assert all(isinstance(widget, QtWidgets.QWidget) for widget in widgets)
+    assert sum(widget is duplicate for widget in widgets) == 1
+
+
+def test_fit1d_request_fit_progress_paint_repaints_visible_widgets(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+
+    class _PaintWidget(QtWidgets.QWidget):
+        def __init__(self, name: str, *, visible: bool = True) -> None:
+            super().__init__()
+            self._name = name
+            self._visible = visible
+
+        def repaint(self) -> None:
+            events.append(self._name)
+
+        def isVisible(self) -> bool:
+            return self._visible
+
+    widgets = (
+        _PaintWidget("visible"),
+        _PaintWidget("hidden", visible=False),
+    )
+    for widget in widgets:
+        qtbot.addWidget(widget)
+    monkeypatch.setattr(win, "_fit_progress_paint_widgets", lambda: widgets)
+
+    win._request_fit_progress_paint()
+
+    assert events == ["visible"]
+
+
 def test_fit1d_set_fit_ds_updates_without_param_changed_signal(
     qtbot, monkeypatch
 ) -> None:
@@ -1208,6 +1263,265 @@ def test_fit1d_cancelled_before_deferred_multi_step_stops_sequence(
     )
     assert started_steps == [1]
     assert win._fit_running_multi is False
+
+
+def test_fit1d_defer_next_fit_step_refreshes_due_live_view(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+    win._fit_multi_total = 2
+    monkeypatch.setattr(win, "_fit_multi_live_refresh_due", lambda: True)
+    monkeypatch.setattr(
+        win, "_sync_multi_fit_view", lambda **_kwargs: events.append("sync")
+    )
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda _parent, _delay, callback: callback(),
+    )
+
+    win._defer_next_fit_step(lambda: events.append("callback"))
+    win._fit_multi_total = None
+
+    assert events == ["sync", "paint", "callback"]
+
+
+def test_fit1d_defer_next_fit_step_paints_single_sequence(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda _parent, _delay, callback: callback(),
+    )
+
+    win._defer_next_fit_step(lambda: events.append("callback"))
+
+    assert events == ["paint", "callback"]
+
+
+def test_fit1d_fit_curve_residual_success_and_failure(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    fit_calls: list[tuple[np.ndarray, np.ndarray]] = []
+    residual_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Curve:
+        def __init__(self, calls) -> None:
+            self._calls = calls
+
+        def setData(self, *args, **kwargs) -> None:
+            self._calls.append((args, kwargs))
+
+    win.fit_curve = _Curve(fit_calls)
+    win.residual_curve = _Curve(residual_calls)
+    xvals = np.array([0.0, 1.0, 2.0])
+    monkeypatch.setattr(win, "_x_values", lambda: xvals)
+    monkeypatch.setattr(win, "_has_non_finite_params", lambda: False)
+    monkeypatch.setattr(win, "_model_eval_values", lambda values: np.zeros_like(values))
+    monkeypatch.setattr(
+        win, "_residuals_from_result", lambda _values: np.array([0.1, 0.2, 0.3])
+    )
+    monkeypatch.setattr(win, "_domain_brushes", lambda _values: None)
+    monkeypatch.setattr(win, "_update_component_curves", lambda _values: None)
+    monkeypatch.setattr(win, "_update_peak_lines", lambda _values: None)
+
+    win._update_fit_curve()
+
+    np.testing.assert_allclose(residual_calls[-1][0][0], xvals)
+    np.testing.assert_allclose(residual_calls[-1][0][1], [0.1, 0.2, 0.3])
+    assert win._last_residual is not None
+
+    def raise_residuals(_values):
+        raise RuntimeError("bad residuals")
+
+    monkeypatch.setattr(win, "_residuals_from_result", raise_residuals)
+    win._update_fit_curve()
+
+    assert residual_calls[-1][0] == ([], [])
+    assert win._last_residual is None
+
+
+def test_fit1d_model_eval_y_independent_shape_mismatch(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    captured: list[dict[str, np.ndarray]] = []
+
+    class _Model:
+        independent_vars = ("x", "y")
+
+        def eval(self, *, params, **kwargs):
+            del params
+            captured.append(kwargs)
+            return np.array([1.0, 2.0])
+
+    win._model = _Model()
+    monkeypatch.setattr(win, "_normalized_data_values", lambda: np.ones(3))
+
+    with pytest.raises(ValueError, match="2 values for 3 x values"):
+        win._model_eval_values(np.arange(3.0))
+
+    assert "y" in captured[0]
+
+
+def test_fit1d_segmented_convolution_support_edges(monkeypatch) -> None:
+    assert not Fit1DTool._x_values_support_segmented_convolution(np.array([0.0, 1.0]))
+    assert not Fit1DTool._x_values_support_segmented_convolution(
+        np.array([0.0, np.nan, 1.0])
+    )
+
+    import erlab.utils._array_jit as array_jit
+
+    monkeypatch.setattr(
+        array_jit,
+        "_split_uniform_segments",
+        lambda _values: (_ for _ in ()).throw(RuntimeError("bad segments")),
+    )
+    assert not Fit1DTool._x_values_support_segmented_convolution(
+        np.array([0.0, 0.5, 1.0])
+    )
+
+
+def test_fit1d_equal_bound_param_state_repair_edges(monkeypatch) -> None:
+    assert Fit1DTool._repair_equal_bound_param_state(("amp",), []) is None
+    assert (
+        Fit1DTool._repair_equal_bound_param_state(
+            ("amp", 1.0, True, None, "bad", "bad"), []
+        )
+        is None
+    )
+    assert (
+        Fit1DTool._repair_equal_bound_param_state(
+            ("amp", 1.0, True, None, 0.0, 1.0), []
+        )
+        is None
+    )
+
+    with pytest.raises(ValueError, match="not enough values"):
+        Fit1DTool._deserialize_params([("amp", 1.0, True, None, 2.0, 1.0)])
+
+    param = lmfit.Parameter(name="amp", value=1.0, min=0.0, max=2.0)
+    bad_state = list(param.__getstate__())
+    bad_state[4] = 1.0
+    bad_state[5] = 1.0
+    monkeypatch.setattr(
+        Fit1DTool,
+        "_repair_equal_bound_param_state",
+        staticmethod(lambda _state, _repaired_bounds: None),
+    )
+    with pytest.raises(ValueError, match="min == max"):
+        Fit1DTool._deserialize_params([tuple(bad_state)])
+
+
+def test_fit1d_multi_fit_history_and_sync_edges(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    win._fit_multi_last_live_refresh = fit1d.time.monotonic()
+    assert not win._fit_multi_live_refresh_due()
+
+    replaced: list[bool] = []
+    monkeypatch.setattr(win, "_replace_last_state", lambda: replaced.append(True))
+    win._write_history = True
+    win._begin_fit_multi_history()
+    assert win._fit_multi_sequence_write_history is True
+    assert win._write_history is False
+    win._finish_fit_multi_history()
+    assert win._write_history is True
+    assert replaced == [True]
+
+    result_ds = _fit_result_dataset(win._params, nfev=4)
+    returned_params = win._store_multi_fit_result(result_ds, fit1d.time.perf_counter())
+    assert returned_params is win._params
+    assert win._fit_multi_live_refresh_pending is True
+    assert win._fit_multi_refresh_pending is True
+
+    events: list[str] = []
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
+    monkeypatch.setattr(
+        win, "_refresh_slider_from_model", lambda: events.append("slider")
+    )
+    monkeypatch.setattr(
+        win,
+        "_set_fit_stats",
+        lambda _result, *, elapsed=None, emit_info=True: events.append(
+            f"stats-{emit_info}"
+        ),
+    )
+    monkeypatch.setattr(
+        win,
+        "_sync_fit_result_state",
+        lambda *, notify=True: events.append(f"sync-{notify}"),
+    )
+    monkeypatch.setattr(
+        win,
+        "_mark_fit_fresh",
+        lambda *, emit_info=True: events.append(f"fresh-{emit_info}"),
+    )
+    monkeypatch.setattr(win, "finalize_source_refresh", lambda: events.append("source"))
+
+    win._fit_multi_refresh_pending = False
+    win._sync_multi_fit_view(full=True)
+    assert events == []
+
+    win._fit_multi_refresh_pending = True
+    win._fit_multi_live_refresh_pending = True
+    win._source_refresh_deferred = True
+    win._sync_multi_fit_view(full=True)
+    assert events == [
+        "curve",
+        "slider",
+        "stats-True",
+        "sync-True",
+        "fresh-True",
+        "source",
+    ]
+
+    events.clear()
+    win._fit_multi_live_refresh_pending = False
+    win._sync_multi_fit_view()
+    assert events == []
+
+
+def test_fit1d_queue_fit_action_exception_recovers(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+
+    class _Thread:
+        def cancel(self) -> None:
+            events.append("cancel")
+
+        def deleteLater(self) -> None:
+            events.append("delete")
+
+    thread = _Thread()
+    win._fit_thread = thread
+    monkeypatch.setattr(win, "_fit_errored", lambda _message: events.append("error"))
+    monkeypatch.setattr(win, "_fit_cancelled", lambda: events.append("cancelled"))
+
+    def fail() -> None:
+        raise RuntimeError("bad action")
+
+    win._queue_fit_action(thread, fail)
+    win._finalize_fit_thread(thread)
+
+    assert events == ["error", "cancelled", "delete"]
+    assert win._pending_fit_action is None
 
 
 def test_fit1d_user_and_file_models(qtbot, tmp_path) -> None:
@@ -1472,6 +1786,61 @@ def test_fit1d_run_fit_start_error_resets_buttons(qtbot, monkeypatch) -> None:
     assert not win.cancel_fit_button.isEnabled()
 
 
+def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    errors: list[tuple[str, str, str | None]] = []
+    deleted: list[bool] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    class _Signal:
+        def connect(self, _callback) -> None:
+            return None
+
+    class _FailingWorker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.finished = _Signal()
+            self.sigFinished = _Signal()
+            self.sigTimedOut = _Signal()
+            self.sigErrored = _Signal()
+            self.sigCancelled = _Signal()
+
+        def setServiceLevel(self, _level) -> None:
+            return None
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+        def deleteLater(self) -> None:
+            deleted.append(True)
+
+    monkeypatch.setattr(fit1d, "_FitWorker", _FailingWorker)
+
+    assert not win._start_fit_worker(
+        win._fit_data(),
+        win._params,
+        multi=False,
+        on_success=lambda _result: None,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
+
+    assert errors
+    assert deleted == [True]
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
 def test_fit1d_run_fit_preparation_error_resets_buttons(qtbot, monkeypatch) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
@@ -1497,6 +1866,35 @@ def test_fit1d_run_fit_preparation_error_resets_buttons(qtbot, monkeypatch) -> N
     assert win._fit_thread is None
     assert win._fit_cancel_requested is False
     assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit1d_run_fit_multiple_preparation_error_finishes(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    def _raise_fit_data() -> xr.DataArray:
+        raise RuntimeError("unexpected preparation failure")
+
+    monkeypatch.setattr(win, "_fit_data", _raise_fit_data)
+
+    win._run_fit_multiple(2)
+
+    assert errors
+    assert win._fit_multi_total is None
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win.fit_multi_button.isEnabled()
     assert not win.cancel_fit_button.isEnabled()
 
 

@@ -1038,7 +1038,9 @@ def _plot_slices_styled_label_line_kw_code(
     styles: Mapping[tuple[int, int], FigurePlotSlicesPanelStyleState],
     fields: set[str],
 ) -> str:
-    panel_index = {key: index for index, key in enumerate(keys)}
+    panel_index = {
+        (key.map_index, key.slice_index): index for index, key in enumerate(keys)
+    }
 
     def value_getter(key: _PlotSlicesPanelKey) -> dict[str, typing.Any]:
         style = styles.get(
@@ -1057,7 +1059,7 @@ def _plot_slices_styled_label_line_kw_code(
             value_expr=_plot_slices_indexed_slice_value_code(
                 slice_values_code, key.slice_index
             ),
-            index_expr=str(panel_index[key]),
+            index_expr=str(panel_index[(key.map_index, key.slice_index)]),
         )
         return {**operation.line_kw, **style.line_kw, "label": _RawCode(label_code)}
 

@@ -2680,8 +2680,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.bic_value,
             self.fit_multi_button,
         ):
-            if erlab.interactive.utils.qt_is_valid(widget) and not any(
-                widget is existing for existing in widgets
+            if (
+                isinstance(widget, QtWidgets.QWidget)
+                and erlab.interactive.utils.qt_is_valid(widget)
+                and not any(widget is existing for existing in widgets)
             ):
                 widgets.append(widget)
         return tuple(widgets)

@@ -1256,6 +1256,84 @@ def test_fit2d_fit_step_paint_widgets_skip_invalid_entries(qtbot) -> None:
     assert sum(widget is duplicate for widget in widgets) == 1
 
 
+def test_fit2d_sequence_state_and_history_edges(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._fit_2d_total = 2
+    win._sync_fit_result_state()
+    assert win._fit_2d_param_plot_refresh_pending
+
+    win._fit_2d_last_live_refresh = fit2d_module.time.monotonic()
+    assert not win._fit_2d_live_refresh_due()
+
+    replaced: list[bool] = []
+    monkeypatch.setattr(win, "_replace_last_state", lambda: replaced.append(True))
+    win._write_history = True
+    win._begin_fit_2d_sequence_history()
+    assert win._fit_2d_sequence_write_history is True
+    assert win._write_history is False
+    win._begin_fit_2d_sequence_history()
+    win._finish_fit_2d_sequence_history()
+    assert win._write_history is True
+    assert replaced == [True]
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        win, "_update_param_plot_options", lambda: events.append("options")
+    )
+    monkeypatch.setattr(
+        win,
+        "_update_param_plot",
+        lambda *, notify=True: events.append(f"plot-{notify}"),
+    )
+
+    win._fit_2d_param_plot_refresh_pending = False
+    win._flush_fit_2d_sequence_param_plot()
+    assert events == []
+    win._flush_fit_2d_sequence_param_plot(force=True, notify=False)
+    assert events == ["options", "plot-False"]
+
+
+def test_fit2d_sequence_view_live_refresh_edges(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        win,
+        "_refresh_contents_from_index",
+        lambda **kwargs: events.append(f"refresh-{kwargs['emit_info']}"),
+    )
+    monkeypatch.setattr(
+        win,
+        "_flush_fit_2d_sequence_param_plot",
+        lambda *, notify=True, force=False: events.append(f"plot-{notify}"),
+    )
+
+    win._fit_2d_live_refresh_pending = False
+    win._sync_fit_2d_sequence_view(0, full=False)
+    assert events == []
+
+    win._fit_2d_live_refresh_pending = True
+    win._sync_fit_2d_sequence_view(0, full=False)
+    assert events == ["refresh-False", "plot-False"]
+
+    events.clear()
+    win._fit_2d_total = 0
+    monkeypatch.setattr(
+        Fit2DTool.__mro__[1],
+        "_defer_next_fit_step",
+        lambda _self, callback: events.append("super") or callback(),
+    )
+    win._defer_next_fit_step(lambda: events.append("callback"))
+    assert events == ["super", "callback"]
+
+
 def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
     qtbot, monkeypatch
 ) -> None:

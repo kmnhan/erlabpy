@@ -20847,6 +20847,29 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         figurecomposer_plot_slices._all_coordinate_slice_values_code(operation) is None
     )
     assert (
+        figurecomposer_plot_slices._first_plot_slices_source_code(
+            operation.model_copy(update={"sources": ()})
+        )
+        is None
+    )
+    selection_operation = operation.model_copy(
+        update={
+            "map_selections": (
+                FigureDataSelectionState(source="data", qsel={"eV": 0.1}),
+            )
+        }
+    )
+    assert ".qsel" in (
+        figurecomposer_plot_slices._first_plot_slices_source_code(selection_operation)
+        or ""
+    )
+    assert (
+        figurecomposer_plot_slices._all_coordinate_slice_values_code(
+            operation.model_copy(update={"sources": (), "slice_dim": "eV"})
+        )
+        is None
+    )
+    assert (
         figurecomposer_plot_slices._slice_values_mode_from_text("not a mode")
         == "manual"
     )
@@ -21164,6 +21187,36 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
     assert styled_value[1][1]["color"] == "red"
     assert styled_value[0][0]["linewidth"] == 1.5
 
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.1, 0.2], "kx": [-1.0, 0.0, 1.0]},
+        name="data",
+    )
+    tool = types.SimpleNamespace(
+        _source_data={"a": data},
+        _source_display_name=lambda name: name,
+        _editable_operations=lambda: (),
+    )
+    styled_operation = operation.model_copy(
+        update={
+            "sources": ("a",),
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0, slice_index=1, line_kw={"color": "blue"}
+                ),
+            ),
+        }
+    )
+    styled_line_kw = figurecomposer_plot_slices._plot_slices_label_line_kw_code(
+        tool, styled_operation
+    )
+    assert styled_line_kw is not None
+    styled_line_kw_value = eval(styled_line_kw, {}, namespace)  # noqa: S307
+    assert styled_line_kw_value[0][1]["label"] == "a:2:0.2"
+    assert styled_line_kw_value[0][1]["color"] == "blue"
+
     assert (
         figurecomposer_plot_slices._plot_slices_panel_index_expr(
             "F",
@@ -21177,6 +21230,10 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
     assert (
         figurecomposer_plot_slices._line_kw_dict_code({"alpha": 0.5}, "label_code")
         == "{**{'alpha': 0.5}, 'label': label_code}"
+    )
+    assert (
+        figurecomposer_plot_slices._line_kw_dict_code({}, "label_code")
+        == "{'label': label_code}"
     )
 
 
@@ -21257,6 +21314,24 @@ def test_figure_composer_plot_slices_line_color_codegen_helper_variants() -> Non
         for line in figurecomposer_plot_slices._plot_slices_line_color_code_lines(
             tool, c_order
         )
+    )
+
+    missing_key_operation = FigureOperationState.plot_slices(
+        label="missing-key",
+        sources=("a",),
+        slice_dim="eV",
+        slice_values=(0.1,),
+    ).model_copy(
+        update={
+            "line_color_mode": "coordinate",
+            "map_selections": (FigureDataSelectionState(source="missing"),),
+        }
+    )
+    assert (
+        figurecomposer_plot_slices._plot_slices_line_color_code_lines(
+            tool, missing_key_operation
+        )
+        == []
     )
 
     label_operation = FigureOperationState.plot_slices(
