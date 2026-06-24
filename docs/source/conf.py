@@ -300,6 +300,7 @@ intersphinx_mapping = {
     "hvplot": ("https://hvplot.holoviz.org/en/docs/latest/", None),
     "nexusformat": ("https://nexpy.github.io/nexpy", None),
     "findiff": ("https://findiff.readthedocs.io/en/stable", None),
+    "seaborn": ("https://seaborn.pydata.org/", None),
 }
 
 
