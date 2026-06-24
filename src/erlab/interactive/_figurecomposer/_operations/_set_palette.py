@@ -79,6 +79,7 @@ _SEABORN_SPECIAL_PALETTES = (
     "dark:#5A9_r",
     "blend:#7AB,#EDA",
 )
+_HIDDEN_PALETTE_OPTIONS = frozenset({"jet", "jet_r"})
 _DESAT_AUTO_VALUE = -0.01
 _PALETTE_COUNT_MAX = 256
 _PALETTE_ICON_SIZE = QtCore.QSize(72, 14)
@@ -114,9 +115,14 @@ class _PaletteSwatch(QtWidgets.QFrame):
             f"background-color: {hex_color}; border: 1px solid {border};"
         )
 
-    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent | None) -> None:
+        if event is None:
+            return
         menu = QtWidgets.QMenu(self)
         copy_action = menu.addAction("Copy Hex Code")
+        if copy_action is None:
+            event.accept()
+            return
         copy_action.setData(self._hex_color)
         chosen = menu.exec(event.globalPos())
         if chosen is copy_action:
@@ -193,7 +199,11 @@ def _palette_options(
             *plt.colormaps(),
         )
     )
-    if operation.palette_name not in options:
+    options = [option for option in options if option not in _HIDDEN_PALETTE_OPTIONS]
+    if (
+        operation.palette_name not in options
+        and operation.palette_name not in _HIDDEN_PALETTE_OPTIONS
+    ):
         options.append(operation.palette_name)
     return tuple(dict.fromkeys(options))
 
@@ -406,12 +416,14 @@ def _editor_sections(
     docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
     docs_button.setProperty("figure_palette_doc_url", _SET_PALETTE_DOC_URL)
     docs_button.setToolTip("Open seaborn.set_palette documentation.")
+
+    def open_docs(_checked: bool = False) -> None:
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(_SET_PALETTE_DOC_URL))
+
     tool._connect_editor_signal(
         docs_button,
         docs_button.clicked,
-        lambda _checked=False: QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl(_SET_PALETTE_DOC_URL)
-        ),
+        open_docs,
     )
     palette_layout.addWidget(docs_button)
     tool._add_form_row(

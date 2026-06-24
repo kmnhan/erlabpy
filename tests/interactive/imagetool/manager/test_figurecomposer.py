@@ -680,6 +680,12 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
     assert combo is not None
     assert combo.isEnabled()
+    assert combo.findText("jet") == -1
+    assert combo.findText("jet_r") == -1
+    assert "jet" not in figurecomposer_set_palette._palette_options(
+        FigureOperationState.set_palette().model_copy(update={"palette_name": "jet"}),
+        sns,
+    )
     for palette_name in ("deep6", "tab20b", "Accent", "rocket_r", "husl", "viridis_r"):
         palette_index = combo.findText(palette_name)
         assert palette_index >= 0
