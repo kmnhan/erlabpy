@@ -21119,12 +21119,12 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
     single = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
         operation, single_key, ("alpha",), "slice_values", fields
     )
-    assert eval(single, {}, namespace) == {"label": "alpha:1:0.1"}  # noqa: S307
+    assert eval(single, namespace) == {"label": "alpha:1:0.1"}  # noqa: S307
 
     by_slice = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
         operation, by_slice_keys, ("alpha",), "slice_values", fields
     )
-    assert eval(by_slice, {}, namespace) == [  # noqa: S307
+    assert eval(by_slice, namespace) == [  # noqa: S307
         {"label": "alpha:1:0.1"},
         {"label": "alpha:2:0.2"},
     ]
@@ -21134,7 +21134,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
             operation, by_source_keys, ("alpha", "beta"), "slice_values", fields
         )
     )
-    assert eval(by_source, {}, namespace) == [  # noqa: S307
+    assert eval(by_source, namespace) == [  # noqa: S307
         {"label": "alpha:1:0.1"},
         {"label": "beta:2:0.1"},
     ]
@@ -21142,7 +21142,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
     grid = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
         operation, grid_keys, ("alpha", "beta"), "slice_values", fields
     )
-    assert eval(grid, {}, namespace) == [  # noqa: S307
+    assert eval(grid, namespace) == [  # noqa: S307
         [{"label": "alpha:1:0.1"}, {"label": "alpha:2:0.2"}],
         [{"label": "beta:3:0.1"}, {"label": "beta:4:0.2"}],
     ]
@@ -21156,7 +21156,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
             fields,
         )
     )
-    assert eval(fortran_grid, {}, namespace) == [  # noqa: S307
+    assert eval(fortran_grid, namespace) == [  # noqa: S307
         [{"label": "alpha:1:0.1"}, {"label": "beta:2:0.1"}],
         [{"label": "alpha:3:0.2"}, {"label": "beta:4:0.2"}],
     ]
@@ -21182,7 +21182,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         },
         fields,
     )
-    styled_value = eval(styled, {}, namespace)  # noqa: S307
+    styled_value = eval(styled, namespace)  # noqa: S307
     assert styled_value[1][1]["label"] == "beta:4:0.2"
     assert styled_value[1][1]["color"] == "red"
     assert styled_value[0][0]["linewidth"] == 1.5

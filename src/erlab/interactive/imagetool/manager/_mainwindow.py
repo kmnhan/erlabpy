@@ -1478,6 +1478,14 @@ class ImageToolManager(_ImageToolManagerBase):
                     for handler in list(self._file_handlers):
                         handler.wait()
 
+            if self._standalone_app_windows:
+                logger.debug("Closing standalone apps...")
+                self._close_standalone_apps()
+                if self._standalone_app_windows:
+                    if event:
+                        event.ignore()
+                    return
+
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
             self._registry_heartbeat.stop()
@@ -1521,10 +1529,6 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console._console_widget.shutdown_kernel()
                 self.console.close()
                 self.console.deleteLater()
-
-            if self._standalone_app_windows:
-                logger.debug("Closing standalone apps...")
-                self._close_standalone_apps()
 
             logger.debug("Releasing workspace lock...")
             self._release_workspace_lock()

@@ -3924,8 +3924,6 @@ def test_manager_provenance_recorded_operation_dialog_handles_empty_operations(
 
 def test_manager_provenance_operation_title_falls_back_on_label_failure() -> None:
     class _BrokenTitleOperation(provenance.ToolProvenanceOperation):
-        op: typing.Literal["broken_title"] = "broken_title"
-
         def derivation_label(self) -> str:
             raise RuntimeError("label failed")
 
@@ -8903,23 +8901,20 @@ def test_manager_copy_selected_derivation_code_fallbacks(
 
 def test_manager_derivation_context_menu_ignores_empty_space(
     qtbot,
-    monkeypatch,
 ) -> None:
     list_widget = QtWidgets.QListWidget()
     qtbot.addWidget(list_widget)
     calls: list[bool] = []
-    menus: list[QtWidgets.QMenu] = []
     exec_positions: list[QtCore.QPoint] = []
+
+    class _Menu:
+        def exec(self, pos: QtCore.QPoint) -> None:
+            exec_positions.append(pos)
 
     def build_menu(*, include_row_actions: bool) -> QtWidgets.QMenu:
         calls.append(include_row_actions)
-        menu = QtWidgets.QMenu()
-        menus.append(menu)
-        return menu
+        return typing.cast("QtWidgets.QMenu", _Menu())
 
-    monkeypatch.setattr(
-        QtWidgets.QMenu, "exec", lambda _self, pos: exec_positions.append(pos)
-    )
     manager = types.SimpleNamespace(
         metadata_derivation_list=list_widget,
         _build_metadata_derivation_menu=build_menu,

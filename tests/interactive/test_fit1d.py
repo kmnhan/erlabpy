@@ -1433,7 +1433,9 @@ def test_fit1d_multi_fit_history_and_sync_edges(qtbot, monkeypatch) -> None:
     assert not win._fit_multi_live_refresh_due()
 
     replaced: list[bool] = []
-    monkeypatch.setattr(win, "_replace_last_state", lambda: replaced.append(True))
+    monkeypatch.setattr(
+        win, "_replace_last_state", lambda *_args: replaced.append(True)
+    )
     win._write_history = True
     win._begin_fit_multi_history()
     assert win._fit_multi_sequence_write_history is True
@@ -1449,9 +1451,9 @@ def test_fit1d_multi_fit_history_and_sync_edges(qtbot, monkeypatch) -> None:
     assert win._fit_multi_refresh_pending is True
 
     events: list[str] = []
-    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
+    monkeypatch.setattr(win, "_update_fit_curve", lambda *_args: events.append("curve"))
     monkeypatch.setattr(
-        win, "_refresh_slider_from_model", lambda: events.append("slider")
+        win, "_refresh_slider_from_model", lambda *_args: events.append("slider")
     )
     monkeypatch.setattr(
         win,
@@ -1463,14 +1465,16 @@ def test_fit1d_multi_fit_history_and_sync_edges(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         win,
         "_sync_fit_result_state",
-        lambda *, notify=True: events.append(f"sync-{notify}"),
+        lambda *_args, notify=True: events.append(f"sync-{notify}"),
     )
     monkeypatch.setattr(
         win,
         "_mark_fit_fresh",
-        lambda *, emit_info=True: events.append(f"fresh-{emit_info}"),
+        lambda *_args, emit_info=True: events.append(f"fresh-{emit_info}"),
     )
-    monkeypatch.setattr(win, "finalize_source_refresh", lambda: events.append("source"))
+    monkeypatch.setattr(
+        win, "finalize_source_refresh", lambda *_args: events.append("source")
+    )
 
     win._fit_multi_refresh_pending = False
     win._sync_multi_fit_view(full=True)

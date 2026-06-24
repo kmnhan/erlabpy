@@ -575,14 +575,21 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         self._standalone_app_pending_states[key] = state
 
     def _close_standalone_app(self, key: str) -> None:
-        widget = self._standalone_app_windows.pop(key, None)
-        event_filter = self._standalone_app_event_filters.pop(key, None)
+        widget = self._standalone_app_windows.get(key)
+        event_filter = self._standalone_app_event_filters.get(key)
         if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            self._standalone_app_windows.pop(key, None)
+            self._standalone_app_event_filters.pop(key, None)
             self._standalone_app_pending_states.pop(key, None)
             return
         if event_filter is not None:
             widget.removeEventFilter(event_filter)
-        widget.close()
+        if not widget.close():
+            if event_filter is not None and erlab.interactive.utils.qt_is_valid(widget):
+                widget.installEventFilter(event_filter)
+            return
+        self._standalone_app_windows.pop(key, None)
+        self._standalone_app_event_filters.pop(key, None)
         widget.deleteLater()
         self._standalone_app_pending_states.pop(key, None)
 

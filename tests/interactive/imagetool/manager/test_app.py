@@ -1301,3 +1301,113 @@ def test_manager_close_event_closes_standalone_apps(
 
         assert manager._standalone_app_windows == {}
         assert not erlab.interactive.utils.qt_is_valid(explorer, ptable)
+
+
+def test_manager_close_standalone_app_keeps_ignored_close(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _BusyStandaloneWindow(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_event_count = 0
+            self.delete_later_count = 0
+            self.refuse_close = True
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            if self.refuse_close and event is not None:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+        def deleteLater(self) -> None:
+            self.delete_later_count += 1
+            super().deleteLater()
+
+    with manager_context() as manager:
+        spec = manager._standalone_app_specs["explorer"]
+        manager._standalone_app_specs["explorer"] = dataclasses.replace(
+            spec,
+            factory=_BusyStandaloneWindow,
+        )
+        manager.show_explorer()
+        standalone = manager.explorer
+        event_filter = manager._standalone_app_event_filters["explorer"]
+
+        assert isinstance(standalone, _BusyStandaloneWindow)
+        qtbot.wait_until(standalone.isVisible)
+
+        manager._standalone_app_event_filters["stale"] = QtCore.QObject(manager)
+        manager._standalone_app_pending_states["stale"] = {}
+        manager._close_standalone_app("stale")
+
+        assert "stale" not in manager._standalone_app_windows
+        assert "stale" not in manager._standalone_app_event_filters
+        assert "stale" not in manager._standalone_app_pending_states
+
+        manager._close_standalone_app("explorer")
+
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert manager._standalone_app_event_filters["explorer"] is event_filter
+        assert standalone.close_event_count == 1
+        assert standalone.delete_later_count == 0
+
+        manager._standalone_app_event_filters.pop("explorer")
+        manager._close_standalone_app("explorer")
+
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert "explorer" not in manager._standalone_app_event_filters
+        assert standalone.close_event_count == 2
+        assert standalone.delete_later_count == 0
+
+        standalone.refuse_close = False
+        manager._close_standalone_app("explorer")
+
+        assert "explorer" not in manager._standalone_app_windows
+        assert standalone.delete_later_count == 1
+
+
+def test_manager_close_event_waits_for_busy_standalone_app(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _BusyStandaloneWindow(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_event_count = 0
+            self.refuse_close = True
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            if self.refuse_close and event is not None:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    with manager_context() as manager:
+        spec = manager._standalone_app_specs["explorer"]
+        manager._standalone_app_specs["explorer"] = dataclasses.replace(
+            spec,
+            factory=_BusyStandaloneWindow,
+        )
+        manager.show_explorer()
+        standalone = manager.explorer
+
+        assert isinstance(standalone, _BusyStandaloneWindow)
+        qtbot.wait_until(standalone.isVisible)
+
+        assert not manager.close()
+        assert manager.isVisible()
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert standalone.close_event_count == 1
+
+        manager.closeEvent(None)
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert standalone.close_event_count == 2
+
+        standalone.refuse_close = False
