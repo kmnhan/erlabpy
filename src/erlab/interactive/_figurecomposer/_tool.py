@@ -192,11 +192,34 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
     cut_requested = QtCore.Signal()
     paste_requested = QtCore.Signal()
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
+    rows_reordered = QtCore.Signal(object, object, object)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        model = self.model()
+        if model is None:
+            raise RuntimeError("Figure Composer operation list has no item model")
+        model.rowsMoved.connect(self._model_rows_moved)
+
+    def _operation_ids(self) -> tuple[str, ...]:
+        operation_ids: list[str] = []
+        for row in range(self.count()):
+            item = self.item(row)
+            operation_id = (
+                None if item is None else item.data(QtCore.Qt.ItemDataRole.UserRole)
+            )
+            if not isinstance(operation_id, str):
+                return ()
+            operation_ids.append(operation_id)
+        return tuple(operation_ids)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
@@ -214,6 +237,30 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _model_rows_moved(self, *_args: object) -> None:
+        operation_ids = self._operation_ids()
+        if not operation_ids or len(set(operation_ids)) != len(operation_ids):
+            return
+        current_item = self.currentItem()
+        current_id = (
+            None
+            if current_item is None
+            else current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+        )
+        selected_ids = frozenset(
+            operation_id
+            for item in self.selectedItems()
+            if isinstance(
+                operation_id := item.data(QtCore.Qt.ItemDataRole.UserRole),
+                str,
+            )
+        )
+        self.rows_reordered.emit(
+            operation_ids,
+            selected_ids,
+            current_id if isinstance(current_id, str) else None,
+        )
 
 
 def _step_clipboard_payload_text(
@@ -1169,6 +1216,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.context_menu_requested.connect(
             self._show_operation_context_menu
         )
+        self.operation_list.rows_reordered.connect(self._operation_list_reordered)
         self._operation_list_viewport = self.operation_list.viewport()
         if self._operation_list_viewport is not None:
             self._operation_list_viewport.installEventFilter(self)
@@ -2535,7 +2583,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if render_error is not None:
                     text = f"{text} (render error)"
                 item = QtWidgets.QListWidgetItem(text)
-                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                item.setFlags(
+                    item.flags()
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                    | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+                )
                 item.setCheckState(
                     QtCore.Qt.CheckState.Checked
                     if operation.enabled
@@ -4367,6 +4420,62 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             {operation.operation_id for operation in duplicates},
             duplicates[0].operation_id,
         )
+
+    @QtCore.Slot(object, object, object)
+    def _operation_list_reordered(
+        self,
+        operation_ids: object,
+        selected_ids: object,
+        current_id: object,
+    ) -> None:
+        if not isinstance(operation_ids, (tuple, list)):
+            self._refresh_operation_list()
+            return
+        ordered_ids = tuple(
+            operation_id
+            for operation_id in operation_ids
+            if isinstance(operation_id, str)
+        )
+        operation_by_id = {
+            operation.operation_id: operation for operation in self._recipe.operations
+        }
+        if (
+            len(ordered_ids) != len(operation_ids)
+            or len(ordered_ids) != len(operation_by_id)
+            or set(ordered_ids) != set(operation_by_id)
+        ):
+            self._refresh_operation_list()
+            return
+        current_order = tuple(
+            operation.operation_id for operation in self._recipe.operations
+        )
+        if ordered_ids == current_order:
+            return
+        selected_id_set: set[str] = set()
+        if isinstance(selected_ids, (set, frozenset, tuple, list)):
+            selected_id_set = {
+                operation_id
+                for operation_id in selected_ids
+                if isinstance(operation_id, str) and operation_id in operation_by_id
+            }
+        current_operation_id = (
+            current_id
+            if isinstance(current_id, str) and current_id in operation_by_id
+            else None
+        )
+        if not selected_id_set and current_operation_id is not None:
+            selected_id_set = {current_operation_id}
+        if current_operation_id is None:
+            current_operation_id = next(
+                iter(selected_id_set),
+                ordered_ids[0] if ordered_ids else None,
+            )
+
+        operations = tuple(
+            operation_by_id[operation_id] for operation_id in ordered_ids
+        )
+        self._recipe = self._recipe.model_copy(update={"operations": operations})
+        self._finish_operation_structure_change(selected_id_set, current_operation_id)
 
     def _move_current_operation(self, offset: int) -> None:
         indices = self._selected_operation_indices()

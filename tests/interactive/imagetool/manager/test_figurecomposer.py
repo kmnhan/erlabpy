@@ -8217,6 +8217,68 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
     assert tool.operation_list.currentRow() == 1
 
 
+def test_figure_composer_drag_reorders_steps_and_history(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in "abcd"),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert (
+        tool.operation_list.dragDropMode()
+        == QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+    )
+    assert tool.operation_list.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
+    assert tool.operation_list.showDropIndicator()
+
+    _select_operation_rows(tool, (1, 2))
+    assert tool.operation_list.model().moveRows(
+        QtCore.QModelIndex(),
+        1,
+        2,
+        QtCore.QModelIndex(),
+        4,
+    )
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "d",
+        "b",
+        "c",
+    ]
+    assert _selected_operation_rows(tool) == (2, 3)
+    assert tool.operation_list.currentRow() == 2
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].__dict__["_order"] == ["a", "d", "b", "c"]
+
+    tool.undo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+    tool.redo()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "d",
+        "b",
+        "c",
+    ]
+
+
 def test_figure_composer_copy_paste_steps_preserves_order_and_history(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
