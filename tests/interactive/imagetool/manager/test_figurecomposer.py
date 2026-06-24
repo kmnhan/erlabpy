@@ -718,7 +718,13 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     assert swatches
     expected_first = QtGui.QColor.fromRgbF(*sns.color_palette("deep")[0]).name()
     assert swatches[0].property("palette_color") == expected_first
-    assert swatches[0].toolTip() == expected_first
+    assert swatches[0].property("palette_tooltip_font_family") == "monospace"
+    assert swatches[0].property("palette_tooltip_text_color") in {
+        "#000000",
+        "#ffffff",
+    }
+    assert expected_first in swatches[0].toolTip()
+    assert "font-family" in swatches[0].toolTip()
     typing.cast("typing.Any", swatches[0]).copy_hex_to_clipboard()
     assert QtWidgets.QApplication.clipboard().text() == expected_first
 
@@ -752,6 +758,24 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     assert color_codes is not None
     color_codes.click()
     assert tool.tool_status.operations[0].palette_color_codes is True
+
+
+def test_figure_composer_set_palette_swatch_tooltip_contrast(qtbot) -> None:
+    dark = figurecomposer_set_palette._PaletteSwatch(QtGui.QColor("#000000"), 0)
+    light = figurecomposer_set_palette._PaletteSwatch(QtGui.QColor("#ffffff"), 1)
+    qtbot.addWidget(dark)
+    qtbot.addWidget(light)
+
+    assert dark.property("palette_tooltip_text_color") == "#ffffff"
+    assert light.property("palette_tooltip_text_color") == "#000000"
+    assert dark.property("palette_tooltip_font_family") == "monospace"
+    assert light.property("palette_tooltip_font_family") == "monospace"
+    assert "background-color: #000000" in dark.toolTip()
+    assert "color: #ffffff" in dark.toolTip()
+    assert "background-color: #ffffff" in light.toolTip()
+    assert "color: #000000" in light.toolTip()
+    assert "monospace" in dark.toolTip()
+    assert "monospace" in light.toolTip()
 
 
 def test_figure_composer_set_palette_editor_disables_without_seaborn(

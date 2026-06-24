@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import html
 import typing
 
 import matplotlib.pyplot as plt
@@ -22,6 +23,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureOperationState,
 )
+from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -86,6 +88,27 @@ _PALETTE_ICON_SIZE = QtCore.QSize(72, 14)
 _PALETTE_ICON_COLORS = 8
 
 
+def _palette_tooltip_text_color(qcolor: QtGui.QColor) -> str:
+    color = (qcolor.redF(), qcolor.greenF(), qcolor.blueF())
+    return "#000000" if close_to_white(color) else "#ffffff"
+
+
+def _palette_tooltip_html(hex_color: str, text_color: str) -> str:
+    font_family = QtGui.QFontDatabase.systemFont(
+        QtGui.QFontDatabase.SystemFont.FixedFont
+    ).family()
+    escaped_family = html.escape(font_family, quote=True)
+    escaped_hex = html.escape(hex_color)
+    return (
+        '<qt><span style="'
+        f"font-family: '{escaped_family}', monospace; "
+        f"color: {text_color}; "
+        f"background-color: {escaped_hex}; "
+        "padding: 2px 4px;"
+        f'">{escaped_hex}</span></qt>'
+    )
+
+
 class _PaletteSwatch(QtWidgets.QFrame):
     """Palette preview swatch with copyable hex color."""
 
@@ -101,8 +124,11 @@ class _PaletteSwatch(QtWidgets.QFrame):
         self.setObjectName("figureComposerSetPalettePreviewSwatch")
         self.setProperty("palette_color_index", index)
         self.setProperty("palette_color", hex_color)
+        text_color = _palette_tooltip_text_color(qcolor)
+        self.setProperty("palette_tooltip_text_color", text_color)
+        self.setProperty("palette_tooltip_font_family", "monospace")
         self.setAccessibleName(f"Palette color {index + 1}: {hex_color}")
-        self.setToolTip(hex_color)
+        self.setToolTip(_palette_tooltip_html(hex_color, text_color))
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMinimumSize(18, 18)
         self.setMaximumSize(28, 18)
