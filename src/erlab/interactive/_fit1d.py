@@ -2749,22 +2749,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_multi_live_refresh_pending = False
 
         result = self._last_result_ds.modelfit_results.compute().item()
-        if not full:
-            self._set_fit_stats(
-                result,
-                elapsed=self._fit_multi_last_elapsed,
-                emit_info=False,
-            )
-            return
-
         self.param_model.set_params(
             self._params, self._params_from_coord, emit_changed=False
         )
         self._update_fit_curve()
         self._refresh_slider_from_model()
-        self._set_fit_stats(result, elapsed=self._fit_multi_last_elapsed)
-        self._sync_fit_result_state()
-        self._mark_fit_fresh()
+        self._set_fit_stats(
+            result,
+            elapsed=self._fit_multi_last_elapsed,
+            emit_info=full,
+        )
+        self._sync_fit_result_state(notify=full)
+        self._mark_fit_fresh(emit_info=full)
         if self._source_refresh_deferred:
             self.finalize_source_refresh()
 
@@ -2776,12 +2772,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if self._fit_multi_sequence_active():
             if self._fit_multi_live_refresh_due():
                 self._sync_multi_fit_view()
-                self._request_fit_progress_paint()
+                self._request_fit_step_paint()
         else:
             self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
 
-    def _sync_fit_result_state(self) -> None:
+    def _sync_fit_result_state(self, *, notify: bool = True) -> None:
         pass
 
     def _set_fit_ds(self, result_ds: xr.Dataset, t0: float) -> lmfit.Parameters:
@@ -3842,17 +3838,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _has_non_finite_params(self) -> bool:
         return any(not np.isfinite(param.value) for param in self._params.values())
 
-    def _mark_fit_stale(self) -> None:
+    def _mark_fit_stale(self, *, emit_info: bool = True) -> None:
         self._fit_is_current = False
         self.save_button.setEnabled(False)
         self.copy_button.setEnabled(False)
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
-    def _mark_fit_fresh(self) -> None:
+    def _mark_fit_fresh(self, *, emit_info: bool = True) -> None:
         self._fit_is_current = True
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

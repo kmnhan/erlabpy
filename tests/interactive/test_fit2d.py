@@ -968,7 +968,7 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
 
 
-def test_fit2d_next_step_requests_progress_paint_before_deferred_next_step(
+def test_fit2d_next_step_requests_paint_before_deferred_next_step(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -978,11 +978,17 @@ def test_fit2d_next_step_requests_progress_paint_before_deferred_next_step(
 
     events: list[str] = []
 
-    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
-    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
     monkeypatch.setattr(
-        win, "_request_fit_progress_paint", lambda: events.append("progress")
+        win, "_refresh_slider_from_model", lambda: events.append("slider")
     )
+
+    def _update_param_plot(*, notify: bool = True) -> None:
+        events.append(f"plot-{notify}")
+
+    monkeypatch.setattr(win, "_update_param_plot", _update_param_plot)
+    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1012,13 +1018,13 @@ def test_fit2d_next_step_requests_progress_paint_before_deferred_next_step(
     events.clear()
     win._run_fit_2d("up")
 
-    assert events == ["start-1", "progress"]
+    assert events == ["start-1", "curve", "slider", "plot-False", "paint"]
     qtbot.waitUntil(lambda: "start-2" in events, timeout=1000)
-    progress_after_first_start = events.index("progress", events.index("start-1"))
-    assert progress_after_first_start < events.index("start-2")
+    paint_after_first_start = events.index("paint", events.index("start-1"))
+    assert paint_after_first_start < events.index("start-2")
 
 
-def test_fit2d_progress_paints_once_between_finished_step_and_next_worker(
+def test_fit2d_paints_once_between_finished_step_and_next_worker(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -1029,9 +1035,7 @@ def test_fit2d_progress_paints_once_between_finished_step_and_next_worker(
     events: list[str] = []
 
     monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
-    monkeypatch.setattr(
-        win, "_request_fit_progress_paint", lambda: events.append("progress")
-    )
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1061,7 +1065,7 @@ def test_fit2d_progress_paints_once_between_finished_step_and_next_worker(
     win._run_fit_2d("up")
     qtbot.waitUntil(lambda: events[-1:] == ["start-2"], timeout=1000)
 
-    assert events == ["start-1", "progress", "start-2"]
+    assert events == ["start-1", "paint", "start-2"]
 
 
 def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -> None:
@@ -1080,10 +1084,12 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
     monkeypatch.setattr(
         win, "_update_param_plot_options", lambda: events.append("options")
     )
-    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
-    monkeypatch.setattr(
-        win, "_request_fit_progress_paint", lambda: events.append("progress")
-    )
+
+    def _update_param_plot(*, notify: bool = True) -> None:
+        events.append(f"plot-{notify}")
+
+    monkeypatch.setattr(win, "_update_param_plot", _update_param_plot)
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1118,10 +1124,12 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
     assert events == [
         "start-1",
         "start-2",
-        "progress",
+        "options",
+        "plot-False",
+        "paint",
         "start-3",
         "options",
-        "plot",
+        "plot-True",
     ]
 
 
@@ -1140,7 +1148,7 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
     def _monotonic() -> float:
         return clock_values.pop(0) if clock_values else 100.10
 
-    refresh_modes: list[bool] = []
+    refresh_modes: list[tuple[bool, bool, bool]] = []
     original_refresh = win._refresh_contents_from_index
 
     def _refresh_contents_from_index(
@@ -1148,12 +1156,16 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
         mark_fit_stale: bool = True,
         update_widgets: bool = True,
         elapsed: float | None = None,
+        emit_info: bool = True,
+        emit_param_changed: bool = True,
     ) -> None:
-        refresh_modes.append(update_widgets)
+        refresh_modes.append((update_widgets, emit_info, emit_param_changed))
         original_refresh(
             mark_fit_stale=mark_fit_stale,
             update_widgets=update_widgets,
             elapsed=elapsed,
+            emit_info=emit_info,
+            emit_param_changed=emit_param_changed,
         )
 
     started_steps: list[int] = []
@@ -1190,8 +1202,9 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
     )
 
     assert started_steps == [1, 2, 3]
-    assert refresh_modes.count(False) > refresh_modes.count(True)
-    assert refresh_modes.count(True) == 1
+    assert sum(not update for update, _, _ in refresh_modes) > 0
+    assert (True, False, False) in refresh_modes
+    assert refresh_modes[-1] == (True, True, True)
     assert win.y_index_spin.value() == win.y_max_spin.value()
     assert win._write_history is True
 
@@ -1215,7 +1228,9 @@ def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
     events: list[str] = []
     win.param_model.sigParamsChanged.connect(lambda: param_changed.append(None))
     win.sigFitFinished.connect(lambda params: events.append("finished"))
-    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+    monkeypatch.setattr(
+        win, "_update_param_plot", lambda *, notify=True: events.append("plot")
+    )
 
     win._set_fit_ds(result_ds, 0.0)
 

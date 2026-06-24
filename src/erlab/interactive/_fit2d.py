@@ -478,7 +478,7 @@ class Fit2DTool(Fit1DTool):
             return
         self._update_param_plot()
 
-    def _sync_fit_result_state(self) -> None:
+    def _sync_fit_result_state(self, *, notify: bool = True) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
@@ -486,7 +486,7 @@ class Fit2DTool(Fit1DTool):
             self._fit_2d_param_plot_refresh_pending = True
             return
         self._update_param_plot_options()
-        self._update_param_plot()
+        self._update_param_plot(notify=notify)
 
     def _fit_2d_sequence_active(self) -> bool:
         return self._fit_2d_total > 0
@@ -537,9 +537,13 @@ class Fit2DTool(Fit1DTool):
             if not self._fit_2d_live_refresh_pending:
                 return
             self._fit_2d_live_refresh_pending = False
-            if self._last_result_ds is not None:
-                result = self._last_result_ds.modelfit_results.compute().item()
-                self._set_fit_stats(result, elapsed=elapsed, emit_info=False)
+            self._refresh_contents_from_index(
+                mark_fit_stale=mark_fit_stale,
+                elapsed=elapsed,
+                emit_info=False,
+                emit_param_changed=False,
+            )
+            self._flush_fit_2d_sequence_param_plot(notify=False)
             return
 
         self._fit_2d_live_refresh_pending = False
@@ -548,12 +552,14 @@ class Fit2DTool(Fit1DTool):
             elapsed=elapsed,
         )
 
-    def _flush_fit_2d_sequence_param_plot(self, *, force: bool = False) -> None:
+    def _flush_fit_2d_sequence_param_plot(
+        self, *, force: bool = False, notify: bool = True
+    ) -> None:
         if not (force or self._fit_2d_param_plot_refresh_pending):
             return
         self._fit_2d_param_plot_refresh_pending = False
         self._update_param_plot_options()
-        self._update_param_plot()
+        self._update_param_plot(notify=notify)
 
     def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
         if not self._fit_2d_sequence_active():
@@ -566,7 +572,7 @@ class Fit2DTool(Fit1DTool):
                     mark_fit_stale=False,
                     full=False,
                 )
-            self._request_fit_progress_paint()
+            self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
 
     def _build_ui(self) -> None:
@@ -1127,7 +1133,11 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot()
 
     @QtCore.Slot()
-    def _update_param_plot(self) -> None:
+    @QtCore.Slot(int)
+    def _update_param_plot(
+        self, _index: int | None = None, *, notify: bool = True
+    ) -> None:
+        del _index
         param_name = self.param_plot_combo.currentText()
         self.param_plot.setLabel("bottom", param_name)
         plot_y, param_values, param_errors = self._param_plot_data(param_name)
@@ -1135,7 +1145,8 @@ class Fit2DTool(Fit1DTool):
         self.param_plot_scatter.setData(x=param_values, y=plot_y)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
-        self._notify_data_changed()
+        if notify:
+            self._notify_data_changed()
 
     def _on_image_legend_sample_clicked(self, sample, event=None) -> None:
         """Mirror legend-driven visibility changes to error bars and state."""
@@ -1400,12 +1411,21 @@ class Fit2DTool(Fit1DTool):
         mark_fit_stale: bool = True,
         update_widgets: bool = True,
         elapsed: float | None = None,
+        emit_info: bool = True,
+        emit_param_changed: bool = True,
     ) -> None:
         self._load_contents_from_index()
         if not update_widgets:
             return
 
-        self.param_model.set_params(self._params, self._params_from_coord)
+        self.param_model.set_params(
+            self._params,
+            self._params_from_coord,
+            emit_changed=emit_param_changed,
+        )
+        if not emit_param_changed:
+            self._update_fit_curve()
+            self._refresh_slider_from_model()
         self._populate_data_curve()
 
         self._data_name = (
@@ -1419,15 +1439,16 @@ class Fit2DTool(Fit1DTool):
 
         if self._last_result_ds is not None:
             result = self._last_result_ds.modelfit_results.compute().item()
-            self._set_fit_stats(result, elapsed=elapsed)
+            self._set_fit_stats(result, elapsed=elapsed, emit_info=emit_info)
             if mark_fit_stale:
-                self._mark_fit_stale()
+                self._mark_fit_stale(emit_info=emit_info)
             else:
-                self._mark_fit_fresh()
+                self._mark_fit_fresh(emit_info=emit_info)
         else:
-            self._set_fit_stats(None)
-            self._mark_fit_stale()
-        self._emit_info_changed()
+            self._set_fit_stats(None, emit_info=emit_info)
+            self._mark_fit_stale(emit_info=emit_info)
+        if emit_info:
+            self._emit_info_changed()
 
     @_rebuild_ui(mark_fresh=True)
     def _restore_from_fit_dataset(
@@ -1907,13 +1928,13 @@ class Fit2DTool(Fit1DTool):
     def _refresh_main_image(self) -> None:
         self.image.setDataArray(self._data_full)
 
-    def _mark_fit_stale(self) -> None:
-        super()._mark_fit_stale()
+    def _mark_fit_stale(self, *, emit_info: bool = True) -> None:
+        super()._mark_fit_stale(emit_info=emit_info)
         self.save_full_button.setDisabled(True)
         self.copy_full_button.setDisabled(True)
 
-    def _mark_fit_fresh(self) -> None:
-        super()._mark_fit_fresh()
+    def _mark_fit_fresh(self, *, emit_info: bool = True) -> None:
+        super()._mark_fit_fresh(emit_info=emit_info)
         self._update_full_fit_saveable()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
