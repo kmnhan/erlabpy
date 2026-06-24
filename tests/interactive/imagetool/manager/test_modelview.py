@@ -530,6 +530,30 @@ def test_manager_idle_queue_stops_when_activity_resumes(
         assert manager._interaction_gate.pending_keys == ()
 
 
+def test_manager_idle_queue_perf_timing_logs(
+    monkeypatch,
+    caplog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    monkeypatch.setenv("ERLAB_MANAGER_PERF_TIMING", "1")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="erlab.interactive.imagetool.manager._interaction",
+    )
+    with manager_context() as manager:
+        calls: list[str] = []
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("work"))
+        manager._flush_idle_work(force=True)
+
+        assert calls == ["work"]
+        assert any(
+            "Manager forced work flush ran 1 callbacks" in record.message
+            for record in caplog.records
+        )
+
+
 def test_childtool_data_changed_deduplicates_descendant_refresh(
     qtbot,
     monkeypatch,

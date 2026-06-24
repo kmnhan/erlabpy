@@ -1,6 +1,7 @@
 import enum
 import importlib
 import json
+import logging
 import sys
 import tempfile
 import types
@@ -175,6 +176,24 @@ def test_tool_window_history_write_coalesces_burst(qtbot) -> None:
     assert tuple(win._prev_states) == (
         _PersistentToolState(value=0),
         _PersistentToolState(value=3),
+    )
+
+
+def test_tool_window_history_perf_timing_logs(qtbot, monkeypatch, caplog) -> None:
+    monkeypatch.setenv("ERLAB_MANAGER_PERF_TIMING", "1")
+    caplog.set_level(logging.DEBUG, logger="erlab.interactive.utils")
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+
+    assert win._flush_pending_history_write()
+    assert any(
+        "ToolWindow history flush appended state" in record.message
+        for record in caplog.records
     )
 
 

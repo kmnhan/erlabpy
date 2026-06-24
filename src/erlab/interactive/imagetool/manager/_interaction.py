@@ -6,6 +6,7 @@ __all__ = ["_ManagerInteractionGate"]
 
 import collections
 import logging
+import os
 import time
 import typing
 import weakref
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 _IDLE_QUIET_INTERVAL_MS = 150
 _IDLE_BATCH_BUDGET_MS = 6
+
+
+def _manager_perf_timing_enabled() -> bool:
+    return os.environ.get("ERLAB_MANAGER_PERF_TIMING") == "1"
 
 
 class _ManagerInteractionGate(QtCore.QObject):
@@ -66,6 +71,8 @@ class _ManagerInteractionGate(QtCore.QObject):
         self._work_timer.setInterval(0)
         self._work_timer.timeout.connect(self._run_pending_work)
         self._batch_budget_ms = _IDLE_BATCH_BUDGET_MS
+        self._queued_since_flush = 0
+        self._replaced_since_flush = 0
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -104,6 +111,10 @@ class _ManagerInteractionGate(QtCore.QObject):
         *,
         require_idle: bool = True,
     ) -> None:
+        if _manager_perf_timing_enabled():
+            self._queued_since_flush += 1
+            if key in self._pending_work:
+                self._replaced_since_flush += 1
         self._pending_work[key] = callback
         if require_idle and self.is_active:
             return
@@ -117,13 +128,17 @@ class _ManagerInteractionGate(QtCore.QObject):
     ) -> None:
         if self.is_active and not force:
             return
+        start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
+        flushed = 0
         keys = list(self._pending_work)
         for key in keys:
             if key_prefix is not None and not self._key_matches_prefix(key, key_prefix):
                 continue
             callback = self._pending_work.pop(key, None)
             if callback is not None:
+                flushed += 1
                 self._run_callback(callback)
+        self._log_flush_stats("forced", flushed, start_time)
 
     def eventFilter(
         self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
@@ -174,13 +189,33 @@ class _ManagerInteractionGate(QtCore.QObject):
     def _run_pending_work(self) -> None:
         if self.is_active:
             return
+        start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
+        flushed = 0
         deadline = time.monotonic() + self._batch_budget_ms / 1000.0
         while self._pending_work and not self.is_active:
             _key, callback = self._pending_work.popitem(last=False)
+            flushed += 1
             self._run_callback(callback)
             if time.monotonic() >= deadline:
                 break
+        self._log_flush_stats("idle", flushed, start_time)
         self._schedule_pending_work()
+
+    def _log_flush_stats(self, mode: str, flushed: int, start_time: float) -> None:
+        if not _manager_perf_timing_enabled() or flushed == 0:
+            return
+        logger.debug(
+            "Manager %s work flush ran %d callbacks in %.1f ms "
+            "(remaining=%d queued=%d replaced=%d)",
+            mode,
+            flushed,
+            (time.perf_counter() - start_time) * 1000.0,
+            len(self._pending_work),
+            self._queued_since_flush,
+            self._replaced_since_flush,
+        )
+        self._queued_since_flush = 0
+        self._replaced_since_flush = 0
 
     @staticmethod
     def _run_callback(callback: Callable[[], None]) -> None:

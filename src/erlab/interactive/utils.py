@@ -102,6 +102,10 @@ logger = logging.getLogger(__name__)
 _TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 
 
+def _manager_perf_timing_enabled() -> bool:
+    return os.environ.get("ERLAB_MANAGER_PERF_TIMING") == "1"
+
+
 def _qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
     return _qt_state.qt_bytearray_to_base64(value)
 
@@ -3388,6 +3392,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _flush_pending_history_write(self) -> bool:
         if not self._history_write_pending:
             return False
+        timing_enabled = _manager_perf_timing_enabled()
+        start_time = time.perf_counter() if timing_enabled else 0.0
         self._history_write_timer.stop()
         self._history_write_pending = False
         if not self._write_history or self._restoring_from_dataset:
@@ -3398,7 +3404,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self._prev_states.append(curr_state)
             self._next_states.clear()
             self._update_history_actions()
+            if timing_enabled:
+                logger.debug(
+                    "ToolWindow history flush appended state for %s in %.1f ms",
+                    type(self).__name__,
+                    (time.perf_counter() - start_time) * 1000.0,
+                )
             return True
+        if timing_enabled:
+            logger.debug(
+                "ToolWindow history flush skipped unchanged state for %s in %.1f ms",
+                type(self).__name__,
+                (time.perf_counter() - start_time) * 1000.0,
+            )
         return False
 
     @QtCore.Slot()
