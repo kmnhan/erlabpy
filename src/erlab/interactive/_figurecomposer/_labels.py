@@ -34,6 +34,7 @@ _LABEL_FIELD_SOURCES_KEY = "__figure_composer_label_field_sources__"
 _LABEL_FIELD_ORIGINAL_NAMES_KEY = "__figure_composer_label_original_names__"
 _LABEL_COORD_ALIASES_KEY = "__figure_composer_label_coord_aliases__"
 _LABEL_ATTR_ALIASES_KEY = "__figure_composer_label_attr_aliases__"
+_PLACEHOLDER_HELP_ERROR_SUFFIX = ". See Legend labels help for valid names"
 _LABEL_INTERNAL_KEYS = frozenset(
     {
         _LABEL_FIELD_SOURCES_KEY,
@@ -508,9 +509,8 @@ def _invalid_placeholder_error(
     if normalized in available_fields:
         suffix = field_text[len(field_text.split("!", 1)[0].split(":", 1)[0]) :]
         message += f". Use {{{normalized}{suffix}}} instead"
-    available = _format_available_placeholders(available_fields)
-    if available:
-        message += f". Available placeholders: {available}"
+    if available_fields:
+        message += _PLACEHOLDER_HELP_ERROR_SUFFIX
     return _LabelPlaceholderError(message)
 
 
@@ -658,21 +658,13 @@ def _evaluate_label_expression(
 def _unavailable_placeholder_error(
     placeholder: str, available_fields: set[str], *, item_name: str
 ) -> _LabelPlaceholderError:
-    available = _format_available_placeholders(available_fields)
     message = (
         f"Legend label placeholder {placeholder!r} is not available for this "
         f"{item_name}"
     )
-    if available:
-        message += f". Available placeholders: {available}"
+    if available_fields:
+        message += _PLACEHOLDER_HELP_ERROR_SUFFIX
     return _LabelPlaceholderError(message)
-
-
-def _format_available_placeholders(fields: set[str]) -> str:
-    ordered = [name for name in _GENERIC_PLACEHOLDER_ORDER if name in fields] + sorted(
-        name for name in fields if name not in _GENERIC_PLACEHOLDER_ORDER
-    )
-    return ", ".join(f"{{{name}}}" for name in ordered)
 
 
 def _field_fstring_code(

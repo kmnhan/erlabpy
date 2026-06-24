@@ -19414,9 +19414,12 @@ def test_figure_composer_line_label_missing_placeholder_errors(qtbot) -> None:
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     render_error = tool._operation_render_errors[operation.operation_id]
     assert "temperature" in render_error
-    assert "Available placeholders" in render_error
-    with pytest.raises(ValueError, match=r"temperature.*Available placeholders"):
+    assert "Available placeholders" not in render_error
+    with pytest.raises(ValueError, match="temperature") as exc_info:
         tool.generated_code()
+    codegen_error = str(exc_info.value)
+    assert "temperature" in codegen_error
+    assert "Available placeholders" not in codegen_error
 
 
 def test_figure_composer_line_profile_coordinate_colormap_render_and_codegen(
@@ -19921,8 +19924,11 @@ def test_figure_composer_label_helper_edges() -> None:
     assert figurecomposer_labels.labels_from_text(
         "{sample_temp + 1.5:g} K, {sample_label}", (spaced_context,)
     ) == ("21.5 K, annealed",)
-    with pytest.raises(ValueError, match=r"Use \{sample_temp:g\}"):
+    with pytest.raises(ValueError, match=r"Use \{sample_temp:g\}") as exc_info:
         figurecomposer_labels.labels_from_text("{sample temp:g}", (spaced_context,))
+    error_message = str(exc_info.value)
+    assert "Use {sample_temp:g}" in error_message
+    assert "Available placeholders" not in error_message
     label_code = figurecomposer_labels.label_fstring_code(
         "{sample_temp + 1.5:g} K, {sample_label}",
         {
@@ -19969,8 +19975,12 @@ def test_figure_composer_label_helper_edges() -> None:
         figurecomposer_labels.labels_from_text("{abs(sample_temp)}", (context,))
     with pytest.raises(ValueError, match="not available"):
         figurecomposer_labels.labels_from_text("{missing + 1}", (context,))
-    with pytest.raises(ValueError, match="not available"):
+    with pytest.raises(ValueError, match="missing") as exc_info:
         figurecomposer_labels.labels_from_text("{missing:g}", (context,))
+    error_message = str(exc_info.value)
+    assert "not available" in error_message
+    assert "missing" in error_message
+    assert "Available placeholders" not in error_message
     with pytest.raises(ValueError, match="Could not format"):
         figurecomposer_labels.labels_from_text("{source:g}", (context,))
 
@@ -19982,8 +19992,12 @@ def test_figure_composer_label_helper_edges() -> None:
         )
         == r'f"{source}\\{{missing}}"'
     )
-    with pytest.raises(ValueError, match="not available"):
+    with pytest.raises(ValueError, match="missing") as exc_info:
         figurecomposer_labels.label_fstring_code("{missing:g}", {"source": "source"})
+    error_message = str(exc_info.value)
+    assert "not available" in error_message
+    assert "missing" in error_message
+    assert "Available placeholders" not in error_message
     assert figurecomposer_labels.coord_value_expression("sample_temp") == (
         'profile.coords["sample_temp"].values.item()'
     )
