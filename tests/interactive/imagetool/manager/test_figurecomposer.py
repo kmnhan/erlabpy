@@ -20018,6 +20018,23 @@ def test_figure_composer_label_helper_edges() -> None:
     assert placeholder_rows["sample_temp"].description.endswith("'sample temp'")
     assert placeholder_rows["sample_label"].kind == "attr"
     assert placeholder_rows["sample_label"].description.endswith("'sample label'")
+    many_context = figurecomposer_labels.label_context(
+        xr.DataArray(
+            [1.0],
+            dims=("x",),
+            coords={
+                "x": [0.0],
+                **{f"coord {index}": float(index) for index in range(80)},
+            },
+        ),
+        index=0,
+    )
+    many_rows = figurecomposer_labels.label_text_help_placeholder_rows(
+        (many_context,), item_name="profile"
+    )
+    row_names = {row.placeholder for row in many_rows}
+    assert "more" not in {row.kind for row in many_rows}
+    assert {f"coord_{index}" for index in range(80)}.issubset(row_names)
     assert (
         figurecomposer_labels.label_editor_text(
             FigureOperationState.line(label="line", source="data").model_copy(
@@ -20029,8 +20046,17 @@ def test_figure_composer_label_helper_edges() -> None:
 
 
 def test_figure_composer_line_label_help_button_opens_structured_dialog(
-    qtbot,
+    qtbot, monkeypatch
 ) -> None:
+    icon_names: list[str] = []
+
+    def themed_icon(name: str) -> QtGui.QIcon:
+        icon_names.append(name)
+        pixmap = QtGui.QPixmap(12, 12)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        return QtGui.QIcon(pixmap) if name == "help-faq" else QtGui.QIcon()
+
+    monkeypatch.setattr(QtGui.QIcon, "fromTheme", themed_icon)
     data = xr.DataArray(
         [1.0, 2.0, 3.0],
         dims=("kx",),
@@ -20065,6 +20091,8 @@ def test_figure_composer_line_label_help_button_opens_structured_dialog(
     assert help_button is not None
     assert "\n" not in labels_edit.toolTip()
     assert "\n" not in help_button.toolTip()
+    assert "help-faq" in icon_names
+    assert help_button.text() == ""
 
     help_button.click()
     qtbot.waitUntil(
@@ -20079,7 +20107,15 @@ def test_figure_composer_line_label_help_button_opens_structured_dialog(
     table = dialog.findChild(
         QtWidgets.QTableWidget, "figureComposerLegendLabelsHelpTable"
     )
+    examples = dialog.findChildren(
+        QtWidgets.QWidget, "figureComposerLegendLabelsHelpExample"
+    )
+    examples_list = dialog.findChild(
+        QtWidgets.QListWidget, "figureComposerLegendLabelsHelpExamples"
+    )
     assert table is not None
+    assert len(examples) == 4
+    assert examples_list is None
     rows = {
         table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole): table.item(
             row, 1

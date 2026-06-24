@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive._figurecomposer._labels import (
     label_text_help_placeholder_rows,
@@ -52,24 +52,17 @@ class LegendLabelHelpDialog(QtWidgets.QDialog):
         examples_group = QtWidgets.QGroupBox("Examples", self)
         examples_layout = QtWidgets.QVBoxLayout(examples_group)
         examples_layout.setContentsMargins(8, 6, 8, 8)
-        examples_list = QtWidgets.QListWidget(examples_group)
-        examples_list.setObjectName("figureComposerLegendLabelsHelpExamples")
-        examples_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
-        )
-        for index, example in enumerate(
+        examples_layout.setSpacing(4)
+        for index, (example, meaning) in enumerate(
             (
-                "{value:g}",
-                "{value + 1.5:.1f} K",
-                "{source}, {number}",
-                r"$E-E_F = {eV:g}$ eV",
+                ("{value:g}", "current coordinate value"),
+                ("{value + 1.5:.1f} K", "basic arithmetic and format specs"),
+                ("{source}, {number}", "source name and one-based line number"),
+                (r"$E-E_F = {eV:g}$ eV", "plain text and LaTeX around a placeholder"),
             )
         ):
-            item = QtWidgets.QListWidgetItem(example)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, example)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, index)
-            examples_list.addItem(item)
-        examples_layout.addWidget(examples_list)
+            row = _example_row(example, meaning, index, examples_group)
+            examples_layout.addWidget(row)
         layout.addWidget(examples_group)
 
         rows = label_text_help_placeholder_rows(contexts, item_name=item_name)
@@ -162,10 +155,15 @@ def legend_label_input_widget(
     button.setToolTip("Show legend label examples and coordinate or attr aliases.")
     button.setAutoRaise(True)
     button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+    button.setIcon(QtGui.QIcon.fromTheme("help-faq"))
+    if button.icon().isNull():
+        button.setIcon(QtGui.QIcon.fromTheme("help-about"))
     style = button.style()
-    if style is not None:  # pragma: no branch
+    if button.icon().isNull() and style is not None:  # pragma: no branch
         button.setIcon(
-            style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogHelpButton)
+            style.standardIcon(
+                QtWidgets.QStyle.StandardPixmap.SP_TitleBarContextHelpButton
+            )
         )
     if button.icon().isNull():
         button.setText("?")
@@ -205,3 +203,38 @@ def _display_kind(kind: str) -> str:
     if kind == "coord":
         return "coordinate"
     return kind
+
+
+def _example_row(
+    example: str,
+    meaning: str,
+    index: int,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QWidget:
+    row = QtWidgets.QWidget(parent)
+    row.setObjectName("figureComposerLegendLabelsHelpExample")
+    row.setProperty("legend_label_example_index", index)
+    row.setProperty("legend_label_example", example)
+    layout = QtWidgets.QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+
+    example_label = QtWidgets.QLabel(example, row)
+    example_label.setObjectName("figureComposerLegendLabelsHelpExampleText")
+    example_label.setProperty("legend_label_example", example)
+    example_label.setTextInteractionFlags(
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+    example_label.setFont(font)
+    example_label.setMinimumWidth(170)
+    layout.addWidget(example_label, 0)
+
+    meaning_label = QtWidgets.QLabel(meaning, row)
+    meaning_label.setObjectName("figureComposerLegendLabelsHelpExampleMeaning")
+    meaning_label.setWordWrap(True)
+    meaning_label.setTextInteractionFlags(
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    layout.addWidget(meaning_label, 1)
+    return row

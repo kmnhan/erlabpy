@@ -829,7 +829,6 @@ def label_text_help_placeholder_rows(
     contexts: Sequence[Mapping[str, typing.Any]],
     *,
     item_name: str,
-    limit: int = 64,
 ) -> tuple[LabelPlaceholderHelpRow, ...]:
     rows: list[LabelPlaceholderHelpRow] = []
     available_fields = _available_field_names(contexts)
@@ -852,18 +851,7 @@ def label_text_help_placeholder_rows(
 
     field_sources = label_context_field_sources(contexts)
     original_names = label_context_original_field_names(contexts)
-    alias_items = sorted(original_names)
-    for alias_index, alias in enumerate(alias_items):
-        if len(rows) >= limit:
-            remaining = len(alias_items) - alias_index
-            rows.append(
-                LabelPlaceholderHelpRow(
-                    placeholder="",
-                    kind="more",
-                    description=f"{max(remaining, 0)} more aliases available",
-                )
-            )
-            break
+    for alias in sorted(original_names):
         original = original_names[alias]
         if not original:
             original = alias
