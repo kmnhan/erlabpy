@@ -419,6 +419,8 @@ def manager_context() -> Callable[
                     clipboard = QtWidgets.QApplication.clipboard()
                     if clipboard is not None:
                         clipboard.clear()
+                    manager._close_standalone_apps()
+                    _drain_qt_events()
                     manager.remove_all_tools()
                     manager._mark_workspace_clean()
                     manager.close()
