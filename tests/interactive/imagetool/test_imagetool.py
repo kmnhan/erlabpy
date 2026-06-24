@@ -26,7 +26,11 @@ import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive._figurecomposer import FigureOperationKind, FigureOperationState
+from erlab.interactive._figurecomposer import (
+    FigureDataSelectionState,
+    FigureOperationKind,
+    FigureOperationState,
+)
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
@@ -1305,11 +1309,10 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
     win.slicer_area.array_slicer.set_bin(0, 2, 3)
 
     operation = main_image.figure_composer_operation(source_name="data")
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.slice_dim == "beta"
-    assert operation.slice_values == (2.0,)
-    assert operation.slice_width == pytest.approx(3.0)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert len(operation.map_selections) == 1
+    assert operation.map_selections[0].qsel["beta"] == pytest.approx(2.0)
+    assert operation.map_selections[0].qsel["beta_width"] == pytest.approx(3.0)
     assert operation.extra_kwargs == {}
 
     win.close()
@@ -1566,7 +1569,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
         FigureSourceState,
     )
 
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert operation.sources == ("data_0",)
     assert isinstance(operation.transpose, bool)
     assert isinstance(operation.crop, bool)
@@ -1577,7 +1580,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     assert operation.norm_gamma == pytest.approx(1.5)
     assert operation.vmin == pytest.approx(0.0)
     assert operation.vmax == pytest.approx(124.0)
-    assert operation.same_limits is True
+    assert operation.same_limits is False
     assert "custom_code" not in created[0]
 
     composer = FigureComposerTool.from_sources(
@@ -1645,10 +1648,10 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     assert warnings_shown == []
     operation = created[0]["operation"]
     assert isinstance(operation, FigureOperationState)
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.slice_dim == "Track Shift"
-    assert operation.slice_values == (2.0,)
-    assert operation.map_selections == ()
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.map_selections == (
+        FigureDataSelectionState(source="data_0", qsel={"Track Shift": 2.0}),
+    )
 
     win.close()
 
@@ -1748,10 +1751,10 @@ def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
     assert operation.ylim == (0.5, 2.5)
     assert operation.cmap == "magma"
     assert operation.norm_gamma == pytest.approx(0.3)
-    assert operation.map_selections == ()
-    assert operation.slice_dim == "Track_Shift"
-    assert operation.slice_values == (2.0,)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.map_selections == (
+        FigureDataSelectionState(source="data_0", qsel={"Track_Shift": 2.0}),
+    )
 
     from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 
@@ -1762,22 +1765,6 @@ def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
         primary_source="data_0",
     )
     qtbot.addWidget(composer)
-
-    dim_combo = composer.findChild(
-        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
-    )
-    values_edit = composer.findChild(
-        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
-    )
-    slice_kwargs_edit = composer.findChild(
-        QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
-    )
-    assert dim_combo is not None
-    assert values_edit is not None
-    assert slice_kwargs_edit is not None
-    assert dim_combo.currentText() == "Track_Shift"
-    assert values_edit.text() == "2"
-    assert slice_kwargs_edit.text() == ""
 
     import matplotlib.pyplot as plt
 

@@ -245,6 +245,7 @@ class FigureExportState(pydantic.BaseModel):
 
 class FigureOperationKind(enum.StrEnum):
     SET_PALETTE = "set_palette"
+    PLOT_ARRAY = "plot_array"
     PLOT_SLICES = "plot_slices"
     LINE = "line"
     BZ_OVERLAY = "bz_overlay"
@@ -475,6 +476,25 @@ class FigureOperationState(pydantic.BaseModel):
             slice_dim=slice_dim,
             slice_values=tuple(slice_values),
             slice_width=slice_width,
+            norm_name=_POWER_NORM_NAME,
+        )
+
+    @classmethod
+    def plot_array(
+        cls,
+        *,
+        label: str,
+        source: str,
+        map_selections: Sequence[FigureDataSelectionState] = (),
+        axes: FigureAxesSelectionState | None = None,
+    ) -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.PLOT_ARRAY,
+            label=label,
+            sources=(source,),
+            map_selections=tuple(map_selections),
+            axes=axes or FigureAxesSelectionState(),
+            crop=False,
             norm_name=_POWER_NORM_NAME,
         )
 

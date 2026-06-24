@@ -68,7 +68,10 @@ There are several step types, each with a different set of controls for the gene
 code:
 
 - {guilabel}`Set Palette` to set the line color cycle with {func}`seaborn.set_palette`.
-- {guilabel}`Slice Plot` as an interface to {func}`erlab.plotting.plot_slices`.
+- {guilabel}`Image Plot` for one two-dimensional image on one axes. Uses
+  {func}`erlab.plotting.plot_array`.
+- {guilabel}`Slice Plot` for plotting multiple slices on multiple axes. Uses
+  {func}`erlab.plotting.plot_slices`.
 - {guilabel}`Line/Profile` for extracted one-dimensional profiles. This also provides an
   ability to create MDC/EDC stack plots. You can either use this step as a simple
   interface to {meth}`xarray.DataArray.plot` with 1D data, or use it to extract multiple

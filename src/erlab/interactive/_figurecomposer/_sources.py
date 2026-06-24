@@ -131,6 +131,12 @@ def _default_plot_operation(
             source=name,
             axes=FigureAxesSelectionState(axes=((0, 0),)),
         )
+    if squeezed.ndim == 2:
+        return FigureOperationState.plot_array(
+            label=_source_label(data),
+            source=name,
+            axes=FigureAxesSelectionState(axes=_all_axes(setup)),
+        )
 
     slice_dim: str | None = None
     slice_values: tuple[float, ...] = ()

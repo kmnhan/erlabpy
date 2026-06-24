@@ -2275,6 +2275,19 @@ class ImageToolManager(_ImageToolManagerBase):
             for data in source_data.values()
         ]
 
+        if all(data.ndim == 2 for data in squeezed):
+            operations = []
+            for index, source_name in enumerate(source_names):
+                row = min(index, setup.nrows - 1)
+                operations.append(
+                    FigureOperationState.plot_array(
+                        label=source_name,
+                        source=source_name,
+                        axes=FigureAxesSelectionState(axes=((row, 0),)),
+                    )
+                )
+            return tuple(operations)
+
         if all(data.ndim > 1 for data in squeezed):
             first = squeezed[0]
             slice_dim = None
@@ -2294,20 +2307,31 @@ class ImageToolManager(_ImageToolManagerBase):
             return (operation,)
 
         operations = []
-        for index, source_name in enumerate(source_names):
+        for index, (source_name, data) in enumerate(
+            zip(source_names, squeezed, strict=True)
+        ):
             row = min(index, setup.nrows - 1)
-            operations.append(
-                FigureOperationState.line(
-                    label=source_name,
-                    source=source_name,
-                    axes=FigureAxesSelectionState(axes=((row, 0),)),
+            if data.ndim == 1:
+                operations.append(
+                    FigureOperationState.line(
+                        label=source_name,
+                        source=source_name,
+                        axes=FigureAxesSelectionState(axes=((row, 0),)),
+                    )
                 )
-            )
+            elif data.ndim == 2:
+                operations.append(
+                    FigureOperationState.plot_array(
+                        label=source_name,
+                        source=source_name,
+                        axes=FigureAxesSelectionState(axes=((row, 0),)),
+                    )
+                )
         return tuple(operations)
 
-    def _figure_plot_slices_operation_from_targets(
+    def _figure_operations_from_image_targets(
         self, targets: tuple[int | str, ...], source_names: tuple[str, ...]
-    ) -> typing.Any | None:
+    ) -> tuple[typing.Any, ...] | None:
         from erlab.interactive._figurecomposer import FigureOperationKind
         from erlab.interactive._figurecomposer._seeding import (
             plot_slices_operation_with_source_styles,
@@ -2329,10 +2353,23 @@ class ImageToolManager(_ImageToolManagerBase):
             source_operation = plot.figure_composer_operation(
                 source_name=source_names[index]
             )
-            if source_operation.kind != FigureOperationKind.PLOT_SLICES:
+            if source_operation.kind not in {
+                FigureOperationKind.PLOT_ARRAY,
+                FigureOperationKind.PLOT_SLICES,
+            }:
                 return None
             source_operations.append(source_operation)
         if not source_operations:
+            return None
+        if all(
+            operation.kind == FigureOperationKind.PLOT_ARRAY
+            for operation in source_operations
+        ):
+            return tuple(source_operations)
+        if any(
+            operation.kind != FigureOperationKind.PLOT_SLICES
+            for operation in source_operations
+        ):
             return None
 
         if any(operation.map_selections for operation in source_operations):
@@ -2346,10 +2383,12 @@ class ImageToolManager(_ImageToolManagerBase):
         if len(source_names) > 1:
             updates["order"] = "F"
         expanded_operation = operation.model_copy(update=updates)
-        return plot_slices_operation_with_source_styles(
-            expanded_operation,
-            tuple(source_operations),
-            selections_per_source=1,
+        return (
+            plot_slices_operation_with_source_styles(
+                expanded_operation,
+                tuple(source_operations),
+                selections_per_source=1,
+            ),
         )
 
     def _figure_bz_overlay_operation_from_target(
@@ -2658,7 +2697,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         primary_source = sources[0].name
         source_names = tuple(source.name for source in sources)
-        auto_operation = None
+        auto_operations: tuple[FigureOperationState, ...] = ()
         if (
             operation is None
             and custom_code is None
@@ -2672,15 +2711,22 @@ class ImageToolManager(_ImageToolManagerBase):
             )
 
             try:
-                auto_operation = self._figure_plot_slices_operation_from_targets(
-                    resolved_targets, source_names
+                auto_operations = typing.cast(
+                    "tuple[FigureOperationState, ...]",
+                    self._figure_operations_from_image_targets(
+                        resolved_targets, source_names
+                    )
+                    or (),
                 )
             except FigureComposerPlotSlicesSelectionError as exc:
                 self._show_figure_plot_slices_selection_error(exc)
                 return None
         with figure_options_context(self.effective_interactive_options):
+            setup_operation = None if custom_code is not None else operation
+            if setup_operation is None and len(auto_operations) == 1:
+                setup_operation = auto_operations[0]
             setup = self._figure_setup_for_operation(
-                None if custom_code is not None else operation or auto_operation,
+                setup_operation,
                 source_data,
             )
             all_axes = FigureAxesSelectionState(
@@ -2698,7 +2744,8 @@ class ImageToolManager(_ImageToolManagerBase):
             operations: tuple[FigureOperationState, ...]
             if operation is not None:
                 if (
-                    operation.kind == FigureOperationKind.PLOT_SLICES
+                    operation.kind
+                    in {FigureOperationKind.PLOT_ARRAY, FigureOperationKind.PLOT_SLICES}
                     and not operation.axes.expression
                 ):
                     operation = operation.model_copy(update={"axes": all_axes})
@@ -2711,12 +2758,10 @@ class ImageToolManager(_ImageToolManagerBase):
                         trusted=True,
                     ),
                 )
-            elif auto_operation is not None:
-                if not auto_operation.axes.expression:
-                    auto_operation = auto_operation.model_copy(
-                        update={"axes": all_axes}
-                    )
-                operations = (auto_operation,)
+            elif auto_operations:
+                operations = self._figure_operations_with_append_axes(
+                    auto_operations, all_axes
+                )
             else:
                 operations = typing.cast(
                     "tuple[FigureOperationState, ...]",
@@ -2869,7 +2914,9 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
     ) -> bool:
         from erlab.interactive._figurecomposer import (
+            FigureAxesSelectionState,
             FigureComposerTool,
+            FigureOperationState,
             FigureSourceState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
@@ -2890,7 +2937,7 @@ class ImageToolManager(_ImageToolManagerBase):
             sources.append(source_model)
 
         source_names = tuple(source.name for source in sources)
-        auto_operation = None
+        auto_operations: tuple[FigureOperationState, ...] = ()
         if operation is None and all(
             _public_source_data(data).squeeze(drop=True).ndim > 1
             for data in source_data.values()
@@ -2900,13 +2947,19 @@ class ImageToolManager(_ImageToolManagerBase):
             )
 
             try:
-                auto_operation = self._figure_plot_slices_operation_from_targets(
-                    resolved_targets, source_names
+                auto_operations = typing.cast(
+                    "tuple[FigureOperationState, ...]",
+                    self._figure_operations_from_image_targets(
+                        resolved_targets, source_names
+                    )
+                    or (),
                 )
             except FigureComposerPlotSlicesSelectionError as exc:
                 self._show_figure_plot_slices_selection_error(exc)
                 return False
-        prompt_operation = operation or auto_operation
+        prompt_operation = operation
+        if prompt_operation is None and len(auto_operations) == 1:
+            prompt_operation = auto_operations[0]
 
         if axes_selection is None:
             prompt = self._prompt_append_figure_target(
@@ -2930,9 +2983,8 @@ class ImageToolManager(_ImageToolManagerBase):
             operations = (
                 (operation,)
                 if operation is not None
-                else (auto_operation,)
-                if auto_operation is not None
-                else self._make_figure_operations_for_sources(
+                else auto_operations
+                or self._make_figure_operations_for_sources(
                     source_data, setup=tool.tool_status.setup
                 )
             )
@@ -2944,14 +2996,64 @@ class ImageToolManager(_ImageToolManagerBase):
                 )
                 if bz_operation is not None:
                     operations = (*operations, bz_operation)
-        for appended in operations:
-            tool.add_operation(appended.model_copy(update={"axes": axes_selection}))
+        for appended in self._figure_operations_with_append_axes(
+            operations,
+            typing.cast("FigureAxesSelectionState", axes_selection),
+        ):
+            tool.add_operation(appended)
 
         self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
         self._select_figure_uid(resolved_figure_uid)
         if show:
             node.show()
         return True
+
+    @staticmethod
+    def _figure_operations_with_append_axes(
+        operations: tuple[typing.Any, ...],
+        axes_selection: typing.Any,
+    ) -> tuple[typing.Any, ...]:
+        from erlab.interactive._figurecomposer import (
+            FigureAxesSelectionState,
+            FigureOperationKind,
+        )
+
+        if (
+            len(operations) > 1
+            and not axes_selection.expression
+            and all(
+                operation.kind == FigureOperationKind.PLOT_ARRAY
+                for operation in operations
+            )
+        ):
+            if axes_selection.axes and len(axes_selection.axes) >= len(operations):
+                return tuple(
+                    operation.model_copy(
+                        update={
+                            "axes": FigureAxesSelectionState(
+                                axes=(axes_selection.axes[index],)
+                            )
+                        }
+                    )
+                    for index, operation in enumerate(operations)
+                )
+            if axes_selection.axes_ids and len(axes_selection.axes_ids) >= len(
+                operations
+            ):
+                return tuple(
+                    operation.model_copy(
+                        update={
+                            "axes": FigureAxesSelectionState(
+                                axes_ids=(axes_selection.axes_ids[index],)
+                            )
+                        }
+                    )
+                    for index, operation in enumerate(operations)
+                )
+        return tuple(
+            operation.model_copy(update={"axes": axes_selection})
+            for operation in operations
+        )
 
     def append_figure_from_slicer_area(
         self,

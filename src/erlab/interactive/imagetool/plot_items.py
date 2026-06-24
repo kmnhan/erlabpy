@@ -1820,10 +1820,9 @@ class ItoolPlotItem(pg.PlotItem):
     def figure_composer_operation(self, *, source_name: str):
         """Build a Figure Composer operation from the current ImageTool plot state.
 
-        Image plots seed editable ``plot_slices`` operations when their non-display
-        selections can be represented as qsel keyword arguments, including string
-        dimensions that are not Python identifiers. Unsupported image selections raise
-        a Figure Composer selection error with details for the warning dialog.
+        Image plots seed editable ``plot_array`` operations for one concrete image and
+        ``plot_slices`` operations for multi-slice views. Unsupported image selections
+        raise a Figure Composer selection error with details for the warning dialog.
         """
         self._sync_figure_composer_view_limits()
         non_display_axes = tuple(
@@ -1904,6 +1903,22 @@ class ItoolPlotItem(pg.PlotItem):
         dim_order_plot.reverse()
 
         if self.is_image:
+            if self._figure_composer_should_use_plot_array(result):
+                plot_array_selections = (
+                    self._figure_composer_map_selections(
+                        source_name=source_name,
+                        non_display_axes=non_display_axes,
+                        variable_dim=variable_dim,
+                        selection_count=1,
+                    )
+                    if result
+                    else ()
+                )
+                return self._figure_composer_plot_array_operation(
+                    source_name=source_name,
+                    dim_order_plot=dim_order_plot,
+                    map_selections=plot_array_selections,
+                )
             return self._figure_composer_plot_slices_operation(
                 source_name=source_name,
                 variable_dim=variable_dim,
@@ -1952,6 +1967,19 @@ class ItoolPlotItem(pg.PlotItem):
         with contextlib.suppress(TypeError, ValueError):
             return float(value)
         return value
+
+    def _figure_composer_should_use_plot_array(
+        self,
+        qsel_kwargs: dict[Hashable, float | list[float]] | None,
+    ) -> bool:
+        """Return whether the current image view is one concrete 2D image."""
+        if qsel_kwargs is None:
+            return True
+        for value in qsel_kwargs.values():
+            plain_value = self._figure_composer_plain_value(value)
+            if isinstance(plain_value, list) and len(plain_value) > 1:
+                return False
+        return True
 
     @staticmethod
     def _figure_composer_indexer_state(indexer: typing.Any) -> typing.Any:
@@ -2255,6 +2283,44 @@ class ItoolPlotItem(pg.PlotItem):
                 "slice_kwargs": slice_kwargs,
                 "extra_kwargs": extra_kwargs,
                 **default_labels_update,
+            }
+        )
+
+    def _figure_composer_plot_array_operation(
+        self,
+        *,
+        source_name: str,
+        dim_order_plot: list[Hashable],
+        map_selections: tuple[typing.Any, ...] = (),
+    ):
+        from erlab.interactive._figurecomposer import FigureOperationState
+
+        plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
+        updates = self._figure_composer_operation_updates(plot_kwargs) or {}
+        extra_kwargs = dict(updates.pop("extra_kwargs", {}))
+        axis = updates.pop("axis", None)
+        if axis == "image":
+            extra_kwargs.setdefault("aspect", "equal")
+        for key in (
+            "same_limits",
+            "show_all_labels",
+            "annotate",
+            "order",
+            "cmap_order",
+            "norm_order",
+            "subplot_kw",
+            "annotate_kw",
+        ):
+            updates.pop(key, None)
+        operation = FigureOperationState.plot_array(
+            label="plot_array",
+            source=source_name,
+            map_selections=map_selections,
+        )
+        return operation.model_copy(
+            update={
+                **updates,
+                "extra_kwargs": extra_kwargs,
             }
         )
 

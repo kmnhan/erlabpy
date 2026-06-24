@@ -79,9 +79,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   contributor questions about adding new interactive tools.
 - Search `Figure Composer`, `Add to Figure`, `Append to Figure`, `New Figure`,
   `Recipe steps`, `Step sources`, `Sources`, `Add New Step`, `Add Source Only`,
-  `Replace Source`, `Set Palette`, `Slice Plot`, `Line/Profile`, `Python`,
-  `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`, `plot_bz`,
-  `BZ Overlay`, `Photon Energy Overlay`, `plot_in_plane_bz`,
+  `Replace Source`, `Set Palette`, `Image Plot`, `Slice Plot`, `Line/Profile`,
+  `Python`, `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
+  `plot_bz`, `BZ Overlay`, `Photon Energy Overlay`, `plot_in_plane_bz`,
   `plot_out_of_plane_bz`, or `hv_to_kz` for plotting and Figure Composer
   questions.
 
@@ -115,6 +115,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Mention `%watch --restore` when a saved manager workspace contains disconnected
   watched rows that should reconnect to variables in an open notebook.
 - Mention Figure Composer when the user wants to create Matplotlib figures from the GUI.
+- Mention the Figure Composer `Image Plot` step for one rendered 2D image on one axes.
+- Mention the Figure Composer `Slice Plot` step for multi-cursor, multi-slice, or
+  slice-grid image plots.
 - Mention the Figure Composer `BZ Overlay` step when the user wants
   Brillouin-zone slice overlays on in-plane or out-of-plane momentum plots.
 - Mention the Figure Composer `Photon Energy Overlay` step when the user wants
