@@ -680,6 +680,11 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
     assert combo is not None
     assert combo.isEnabled()
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert mode_combo is not None
+    assert mode_combo.currentData() == "named"
     assert combo.findText("jet") == -1
     assert combo.findText("jet_r") == -1
     assert "jet" not in figurecomposer_set_palette._palette_options(
@@ -758,6 +763,133 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     assert color_codes is not None
     color_codes.click()
     assert tool.tool_status.operations[0].palette_color_codes is True
+
+
+def test_figure_composer_set_palette_custom_colors_editor_and_codegen(
+    qtbot,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    profile = _figure_composer_profile_source("profile")
+    palette_operation = FigureOperationState.set_palette().model_copy(
+        update={
+            "palette_mode": "colors",
+            "palette_colors": ("#ff0000", "#00aa00"),
+        }
+    )
+    line_operation = FigureOperationState.line(label="line", source="profile")
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(palette_operation, line_operation),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert mode_combo is not None
+    assert mode_combo.currentData() == "colors"
+    assert (
+        page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo") is None
+    )
+    colors_widget = page.findChild(
+        figurecomposer_widgets._ColorListEditorWidget,
+        "figureComposerSetPaletteColorsWidget",
+    )
+    assert colors_widget is not None
+    colors_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerSetPaletteColorsEdit"
+    )
+    assert colors_edit is colors_widget.main_edit
+    assert colors_widget.colors() == ("#ff0000", "#00aa00")
+
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert preview is not None
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    assert [swatch.property("palette_color") for swatch in swatches[:2]] == [
+        "#ff0000",
+        "#00aa00",
+    ]
+
+    colors_edit.setText("#0000ff, #00ffff")
+    colors_edit.setModified(True)
+    colors_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].palette_mode == "colors"
+    assert tool.tool_status.operations[0].palette_colors == ("#0000ff", "#00ffff")
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    rendered_line = tool.figure.axes[0].lines[0]
+    np.testing.assert_allclose(
+        mcolors.to_rgb(rendered_line.get_color()),
+        mcolors.to_rgb("#0000ff"),
+    )
+
+    code = tool.generated_code()
+    assert "sns.set_palette(['#0000ff', '#00ffff'])" in code
+    namespace: dict[str, typing.Any] = {"profile": profile}
+    exec(code, namespace)  # noqa: S102
+    generated_line = namespace["fig"].axes[0].lines[0]
+    np.testing.assert_allclose(
+        mcolors.to_rgb(generated_line.get_color()),
+        mcolors.to_rgb("#0000ff"),
+    )
+    assert sns.color_palette(["#0000ff", "#00ffff"])
+
+
+def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> None:
+    pytest.importorskip("seaborn")
+    profile = _figure_composer_profile_source("profile")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_name": "deep", "palette_n_colors": 3}
+    )
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert mode_combo is not None
+    colors_index = mode_combo.findData("colors")
+    assert colors_index >= 0
+
+    mode_combo.setCurrentIndex(colors_index)
+    mode_combo.activated.emit(colors_index)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.palette_mode == "colors"
+    assert len(operation.palette_colors) == 3
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget() is not None
+            and tool.step_editor_stack.currentWidget().findChild(
+                figurecomposer_widgets._ColorListEditorWidget,
+                "figureComposerSetPaletteColorsWidget",
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    page = tool.step_editor_stack.currentWidget()
+    assert page is not None
+    colors_widget = page.findChild(
+        figurecomposer_widgets._ColorListEditorWidget,
+        "figureComposerSetPaletteColorsWidget",
+    )
+    assert colors_widget is not None
+    assert colors_widget.colors() == operation.palette_colors
 
 
 def test_figure_composer_set_palette_swatch_tooltip_contrast(qtbot) -> None:

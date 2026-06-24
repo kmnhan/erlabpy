@@ -326,6 +326,8 @@ class FigureOperationState(pydantic.BaseModel):
     )
 
     palette_name: str = "deep"
+    palette_mode: typing.Literal["named", "colors"] = "named"
+    palette_colors: tuple[str, ...] = ()
     palette_n_colors: int | None = pydantic.Field(default=None, ge=1)
     palette_desat: float | None = pydantic.Field(default=None, ge=0.0, le=1.0)
     palette_color_codes: bool = False

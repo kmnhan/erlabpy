@@ -23,6 +23,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureOperationState,
 )
+from erlab.interactive._figurecomposer._widgets import _ColorListEditorWidget
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:
@@ -86,6 +87,10 @@ _DESAT_AUTO_VALUE = -0.01
 _PALETTE_COUNT_MAX = 256
 _PALETTE_ICON_SIZE = QtCore.QSize(72, 14)
 _PALETTE_ICON_COLORS = 8
+_PALETTE_MODE_LABELS = {
+    "named": "Named palette",
+    "colors": "Custom colors",
+}
 
 
 def _palette_tooltip_text_color(qcolor: QtGui.QColor) -> str:
@@ -234,6 +239,23 @@ def _palette_options(
     return tuple(dict.fromkeys(options))
 
 
+def _palette_display_text(operation: FigureOperationState) -> str:
+    if operation.palette_mode == "colors":
+        count = len(operation.palette_colors)
+        return f"Custom colors ({count})" if count else "Custom colors"
+    return operation.palette_name
+
+
+def _palette_value(operation: FigureOperationState) -> str | tuple[str, ...]:
+    if operation.palette_mode == "colors":
+        return operation.palette_colors
+    return operation.palette_name
+
+
+def _palette_has_effect(operation: FigureOperationState) -> bool:
+    return operation.palette_mode != "colors" or bool(operation.palette_colors)
+
+
 def _palette_call_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]:
     kwargs: dict[str, typing.Any] = {}
     if operation.palette_n_colors is not None:
@@ -247,14 +269,14 @@ def _palette_call_kwargs(operation: FigureOperationState) -> dict[str, typing.An
 
 def _palette_colors(
     sns: typing.Any | None,
-    palette_name: str,
+    palette: str | tuple[str, ...],
     n_colors: int | None,
     desat: float | None,
 ) -> tuple[typing.Any, ...]:
     if sns is None:
         return ()
     try:
-        return tuple(sns.color_palette(palette_name, n_colors=n_colors, desat=desat))
+        return tuple(sns.color_palette(palette, n_colors=n_colors, desat=desat))
     except (TypeError, ValueError):
         return ()
 
@@ -313,6 +335,8 @@ def _apply_palette_combo_icons(
 
 def _apply_palette_to_existing_axes(fig: Figure, sns: typing.Any) -> None:
     colors = sns.color_palette()
+    if not colors:
+        return
     for axis in fig.axes:
         axis.set_prop_cycle(color=colors)
 
@@ -324,9 +348,9 @@ def _render_set_palette(
     _axs: typing.Any,
 ) -> None:
     sns = _import_seaborn()
-    if sns is None:
+    if sns is None or not _palette_has_effect(operation):
         return
-    sns.set_palette(operation.palette_name, **_palette_call_kwargs(operation))
+    sns.set_palette(_palette_value(operation), **_palette_call_kwargs(operation))
     _apply_palette_to_existing_axes(fig, sns)
 
 
@@ -336,8 +360,8 @@ def _create_operation(_tool: FigureComposerTool) -> FigureOperationState:
 
 def _display_text(_tool: FigureComposerTool, operation: FigureOperationState) -> str:
     if _import_seaborn() is None:
-        return f"Skipped Set Palette: {operation.palette_name}"
-    return f"Set Palette: {operation.palette_name}"
+        return f"Skipped Set Palette: {_palette_display_text(operation)}"
+    return f"Set Palette: {_palette_display_text(operation)}"
 
 
 def _tooltip(_tool: FigureComposerTool, operation: FigureOperationState) -> str:
@@ -345,7 +369,7 @@ def _tooltip(_tool: FigureComposerTool, operation: FigureOperationState) -> str:
         return "Install seaborn to apply this palette step.\nTargets: figure"
     return (
         "Sets the Matplotlib line color cycle with seaborn.set_palette().\n"
-        f"Palette: {operation.palette_name}\n"
+        f"Palette: {_palette_display_text(operation)}\n"
         "Targets: figure"
     )
 
@@ -369,7 +393,9 @@ def _editor_sections(
     preview = _PalettePreviewWidget(page)
     preview.setEnabled(available)
     preview_values: list[typing.Any] = [
+        operation.palette_mode,
         operation.palette_name,
+        operation.palette_colors,
         operation.palette_n_colors,
         operation.palette_desat,
     ]
@@ -377,22 +403,31 @@ def _editor_sections(
 
     def refresh_preview(
         *,
+        palette_mode: str | None = None,
         palette_name: str | None = None,
+        palette_colors: typing.Any = unchanged,
         n_colors: typing.Any = unchanged,
         desat: typing.Any = unchanged,
     ) -> None:
+        if palette_mode is not None:
+            preview_values[0] = palette_mode
         if palette_name is not None:
-            preview_values[0] = palette_name
+            preview_values[1] = palette_name
+        if palette_colors is not unchanged:
+            preview_values[2] = tuple(palette_colors)
         if n_colors is not unchanged:
-            preview_values[1] = n_colors
+            preview_values[3] = n_colors
         if desat is not unchanged:
-            preview_values[2] = desat
+            preview_values[4] = desat
+        palette_value = (
+            preview_values[2] if preview_values[0] == "colors" else preview_values[1]
+        )
         preview.set_colors(
             _palette_colors(
                 sns,
-                preview_values[0],
-                preview_values[1],
-                preview_values[2],
+                palette_value,
+                preview_values[3],
+                preview_values[4],
             )
         )
 
@@ -410,33 +445,61 @@ def _editor_sections(
             "This step needs seaborn in the active Python environment.",
         )
 
-    def update_palette_name(text: str) -> None:
-        refresh_preview(palette_name=text)
-        tool._update_current_operation(palette_name=text)
+    def update_palette_mode(mode: str) -> None:
+        if mode not in _PALETTE_MODE_LABELS:
+            return
+        updates: dict[str, typing.Any] = {"palette_mode": mode}
+        if mode == "colors" and not operation.palette_colors:
+            seeded_colors = _palette_hex_colors(
+                _palette_colors(
+                    sns,
+                    operation.palette_name,
+                    operation.palette_n_colors,
+                    operation.palette_desat,
+                )
+            )
+            if seeded_colors:
+                updates["palette_colors"] = seeded_colors
+        refresh_preview(
+            palette_mode=mode,
+            palette_colors=updates.get("palette_colors", operation.palette_colors),
+        )
+        tool._update_current_operation_rebuild(**updates)
 
-    palette_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_name)
-    palette_combo = tool._combo(
-        _palette_options(operation, sns),
-        None if palette_mixed else operation.palette_name,
-        update_palette_name,
-        parent=page,
-        mixed=palette_mixed,
-        enabled=available,
+    mode_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_mode)
+    mode_combo = QtWidgets.QComboBox(page)
+    mode_combo.setObjectName("figureComposerSetPaletteModeCombo")
+    for mode, text in _PALETTE_MODE_LABELS.items():
+        mode_combo.addItem(text, mode)
+    if mode_mixed:
+        mode_combo.insertItem(0, "(multiple values)", None)
+        item = typing.cast("typing.Any", mode_combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        mode_combo.setCurrentIndex(0)
+    else:
+        mode_combo.setCurrentIndex(max(mode_combo.findData(operation.palette_mode), 0))
+    mode_combo.setEnabled(available)
+    mode_combo.setToolTip(
+        "Choose a named seaborn or Matplotlib palette, or provide explicit colors."
     )
-    palette_combo.setObjectName("figureComposerSetPaletteNameCombo")
-    palette_combo.setToolTip(
-        "Palette name passed to seaborn.set_palette. The list includes seaborn "
-        "palettes and Matplotlib colormaps."
+    tool._connect_editor_signal(
+        mode_combo,
+        mode_combo.activated,
+        lambda _index, combo=mode_combo: (
+            None
+            if combo.currentData() is None
+            else update_palette_mode(str(combo.currentData()))
+        ),
     )
-    _apply_palette_combo_icons(palette_combo, sns)
 
-    palette_row = QtWidgets.QWidget(page)
-    palette_row.setObjectName("figureComposerSetPaletteNameRow")
-    palette_layout = QtWidgets.QHBoxLayout(palette_row)
-    palette_layout.setContentsMargins(0, 0, 0, 0)
-    palette_layout.setSpacing(6)
-    palette_layout.addWidget(palette_combo, 1)
-    docs_button = QtWidgets.QToolButton(palette_row)
+    mode_row = QtWidgets.QWidget(page)
+    mode_row.setObjectName("figureComposerSetPaletteModeRow")
+    mode_layout = QtWidgets.QHBoxLayout(mode_row)
+    mode_layout.setContentsMargins(0, 0, 0, 0)
+    mode_layout.setSpacing(6)
+    mode_layout.addWidget(mode_combo, 1)
+    docs_button = QtWidgets.QToolButton(mode_row)
     docs_button.setObjectName("figureComposerSetPaletteDocsButton")
     docs_button.setText("Docs")
     docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
@@ -451,13 +514,78 @@ def _editor_sections(
         docs_button.clicked,
         open_docs,
     )
-    palette_layout.addWidget(docs_button)
+    mode_layout.addWidget(docs_button)
     tool._add_form_row(
         layout,
-        "Palette",
-        palette_row,
-        "Named seaborn or Matplotlib palette passed to seaborn.set_palette.",
+        "Use",
+        mode_row,
+        "Choose whether this step uses a named palette or explicit colors.",
     )
+
+    def update_palette_name(text: str) -> None:
+        refresh_preview(palette_name=text)
+        tool._update_current_operation(palette_name=text)
+
+    if not mode_mixed and operation.palette_mode == "colors":
+
+        def update_palette_colors(colors: typing.Any) -> None:
+            colors = tuple(str(color).strip() for color in colors if str(color).strip())
+            refresh_preview(palette_colors=colors)
+            tool._update_current_operation(
+                palette_mode="colors",
+                palette_colors=colors,
+            )
+
+        colors_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.palette_colors
+        )
+        colors_widget = _ColorListEditorWidget(
+            () if colors_mixed else operation.palette_colors,
+            parent=page,
+        )
+        colors_widget.setObjectName("figureComposerSetPaletteColorsWidget")
+        colors_widget.setMainEditObjectName("figureComposerSetPaletteColorsEdit")
+        if colors_mixed:
+            colors_widget.setMixedPlaceholder("(multiple values)")
+        colors_widget.setEnabled(available)
+        colors_widget.setToolTip("Colors passed as a sequence to seaborn.set_palette.")
+        tool._connect_value_signal(
+            colors_widget,
+            colors_widget.colorsChanged,
+            lambda colors: tuple(colors),
+            update_palette_colors,
+            unchanged_mixed=colors_widget.batchUnchanged,
+        )
+        tool._add_form_row(
+            layout,
+            "Colors",
+            colors_widget,
+            "Explicit color sequence passed to seaborn.set_palette.",
+        )
+    else:
+        palette_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.palette_name
+        )
+        palette_combo = tool._combo(
+            _palette_options(operation, sns),
+            None if palette_mixed else operation.palette_name,
+            update_palette_name,
+            parent=page,
+            mixed=palette_mixed,
+            enabled=available,
+        )
+        palette_combo.setObjectName("figureComposerSetPaletteNameCombo")
+        palette_combo.setToolTip(
+            "Palette name passed to seaborn.set_palette. The list includes seaborn "
+            "palettes and Matplotlib colormaps."
+        )
+        _apply_palette_combo_icons(palette_combo, sns)
+        tool._add_form_row(
+            layout,
+            "Palette",
+            palette_combo,
+            "Named seaborn or Matplotlib palette passed to seaborn.set_palette.",
+        )
 
     count_mixed = tool._batch_is_mixed(
         operation, lambda target: target.palette_n_colors
@@ -565,12 +693,19 @@ def _section_summary(
     _tool: FigureComposerTool, key: str, operation: FigureOperationState
 ) -> str:
     if key == "palette":
-        return operation.palette_name
+        return _palette_display_text(operation)
     return ""
 
 
-def _palette_call_code(operation: FigureOperationState) -> str:
-    args = [repr(operation.palette_name)]
+def _palette_call_code(operation: FigureOperationState) -> str | None:
+    if not _palette_has_effect(operation):
+        return None
+    palette_value: str | list[str]
+    if operation.palette_mode == "colors":
+        palette_value = list(operation.palette_colors)
+    else:
+        palette_value = operation.palette_name
+    args = [repr(palette_value)]
     for key, value in _palette_call_kwargs(operation).items():
         args.append(f"{key}={value!r}")
     return f"sns.set_palette({', '.join(args)})"
@@ -579,13 +714,16 @@ def _palette_call_code(operation: FigureOperationState) -> str:
 def _code_lines(
     _tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
+    palette_call = _palette_call_code(operation)
+    if palette_call is None:
+        return []
     return [
         "try:",
         "    import seaborn as sns",
         "except ImportError:",
         "    pass",
         "else:",
-        f"    {_palette_call_code(operation)}",
+        f"    {palette_call}",
         "    for ax in fig.axes:",
         "        ax.set_prop_cycle(color=sns.color_palette())",
     ]
