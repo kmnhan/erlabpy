@@ -934,22 +934,8 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _DummyResult:
-        nfev = 1
-
-    class _DummyResults:
-        def compute(self):
-            return self
-
-        def item(self):
-            return _DummyResult()
-
-    class _DummyDataset:
-        modelfit_results = _DummyResults()
-
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -969,7 +955,7 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(_DummyDataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 
@@ -1133,6 +1119,77 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
     ]
 
 
+def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+
+    clock_values = [100.0, 100.05, 100.10]
+
+    def _monotonic() -> float:
+        return clock_values.pop(0) if clock_values else 100.10
+
+    refresh_modes: list[bool] = []
+    original_refresh = win._refresh_contents_from_index
+
+    def _refresh_contents_from_index(
+        *,
+        mark_fit_stale: bool = True,
+        update_widgets: bool = True,
+        elapsed: float | None = None,
+    ) -> None:
+        refresh_modes.append(update_widgets)
+        original_refresh(
+            mark_fit_stale=mark_fit_stale,
+            update_widgets=update_widgets,
+            elapsed=elapsed,
+        )
+
+    started_steps: list[int] = []
+    monkeypatch.setattr(fit2d_module.time, "monotonic", _monotonic)
+    monkeypatch.setattr(
+        win, "_refresh_contents_from_index", _refresh_contents_from_index
+    )
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
+        timeout=1000,
+    )
+
+    assert started_steps == [1, 2, 3]
+    assert refresh_modes.count(False) > refresh_modes.count(True)
+    assert refresh_modes.count(True) == 2
+    assert win.y_index_spin.value() == win.y_max_spin.value()
+    assert win._write_history is True
+
+
 def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
     qtbot, monkeypatch
 ) -> None:
@@ -1186,22 +1243,8 @@ def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _DummyResult:
-        nfev = 1
-
-    class _DummyResults:
-        def compute(self):
-            return self
-
-        def item(self):
-            return _DummyResult()
-
-    class _DummyDataset:
-        modelfit_results = _DummyResults()
-
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1221,7 +1264,7 @@ def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(_DummyDataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 

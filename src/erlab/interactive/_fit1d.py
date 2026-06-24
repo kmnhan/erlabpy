@@ -39,6 +39,7 @@ _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
 _T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
+_FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.25
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
@@ -1007,6 +1008,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step: int = 0
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
+        self._fit_multi_last_live_refresh: float = 0.0
+        self._fit_multi_refresh_pending: bool = False
+        self._fit_multi_last_elapsed: float | None = None
+        self._fit_multi_sequence_write_history: bool | None = None
         self._param_bounds_repair_names: list[str] | None = None
         self._write_history = False
 
@@ -2663,8 +2668,76 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if widget.isVisible():
                 widget.repaint()
 
+    def _fit_multi_sequence_active(self) -> bool:
+        return self._fit_multi_total is not None
+
+    def _fit_multi_live_refresh_due(self) -> bool:
+        now = time.monotonic()
+        if (
+            self._fit_multi_last_live_refresh <= 0.0
+            or now - self._fit_multi_last_live_refresh
+            >= _FIT_MULTI_LIVE_REFRESH_INTERVAL_S
+        ):
+            self._fit_multi_last_live_refresh = now
+            return True
+        return False
+
+    def _begin_fit_multi_history(self) -> None:
+        if self._fit_multi_sequence_write_history is not None:
+            return
+        self._fit_multi_sequence_write_history = self._write_history
+        self._write_history = False
+
+    def _finish_fit_multi_history(self) -> None:
+        write_history = self._fit_multi_sequence_write_history
+        self._fit_multi_sequence_write_history = None
+        if write_history is None:
+            return
+        self._write_history = write_history
+        if write_history:
+            self._replace_last_state()
+
+    def _store_multi_fit_result(
+        self, result_ds: xr.Dataset, t0: float
+    ) -> lmfit.Parameters:
+        self._last_result_ds = result_ds.copy()
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self._params = result.params.copy()
+        self._fit_is_current = True
+        self._fit_multi_last_elapsed = time.perf_counter() - t0
+        self._fit_multi_refresh_pending = True
+        self.sigFitFinished.emit(self._params.copy())
+        return self._params
+
+    def _sync_multi_fit_view(self, *, force: bool = False) -> None:
+        if self._last_result_ds is None:
+            return
+        if not (force or self._fit_multi_refresh_pending):
+            return
+        self._fit_multi_refresh_pending = False
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self.param_model.set_params(
+            self._params, self._params_from_coord, emit_changed=False
+        )
+        self._update_fit_curve()
+        self._refresh_slider_from_model()
+        self._set_fit_stats(result, elapsed=self._fit_multi_last_elapsed)
+        self._sync_fit_result_state()
+        self._mark_fit_fresh()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
+
+        viewport = self.param_view.viewport()
+        if viewport:  # pragma: no branch
+            viewport.update()
+
     def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
-        self._request_fit_step_paint()
+        if self._fit_multi_sequence_active():
+            if self._fit_multi_live_refresh_due():
+                self._sync_multi_fit_view()
+                self._request_fit_step_paint()
+        else:
+            self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
 
     def _sync_fit_result_state(self) -> None:
@@ -2995,6 +3068,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step = 0
         self._fit_multi_fit_data = fit_data
         self._fit_multi_params = self._params
+        self._fit_multi_last_live_refresh = 0.0
+        self._fit_multi_refresh_pending = False
+        self._fit_multi_last_elapsed = None
+        self._begin_fit_multi_history()
         self._start_next_multi_fit()
 
     def _start_next_multi_fit(self) -> None:
@@ -3017,7 +3094,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         def _on_success(result_ds: xr.Dataset) -> None:
             if self._fit_start_time is None:
                 return
-            self._fit_multi_params = self._set_fit_ds(result_ds, self._fit_start_time)
+            self._fit_multi_params = self._store_multi_fit_result(
+                result_ds, self._fit_start_time
+            )
             if self._fit_multi_step >= (self._fit_multi_total or 0):
                 self._finish_multi_fit()
             else:
@@ -3047,12 +3126,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
 
     def _finish_multi_fit(self) -> None:
+        self._sync_multi_fit_view()
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_multi_total = None
         self._fit_multi_step = 0
         self._fit_multi_fit_data = None
         self._fit_multi_params = None
+        self._fit_multi_refresh_pending = False
+        self._fit_multi_last_elapsed = None
+        self._finish_fit_multi_history()
 
     def _set_fit_running(
         self, running: bool, *, multi: bool, step: int = 0, total: int = 0

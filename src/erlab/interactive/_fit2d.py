@@ -433,6 +433,9 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_initial_range: tuple[int, int] | None = None
         self._fit_2d_last_live_refresh: float = 0.0
         self._fit_2d_param_plot_refresh_pending: bool = False
+        self._fit_2d_last_completed_idx: int | None = None
+        self._fit_2d_last_completed_elapsed: float | None = None
+        self._fit_2d_sequence_write_history: bool | None = None
 
     @staticmethod
     def _data_with_saved_dims(
@@ -498,6 +501,42 @@ class Fit2DTool(Fit1DTool):
             return True
         return False
 
+    def _begin_fit_2d_sequence_history(self) -> None:
+        if self._fit_2d_sequence_write_history is not None:
+            return
+        self._fit_2d_sequence_write_history = self._write_history
+        self._write_history = False
+
+    def _finish_fit_2d_sequence_history(self) -> None:
+        write_history = self._fit_2d_sequence_write_history
+        self._fit_2d_sequence_write_history = None
+        if write_history is None:
+            return
+        self._write_history = write_history
+        if write_history:
+            self._replace_last_state()
+
+    def _sync_fit_2d_sequence_view(
+        self, index: int, *, mark_fit_stale: bool = True
+    ) -> None:
+        y_vals = self._y_values()
+        curr_val = y_vals[index]
+        self._current_idx = int(index)
+        with QtCore.QSignalBlocker(self.y_index_spin):
+            self.y_index_spin.setValue(self._current_idx)
+        self.index_line.setPos(curr_val)
+        self.param_plot_index_line.setPos(curr_val)
+        self.y_value_spin.setValue(curr_val)
+        elapsed = (
+            self._fit_2d_last_completed_elapsed
+            if index == self._fit_2d_last_completed_idx
+            else None
+        )
+        self._refresh_contents_from_index(
+            mark_fit_stale=mark_fit_stale,
+            elapsed=elapsed,
+        )
+
     def _flush_fit_2d_sequence_param_plot(self, *, force: bool = False) -> None:
         if not (force or self._fit_2d_param_plot_refresh_pending):
             return
@@ -510,6 +549,11 @@ class Fit2DTool(Fit1DTool):
             super()._defer_next_fit_step(callback)
             return
         if self._fit_2d_live_refresh_due():
+            if self._fit_2d_last_completed_idx is not None:
+                self._sync_fit_2d_sequence_view(
+                    self._fit_2d_last_completed_idx,
+                    mark_fit_stale=False,
+                )
             self._flush_fit_2d_sequence_param_plot()
             self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
@@ -1318,7 +1362,7 @@ class Fit2DTool(Fit1DTool):
         errbar.setData(x=param_values, y=plot_y, width=param_errors)
         scatter.setData(x=param_values, y=plot_y)
 
-    def _refresh_contents_from_index(self, *, mark_fit_stale: bool = True) -> None:
+    def _load_contents_from_index(self) -> None:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
 
         params = self._params_full[self._current_idx]
@@ -1338,6 +1382,18 @@ class Fit2DTool(Fit1DTool):
 
         self._params = params
         self._params_from_coord = params_from_coord
+
+    def _refresh_contents_from_index(
+        self,
+        *,
+        mark_fit_stale: bool = True,
+        update_widgets: bool = True,
+        elapsed: float | None = None,
+    ) -> None:
+        self._load_contents_from_index()
+        if not update_widgets:
+            return
+
         self.param_model.set_params(self._params, self._params_from_coord)
         self._populate_data_curve()
 
@@ -1350,9 +1406,9 @@ class Fit2DTool(Fit1DTool):
             + ")"
         )
 
-        if last_ds is not None:
-            result = last_ds.modelfit_results.compute().item()
-            self._set_fit_stats(result)
+        if self._last_result_ds is not None:
+            result = self._last_result_ds.modelfit_results.compute().item()
+            self._set_fit_stats(result, elapsed=elapsed)
             if mark_fit_stale:
                 self._mark_fit_stale()
             else:
@@ -1524,7 +1580,9 @@ class Fit2DTool(Fit1DTool):
     def _set_current_index(self, index: int) -> None:
         self.y_index_spin.setValue(int(index))
 
-    def _fill_params_from(self, target_index: int, mode=None) -> None:
+    def _fill_params_from(
+        self, target_index: int, mode=None, *, update_widgets: bool = True
+    ) -> None:
         if (
             target_index < self.y_min_spin.value()
             or target_index > self.y_max_spin.value()
@@ -1555,7 +1613,9 @@ class Fit2DTool(Fit1DTool):
                 or params1 is None
                 or params2 is None
             ):
-                self._fill_params_from(target_index, mode="previous")
+                self._fill_params_from(
+                    target_index, mode="previous", update_widgets=update_widgets
+                )
                 return
 
             params = params2.copy()
@@ -1577,7 +1637,7 @@ class Fit2DTool(Fit1DTool):
 
         self._params_full[self._current_idx] = params.copy()
 
-        self._refresh_contents_from_index()
+        self._refresh_contents_from_index(update_widgets=update_widgets)
 
     def _fill_params_from_prev(self) -> None:
         self._fill_params_from(self._current_idx - 1)
@@ -1681,8 +1741,35 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_start_idx = start_idx
         self._fit_2d_last_live_refresh = 0.0
         self._fit_2d_param_plot_refresh_pending = False
+        self._fit_2d_last_completed_idx = None
+        self._begin_fit_2d_sequence_history()
         if self._fit_2d_indices:
             self._start_next_fit_2d()
+
+    def _prepare_fit_2d_sequence_index(self, idx: int) -> None:
+        self._current_idx = int(idx)
+        self._refresh_contents_from_index(update_widgets=False)
+        if idx != self._fit_2d_start_idx:
+            direction = self._fit_2d_direction or "up"
+            self._fill_params_from(
+                idx - 1 if direction == "up" else idx + 1,
+                update_widgets=False,
+            )
+
+    def _store_fit_2d_sequence_result(
+        self, idx: int, result_ds: xr.Dataset, t0: float
+    ) -> lmfit.model.ModelResult:
+        self._last_result_ds = result_ds.copy()
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self._params = result.params.copy()
+        self._result_ds_full[idx] = self._last_result_ds
+        self._params_full[idx] = self._params.copy()
+        self._fit_is_current = True
+        self._fit_2d_last_completed_idx = idx
+        self._fit_2d_last_completed_elapsed = time.perf_counter() - t0
+        self._fit_2d_param_plot_refresh_pending = True
+        self.sigFitFinished.emit(self._params.copy())
+        return result
 
     def _start_next_fit_2d(self) -> None:
         if self._fit_cancel_requested:
@@ -1707,19 +1794,17 @@ class Fit2DTool(Fit1DTool):
         if idx < self.y_min_spin.value() or idx > self.y_max_spin.value():
             self._finish_fit_2d_sequence()
             return
-        self._set_current_index(idx)
-        if idx != self._fit_2d_start_idx:
-            direction = self._fit_2d_direction or "up"
-            self._fill_params_from(idx - 1 if direction == "up" else idx + 1)
+        self._prepare_fit_2d_sequence_index(idx)
 
         step = self._fit_2d_total - len(self._fit_2d_indices)
 
         def _on_success(result_ds: xr.Dataset) -> None:
             if self._fit_start_time is None:
                 return
-            self._set_fit_ds(result_ds, self._fit_start_time)
+            result = self._store_fit_2d_sequence_result(
+                idx, result_ds, self._fit_start_time
+            )
             max_nfev = self.nfev_spin.value()
-            result = result_ds.modelfit_results.compute().item()
             if max_nfev > 0 and result.nfev >= max_nfev:
                 self._show_warning(
                     "Fit Stopped",
@@ -1761,14 +1846,25 @@ class Fit2DTool(Fit1DTool):
             self._finish_fit_2d_sequence()
 
     def _finish_fit_2d_sequence(self) -> None:
+        final_idx = self._fit_2d_last_completed_idx
+        if final_idx is None and self._data_full.sizes[self._y_dim_name] > 0:
+            final_idx = self._current_idx
+        if final_idx is not None:
+            self._sync_fit_2d_sequence_view(
+                final_idx,
+                mark_fit_stale=self._result_ds_full[final_idx] is None,
+            )
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_2d_indices = []
         self._fit_2d_total = 0
         self._fit_2d_direction = None
         self._fit_2d_initial_range = None
+        self._fit_2d_last_completed_idx = None
+        self._fit_2d_last_completed_elapsed = None
         self._update_full_fit_saveable()
         self._flush_fit_2d_sequence_param_plot(force=True)
+        self._finish_fit_2d_sequence_history()
 
     def _y_values(self) -> np.ndarray:
         if self._y_values_cache is not None:

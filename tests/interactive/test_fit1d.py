@@ -933,7 +933,6 @@ def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
 
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
 
@@ -952,7 +951,7 @@ def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(xr.Dataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 
@@ -1002,6 +1001,57 @@ def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
 
     assert events == ["start-1", "paint"]
     qtbot.waitUntil(lambda: events == ["start-1", "paint", "start-2"], timeout=1000)
+
+
+def test_fit1d_multi_fit_throttles_visible_refreshes(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    clock_values = [100.0, 100.05, 100.10]
+
+    def _monotonic() -> float:
+        return clock_values.pop(0) if clock_values else 100.10
+
+    events: list[str] = []
+    started_steps: list[int] = []
+    monkeypatch.setattr(fit1d.time, "monotonic", _monotonic)
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
+    monkeypatch.setattr(
+        win, "_refresh_slider_from_model", lambda: events.append("slider")
+    )
+    monkeypatch.setattr(win, "_set_fit_stats", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_multiple(3)
+    qtbot.waitUntil(
+        lambda: win._fit_multi_total is None and not win._fit_running(),
+        timeout=1000,
+    )
+
+    assert started_steps == [1, 2, 3]
+    assert events == ["curve", "slider", "curve", "slider"]
+    assert win._write_history is True
 
 
 def test_fit1d_fit_step_paint_repaints_targets_without_queued_update(
@@ -1110,7 +1160,6 @@ def test_fit1d_cancelled_before_deferred_multi_step_stops_sequence(
 
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
 
@@ -1129,7 +1178,7 @@ def test_fit1d_cancelled_before_deferred_multi_step_stops_sequence(
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(xr.Dataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 
