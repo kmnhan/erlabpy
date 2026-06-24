@@ -7,6 +7,7 @@ import enum
 import functools
 import logging
 import os
+import time
 import typing
 import urllib.parse
 
@@ -43,6 +44,7 @@ else:
 logger = logging.getLogger(__name__)
 
 _P = typing.ParamSpec("_P")
+_FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.10
 _R = typing.TypeVar("_R")
 
 
@@ -429,6 +431,12 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_direction: typing.Literal["down", "up"] | None = None
         self._fit_2d_start_idx: int = 0
         self._fit_2d_initial_range: tuple[int, int] | None = None
+        self._fit_2d_last_live_refresh: float = 0.0
+        self._fit_2d_live_refresh_pending: bool = False
+        self._fit_2d_param_plot_refresh_pending: bool = False
+        self._fit_2d_last_completed_idx: int | None = None
+        self._fit_2d_last_completed_elapsed: float | None = None
+        self._fit_2d_sequence_write_history: bool | None = None
 
     @staticmethod
     def _data_with_saved_dims(
@@ -465,13 +473,107 @@ class Fit2DTool(Fit1DTool):
     def _update_params_full(self) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
+        if self._fit_2d_sequence_active():
+            self._fit_2d_param_plot_refresh_pending = True
+            return
         self._update_param_plot()
 
-    def _sync_fit_result_state(self) -> None:
+    def _sync_fit_result_state(self, *, notify: bool = True) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
-        self._update_param_plot()
+        if self._fit_2d_sequence_active():
+            self._fit_2d_param_plot_refresh_pending = True
+            return
+        self._update_param_plot_options()
+        self._update_param_plot(notify=notify)
+
+    def _fit_2d_sequence_active(self) -> bool:
+        return self._fit_2d_total > 0
+
+    def _fit_2d_live_refresh_due(self) -> bool:
+        now = time.monotonic()
+        if (
+            self._fit_2d_last_live_refresh <= 0.0
+            or now - self._fit_2d_last_live_refresh
+            >= _FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S
+        ):
+            self._fit_2d_last_live_refresh = now
+            return True
+        return False
+
+    def _begin_fit_2d_sequence_history(self) -> None:
+        if self._fit_2d_sequence_write_history is not None:
+            return
+        self._fit_2d_sequence_write_history = self._write_history
+        self._write_history = False
+
+    def _finish_fit_2d_sequence_history(self) -> None:
+        write_history = self._fit_2d_sequence_write_history
+        self._fit_2d_sequence_write_history = None
+        if write_history is None:
+            return
+        self._write_history = write_history
+        if write_history:
+            self._replace_last_state()
+
+    def _sync_fit_2d_sequence_view(
+        self, index: int, *, mark_fit_stale: bool = True, full: bool = True
+    ) -> None:
+        y_vals = self._y_values()
+        curr_val = y_vals[index]
+        self._current_idx = int(index)
+        with QtCore.QSignalBlocker(self.y_index_spin):
+            self.y_index_spin.setValue(self._current_idx)
+        self.index_line.setPos(curr_val)
+        self.param_plot_index_line.setPos(curr_val)
+        self.y_value_spin.setValue(curr_val)
+        elapsed = (
+            self._fit_2d_last_completed_elapsed
+            if index == self._fit_2d_last_completed_idx
+            else None
+        )
+        if not full:
+            if not self._fit_2d_live_refresh_pending:
+                return
+            self._fit_2d_live_refresh_pending = False
+            self._refresh_contents_from_index(
+                mark_fit_stale=mark_fit_stale,
+                elapsed=elapsed,
+                emit_info=False,
+                emit_param_changed=False,
+            )
+            self._flush_fit_2d_sequence_param_plot(notify=False)
+            return
+
+        self._fit_2d_live_refresh_pending = False
+        self._refresh_contents_from_index(
+            mark_fit_stale=mark_fit_stale,
+            elapsed=elapsed,
+        )
+
+    def _flush_fit_2d_sequence_param_plot(
+        self, *, force: bool = False, notify: bool = True
+    ) -> None:
+        if not (force or self._fit_2d_param_plot_refresh_pending):
+            return
+        self._fit_2d_param_plot_refresh_pending = False
+        self._update_param_plot_options()
+        self._update_param_plot(notify=notify)
+
+    def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
+        if not self._fit_2d_sequence_active():
+            super()._defer_next_fit_step(callback)
+            return
+        if self._fit_2d_live_refresh_due():
+            if self._fit_2d_last_completed_idx is not None:
+                self._sync_fit_2d_sequence_view(
+                    self._fit_2d_last_completed_idx,
+                    mark_fit_stale=False,
+                    full=False,
+                )
+            self._request_fit_step_paint()
+        erlab.interactive.utils.single_shot(self, 0, callback)
 
     def _build_ui(self) -> None:
         super()._build_ui()
@@ -759,6 +861,7 @@ class Fit2DTool(Fit1DTool):
     @property
     def tool_status(self) -> Fit1DTool.StateModel:
         state_dict = super().tool_status.model_dump()
+        param_plot_names = set(self._param_plot_names())
         state_dict["state2d"] = _State2D(
             current_idx=int(self._current_idx),
             data_name_full=str(self._data_name_full),
@@ -778,7 +881,11 @@ class Fit2DTool(Fit1DTool):
                 self.fill_mode_combo.currentText().lower(),
             ),
             y_limits=(self.y_min_spin.value(), self.y_max_spin.value()),
-            param_plot_overlay_states=self._param_plot_overlay_states.copy(),
+            param_plot_overlay_states={
+                name: checked
+                for name, checked in self._param_plot_overlay_states.items()
+                if name in param_plot_names
+            },
         )
         return self.StateModel(**state_dict)
 
@@ -790,49 +897,61 @@ class Fit2DTool(Fit1DTool):
             with self._history_suppressed():
                 self._rebuild_ui_for_full_data(restored_data, self._params.copy())
 
-        super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
-            self, status
-        )
-        self._update_param_plot_options()
-        if state2d is not None:  # pragma: no branch
-            y_size = int(self._data_full.sizes[self._y_dim_name])
-            self._data_name_full = state2d.data_name_full
-            restored_params_full = [
-                self._deserialize_params(params) for params in state2d.params_full
-            ]
-            self._params_full = [None] * y_size
-            for i, params in enumerate(restored_params_full[:y_size]):
-                self._params_full[i] = params
-
-            self._initial_params_full = None
-            if state2d.initial_params_full is not None:
-                self._initial_params_full = [
-                    self._initial_params.copy() for _ in range(y_size)
+        repaired_bounds: list[str] = []
+        previous_repaired_bounds = self._param_bounds_repair_names
+        self._param_bounds_repair_names = repaired_bounds
+        try:
+            super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
+                self, status
+            )
+            self._update_param_plot_options()
+            if state2d is not None:  # pragma: no branch
+                y_size = int(self._data_full.sizes[self._y_dim_name])
+                self._data_name_full = state2d.data_name_full
+                restored_params_full = [
+                    self._deserialize_params(params, repaired_bounds=repaired_bounds)
+                    for params in state2d.params_full
                 ]
-                for i, params in enumerate(state2d.initial_params_full[:y_size]):
-                    restored = self._deserialize_params(params)
-                    if restored is not None:
-                        self._initial_params_full[i] = restored
+                self._params_full = [None] * y_size
+                for i, params in enumerate(restored_params_full[:y_size]):
+                    self._params_full[i] = params
 
-            self._params_from_coord_full = [{} for _ in range(y_size)]
-            for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
-                self._params_from_coord_full[i] = mapping.copy()
+                self._initial_params_full = None
+                if state2d.initial_params_full is not None:
+                    self._initial_params_full = [
+                        self._initial_params.copy() for _ in range(y_size)
+                    ]
+                    for i, params in enumerate(state2d.initial_params_full[:y_size]):
+                        restored = self._deserialize_params(
+                            params, repaired_bounds=repaired_bounds
+                        )
+                        if restored is not None:
+                            self._initial_params_full[i] = restored
 
-            self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
-            self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
-            if state2d.y_limits is not None:  # pragma: no branch
-                max_idx = y_size - 1
-                y_min = min(max(state2d.y_limits[0], 0), max_idx)
-                y_max = min(max(state2d.y_limits[1], 0), max_idx)
-                with (
-                    QtCore.QSignalBlocker(self.y_min_spin),
-                    QtCore.QSignalBlocker(self.y_max_spin),
-                ):
-                    self.y_min_spin.setValue(min(y_min, y_max))
-                    self.y_max_spin.setValue(max(y_min, y_max))
-                self._y_minmax_changed()
-            self._current_idx = min(max(state2d.current_idx, 0), y_size - 1)
+                self._params_from_coord_full = [{} for _ in range(y_size)]
+                for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
+                    self._params_from_coord_full[i] = mapping.copy()
+
+                self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
+                self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
+                if state2d.y_limits is not None:  # pragma: no branch
+                    max_idx = y_size - 1
+                    y_min = min(max(state2d.y_limits[0], 0), max_idx)
+                    y_max = min(max(state2d.y_limits[1], 0), max_idx)
+                    with (
+                        QtCore.QSignalBlocker(self.y_min_spin),
+                        QtCore.QSignalBlocker(self.y_max_spin),
+                    ):
+                        self.y_min_spin.setValue(min(y_min, y_max))
+                        self.y_max_spin.setValue(max(y_min, y_max))
+                    self._y_minmax_changed()
+                self._current_idx = min(max(state2d.current_idx, 0), y_size - 1)
+        finally:
+            self._param_bounds_repair_names = previous_repaired_bounds
+        self._show_repaired_parameter_bounds_warning(repaired_bounds)
         self.y_index_spin.setValue(self._current_idx)
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
     def _transpose(self) -> None:
@@ -925,35 +1044,38 @@ class Fit2DTool(Fit1DTool):
         with QtCore.QSignalBlocker(self.param_plot_combo):
             prev_param = self.param_plot_combo.currentText()
             self.param_plot_combo.clear()
-            updated_names = list(self._params.keys())
+            updated_names = self._param_plot_names()
             self.param_plot_combo.addItems(updated_names)
-            if set(self._param_plot_overlay_states) != set(updated_names):
-                self._reset_param_plot_overlay_states(updated_names)
+            for name in updated_names:
+                self._param_plot_overlay_states.setdefault(name, False)
+            self._remove_unavailable_param_plot_overlay_items(updated_names)
             if prev_param in updated_names:
                 self.param_plot_combo.setCurrentText(prev_param)
-            else:
-                self._update_param_plot()
+            self.param_plot_combo.setEnabled(bool(updated_names))
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
 
     def _apply_param_plot_overlay_states(self, states: dict[str, bool]) -> None:
         """Apply saved overlay states and refresh overlay UI."""
-        param_names = list(self._params.keys())
-        if set(states) != set(param_names):
-            self._reset_param_plot_overlay_states(param_names)
-            return
         self._param_plot_overlay_states = dict(states)
+        for name in self._param_plot_names():
+            self._param_plot_overlay_states.setdefault(name, False)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
 
-    def _reset_param_plot_overlay_states(self, param_names: list[str]) -> None:
-        """Reset overlay state/items when parameter names change."""
-        for errbar, scatter in self._param_plot_overlay_items.values():
+    def _remove_unavailable_param_plot_overlay_items(
+        self, param_names: list[str]
+    ) -> None:
+        """Remove visible overlays for parameters without fit-result data."""
+        available = set(param_names)
+        for name in list(self._param_plot_overlay_items):
+            if name in available:
+                continue
+            errbar, scatter = self._param_plot_overlay_items.pop(name)
             self.image_plot.removeItem(errbar)
             self.image_plot.removeItem(scatter)
-        self._param_plot_overlay_items = {}
-        self._param_plot_overlay_states = dict.fromkeys(param_names, False)
-        self._clear_image_plot_legend()
+            if self.image_plot_legend is not None:
+                self.image_plot_legend.removeItem(name)
 
     def _toggle_param_plot_overlay(self, checked: bool) -> None:
         """Toggle overlay visibility for the currently selected parameter."""
@@ -1008,9 +1130,14 @@ class Fit2DTool(Fit1DTool):
             reset_params_from_coord=reset_params_from_coord,
         )
         self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
-    def _update_param_plot(self) -> None:
+    @QtCore.Slot(int)
+    def _update_param_plot(
+        self, _index: int | None = None, *, notify: bool = True
+    ) -> None:
+        del _index
         param_name = self.param_plot_combo.currentText()
         self.param_plot.setLabel("bottom", param_name)
         plot_y, param_values, param_errors = self._param_plot_data(param_name)
@@ -1018,7 +1145,8 @@ class Fit2DTool(Fit1DTool):
         self.param_plot_scatter.setData(x=param_values, y=plot_y)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
-        self._notify_data_changed()
+        if notify:
+            self._notify_data_changed()
 
     def _on_image_legend_sample_clicked(self, sample, event=None) -> None:
         """Mirror legend-driven visibility changes to error bars and state."""
@@ -1052,11 +1180,15 @@ class Fit2DTool(Fit1DTool):
         """Update the overlay checkbox for the current parameter."""
         param_name = self.param_plot_combo.currentText()
         if not param_name:  # pragma: no cover
+            with QtCore.QSignalBlocker(self.param_plot_overlay_check):
+                self.param_plot_overlay_check.setChecked(False)
+                self.param_plot_overlay_check.setEnabled(False)
             return
         if checked is None:  # pragma: no branch
             checked = self._param_plot_overlay_states.get(param_name, False)
         with QtCore.QSignalBlocker(self.param_plot_overlay_check):
             self.param_plot_overlay_check.setChecked(checked)
+            self.param_plot_overlay_check.setEnabled(True)
 
     def _clear_image_plot_legend(self) -> None:
         """Remove all entries from the image plot legend."""
@@ -1078,7 +1210,9 @@ class Fit2DTool(Fit1DTool):
         if y_vals is None or params_list is None:
             y_range_slice = self._y_range_slice()
             y_vals = self._y_values()[y_range_slice]
-            params_list = self._params_full[y_range_slice]
+            params_list = self._fit_result_params_list(
+                self._result_ds_full[y_range_slice]
+            )
 
         plot_y = []
         param_values = []
@@ -1092,6 +1226,59 @@ class Fit2DTool(Fit1DTool):
             param_errors.append(param.stderr if param.stderr is not None else 0.0)
 
         return np.array(plot_y), np.array(param_values), np.array(param_errors)
+
+    @staticmethod
+    def _fit_result_params(result_ds: xr.Dataset | None) -> lmfit.Parameters | None:
+        if result_ds is None or "modelfit_results" not in result_ds.data_vars:
+            return None
+        try:
+            result = result_ds.modelfit_results.compute().item()
+        except Exception:
+            logger.warning(
+                "Ignoring invalid Fit2D result dataset for parameter plot",
+                exc_info=True,
+                extra={"suppress_ui_alert": True},
+            )
+            return None
+        params = getattr(result, "params", None)
+        if not isinstance(result, lmfit.model.ModelResult) or params is None:
+            logger.warning(
+                "Ignoring non-ModelResult Fit2D result dataset for parameter plot",
+                extra={"suppress_ui_alert": True},
+            )
+            return None
+        try:
+            nfev = int(getattr(result, "nfev", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            nfev = 0
+        if nfev <= 0:
+            logger.debug(
+                "Ignoring unfitted Fit2D result dataset for parameter plot",
+                extra={"suppress_ui_alert": True},
+            )
+            return None
+        return params
+
+    @classmethod
+    def _fit_result_params_list(
+        cls, result_datasets: list[xr.Dataset | None]
+    ) -> list[lmfit.Parameters | None]:
+        return [cls._fit_result_params(result_ds) for result_ds in result_datasets]
+
+    def _param_plot_names(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for params in self._fit_result_params_list(
+            self._result_ds_full[self._y_range_slice()]
+        ):
+            if params is None:
+                continue
+            for name in params:
+                if name in seen:
+                    continue
+                seen.add(name)
+                names.append(name)
+        return names
 
     def _param_plot_dataarray(
         self, param_name: str, *, stderr: bool = False
@@ -1135,10 +1322,11 @@ class Fit2DTool(Fit1DTool):
 
         y_range_slice = self._y_range_slice()
         y_vals = self._y_values()[y_range_slice]
-        params_list = self._params_full[y_range_slice]
+        params_list = self._fit_result_params_list(self._result_ds_full[y_range_slice])
+        available_names = set(self._param_plot_names())
         enabled = []
         for name, checked in self._param_plot_overlay_states.items():
-            if not checked:
+            if not checked or name not in available_names:
                 items = self._param_plot_overlay_items.pop(name, None)
                 if items is not None:
                     errbar, scatter = items
@@ -1196,7 +1384,7 @@ class Fit2DTool(Fit1DTool):
         errbar.setData(x=param_values, y=plot_y, width=param_errors)
         scatter.setData(x=param_values, y=plot_y)
 
-    def _refresh_contents_from_index(self, *, mark_fit_stale: bool = True) -> None:
+    def _load_contents_from_index(self) -> None:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
 
         params = self._params_full[self._current_idx]
@@ -1216,7 +1404,28 @@ class Fit2DTool(Fit1DTool):
 
         self._params = params
         self._params_from_coord = params_from_coord
-        self.param_model.set_params(self._params, self._params_from_coord)
+
+    def _refresh_contents_from_index(
+        self,
+        *,
+        mark_fit_stale: bool = True,
+        update_widgets: bool = True,
+        elapsed: float | None = None,
+        emit_info: bool = True,
+        emit_param_changed: bool = True,
+    ) -> None:
+        self._load_contents_from_index()
+        if not update_widgets:
+            return
+
+        self.param_model.set_params(
+            self._params,
+            self._params_from_coord,
+            emit_changed=emit_param_changed,
+        )
+        if not emit_param_changed:
+            self._update_fit_curve()
+            self._refresh_slider_from_model()
         self._populate_data_curve()
 
         self._data_name = (
@@ -1228,17 +1437,18 @@ class Fit2DTool(Fit1DTool):
             + ")"
         )
 
-        if last_ds is not None:
-            result = last_ds.modelfit_results.compute().item()
-            self._set_fit_stats(result)
+        if self._last_result_ds is not None:
+            result = self._last_result_ds.modelfit_results.compute().item()
+            self._set_fit_stats(result, elapsed=elapsed, emit_info=emit_info)
             if mark_fit_stale:
-                self._mark_fit_stale()
+                self._mark_fit_stale(emit_info=emit_info)
             else:
-                self._mark_fit_fresh()
+                self._mark_fit_fresh(emit_info=emit_info)
         else:
-            self._set_fit_stats(None)
-            self._mark_fit_stale()
-        self._emit_info_changed()
+            self._set_fit_stats(None, emit_info=emit_info)
+            self._mark_fit_stale(emit_info=emit_info)
+        if emit_info:
+            self._emit_info_changed()
 
     @_rebuild_ui(mark_fresh=True)
     def _restore_from_fit_dataset(
@@ -1303,6 +1513,8 @@ class Fit2DTool(Fit1DTool):
         self._params_from_coord_full = [{} for _ in range(y_size)]
         self._result_ds_full = [slice_ds for _, slice_ds in slice_states]
         self._fit_is_current = True
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
         saved_results = [
@@ -1359,6 +1571,8 @@ class Fit2DTool(Fit1DTool):
                 ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)
             )
         )
+        self._update_param_plot_options()
+        self._update_param_plot()
 
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
@@ -1377,6 +1591,7 @@ class Fit2DTool(Fit1DTool):
         self.y_min_line.setPos(min_val)
         self.y_max_line.setPos(max_val)
         self._update_full_fit_saveable()
+        self._update_param_plot_options()
         self._update_param_plot()
         self._write_state()
         self._emit_info_changed()
@@ -1397,7 +1612,9 @@ class Fit2DTool(Fit1DTool):
     def _set_current_index(self, index: int) -> None:
         self.y_index_spin.setValue(int(index))
 
-    def _fill_params_from(self, target_index: int, mode=None) -> None:
+    def _fill_params_from(
+        self, target_index: int, mode=None, *, update_widgets: bool = True
+    ) -> None:
         if (
             target_index < self.y_min_spin.value()
             or target_index > self.y_max_spin.value()
@@ -1428,7 +1645,9 @@ class Fit2DTool(Fit1DTool):
                 or params1 is None
                 or params2 is None
             ):
-                self._fill_params_from(target_index, mode="previous")
+                self._fill_params_from(
+                    target_index, mode="previous", update_widgets=update_widgets
+                )
                 return
 
             params = params2.copy()
@@ -1450,7 +1669,7 @@ class Fit2DTool(Fit1DTool):
 
         self._params_full[self._current_idx] = params.copy()
 
-        self._refresh_contents_from_index()
+        self._refresh_contents_from_index(update_widgets=update_widgets)
 
     def _fill_params_from_prev(self) -> None:
         self._fill_params_from(self._current_idx - 1)
@@ -1494,13 +1713,26 @@ class Fit2DTool(Fit1DTool):
         self._params_from_coord_full = [{} for _ in range(len(self._params_full))]
         self._result_ds_full = [None] * len(self._params_full)
         self._refresh_contents_from_index()
+        self._update_param_plot_options()
         self._update_param_plot()
         self._mark_fit_stale()
 
     def _set_fit_running(
-        self, running: bool, *, multi: bool, step: int = 0, total: int = 0
+        self,
+        running: bool,
+        *,
+        multi: bool,
+        step: int = 0,
+        total: int = 0,
+        emit_info: bool = True,
     ) -> None:
-        super()._set_fit_running(running, multi=multi, step=step, total=total)
+        super()._set_fit_running(
+            running,
+            multi=multi,
+            step=step,
+            total=total,
+            emit_info=emit_info,
+        )
         self.fit_down_button.setDisabled(running)
         self.fit_up_button.setDisabled(running)
 
@@ -1551,8 +1783,39 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_total = len(self._fit_2d_indices)
         self._fit_2d_direction = direction
         self._fit_2d_start_idx = start_idx
+        self._fit_2d_last_live_refresh = time.monotonic()
+        self._fit_2d_live_refresh_pending = False
+        self._fit_2d_param_plot_refresh_pending = False
+        self._fit_2d_last_completed_idx = None
+        self._begin_fit_2d_sequence_history()
         if self._fit_2d_indices:
             self._start_next_fit_2d()
+
+    def _prepare_fit_2d_sequence_index(self, idx: int) -> None:
+        self._current_idx = int(idx)
+        self._refresh_contents_from_index(update_widgets=False)
+        if idx != self._fit_2d_start_idx:
+            direction = self._fit_2d_direction or "up"
+            self._fill_params_from(
+                idx - 1 if direction == "up" else idx + 1,
+                update_widgets=False,
+            )
+
+    def _store_fit_2d_sequence_result(
+        self, idx: int, result_ds: xr.Dataset, t0: float
+    ) -> lmfit.model.ModelResult:
+        self._last_result_ds = result_ds.copy()
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self._params = result.params.copy()
+        self._result_ds_full[idx] = self._last_result_ds
+        self._params_full[idx] = self._params.copy()
+        self._fit_is_current = True
+        self._fit_2d_last_completed_idx = idx
+        self._fit_2d_last_completed_elapsed = time.perf_counter() - t0
+        self._fit_2d_live_refresh_pending = True
+        self._fit_2d_param_plot_refresh_pending = True
+        self.sigFitFinished.emit(self._params.copy())
+        return result
 
     def _start_next_fit_2d(self) -> None:
         if self._fit_cancel_requested:
@@ -1577,19 +1840,17 @@ class Fit2DTool(Fit1DTool):
         if idx < self.y_min_spin.value() or idx > self.y_max_spin.value():
             self._finish_fit_2d_sequence()
             return
-        self._set_current_index(idx)
-        if idx != self._fit_2d_start_idx:
-            direction = self._fit_2d_direction or "up"
-            self._fill_params_from(idx - 1 if direction == "up" else idx + 1)
+        self._prepare_fit_2d_sequence_index(idx)
 
         step = self._fit_2d_total - len(self._fit_2d_indices)
 
         def _on_success(result_ds: xr.Dataset) -> None:
             if self._fit_start_time is None:
                 return
-            self._set_fit_ds(result_ds, self._fit_start_time)
+            result = self._store_fit_2d_sequence_result(
+                idx, result_ds, self._fit_start_time
+            )
             max_nfev = self.nfev_spin.value()
-            result = result_ds.modelfit_results.compute().item()
             if max_nfev > 0 and result.nfev >= max_nfev:
                 self._show_warning(
                     "Fit Stopped",
@@ -1610,8 +1871,15 @@ class Fit2DTool(Fit1DTool):
             self._fit_errored(message)
             self._finish_fit_2d_sequence()
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=True)
+            self._finish_fit_2d_sequence()
+            return
+
         started = self._start_fit_worker(
-            self._fit_data(),
+            fit_data,
             self._params,
             multi=True,
             step=step,
@@ -1624,14 +1892,26 @@ class Fit2DTool(Fit1DTool):
             self._finish_fit_2d_sequence()
 
     def _finish_fit_2d_sequence(self) -> None:
+        final_idx = self._fit_2d_last_completed_idx
+        if final_idx is None and self._data_full.sizes[self._y_dim_name] > 0:
+            final_idx = self._current_idx
+        if final_idx is not None:
+            self._sync_fit_2d_sequence_view(
+                final_idx,
+                mark_fit_stale=self._result_ds_full[final_idx] is None,
+            )
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_2d_indices = []
         self._fit_2d_total = 0
         self._fit_2d_direction = None
         self._fit_2d_initial_range = None
+        self._fit_2d_last_completed_idx = None
+        self._fit_2d_last_completed_elapsed = None
+        self._fit_2d_live_refresh_pending = False
         self._update_full_fit_saveable()
-        self._update_param_plot()
+        self._flush_fit_2d_sequence_param_plot(force=True)
+        self._finish_fit_2d_sequence_history()
 
     def _y_values(self) -> np.ndarray:
         if self._y_values_cache is not None:
@@ -1648,13 +1928,13 @@ class Fit2DTool(Fit1DTool):
     def _refresh_main_image(self) -> None:
         self.image.setDataArray(self._data_full)
 
-    def _mark_fit_stale(self) -> None:
-        super()._mark_fit_stale()
+    def _mark_fit_stale(self, *, emit_info: bool = True) -> None:
+        super()._mark_fit_stale(emit_info=emit_info)
         self.save_full_button.setDisabled(True)
         self.copy_full_button.setDisabled(True)
 
-    def _mark_fit_fresh(self) -> None:
-        super()._mark_fit_fresh()
+    def _mark_fit_fresh(self, *, emit_info: bool = True) -> None:
+        super()._mark_fit_fresh(emit_info=emit_info)
         self._update_full_fit_saveable()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
@@ -2008,7 +2288,7 @@ class Fit2DTool(Fit1DTool):
 
     def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
         param_name = self.param_plot_combo.currentText().strip()
-        if not param_name:
+        if not param_name or param_name not in self._param_plot_names():
             return None
         return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
 
@@ -2016,10 +2296,7 @@ class Fit2DTool(Fit1DTool):
         self, output: Output, param_name: str
     ) -> tuple[str, bool] | None:
         stderr = output == self.Output.PARAMETER_STDERR
-        if not param_name or all(
-            self.param_plot_combo.itemText(i) != param_name
-            for i in range(self.param_plot_combo.count())
-        ):
+        if not param_name or param_name not in self._param_plot_names():
             return None
         return param_name, stderr
 

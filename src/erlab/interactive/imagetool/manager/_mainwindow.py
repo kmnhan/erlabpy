@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import logging
 import re
@@ -19,6 +20,7 @@ from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._heartbeat import _RegistryHeartbeatController
+from erlab.interactive.imagetool.manager._interaction import _ManagerInteractionGate
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -112,6 +114,72 @@ class _NotesPlainTextEdit(QtWidgets.QPlainTextEdit):
     def focusOutEvent(self, event: QtGui.QFocusEvent | None) -> None:
         super().focusOutEvent(event)
         self.focus_lost.emit()
+
+
+class _ManagerProvenancePasteFilter(QtCore.QObject):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__(manager)
+        self._manager = manager
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if (
+            event is None
+            or event.type() != QtCore.QEvent.Type.KeyPress
+            or not isinstance(event, QtGui.QKeyEvent)
+            or not event.matches(QtGui.QKeySequence.StandardKey.Paste)
+            or not self._should_handle_paste()
+        ):
+            return super().eventFilter(obj, event)
+        self._manager._paste_provenance_steps_from_clipboard()
+        event.accept()
+        return True
+
+    def _should_handle_paste(self) -> bool:
+        app = QtWidgets.QApplication.instance()
+        if not isinstance(app, QtWidgets.QApplication):
+            return False
+        if app.activeWindow() is not self._manager:
+            return False
+        if (
+            self._manager.inspector_tabs.currentWidget()
+            is not self._manager.metadata_provenance_page
+        ):
+            return False
+        focus_widget = app.focusWidget()
+        if focus_widget is None:
+            return True
+        if (
+            focus_widget is self._manager.metadata_derivation_list
+            or self._manager.metadata_derivation_list.isAncestorOf(focus_widget)
+        ):
+            return False
+        return not _widget_accepts_text_paste(focus_widget, stop_at=self._manager)
+
+
+def _widget_accepts_text_paste(
+    widget: QtWidgets.QWidget, *, stop_at: QtWidgets.QWidget
+) -> bool:
+    current: QtWidgets.QWidget | None = widget
+    while current is not None:
+        if isinstance(
+            current,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            return True
+        if isinstance(current, QtWidgets.QComboBox) and current.isEditable():
+            return True
+        if current is stop_at:
+            return False
+        parent = current.parentWidget()
+        current = parent if isinstance(parent, QtWidgets.QWidget) else None
+    return False
 
 
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
@@ -642,18 +710,25 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self._workspace_state = _ManagerWorkspaceState()
+        self._interaction_gate = _ManagerInteractionGate(self)
+        self._interaction_gate.register_window(self)
         self._workspace_controller = _WorkspaceIOController(self)
         self._tool_metadata_queue = _ManagerToolMetadataQueue(
-            self, self._flush_pending_tool_metadata_updates
+            self,
+            self._flush_pending_tool_metadata_updates,
+            idle_scheduler=self._queue_idle_work,
         )
         self._update_workspace_window_title()
         self._registry_heartbeat_timer.start()
 
         qapp = QtWidgets.QApplication.instance()
         self._application_quit_filter: _ApplicationQuitFilter | None = None
+        self._provenance_paste_filter: _ManagerProvenancePasteFilter | None = None
         if isinstance(qapp, QtWidgets.QApplication):
             self._application_quit_filter = _ApplicationQuitFilter(self)
             qapp.installEventFilter(self._application_quit_filter)
+            self._provenance_paste_filter = _ManagerProvenancePasteFilter(self)
+            qapp.installEventFilter(self._provenance_paste_filter)
 
         self._link_registry = _ManagerLinkRegistry()
 
@@ -688,6 +763,14 @@ class ImageToolManager(_ImageToolManagerBase):
             self._read_figure_gallery_size_setting()
         )
         self._updating_figure_view_controls = False
+        self._workspace_ui_refresh_defer_depth = 0
+        self._deferred_workspace_figures_refresh = False
+        self._deferred_workspace_figure_select_uid: str | None = None
+        self._deferred_workspace_info_uids: set[str | None] = set()
+        self._deferred_workspace_dependency_uids: set[str] = set()
+        self._deferred_workspace_source_controls_refresh = False
+        self._deferred_workspace_gallery_icon_uids: set[str] = set()
+        self._deferred_workspace_actions_refresh = False
 
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
@@ -1419,6 +1502,12 @@ class ImageToolManager(_ImageToolManagerBase):
             ):
                 qapp.removeEventFilter(self._application_quit_filter)
                 self._application_quit_filter = None
+            if (
+                isinstance(qapp, QtWidgets.QApplication)
+                and self._provenance_paste_filter is not None
+            ):
+                qapp.removeEventFilter(self._provenance_paste_filter)
+                self._provenance_paste_filter = None
             for widget in (
                 self.text_box,
                 self.metadata_derivation_list,
@@ -1490,8 +1579,9 @@ class ImageToolManager(_ImageToolManagerBase):
         if node is None:
             return
         self._dependency_tracker.clear_uid(uid)
-        self._refresh_dependency_dependents(uid)
-        self._refresh_figure_source_controls()
+        if not self._workspace_state.closing_document:
+            self._refresh_dependency_dependents(uid)
+            self._refresh_figure_source_controls()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1534,9 +1624,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _read_figure_view_mode_setting(self) -> str:
         mode = self._settings_string(
-            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_LIST
+            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_GALLERY
         )
-        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_LIST
+        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_GALLERY
 
     def _read_figure_gallery_size_setting(self) -> str:
         size_name = self._settings_string(
@@ -1791,6 +1881,9 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def _apply_figure_list_view_configuration(self) -> None:
+        self.figure_list.setVerticalScrollMode(
+            QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
             self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
             self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
@@ -1846,12 +1939,6 @@ class ImageToolManager(_ImageToolManagerBase):
         tool_window = node.tool_window
         if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        if getattr(tool_window, "preview_pixmap_stale", False):
-            request_preview = getattr(
-                tool_window, "request_preview_pixmap_update", None
-            )
-            if callable(request_preview):
-                request_preview()
         thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
         if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
@@ -1966,6 +2053,12 @@ class ImageToolManager(_ImageToolManagerBase):
         return f"{base_name} {suffix}"
 
     def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_figures_refresh = True
+            if select_uid is not None:
+                self._deferred_workspace_figure_select_uid = select_uid
+            return
+
         figure_uids = self._figure_uids()
         selected_uids = (
             {select_uid}
@@ -2008,6 +2101,9 @@ class ImageToolManager(_ImageToolManagerBase):
         return None
 
     def _update_figure_gallery_icon(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_gallery_icon_uids.add(uid)
+            return
         if (
             not erlab.interactive.utils.qt_is_valid(self)
             or not hasattr(self, "figure_list")
@@ -2024,6 +2120,15 @@ class ImageToolManager(_ImageToolManagerBase):
                 item.setIcon(self._figure_gallery_icon(uid))
             finally:
                 self.figure_list.blockSignals(False)
+
+    def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_gallery_icon_uids.add(uid)
+            return
+        self._queue_idle_work(
+            ("figure-gallery-icon", uid),
+            functools.partial(self._update_figure_gallery_icon, uid),
+        )
 
     def _figure_uid_from_item(
         self, item: QtWidgets.QListWidgetItem | None
@@ -2045,11 +2150,15 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if not self.tree_view.selectedIndexes():
             return
+        if not self.figure_list.selectedItems():
+            return
         self.figure_list.blockSignals(True)
         try:
             self.figure_list.clearSelection()
         finally:
             self.figure_list.blockSignals(False)
+        self._update_actions()
+        self._update_info()
 
     @QtCore.Slot()
     def _figure_selection_changed(self) -> None:
@@ -2495,6 +2604,10 @@ class ImageToolManager(_ImageToolManagerBase):
         return refreshed
 
     def _refresh_figure_source_controls(self) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_source_controls_refresh = True
+            return
+
         from erlab.interactive._figurecomposer import FigureComposerTool
 
         for figure_uid in self._figure_uids():
@@ -2874,8 +2987,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
-        self._refresh_dependency_dependents(wrapper.uid)
-        self._refresh_figure_source_controls()
+        if not self._workspace_state.closing_document:
+            self._refresh_dependency_dependents(wrapper.uid)
+            self._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -2895,11 +3009,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.tree_view.setUpdatesEnabled(True)
                 self.setUpdatesEnabled(True)
 
-                if self._link_registry.pop_pending_cleanup():
-                    self._cleanup_linkers()
+                if self._workspace_state.closing_document:
+                    self._link_registry.clear_pending_cleanup()
+                else:
+                    if self._link_registry.pop_pending_cleanup():
+                        self._cleanup_linkers()
 
-                self._update_actions()
-                self._update_info()
+                    self._update_actions()
+                    self._update_info()
 
     def _remove_imagetools(
         self,
@@ -3021,8 +3138,12 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> provenance._ProvenanceDisplayRow | None:
         return self._details_panel._selected_derivation_row()
 
-    def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
-        return self._details_panel._build_metadata_derivation_menu()
+    def _build_metadata_derivation_menu(
+        self, *, include_row_actions: bool = True
+    ) -> QtWidgets.QMenu | None:
+        return self._details_panel._build_metadata_derivation_menu(
+            include_row_actions=include_row_actions
+        )
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
         self._details_panel._show_metadata_derivation_menu(pos)
@@ -3066,6 +3187,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._commit_note_editor()
 
     def _update_info(self, *, uid: str | None = None) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_info_uids.add(uid)
+            return
         self._details_panel._update_info(uid=uid)
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
@@ -3074,7 +3198,40 @@ class ImageToolManager(_ImageToolManagerBase):
     def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
         self._details_panel._flush_pending_tool_metadata_updates(pending)
 
+    def _register_interaction_window(self, window: QtWidgets.QWidget | None) -> None:
+        self._interaction_gate.register_window(window)
+
+    def _unregister_interaction_window(self, window: QtWidgets.QWidget | None) -> None:
+        self._interaction_gate.unregister_window(window)
+
+    def _note_interaction_activity(self) -> None:
+        self._interaction_gate.note_activity()
+
+    @property
+    def _interaction_active(self) -> bool:
+        return self._interaction_gate.is_active
+
+    def _queue_idle_work(
+        self,
+        key: typing.Hashable,
+        callback: Callable[[], None],
+        *,
+        require_idle: bool = True,
+    ) -> None:
+        self._interaction_gate.queue_work(key, callback, require_idle=require_idle)
+
+    def _flush_idle_work(
+        self,
+        *,
+        key_prefix: typing.Hashable | None = None,
+        force: bool = False,
+    ) -> None:
+        self._interaction_gate.flush(key_prefix=key_prefix, force=force)
+
     def _update_actions(self) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_actions_refresh = True
+            return
         self._details_panel._update_actions()
 
     def about(self) -> None:
@@ -3190,8 +3347,8 @@ class ImageToolManager(_ImageToolManagerBase):
             coalesce_if_busy=coalesce_if_busy
         )
 
-    def _update_workspace_window_title(self) -> None:
-        self._workspace_controller._update_workspace_window_title()
+    def _update_workspace_window_title(self, *, force: bool = True) -> None:
+        self._workspace_controller._update_workspace_window_title(force=force)
 
     def _release_workspace_lock(self) -> None:
         self._workspace_controller._release_workspace_lock()
@@ -3251,8 +3408,8 @@ class ImageToolManager(_ImageToolManagerBase):
         added: bool = False,
         removed: str | None = None,
         structure: str | None = None,
-    ) -> None:
-        self._workspace_controller._mark_workspace_dirty(
+    ) -> bool:
+        return self._workspace_controller._mark_workspace_dirty(
             uid=uid,
             data=data,
             state=state,
@@ -3261,20 +3418,20 @@ class ImageToolManager(_ImageToolManagerBase):
             structure=structure,
         )
 
-    def _mark_node_added(self, uid: str) -> None:
-        self._workspace_controller._mark_node_added(uid)
+    def _mark_node_added(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_added(uid)
 
-    def _mark_node_data_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_node_data_dirty(uid)
+    def _mark_node_data_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_data_dirty(uid)
 
-    def _mark_node_state_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_node_state_dirty(uid)
+    def _mark_node_state_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_node_state_dirty(uid)
 
-    def _mark_tool_info_dirty(self, uid: str) -> None:
-        self._workspace_controller._mark_tool_info_dirty(uid)
+    def _mark_tool_info_dirty(self, uid: str) -> bool:
+        return self._workspace_controller._mark_tool_info_dirty(uid)
 
-    def _mark_workspace_structure_dirty(self, reason: str) -> None:
-        self._workspace_controller._mark_workspace_structure_dirty(reason)
+    def _mark_workspace_structure_dirty(self, reason: str) -> bool:
+        return self._workspace_controller._mark_workspace_structure_dirty(reason)
 
     def _mark_workspace_clean(self) -> None:
         self._workspace_controller._mark_workspace_clean()
@@ -3338,12 +3495,14 @@ class ImageToolManager(_ImageToolManagerBase):
         self,
         tree: xr.DataTree,
         *,
+        root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int:
         return self._workspace_controller._load_workspace_figures(
             tree,
+            root_item=root_item,
             manifest=manifest,
             workspace_file_path=workspace_file_path,
             loaded_targets_by_uid=loaded_targets_by_uid,
@@ -3481,9 +3640,16 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         replace: bool,
         mark_dirty: bool,
+        selected_paths: set[str] | None = None,
+        profiler: typing.Any | None = None,
     ) -> bool:
         return self._workspace_controller._from_h5py_workspace_file(
-            fname, manifest, replace=replace, mark_dirty=mark_dirty
+            fname,
+            manifest,
+            replace=replace,
+            mark_dirty=mark_dirty,
+            selected_paths=selected_paths,
+            profiler=profiler,
         )
 
     def _restore_replaced_workspace(
@@ -3499,6 +3665,7 @@ class ImageToolManager(_ImageToolManagerBase):
         mark_dirty: bool = True,
         select: bool = True,
         workspace_file_path: str | os.PathLike[str] | None = None,
+        profiler: typing.Any | None = None,
     ) -> bool:
         return self._workspace_controller._from_datatree(
             tree,
@@ -3506,6 +3673,7 @@ class ImageToolManager(_ImageToolManagerBase):
             mark_dirty=mark_dirty,
             select=select,
             workspace_file_path=workspace_file_path,
+            profiler=profiler,
         )
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
@@ -3837,7 +4005,57 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._lineage_controller._dependency_dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
+        if self._workspace_ui_refresh_defer_depth > 0:
+            self._deferred_workspace_dependency_uids.add(uid)
+            return
         self._lineage_controller._refresh_dependency_dependents(uid)
+
+    @contextlib.contextmanager
+    def _workspace_ui_refresh_context(self) -> Iterator[None]:
+        self._workspace_ui_refresh_defer_depth += 1
+        try:
+            yield
+        finally:
+            self._workspace_ui_refresh_defer_depth -= 1
+            if self._workspace_ui_refresh_defer_depth == 0:
+                active_exception = sys.exc_info()[0] is not None
+                try:
+                    self._flush_deferred_workspace_ui_refreshes()
+                except Exception:
+                    if not active_exception:
+                        raise
+                    logger.exception("Failed to flush deferred workspace UI refreshes")
+
+    def _flush_deferred_workspace_ui_refreshes(self) -> None:
+        figure_refresh = self._deferred_workspace_figures_refresh
+        figure_select_uid = self._deferred_workspace_figure_select_uid
+        info_uids = set(self._deferred_workspace_info_uids)
+        dependency_uids = sorted(self._deferred_workspace_dependency_uids)
+        source_controls = self._deferred_workspace_source_controls_refresh
+        gallery_icon_uids = sorted(self._deferred_workspace_gallery_icon_uids)
+        actions_refresh = self._deferred_workspace_actions_refresh
+
+        self._deferred_workspace_figures_refresh = False
+        self._deferred_workspace_figure_select_uid = None
+        self._deferred_workspace_info_uids.clear()
+        self._deferred_workspace_dependency_uids.clear()
+        self._deferred_workspace_source_controls_refresh = False
+        self._deferred_workspace_gallery_icon_uids.clear()
+        self._deferred_workspace_actions_refresh = False
+
+        if figure_refresh:
+            self._sync_figures_ui(select_uid=figure_select_uid)
+        for uid in dependency_uids:
+            self._refresh_dependency_dependents(uid)
+        if source_controls:
+            self._refresh_figure_source_controls()
+        for uid in gallery_icon_uids:
+            self._update_figure_gallery_icon(uid)
+        if actions_refresh:
+            self._update_actions()
+        if info_uids:
+            uid = next(iter(info_uids)) if len(info_uids) == 1 else None
+            self._update_info(uid=uid)
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode

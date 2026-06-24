@@ -432,7 +432,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         path = self.file_path()
         if _normalized_path(path) == _normalized_path(self._original_path):
             return peer.original_path
-        return path.parent / f"{peer.original_path.stem}{path.suffix}"
+        return path.parent / peer.original_path.name
 
     def _peer_path(self, peer: _FileLoadBatchPeer) -> pathlib.Path:
         return self._batch_peer_paths.get(peer.target_id, self._auto_peer_path(peer))
@@ -786,8 +786,7 @@ class _ProvenanceEditController:
     ) -> tuple[bool, str]:
         if not operations:
             return False, "The clipboard does not contain copied ImageTool steps."
-        node = self._metadata_node()
-        if not self._node_editable(node):
+        if not self._paste_target_nodes():
             return False, "Select an available ImageTool row to paste provenance."
         return True, ""
 
@@ -802,30 +801,32 @@ class _ProvenanceEditController:
         if not paste_enabled:
             self._show_unavailable(paste_reason)
             return
-        node = typing.cast(
-            "_ImageToolWrapper | _ManagedWindowNode",
-            self._metadata_node(),
-        )
-        steps = provenance.restamp_operation_groups(operations)
-        try:
-            if contains_script or any(
-                not operation.live_applicable for operation in steps
-            ):
-                self._paste_detached_steps(
+        targets = self._paste_target_nodes()
+        failures: list[tuple[_ImageToolWrapper | _ManagedWindowNode, Exception]] = []
+        pasted_count = 0
+        for node in targets:
+            steps = provenance.restamp_operation_groups(operations)
+            try:
+                self._paste_steps_into_node(
                     node,
-                    provenance.script(
-                        *steps,
-                        start_label="Start from current ImageTool data",
-                        active_name=active_name or "derived",
-                    ),
-                    where="validating the pasted script provenance steps",
+                    steps,
+                    active_name=active_name,
+                    contains_script=contains_script,
                 )
+            except Exception as exc:
+                failures.append((node, exc))
             else:
-                self._paste_structured_steps(node, steps)
-        except Exception as exc:
+                pasted_count += 1
+
+        if pasted_count > 0:
+            if failures:
+                self._show_partial_paste_failures(pasted_count, failures)
+            return
+
+        if failures:
             self._show_failed(
                 "Could Not Paste Provenance Steps",
-                exc,
+                failures[0][1],
                 text="The copied provenance steps could not be applied.",
                 unchanged_reason=(
                     "The copied steps could not be replayed on the selected "
@@ -834,6 +835,27 @@ class _ProvenanceEditController:
                     "inputs expected by the copied steps."
                 ),
             )
+
+    def _paste_steps_into_node(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        steps: tuple[provenance.ToolProvenanceOperation, ...],
+        *,
+        active_name: str,
+        contains_script: bool,
+    ) -> None:
+        if contains_script or any(not operation.live_applicable for operation in steps):
+            self._paste_detached_steps(
+                node,
+                provenance.script(
+                    *steps,
+                    start_label="Start from current ImageTool data",
+                    active_name=active_name or "derived",
+                ),
+                where="validating the pasted script provenance steps",
+            )
+            return
+        self._paste_structured_steps(node, steps)
 
     def _paste_structured_steps(
         self,
@@ -997,6 +1019,7 @@ class _ProvenanceEditController:
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
             and active_filter_ref != row.edit_ref
+            and node.detached_live_parent_data is None
         ):
             return False, "This live row needs a parent source to replay."
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
@@ -1195,6 +1218,27 @@ class _ProvenanceEditController:
         if uid is None:
             return None
         return self._manager._tool_graph.nodes.get(uid)
+
+    def _paste_target_nodes(self) -> list[_ImageToolWrapper | _ManagedWindowNode]:
+        selected_targets = self._manager._selected_imagetool_targets()
+        if selected_targets:
+            nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+            seen_uids: set[str] = set()
+            for target in selected_targets:
+                try:
+                    node = self._manager._node_for_target(target)
+                except (KeyError, IndexError):
+                    continue
+                if node.uid in seen_uids or not self._node_editable(node):
+                    continue
+                seen_uids.add(node.uid)
+                nodes.append(node)
+            return nodes
+
+        node = self._metadata_node()
+        if not self._node_editable(node):
+            return []
+        return [typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)]
 
     @staticmethod
     def _node_editable(
@@ -1885,10 +1929,13 @@ class _ProvenanceEditController:
         if spec.kind == "file":
             return self._replay_file_candidate(spec), spec
         if spec.kind in {"full_data", "public_data", "selection"}:
-            if scope != "source" or node.parent_uid is None:
+            if scope == "source" and node.parent_uid is not None:
+                parent = self._manager._parent_node(node)
+                return spec.apply(parent.current_source_data()), spec
+            parent_data = node.detached_live_parent_data
+            if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            parent = self._manager._parent_node(node)
-            return spec.apply(parent.current_source_data()), spec
+            return spec.apply(parent_data), spec
         if spec.kind == "script":
             result = self._manager._rebuild_script_provenance(
                 spec,
@@ -1951,10 +1998,14 @@ class _ProvenanceEditController:
                 preserve_filter=preserve_filter,
             )
             return
+        live_parent_data = None
+        if spec.kind in {"full_data", "public_data", "selection"}:
+            live_parent_data = node.detached_live_parent_data
         node.replace_with_detached_data(
             data,
             spec,
             preserve_filter=preserve_filter,
+            live_parent_data=live_parent_data,
         )
 
     def _active_filter_ref(
@@ -2029,6 +2080,31 @@ class _ProvenanceEditController:
             "Provenance Step Unavailable",
             reason,
         )
+
+    def _show_partial_paste_failures(
+        self,
+        pasted_count: int,
+        failures: Sequence[tuple[_ImageToolWrapper | _ManagedWindowNode, Exception]],
+    ) -> None:
+        failed_labels = "\n".join(
+            f"- {node.display_text}: {exc}" for node, exc in failures
+        )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title="Some Provenance Steps Could Not Be Pasted",
+            text=(
+                f"Pasted provenance steps into {pasted_count} selected ImageTool "
+                f"{'row' if pasted_count == 1 else 'rows'}."
+            ),
+            informative_text=(
+                f"{len(failures)} selected ImageTool "
+                f"{'row was' if len(failures) == 1 else 'rows were'} left unchanged."
+            ),
+            detailed_text=failed_labels,
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        dialog.exec()
 
     def _show_failed(
         self,

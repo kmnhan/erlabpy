@@ -33,15 +33,23 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
     rendered = QtGui.QPixmap(4, 6)
     rendered.fill(QtGui.QColor("blue"))
     invalid = object()
+    default_pixmap = object()
 
     class _FakeImageItem:
         def __init__(
-            self, pixmap: QtGui.QPixmap | None = None, *, raise_pixmap: bool = False
+            self,
+            pixmap: QtGui.QPixmap | None | object = default_pixmap,
+            *,
+            raise_pixmap: bool = False,
         ) -> None:
-            self.pixmap = pixmap if pixmap is not None else rendered
+            self.pixmap = (
+                rendered
+                if pixmap is default_pixmap
+                else typing.cast("QtGui.QPixmap | None", pixmap)
+            )
             self.raise_pixmap = raise_pixmap
 
-        def getPixmap(self) -> QtGui.QPixmap:
+        def getPixmap(self) -> QtGui.QPixmap | None:
             if self.raise_pixmap:
                 raise RuntimeError("pixmap unavailable")
             return self.pixmap
@@ -122,6 +130,10 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
     assert _preview(
         _FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(raise_pixmap=True)]))
     ) == (1.5, fallback)
+    assert _preview(_FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(None)]))) == (
+        1.5,
+        fallback,
+    )
     assert _preview(
         _FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(QtGui.QPixmap())]))
     ) == (1.5, fallback)

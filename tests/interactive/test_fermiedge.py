@@ -903,6 +903,7 @@ def test_goldtool_undo_redo_state_change(qtbot, gold) -> None:
     initial = win.tool_status
     win.refit_on_source_update_check.setChecked(not initial.refit_on_source_update)
 
+    assert win._flush_pending_history_write()
     assert win.undoable is True
     assert win.tool_status.refit_on_source_update is not initial.refit_on_source_update
 
@@ -982,6 +983,7 @@ def test_restool_undo_redo_state_change(qtbot) -> None:
     initial = win.tool_status
     win.temp_spin.setValue(initial.temp + 1.0)
 
+    assert win._flush_pending_history_write()
     assert win.undoable is True
     assert win.tool_status.temp == initial.temp + 1.0
 

@@ -348,24 +348,22 @@ def kspace_conversion_estimate_text(
     preview: bool = False,
 ) -> str:
     """Return concise inline feedback for a conversion estimate."""
-    if estimate.is_safe:
-        return (
-            f"Output: {_format_sizes(estimate.output_sizes)}\n"
-            f"Estimated size: {_format_bytes(estimate.final_bytes)}"
-        )
-    output_summary = (
-        f"Output: {_format_sizes(estimate.output_sizes)}; "
-        f"memory: {_format_bytes(estimate.peak_bytes)}"
+    estimate_summary = (
+        f"Output: {_format_sizes(estimate.output_sizes)}\n"
+        f"Final array: {_format_bytes(estimate.final_bytes)}\n"
+        f"Peak memory: {_format_bytes(estimate.peak_bytes)}"
     )
+    if estimate.is_safe:
+        return estimate_summary
     if preview:
         return (
             "Preview unavailable.\n"
-            f"{output_summary}\n"
+            f"{estimate_summary}\n"
             "Increase resolution or reduce bounds."
         )
     return (
         "Conversion unavailable.\n"
-        f"{output_summary}\n"
+        f"{estimate_summary}\n"
         "Increase resolution or reduce bounds."
     )
 

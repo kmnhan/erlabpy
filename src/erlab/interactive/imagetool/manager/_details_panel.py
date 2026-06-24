@@ -681,12 +681,14 @@ class _DetailsPanelController:
             return row
         return None
 
-    def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
+    def _build_metadata_derivation_menu(
+        self, *, include_row_actions: bool = True
+    ) -> QtWidgets.QMenu | None:
         if self._manager.metadata_derivation_list.count() == 0:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)
-        row = self._manager._selected_derivation_row()
+        row = self._manager._selected_derivation_row() if include_row_actions else None
         edit_enabled, edit_reason = (
             self._manager._provenance_edit_controller.can_edit_row(row)
         )
@@ -708,7 +710,9 @@ class _DetailsPanelController:
         menu.addAction(self._manager._metadata_revert_step_action)
         menu.addSeparator()
 
-        selected_code = self._manager._selected_derivation_code()
+        selected_code = (
+            self._manager._selected_derivation_code() if include_row_actions else None
+        )
         self._manager._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._manager._metadata_copy_selected_action)
         clipboard = QtWidgets.QApplication.clipboard()
@@ -732,9 +736,9 @@ class _DetailsPanelController:
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
         item = self._manager.metadata_derivation_list.itemAt(pos)
-        if item is None:
-            return
-        menu = self._manager._build_metadata_derivation_menu()
+        menu = self._manager._build_metadata_derivation_menu(
+            include_row_actions=item is not None
+        )
         if menu is None:
             return
         viewport = self._manager.metadata_derivation_list.viewport()
@@ -967,15 +971,24 @@ class _DetailsPanelController:
                 image_item = (
                     None if tool_window is None else tool_window.preview_imageitem
                 )
-                if image_item is None:
+                if image_item is None or not erlab.interactive.utils.qt_is_valid(
+                    image_item
+                ):
                     self._manager.preview_widget.setVisible(False)
-                else:
-                    self._manager.preview_widget.setPixmap(
-                        image_item.getPixmap().transformed(
-                            QtGui.QTransform().scale(1.0, -1.0)
-                        )
-                    )
-                    self._manager.preview_widget.setVisible(True)
+                    return
+
+                try:
+                    pixmap = image_item.getPixmap()
+                except RuntimeError:
+                    pixmap = None
+                if pixmap is None or pixmap.isNull():
+                    self._manager.preview_widget.setVisible(False)
+                    return
+
+                self._manager.preview_widget.setPixmap(
+                    pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
+                )
+                self._manager.preview_widget.setVisible(True)
 
             case _:
                 self._manager.text_box.setHtml(
@@ -990,7 +1003,16 @@ class _DetailsPanelController:
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
         """Refresh expensive selected-tool metadata after bursty info updates settle."""
+        if not self._tool_metadata_update_relevant(uid):
+            return
         self._manager._tool_metadata_queue.schedule(uid)
+
+    def _tool_metadata_update_relevant(self, uid: str) -> bool:
+        selected_imagetools = self._manager._selected_imagetool_targets()
+        selected_childtools = self._manager._selected_tool_uids()
+        if len(selected_imagetools) + len(selected_childtools) != 1:
+            return False
+        return uid in selected_childtools or uid in selected_imagetools
 
     def _schedule_tool_preview_update(self, uid: str) -> None:
         self._tool_preview_update_generation += 1

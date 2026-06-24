@@ -2,6 +2,7 @@ import pathlib
 import sys
 import types
 import typing
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -112,10 +113,14 @@ def test_manager_console(
         # Select all
         select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
         manager.console._console_widget.execute("tools.selected_data")
-        assert _get_last_output_contents() == [
+        selected_data = _get_last_output_contents()
+        expected_data = [
             wrapper.imagetool.slicer_area._data
             for wrapper in manager._tool_graph.root_wrappers.values()
         ]
+        assert len(selected_data) == len(expected_data)
+        for result, expected in zip(selected_data, expected_data, strict=True):
+            xr.testing.assert_identical(result, expected)
 
         # Test storing with ipython
         accept_dialog(manager.store_action.trigger)
@@ -953,6 +958,57 @@ def test_manager_console_bare_expression_opens_provenance_root(
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_console_child_window_divide_uses_public_nonuniform_dims(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("sample_temp", "eV", "alpha"),
+        coords={
+            "sample_temp": [10.0, 20.5, 22.0],
+            "eV": np.arange(4.0),
+            "alpha": np.arange(5.0),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent = manager._tool_graph.root_wrappers[0]
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_tool = manager.get_imagetool(child_uid)
+        tools = manager_console.ToolsNamespace(manager)
+
+        assert tools[0].data.dims == ("sample_temp", "eV", "alpha")
+        assert tools[0].children[0].data.dims == ("sample_temp", "eV")
+        assert "sample_temp_idx" not in tools[0].data.dims
+        assert "sample_temp_idx" not in tools[0].children[0].data.dims
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = tools[0] / tools[0].children[0]
+
+        assert isinstance(result, manager_console._DerivedDataNamespace)
+        assert not any(
+            "Duplicate dimension names" in str(warning.message) for warning in caught
+        )
+        assert result.data.dims == ("sample_temp", "eV", "alpha")
+        xr.testing.assert_identical(
+            result.data,
+            data / child_tool.slicer_area.displayed_data,
+        )
 
 
 @pytest.mark.parametrize("reserved_name", ["data", "derived", "tools", "data_0"])
@@ -1854,6 +1910,96 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_reload_script_input_uses_public_nested_1d_child_data(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
+        tool_name = "ftool"
+
+    x = np.arange(3.0)
+    eV = np.arange(5.0)
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": x, "eV": eV},
+        name="cut",
+    )
+    shift = xr.DataArray(
+        [0.1, -0.1, 0.0],
+        dims=("x",),
+        coords={"x": x},
+        name="fit_shift",
+    )
+    updated_shift = shift + xr.DataArray(
+        [0.1, 0.1, -0.1],
+        dims=("x",),
+        coords={"x": x},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        intermediate_tool = _ConsoleTreeTool()
+        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        manager._child_node(intermediate_uid).name = "Fit"
+        child_tool = itool(shift, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool, intermediate_uid, show=False
+        )
+        manager._child_node(child_uid).name = "fit_shift"
+
+        tools = manager_console.ToolsNamespace(manager)
+        source = tools[0]
+        shift_handle = source.children[0].children[0]
+        assert shift_handle.data.dims == ("x",)
+        assert child_tool.slicer_area.data.dims == ("x", "stack_dim")
+
+        era_proxy = manager_console._ConsoleModuleProxy(erlab.analysis, "era")
+        shifted = era_proxy.transform.shift(
+            source,
+            -shift_handle,
+            along="eV",
+            shift_coords=True,
+        )
+        assert isinstance(shifted, manager_console._DerivedDataNamespace)
+        spec = shifted._console_provenance_spec(
+            active_name="derived",
+            label="Shift with fit result",
+        )
+        assert spec is not None
+
+        shifted_tool = itool(shifted.data, manager=False, execute=False)
+        assert isinstance(shifted_tool, erlab.interactive.imagetool.ImageTool)
+        shifted_index = manager.add_imagetool(
+            shifted_tool,
+            show=False,
+            provenance_spec=spec,
+        )
+
+        child_tool.slicer_area.replace_source_data(updated_shift)
+
+        rebuilt = manager._rebuild_script_provenance(
+            spec,
+            target_node_uid=manager._tool_graph.root_wrappers[shifted_index].uid,
+        )
+        assert "stack_dim" not in rebuilt.data.dims
+        xr.testing.assert_identical(
+            rebuilt.data,
+            erlab.analysis.transform.shift(
+                data,
+                -updated_shift,
+                along="eV",
+                shift_coords=True,
+            ),
+        )
 
 
 def test_manager_console_structures_erlab_and_xarray_calls(
@@ -3631,7 +3777,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_spec=file_spec,
             displayed_provenance_spec=file_spec,
             display_text="Child node",
+            is_imagetool=False,
             snapshot_token=child_marker,
+            type_badge_text="tool",
         )
         script_input = manager._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")

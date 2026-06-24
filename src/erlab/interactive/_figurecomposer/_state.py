@@ -244,6 +244,7 @@ class FigureExportState(pydantic.BaseModel):
 
 
 class FigureOperationKind(enum.StrEnum):
+    SET_PALETTE = "set_palette"
     PLOT_SLICES = "plot_slices"
     LINE = "line"
     BZ_OVERLAY = "bz_overlay"
@@ -284,6 +285,16 @@ class FigureDataSelectionState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
+class FigureMethodPlotValueState(pydantic.BaseModel):
+    """Source-backed value selected for an ``ax.plot`` method step."""
+
+    source: str
+    kind: typing.Literal["data", "coord"] = "data"
+    name: str | None = None
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
 class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
     """Optional style override for one logical plot_slices panel."""
 
@@ -314,10 +325,19 @@ class FigureOperationState(pydantic.BaseModel):
         default_factory=FigureAxesSelectionState
     )
 
+    palette_name: str = "deep"
+    palette_mode: typing.Literal["named", "colors"] = "named"
+    palette_colors: tuple[str, ...] = ()
+    palette_n_colors: int | None = pydantic.Field(default=None, ge=1)
+    palette_desat: float | None = pydantic.Field(default=None, ge=0.0, le=1.0)
+    palette_color_codes: bool = False
+
     sources: tuple[str, ...] = ()
     map_selections: tuple[FigureDataSelectionState, ...] = ()
     slice_dim: str | None = None
+    slice_values_mode: typing.Literal["manual", "all"] = "manual"
     slice_values: tuple[float, ...] = ()
+    slice_values_thin: int = pydantic.Field(default=1, ge=1)
     slice_width: float | None = None
     slice_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     transpose: bool = False
@@ -354,7 +374,14 @@ class FigureOperationState(pydantic.BaseModel):
     extra_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
     line_source: str | None = None
+    line_label_text: str = ""
     line_labels: tuple[str, ...] = ()
+    line_color_mode: typing.Literal["manual", "coordinate"] = "manual"
+    line_color_coord: str | None = None
+    line_color_cmap: str | None = None
+    line_color_cmap_reverse: bool = False
+    line_color_cmap_trim_lower: float = 0.0
+    line_color_cmap_trim_upper: float = 0.0
     line_colors: tuple[str, ...] = ()
     line_x: str | None = None
     line_y: str | None = None
@@ -403,6 +430,9 @@ class FigureOperationState(pydantic.BaseModel):
     method_args: tuple[typing.Any, ...] = ()
     method_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     method_call_policy: str | None = None
+    method_plot_data_mode: typing.Literal["entered", "from_data"] = "entered"
+    method_plot_x: FigureMethodPlotValueState | None = None
+    method_plot_y: FigureMethodPlotValueState | None = None
     text_values: tuple[str, ...] = ()
     method_transform: typing.Literal[
         "data", "axes", "figure", "dpi", "xaxis", "yaxis", "blend", "custom"
@@ -415,6 +445,14 @@ class FigureOperationState(pydantic.BaseModel):
     trusted: bool = False
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @classmethod
+    def set_palette(cls, *, label: str = "set palette") -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.SET_PALETTE,
+            label=label,
+            axes=FigureAxesSelectionState(axes=()),
+        )
 
     @classmethod
     def plot_slices(

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import typing
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
+import erlab.interactive.colors
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import (
     _axes_code,
@@ -15,6 +16,35 @@ from erlab.interactive._figurecomposer._code import (
     _selection_code,
 )
 from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
+from erlab.interactive._figurecomposer._labels import (
+    attr_value_expression,
+    coord_value_expression,
+    default_label_text,
+    label_context,
+    label_context_field_sources,
+    label_context_original_field_names,
+    label_editor_text,
+    label_field_names,
+    label_fstring_code,
+    label_text_tooltip,
+    label_text_uses_placeholders,
+    labels_from_text,
+    string_literal_expression,
+    update_current_line_label_text,
+)
+from erlab.interactive._figurecomposer._line_colormap import (
+    LINE_COLOR_CMAP_TRIM_MAX,
+    colormap_code_lines,
+    colors_from_values,
+    effective_line_color_cmap,
+    effective_line_color_cmap_trim,
+    effective_line_color_coord,
+    line_color_cmap_trim_control_values,
+    line_colormap_active,
+    numeric_context_field_names,
+    values_from_contexts,
+)
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_DEFAULT_LABEL,
@@ -34,6 +64,10 @@ from erlab.interactive._figurecomposer._line_transform import (
     profile_transform_code_lines,
     transform_profiles,
 )
+from erlab.interactive._figurecomposer._norms import (
+    _cmap_base_and_reverse,
+    _cmap_with_reverse,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -42,7 +76,6 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -51,7 +84,6 @@ from erlab.interactive._figurecomposer._sources import (
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
-    FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
 )
@@ -95,11 +127,15 @@ _LINE_REDUCE_TEXT = {
     "thin": "Thin",
     "both": "Both",
 }
+_LINE_COLOR_MODE_TEXT = {
+    "manual": "Manual",
+    "coordinate": "By coordinate",
+}
 
 _SECTION_TOOLTIPS = {
     "selection": "Choose profile coordinates, qsel selection, and profile extraction.",
     "view": "Choose profile placement, axis direction, and plot limits.",
-    "style": "Set labels, colors, line style, and marker style.",
+    "style": "Set legend text, line appearance, and fill style.",
     "other": "Normalize, scale, and offset extracted profiles.",
 }
 
@@ -131,6 +167,18 @@ def _line_reduce_from_text(
                 "typing.Literal['disabled', 'coarsen', 'thin', 'both']", reduce
             )
     return "disabled"
+
+
+def _line_color_mode_text(mode: str) -> str:
+    return _LINE_COLOR_MODE_TEXT.get(mode, _LINE_COLOR_MODE_TEXT["manual"])
+
+
+def _line_color_mode_from_text(
+    text: str,
+) -> typing.Literal["manual", "coordinate"]:
+    if text == _LINE_COLOR_MODE_TEXT["coordinate"]:
+        return "coordinate"
+    return "manual"
 
 
 def _line_reduce_active(operation: FigureOperationState) -> bool:
@@ -207,6 +255,26 @@ def _available_line_offset_coords(
     return coords
 
 
+def _available_line_color_coords(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> list[str]:
+    entries = _line_data_items_with_sources(tool, operation)
+    if entries:
+        profiles = [profile for profile, _source in entries]
+        sources = [source for _profile, source in entries]
+        names = list(
+            numeric_context_field_names(
+                _line_label_contexts(operation, profiles, sources)
+            )
+        )
+    else:
+        names = []
+    for name in (operation.line_iter_dim, operation.line_color_coord):
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _build_line_editor(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
@@ -222,6 +290,11 @@ def _build_line_editor(
     coordinate_options_match = tool._batch_options_match(
         operation, lambda target: _available_line_coordinate_names(tool, target)
     )
+    tool._add_form_section(
+        selection_layout,
+        "Data",
+        object_name="figureComposerLineSelectionDataSection",
+    )
     coordinate_mixed = tool._batch_is_mixed(operation, lambda target: target.line_x)
     coordinate_combo = tool._optional_name_combo(
         coordinate_options,
@@ -235,7 +308,7 @@ def _build_line_editor(
     coordinate_combo.setObjectName("figureComposerProfileCoordinateCombo")
     tool._add_form_row(
         selection_layout,
-        "Profile coordinate",
+        "Coordinate",
         coordinate_combo,
         "Coordinate along each profile.\n"
         "Automatic: use the only remaining dimension.\n"
@@ -264,7 +337,7 @@ def _build_line_editor(
     values_combo.setObjectName("figureComposerProfileValuesCombo")
     tool._add_form_row(
         selection_layout,
-        "Profile values",
+        "Values",
         values_combo,
         "Values plotted from the selected profile.\n"
         "Data array values: use the selected data itself.\n"
@@ -290,12 +363,17 @@ def _build_line_editor(
     )
     tool._add_form_row(
         selection_layout,
-        "Data selection",
+        "Selection",
         selection_edit,
         "Selection kwargs passed to qsel.\n"
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
+    tool._add_form_section(
+        selection_layout,
+        "Profiles",
+        object_name="figureComposerLineSelectionProfilesSection",
+    )
     iter_dim_options = [
         "",
         *_available_source_dims(tool._source_data, (operation.line_source or "",)),
@@ -376,53 +454,63 @@ def _build_line_editor(
     )
     _add_line_limit_controls(tool, operation, view_page, view_layout)
 
+    tool._add_form_section(
+        style_layout,
+        "Legend",
+        object_name="figureComposerLineStyleLegendSection",
+    )
     labels_text, labels_mixed = tool._batch_text(
         operation,
-        lambda target: target.line_labels,
-        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+        label_editor_text,
+        str,
     )
     labels_edit = tool._line_edit(labels_text, parent=style_page)
     tool._apply_mixed_line_edit(labels_edit, labels_mixed)
     labels_edit.setObjectName("figureComposerLineLabelsEdit")
     tool._connect_line_edit_finished(
         labels_edit,
-        lambda text: _update_current_line_labels(tool, text),
+        lambda text: update_current_line_label_text(tool, text),
     )
-    tool._add_form_row(
-        style_layout,
-        "Legend labels",
-        labels_edit,
-        "Optional legend labels.\n"
-        "Use one value for every profile, or one value per profile.",
-    )
-
-    colors_text, colors_mixed = tool._batch_text(
+    label_entries = _line_data_items_with_sources(tool, operation)
+    label_contexts = _line_label_contexts(
         operation,
-        lambda target: target.line_colors,
-        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+        [profile for profile, _source in label_entries],
+        [source for _profile, source in label_entries],
     )
-    colors_widget = _ColorListEditorWidget(
-        _string_tuple_from_text(colors_text), parent=style_page
-    )
-    colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
-    if colors_mixed:
-        colors_widget.setMixedPlaceholder("(multiple values)")
-    tool._connect_value_signal(
-        colors_widget,
-        colors_widget.colorsChanged,
-        lambda colors: tuple(colors),
-        lambda colors: tool._update_current_operation(line_colors=colors),
-        unchanged_mixed=colors_widget.batchUnchanged,
+    labels_widget = legend_label_input_widget(
+        labels_edit,
+        label_contexts,
+        item_name="profile",
+        button_object_name="figureComposerLineLabelsHelpButton",
+        parent=style_page,
     )
     tool._add_form_row(
         style_layout,
-        "Colors",
-        colors_widget,
-        "Optional Matplotlib colors.\n"
-        "Use one value for every profile, or one value per profile.",
+        "Labels",
+        labels_widget,
+        label_text_tooltip(label_contexts, item_name="profile"),
     )
 
+    tool._add_form_section(
+        style_layout,
+        "Color",
+        object_name="figureComposerLineStyleColorSection",
+    )
+    _add_line_color_controls(tool, operation, style_page, style_layout)
+
+    tool._add_form_section(
+        style_layout,
+        "Line",
+        object_name="figureComposerLineStyleLineSection",
+    )
     _add_line_style_controls(tool, operation, style_page, style_layout)
+
+    tool._add_form_section(
+        style_layout,
+        "Fill",
+        object_name="figureComposerLineStyleFillSection",
+    )
+    _add_line_fill_controls(tool, operation, style_page, style_layout)
 
     add_line_transform_controls(
         tool,
@@ -436,8 +524,236 @@ def _build_line_editor(
         ("selection", "Selection", selection_page),
         ("view", "View", view_page),
         ("style", "Style", style_page),
-        ("other", "Other", other_page),
+        ("other", "Transform", other_page),
     ]
+
+
+def _add_line_color_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    row = QtWidgets.QWidget(page)
+    row_layout = QtWidgets.QVBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(4)
+
+    mode_mixed = tool._batch_is_mixed(operation, lambda target: target.line_color_mode)
+    mode_combo = tool._combo(
+        list(_LINE_COLOR_MODE_TEXT.values()),
+        None if mode_mixed else _line_color_mode_text(operation.line_color_mode),
+        lambda text: tool._update_current_operation_rebuild(
+            line_color_mode=_line_color_mode_from_text(text)
+        ),
+        parent=page,
+        mixed=mode_mixed,
+    )
+    mode_combo.setObjectName("figureComposerLineColorModeCombo")
+    mode_combo.setToolTip(
+        "Manual: use typed Matplotlib colors.\n"
+        "By coordinate: map one numeric coordinate value per profile through a "
+        "colormap."
+    )
+    row_layout.addWidget(mode_combo)
+
+    if not mode_mixed and line_colormap_active(operation):
+        _add_line_coordinate_color_controls(tool, operation, page, row_layout)
+    else:
+        _add_line_manual_color_controls(tool, operation, page, row_layout)
+
+    tool._add_form_row(
+        layout,
+        "Mode",
+        row,
+        "Choose manual colors or color profiles from coordinate values.",
+    )
+
+
+def _add_line_manual_color_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QVBoxLayout,
+) -> None:
+    colors_text, colors_mixed = tool._batch_text(
+        operation,
+        lambda target: target.line_colors,
+        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+    )
+    colors_widget = _ColorListEditorWidget(
+        _string_tuple_from_text(colors_text), parent=page
+    )
+    colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
+    if colors_mixed:
+        colors_widget.setMixedPlaceholder("(multiple values)")
+    colors_widget.setToolTip(
+        "Optional Matplotlib colors.\n"
+        "Use one value for every profile, or one value per profile."
+    )
+    tool._connect_value_signal(
+        colors_widget,
+        colors_widget.colorsChanged,
+        lambda colors: tuple(colors),
+        lambda colors: tool._update_current_operation(
+            line_color_mode="manual",
+            line_colors=colors,
+        ),
+        unchanged_mixed=colors_widget.batchUnchanged,
+    )
+    layout.addWidget(colors_widget)
+
+
+def _add_line_coordinate_color_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QVBoxLayout,
+) -> None:
+    coord_options = _available_line_color_coords(tool, operation)
+    coord_options_match = tool._batch_options_match(
+        operation, lambda target: _available_line_color_coords(tool, target)
+    )
+    coord_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_coord
+    )
+    coord_combo = tool._optional_name_combo(
+        coord_options,
+        None
+        if coord_mixed
+        else effective_line_color_coord(operation, operation.line_iter_dim),
+        "Choose coordinate",
+        lambda value: tool._update_current_operation(line_color_coord=value),
+        parent=page,
+        mixed=coord_mixed,
+        enabled=coord_options_match,
+    )
+    coord_combo.setObjectName("figureComposerLineColorCoordCombo")
+    coord_combo.setToolTip(
+        "Numeric scalar coordinate used to color each profile.\n"
+        "One profile per coordinate is selected by default."
+    )
+
+    cmap_row = QtWidgets.QWidget(page)
+    cmap_layout = QtWidgets.QHBoxLayout(cmap_row)
+    cmap_layout.setContentsMargins(0, 0, 0, 0)
+    cmap_layout.setSpacing(6)
+
+    cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_row)
+    cmap_combo.setObjectName("figureComposerLineColorCmapCombo")
+    cmap_combo.setToolTip("Colormap used for coordinate-colored profiles.")
+    cmap_combo.ensure_populated()
+    cmap_base, cmap_reverse = _cmap_base_and_reverse(operation.line_color_cmap)
+    cmap_combo.setCurrentText(cmap_base)
+
+    reverse_check = QtWidgets.QCheckBox("Reverse", cmap_row)
+    reverse_check.setObjectName("figureComposerLineColorCmapReverseCheck")
+    reverse_check.setToolTip("Reverse the selected line colormap.")
+    reverse_check.setChecked(operation.line_color_cmap_reverse or cmap_reverse)
+
+    tool._connect_editor_signal(
+        cmap_combo,
+        cmap_combo.activated,
+        lambda _index: _update_current_line_color_cmap(
+            tool, cmap_combo.currentText(), reverse_check.isChecked()
+        ),
+    )
+    tool._connect_editor_signal(
+        reverse_check,
+        reverse_check.stateChanged,
+        lambda state: _update_current_line_color_cmap(
+            tool,
+            cmap_combo.currentText(),
+            QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked,
+        ),
+    )
+
+    cmap_layout.addWidget(cmap_combo, 1)
+    cmap_layout.addWidget(reverse_check)
+
+    trim_lower_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_cmap_trim_lower
+    )
+    trim_upper_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_color_cmap_trim_upper
+    )
+    trim_lower, trim_upper = line_color_cmap_trim_control_values(operation)
+    trim_row = QtWidgets.QWidget(page)
+    trim_layout = QtWidgets.QHBoxLayout(trim_row)
+    trim_layout.setContentsMargins(0, 0, 0, 0)
+    trim_layout.setSpacing(6)
+    trim_tooltip = "Skip fractions from the low and high ends of the colormap."
+    trim_label = QtWidgets.QLabel("Trim", trim_row)
+    trim_label.setToolTip(trim_tooltip)
+    lower_spin = _line_color_trim_spin(
+        "figureComposerLineColorCmapTrimLowerSpin",
+        0.0 if trim_lower_mixed else trim_lower,
+        trim_tooltip,
+        trim_row,
+    )
+    upper_spin = _line_color_trim_spin(
+        "figureComposerLineColorCmapTrimUpperSpin",
+        0.0 if trim_upper_mixed else trim_upper,
+        trim_tooltip,
+        trim_row,
+    )
+    tool._connect_value_signal(
+        lower_spin,
+        lower_spin.valueChanged,
+        float,
+        lambda value: tool._update_current_operation(line_color_cmap_trim_lower=value),
+    )
+    tool._connect_value_signal(
+        upper_spin,
+        upper_spin.valueChanged,
+        float,
+        lambda value: tool._update_current_operation(line_color_cmap_trim_upper=value),
+    )
+    trim_layout.addWidget(trim_label)
+    trim_layout.addWidget(QtWidgets.QLabel("Low", trim_row))
+    trim_layout.addWidget(
+        tool._mixed_value_widget(lower_spin, mixed=trim_lower_mixed, parent=page)
+    )
+    trim_layout.addWidget(QtWidgets.QLabel("High", trim_row))
+    trim_layout.addWidget(
+        tool._mixed_value_widget(upper_spin, mixed=trim_upper_mixed, parent=page)
+    )
+    trim_layout.addStretch(1)
+
+    layout.addWidget(coord_combo)
+    layout.addWidget(cmap_row)
+    layout.addWidget(trim_row)
+
+
+def _line_color_trim_spin(
+    object_name: str,
+    value: float,
+    tooltip: str,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QDoubleSpinBox:
+    spin = QtWidgets.QDoubleSpinBox(parent)
+    spin.setObjectName(object_name)
+    spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
+    spin.setDecimals(2)
+    spin.setSingleStep(0.05)
+    spin.setKeyboardTracking(False)
+    spin.setValue(value)
+    spin.setToolTip(tooltip)
+    line_edit = spin.lineEdit()
+    if line_edit is not None:
+        line_edit.setToolTip(tooltip)
+    return spin
+
+
+def _update_current_line_color_cmap(
+    tool: FigureComposerTool, base: str, reverse: bool
+) -> None:
+    if tool._updating_controls:
+        return
+    tool._update_current_operation(
+        line_color_cmap=_cmap_with_reverse(base, False),
+        line_color_cmap_reverse=reverse,
+    )
 
 
 def _line_limit_update_callback(
@@ -652,7 +968,7 @@ def _add_line_style_controls(
     )
     tool._add_compound_form_row(
         layout,
-        "Line",
+        "Stroke",
         (
             (
                 "Style",
@@ -727,7 +1043,7 @@ def _add_line_style_controls(
     )
     marker_inherited_color = (
         operation.line_colors[0]
-        if operation.line_colors
+        if operation.line_colors and not line_colormap_active(operation)
         else line_kw_text(operation, "color", "c") or None
     )
     marker_face_edit = _ColorLineEditWidget(
@@ -781,7 +1097,7 @@ def _add_line_style_controls(
     )
     tool._add_compound_form_row(
         layout,
-        "Marker colors",
+        "Colors",
         (
             (
                 "Face",
@@ -797,6 +1113,13 @@ def _add_line_style_controls(
         "Marker face and edge colors for the extracted profiles.",
     )
 
+
+def _add_line_fill_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+) -> None:
     gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
     gradient_check = tool._check_box(
         operation.gradient,
@@ -814,97 +1137,29 @@ def _add_line_style_controls(
     )
 
 
-def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
-    editable = tool._editable_operations()
-    if not editable:
-        return
-    labels = _string_tuple_from_text(text)
-    selected_ids = {operation.operation_id for _index, operation in editable}
-    original_operations = {
-        operation.operation_id: operation for _index, operation in editable
-    }
-    operations = list(tool._recipe.operations)
-    newly_labeled_groups: dict[
-        tuple[tuple[tuple[int, int], ...], tuple[str, ...], str],
-        tuple[int, FigureOperationState],
-    ] = {}
-    for index, operation in enumerate(tuple(operations)):
-        if operation.operation_id not in selected_ids:
-            continue
-        updated = operation.model_copy(update={"line_labels": labels})
-        operations[index] = updated
-        original_operation = original_operations.get(operation.operation_id)
-        if original_operation is None or not labels or original_operation.line_labels:
-            continue
-        key = _line_axes_key(updated)
-        previous = newly_labeled_groups.get(key)
-        if previous is None or index > previous[0]:
-            newly_labeled_groups[key] = (index, updated)
-
-    for index, operation in sorted(
-        newly_labeled_groups.values(), key=lambda item: item[0], reverse=True
-    ):
-        legend_operation = FigureOperationState.method(
-            family=FigureMethodFamily.AXES,
-            name="legend",
-            label="Legend",
-            axes=operation.axes.model_copy(deep=True),
-        )
-        if not _has_later_legend_step(operations, index, legend_operation):
-            operations.insert(index + 1, legend_operation)
-    tool._recipe = tool._recipe.model_copy(update={"operations": tuple(operations)})
-    tool._refresh_operation_list()
-    tool._sync_axes_selector()
-    tool._update_step_action_buttons()
-    tool._refresh_step_section_button_texts()
-    current = tool._current_operation()
-    tool._update_source_status(current[1] if current is not None else None)
-    _render_preview(tool)
-    tool.sigInfoChanged.emit()
-
-
-def _line_axes_key(
-    operation: FigureOperationState,
-) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...], str]:
-    return operation.axes.axes, operation.axes.axes_ids, operation.axes.expression
-
-
-def _has_later_legend_step(
-    operations: list[FigureOperationState],
-    index: int,
-    operation: FigureOperationState,
-) -> bool:
-    axes = operation.axes.model_dump()
-    return any(
-        later.kind == FigureOperationKind.METHOD
-        and later.method_family == FigureMethodFamily.AXES
-        and later.method_name == "legend"
-        and later.axes.model_dump() == axes
-        for later in operations[index + 1 :]
-    )
-
-
 def _render_line(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    line_items = _line_data_items(tool, operation)
-    if not line_items:
+    line_entries = _line_data_items_with_sources(tool, operation)
+    if not line_entries:
         return
+    line_items = [profile for profile, _source in line_entries]
+    sources = [source for _profile, source in line_entries]
     axes = _iter_axes(
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     )
     if operation.line_placement == "one_per_axis":
-        _render_one_profile_per_axis(tool, operation, axes, line_items)
+        _render_one_profile_per_axis(tool, operation, axes, line_items, sources)
         return
     line_items = transform_profiles(operation, line_items)
-    styles = _line_styles_for_profiles(operation, len(line_items))
+    styles = _line_styles_for_profiles(operation, line_items, sources)
     for axis in axes:
         for line_data, kwargs in zip(line_items, styles, strict=True):
+            coordinate = _line_coordinate(line_data, operation.line_x)
             if operation.line_values_axis == "x":
-                coordinate = _line_coordinate(line_data, operation.line_x)
                 line = axis.plot(line_data.values, coordinate.values, **kwargs)[0]
             else:
-                line = line_data.plot(ax=axis, x=operation.line_x, **kwargs)[0]
+                line = axis.plot(coordinate.values, line_data.values, **kwargs)[0]
             _apply_line_gradient_fill(axis, line, operation)
         _apply_line_axes_limits(axis, operation)
 
@@ -914,13 +1169,15 @@ def _render_one_profile_per_axis(
     operation: FigureOperationState,
     axes: tuple[matplotlib.axes.Axes, ...],
     profiles: list[xr.DataArray],
+    sources: list[str | None],
 ) -> None:
     if len(axes) == 1 and len(profiles) > 1:
         axes = axes * len(profiles)
     elif len(profiles) == 1 and len(axes) > 1:
         profiles = profiles * len(axes)
+        sources = sources * len(axes)
     profiles = transform_profiles(operation, profiles)
-    styles = _line_styles_for_profiles(operation, len(profiles))
+    styles = _line_styles_for_profiles(operation, profiles, sources)
     for axis, profile, kwargs in zip(axes, profiles, styles, strict=True):
         coordinate = _line_coordinate(profile, operation.line_x)
         if operation.line_values_axis == "x":
@@ -973,9 +1230,20 @@ def _set_axis_ylim(axis: matplotlib.axes.Axes, limit: FigureLimit) -> None:
 def _line_data_items(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[xr.DataArray]:
+    return [
+        profile for profile, _source in _line_data_items_with_sources(tool, operation)
+    ]
+
+
+def _line_data_items_with_sources(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> list[tuple[xr.DataArray, str | None]]:
     if operation.map_selections:
         line_items = [
-            selected.squeeze(drop=True)
+            (
+                selected.squeeze(drop=True),
+                tool._source_display_name(selection.source),
+            )
             for selection in operation.map_selections
             if (selected := _selected_data(tool._source_data, selection)) is not None
         ]
@@ -992,19 +1260,22 @@ def _line_data_items(
         line_data = _reduced_line_iter_data(line_data, operation)
         if operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
             line_items = [
-                item.squeeze(drop=True)
+                (
+                    item.squeeze(drop=True),
+                    tool._source_display_name(operation.line_source),
+                )
                 for item in line_data.transpose(operation.line_iter_dim, ...)
             ]
         else:
-            line_items = [line_data]
+            line_items = [(line_data, tool._source_display_name(operation.line_source))]
     else:
         return []
 
-    profiles: list[xr.DataArray] = []
-    for line_data in line_items:
+    profiles: list[tuple[xr.DataArray, str | None]] = []
+    for line_data, source in line_items:
         if line_data.ndim != 1:
             continue
-        profiles.append(line_data)
+        profiles.append((line_data, source))
     return profiles
 
 
@@ -1091,11 +1362,66 @@ def _line_coordinate(line_data: xr.DataArray, dim: str | None) -> xr.DataArray:
     return line_data[line_data.dims[0]]
 
 
-def _line_styles_for_profiles(
-    operation: FigureOperationState, count: int
+def _line_label_contexts(
+    operation: FigureOperationState,
+    profiles: Sequence[xr.DataArray],
+    sources: Sequence[str | None],
 ) -> tuple[dict[str, typing.Any], ...]:
-    labels = _line_text_values(operation.line_labels, count, default=None)
-    colors = _line_text_values(operation.line_colors, count, default=None)
+    return tuple(
+        label_context(
+            profile,
+            index=index,
+            source=source,
+            dim=operation.line_iter_dim,
+            value=_line_label_value(profile, operation.line_iter_dim),
+        )
+        for index, (profile, source) in enumerate(zip(profiles, sources, strict=True))
+    )
+
+
+def _line_label_value(profile: xr.DataArray, dim: str | None) -> typing.Any:
+    if dim is None or dim not in profile.coords:
+        return None
+    return profile.coords[dim].values
+
+
+def _line_labels_for_profiles(
+    operation: FigureOperationState,
+    profiles: Sequence[xr.DataArray],
+    sources: Sequence[str | None],
+) -> tuple[str | None, ...]:
+    label_text = operation.line_label_text
+    contexts = _line_label_contexts(operation, profiles, sources)
+    return labels_from_text(
+        label_text,
+        contexts,
+        literal_values=operation.line_labels,
+        default=None,
+        item_name="profile",
+    )
+
+
+def _line_styles_for_profiles(
+    operation: FigureOperationState,
+    profiles: Sequence[xr.DataArray],
+    sources: Sequence[str | None],
+) -> tuple[dict[str, typing.Any], ...]:
+    labels = _line_labels_for_profiles(operation, profiles, sources)
+    count = len(profiles)
+    if line_colormap_active(operation):
+        contexts = _line_label_contexts(operation, profiles, sources)
+        values = values_from_contexts(
+            contexts,
+            effective_line_color_coord(operation, operation.line_iter_dim),
+            item_name="profile",
+        )
+        colors = colors_from_values(
+            values,
+            effective_line_color_cmap(operation),
+            trim=effective_line_color_cmap_trim(operation),
+        )
+    else:
+        colors = _line_text_values(operation.line_colors, count, default=None)
     style_kwargs = _line_profile_style_kwargs(operation)
     styles: list[dict[str, typing.Any]] = []
     for label, color in zip(labels, colors, strict=True):
@@ -1239,12 +1565,15 @@ def _regular_line_code(
     transform_profiles_in_code: bool = True,
 ) -> list[str]:
     lines: list[str] = []
-    profiles = _line_data_items(tool, operation)
+    entries = _line_data_items_with_sources(tool, operation)
+    profiles = [profile for profile, _source in entries]
+    sources = [source for _profile, source in entries]
     if _selected_axes_count(tool, operation) == 1:
         return _regular_line_single_axis_code(
             tool,
             operation,
             profiles=profiles,
+            sources=sources,
             transform_profiles_in_code=transform_profiles_in_code,
         )
     if transform_profiles_in_code:
@@ -1253,6 +1582,8 @@ def _regular_line_code(
     loop_values = ["profiles"]
     style_lines, kwargs_text = _line_style_code(
         operation,
+        profiles=profiles,
+        sources=sources,
         loop_names=loop_names,
         loop_values=loop_values,
     )
@@ -1262,22 +1593,13 @@ def _regular_line_code(
     coordinate = _line_coordinate_code(operation)
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "        ")
-        )
     else:
-        call_args = "ax=ax"
-        if operation.line_x:
-            call_args += f", x={operation.line_x!r}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool, operation, f"profile.plot({call_args})", "ax", "        "
-            )
-        )
+        call_args = f"{coordinate}, profile"
+    if kwargs_text:
+        call_args += f", {kwargs_text}"
+    lines.extend(
+        _line_plot_code(tool, operation, f"ax.plot({call_args})", "ax", "        ")
+    )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
     return lines
@@ -1288,6 +1610,7 @@ def _regular_line_single_axis_code(
     operation: FigureOperationState,
     *,
     profiles: list[xr.DataArray],
+    sources: list[str | None],
     transform_profiles_in_code: bool,
 ) -> list[str]:
     lines: list[str] = []
@@ -1297,6 +1620,8 @@ def _regular_line_single_axis_code(
     loop_values = ["profiles"]
     style_lines, kwargs_text = _line_style_code(
         operation,
+        profiles=profiles,
+        sources=sources,
         loop_names=loop_names,
         loop_values=loop_values,
     )
@@ -1306,28 +1631,19 @@ def _regular_line_single_axis_code(
     lines.extend(_loop_header_lines(loop_names, loop_values))
     if operation.line_values_axis == "x":
         call_args = f"profile, {coordinate}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool,
-                operation,
-                f"{axis_code}.plot({call_args})",
-                axis_code,
-                "    ",
-            )
-        )
     else:
-        call_args = f"ax={axis_code}"
-        if operation.line_x:
-            call_args += f", x={operation.line_x!r}"
-        if kwargs_text:
-            call_args += f", {kwargs_text}"
-        lines.extend(
-            _line_plot_code(
-                tool, operation, f"profile.plot({call_args})", axis_code, "    "
-            )
+        call_args = f"{coordinate}, profile"
+    if kwargs_text:
+        call_args += f", {kwargs_text}"
+    lines.extend(
+        _line_plot_code(
+            tool,
+            operation,
+            f"{axis_code}.plot({call_args})",
+            axis_code,
+            "    ",
         )
+    )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
     return lines
@@ -1336,21 +1652,76 @@ def _regular_line_single_axis_code(
 def _line_style_code(
     operation: FigureOperationState,
     *,
+    profiles: Sequence[xr.DataArray],
+    sources: Sequence[str | None],
     loop_names: list[str],
     loop_values: list[str],
+    sources_expr: str = "profile_sources",
 ) -> tuple[list[str], str]:
     lines: list[str] = []
     kwargs = [_code_kwargs(_line_profile_style_kwargs(operation))]
-    if operation.line_labels:
-        if len(operation.line_labels) == 1:
-            kwargs.append(f"label={operation.line_labels[0]!r}")
+    labels = _line_labels_for_profiles(operation, profiles, sources)
+    if any(labels):
+        contexts = _line_label_contexts(operation, profiles, sources)
+        if label_text_uses_placeholders(operation.line_label_text, contexts):
+            profile_expr = loop_values[loop_names.index("profile")]
+            fields = label_field_names(operation.line_label_text)
+            if {"index", "number"} & fields:
+                _append_loop_value(
+                    loop_names,
+                    loop_values,
+                    "index",
+                    f"range(len({profile_expr}))",
+                )
+            if "source" in fields:
+                _append_loop_value(
+                    loop_names,
+                    loop_values,
+                    "source",
+                    sources_expr
+                    if sources_expr != "profile_sources"
+                    else _line_sources_code(sources, profile_expr),
+                )
+            kwargs.append(
+                "label="
+                + _line_label_fstring_code(
+                    operation,
+                    contexts,
+                    fields,
+                )
+            )
+        elif len(labels) == 1 or all(label == labels[0] for label in labels[1:]):
+            kwargs.append(f"label={labels[0]!r}")
         else:
             loop_names.append("label")
-            loop_values.append(repr(list(operation.line_labels)))
+            loop_values.append(repr(list(labels)))
             kwargs.append("label=label")
 
-    line_colors = operation.line_colors
-    if line_colors:
+    if line_colormap_active(operation):
+        coord = effective_line_color_coord(operation, operation.line_iter_dim)
+        if coord is None:
+            raise ValueError("Choose a coordinate to color profiles")
+        values_from_contexts(
+            _line_label_contexts(operation, profiles, sources),
+            coord,
+            item_name="profile",
+        )
+        values_code = (
+            "["
+            f"float({coord_value_expression(coord)}) "
+            f"for profile in {loop_values[loop_names.index('profile')]}"
+            "]"
+        )
+        lines.extend(
+            colormap_code_lines(
+                values_code,
+                effective_line_color_cmap(operation),
+                trim=effective_line_color_cmap_trim(operation),
+            )
+        )
+        _append_loop_value(loop_names, loop_values, "color", "line_colors")
+        kwargs.append("color=color")
+    elif line_colors := operation.line_colors:
         if len(line_colors) == 1:
             kwargs.append(f"color={line_colors[0]!r}")
         else:
@@ -1358,6 +1729,63 @@ def _line_style_code(
             loop_values.append(repr(list(line_colors)))
             kwargs.append("color=color")
     return lines, ", ".join(item for item in kwargs if item)
+
+
+def _append_loop_value(
+    loop_names: list[str], loop_values: list[str], name: str, value: str
+) -> None:
+    if name in loop_names:
+        return
+    loop_names.append(name)
+    loop_values.append(value)
+
+
+def _line_sources_code(sources: Sequence[str | None], profile_expr: str) -> str:
+    if len(sources) == 1:
+        return f"{list(sources)!r} * len({profile_expr})"
+    return repr(list(sources))
+
+
+def _line_label_fstring_code(
+    operation: FigureOperationState,
+    contexts: Sequence[dict[str, typing.Any]],
+    fields: set[str],
+) -> str:
+    field_expressions: dict[str, str] = {}
+    if "index" in fields:
+        field_expressions["index"] = "index"
+    if "number" in fields:
+        field_expressions["number"] = "index + 1"
+    if "source" in fields:
+        field_expressions["source"] = "source"
+    if "dim" in fields and operation.line_iter_dim is not None:
+        field_expressions["dim"] = string_literal_expression(operation.line_iter_dim)
+    if "value" in fields and operation.line_iter_dim is not None:
+        field_expressions["value"] = coord_value_expression(operation.line_iter_dim)
+
+    field_sources = label_context_field_sources(contexts)
+    original_names = label_context_original_field_names(contexts)
+    for context in contexts:
+        for name in context:
+            if name in {"index", "number", "source", "dim", "value"}:
+                continue
+            if name in fields:
+                original_name = original_names.get(name, name)
+                if not original_name:
+                    raise ValueError(
+                        f"Legend label placeholder {{{name}}} is not consistently "
+                        "available from the same coordinate or attribute"
+                    )
+                if field_sources.get(name) == "attr":
+                    field_expressions[name] = attr_value_expression(original_name)
+                elif field_sources.get(name) == "coord":
+                    field_expressions[name] = coord_value_expression(original_name)
+                elif field_sources.get(name) == "mixed":
+                    raise ValueError(
+                        f"Legend label placeholder {{{name}}} is not consistently "
+                        "a coordinate or attribute for these profiles"
+                    )
+    return label_fstring_code(operation.line_label_text, field_expressions)
 
 
 def _one_profile_per_axis_code(
@@ -1369,7 +1797,9 @@ def _one_profile_per_axis_code(
     profile_count: int | None = None,
 ) -> list[str]:
     lines: list[str] = []
-    profiles = _line_data_items(tool, operation)
+    entries = _line_data_items_with_sources(tool, operation)
+    profiles = [profile for profile, _source in entries]
+    sources = [source for _profile, source in entries]
     if axes_count is None:
         axes_count = _selected_axes_count(tool, operation)
     if profile_count is None:
@@ -1379,20 +1809,23 @@ def _one_profile_per_axis_code(
             tool,
             operation,
             profiles=profiles,
+            sources=sources,
             transform_profiles_in_code=transform_profiles_in_code,
         )
     broadcast_lines, axes_expr, profiles_expr = _one_profile_per_axis_iterables_code(
         tool, operation, axes_count=axes_count, profile_count=profile_count
     )
     lines.extend(broadcast_lines)
+    style_profiles = profiles
+    style_sources = sources
+    if profile_count == 1 and axes_count is not None and axes_count > 1:
+        style_profiles = profiles * axes_count
+        style_sources = sources * axes_count
     if transform_profiles_in_code:
-        transform_profiles = profiles
-        if profile_count == 1 and axes_count is not None and axes_count > 1:
-            transform_profiles = profiles * axes_count
         lines.extend(
             profile_transform_code_lines(
                 operation,
-                profiles=transform_profiles,
+                profiles=style_profiles,
                 input_name=profiles_expr,
             )
         )
@@ -1401,6 +1834,8 @@ def _one_profile_per_axis_code(
     loop_values = [axes_expr, profiles_expr]
     style_lines, kwargs_text = _line_style_code(
         operation,
+        profiles=style_profiles,
+        sources=style_sources,
         loop_names=loop_names,
         loop_values=loop_values,
     )
@@ -1426,6 +1861,7 @@ def _one_axis_many_profiles_code(
     operation: FigureOperationState,
     *,
     profiles: list[xr.DataArray],
+    sources: list[str | None],
     transform_profiles_in_code: bool,
 ) -> list[str]:
     lines: list[str] = []
@@ -1435,6 +1871,8 @@ def _one_axis_many_profiles_code(
     loop_values = ["profiles"]
     style_lines, kwargs_text = _line_style_code(
         operation,
+        profiles=profiles,
+        sources=sources,
         loop_names=loop_names,
         loop_values=loop_values,
     )
@@ -1619,6 +2057,11 @@ def _seeded_line_operation_defaults(
                 current_operation.slice_width
             )
         updates["line_iter_dim"] = current_operation.slice_dim
+        updates["line_label_text"] = default_label_text(
+            current_operation.slice_dim,
+            current_operation.slice_values,
+            fallback="profile {number}",
+        )
     if not updates.get("line_x"):
         updates["line_x"] = _default_profile_x_dim(tool, source_name, current_operation)
     return updates
@@ -1722,6 +2165,9 @@ def _section_summary(
                 return "values on x"
             return "all axes"
         case "style":
+            if line_colormap_active(operation):
+                coord = effective_line_color_coord(operation, operation.line_iter_dim)
+                return f"by {coord}" if coord else "by coordinate"
             if operation.line_colors:
                 return (
                     operation.line_colors[0]
@@ -1737,9 +2183,12 @@ def _section_summary(
 def _required_imports(
     _tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
+    imports: list[str] = []
     if operation.gradient:
-        return ("import erlab.plotting as eplt",)
-    return ()
+        imports.append("import erlab.plotting as eplt")
+    if line_colormap_active(operation):
+        imports.append("import matplotlib.colors as mcolors")
+    return tuple(imports)
 
 
 SPEC = OperationSpec(

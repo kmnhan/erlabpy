@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import contextlib
 import functools
@@ -24,6 +26,7 @@ import erlab
 import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._toolbar_dialogs
+import erlab.interactive._qt_state as _qt_state
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
@@ -85,12 +88,15 @@ from erlab.interactive._figurecomposer._rendering import (
     _render_preview,
     _rendered_output_figure,
 )
+from erlab.interactive._figurecomposer._source_inspector import (
+    SourceInspectorWidget,
+    source_metadata_tooltip,
+)
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
     _public_source_data,
     _source_display_label,
-    _source_display_tooltip,
     _source_duplicate_labels,
     _source_label,
     _source_name,
@@ -143,8 +149,14 @@ if typing.TYPE_CHECKING:
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
+_EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS = 300
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
+_FIGURE_RESIZE_HISTORY_DELAY_MS = 250
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
+_PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
+_PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
+_PERSISTED_PREVIEW_CACHE_SIZE = QtCore.QSize(192, 144)
+_PERSISTED_PREVIEW_CACHE_MAX_BYTES = 96_000
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
@@ -181,11 +193,34 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
     cut_requested = QtCore.Signal()
     paste_requested = QtCore.Signal()
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
+    rows_reordered = QtCore.Signal(object, object, object)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        model = self.model()
+        if model is None:
+            raise RuntimeError("Figure Composer operation list has no item model")
+        model.rowsMoved.connect(self._model_rows_moved)
+
+    def _operation_ids(self) -> tuple[str, ...]:
+        operation_ids: list[str] = []
+        for row in range(self.count()):
+            item = self.item(row)
+            operation_id = (
+                None if item is None else item.data(QtCore.Qt.ItemDataRole.UserRole)
+            )
+            if not isinstance(operation_id, str):
+                return ()
+            operation_ids.append(operation_id)
+        return tuple(operation_ids)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
@@ -203,6 +238,30 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _model_rows_moved(self, *_args: object) -> None:
+        operation_ids = self._operation_ids()
+        if not operation_ids or len(set(operation_ids)) != len(operation_ids):
+            return
+        current_item = self.currentItem()
+        current_id = (
+            None
+            if current_item is None
+            else current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+        )
+        selected_ids = frozenset(
+            operation_id
+            for item in self.selectedItems()
+            if isinstance(
+                operation_id := item.data(QtCore.Qt.ItemDataRole.UserRole),
+                str,
+            )
+        )
+        self.rows_reordered.emit(
+            operation_ids,
+            selected_ids,
+            current_id if isinstance(current_id, str) else None,
+        )
 
 
 def _step_clipboard_payload_text(
@@ -322,6 +381,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._options_getter: Callable[[], AppOptions] | None = None
         self._updating_controls = False
         self._rendering = False
+        self._auto_redraw_dirty = False
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
@@ -341,6 +401,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_timer = QtCore.QTimer(self)
+        self._figure_resize_history_timer.setSingleShot(True)
+        self._figure_resize_history_timer.setInterval(_FIGURE_RESIZE_HISTORY_DELAY_MS)
+        self._figure_resize_history_timer.timeout.connect(
+            self._flush_pending_figure_resize_history_write
+        )
+        self._figure_resize_history_state: FigureRecipeState | None = None
+        self._figure_resize_history_source_data: dict[str, xr.DataArray] | None = None
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
         self._preview_pixmap_generation = 0
         self._preview_thumbnail_cache: dict[
@@ -360,6 +429,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_callback: Callable[[str], bool] | None = None
         self._source_refresh_many_callback: Callable[[Sequence[str]], int] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
+        self._source_inspector_target: str | None = None
+        self._updating_source_selection = False
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
@@ -551,7 +622,44 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
-        _render_preview(self, show_window=True)
+        self._redraw_plot(show_window=True)
+
+    def _auto_redraw_enabled(self) -> bool:
+        check = getattr(self, "auto_redraw_check", None)
+        return not isinstance(check, QtWidgets.QCheckBox) or check.isChecked()
+
+    def _redraw_plot(
+        self, *, show_window: bool | None = None, emit_info: bool = False
+    ) -> None:
+        self._cancel_preview_render_update()
+        if show_window is None:
+            _render_preview(self)
+        else:
+            _render_preview(self, show_window=show_window)
+        self._auto_redraw_dirty = False
+        if emit_info:
+            self.sigInfoChanged.emit()
+
+    def _maybe_redraw_plot(self, *, show_window: bool | None = None) -> bool:
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
+            return False
+        self._redraw_plot(show_window=show_window)
+        return True
+
+    @QtCore.Slot(bool)
+    def _auto_redraw_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._cancel_preview_render_update()
+            return
+        if self._auto_redraw_dirty:
+            self._redraw_plot(emit_info=True)
+
+    @QtCore.Slot()
+    def _redraw_plot_requested(self) -> None:
+        self._redraw_plot(emit_info=True)
 
     def _request_show_figure_window(self, *, activate: bool) -> None:
         if self._closing:
@@ -586,7 +694,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_controls:
             return
         if self._set_recipe_figsize_from_canvas(
-            width_inches, height_inches, draw=False, emit_info=False
+            width_inches,
+            height_inches,
+            draw=False,
+            emit_info=False,
+            history="deferred",
         ):
             self._queue_figure_resize_render()
 
@@ -674,6 +786,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         self._update_source_status(current_operation[1] if current_operation else None)
+        self._refresh_source_inspector()
         if current_operation is not None and (
             current_operation[1].operation_id in changed_operation_ids
         ):
@@ -844,6 +957,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             emit_info=emit_info,
         )
 
+    def _sync_figure_window_to_recipe_setup(self) -> None:
+        window = self._figure_window
+        if window is None or not erlab.interactive.utils.qt_is_valid(window):
+            return
+        window.resize_to_setup(self._recipe.setup)
+        with contextlib.suppress(RuntimeError):
+            window.canvas.flush_events()
+
     def _set_recipe_figsize_from_canvas(
         self,
         width_inches: float,
@@ -851,6 +972,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         draw: bool,
         emit_info: bool,
+        history: typing.Literal["immediate", "deferred"] = "immediate",
     ) -> bool:
         setup = self._recipe.setup
         if math.isclose(width_inches, setup.figsize[0], abs_tol=0.005) and math.isclose(
@@ -874,7 +996,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.canvas.draw()
         if emit_info:
             self.sigInfoChanged.emit()
-        self._write_state()
+        if history == "deferred":
+            self._queue_figure_resize_history_write()
+        else:
+            self._write_state()
         return True
 
     def _show_subplot_adjust_dialog(self) -> None:
@@ -929,6 +1054,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._flush_pending_editor_commits()
+        self._flush_pending_figure_resize_history_write()
         self._closing = True
         self._cancel_queued_show_figure_window()
         self._figure_resize_render_generation += 1
@@ -1037,7 +1163,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.move_operation_down_button.clicked.connect(
             self._move_current_operation_down
         )
-        self.show_figure_button = QtWidgets.QPushButton("Show Plot Window", root)
+        self.show_figure_button = QtWidgets.QPushButton("Show Plot", root)
         self.show_figure_button.setObjectName("figureComposerShowFigureButton")
         self.show_figure_button.setToolTip(
             "Open or raise the separate Matplotlib plot window."
@@ -1056,6 +1182,27 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         output_action_layout.addWidget(copy_button)
         output_action_layout.addWidget(export_button)
         output_action_layout.addStretch(1)
+        self.auto_redraw_check = QtWidgets.QCheckBox("Auto redraw", root)
+        self.auto_redraw_check.setObjectName("figureComposerAutoRedrawCheck")
+        self.auto_redraw_check.setToolTip(
+            "Automatically redraw the plot after recipe changes."
+        )
+        self.auto_redraw_check.setChecked(True)
+        self.auto_redraw_check.toggled.connect(self._auto_redraw_toggled)
+        output_action_layout.addWidget(self.auto_redraw_check)
+        self.redraw_plot_button = QtWidgets.QToolButton(root)
+        self.redraw_plot_button.setObjectName("figureComposerRedrawPlotButton")
+        self.redraw_plot_button.setAccessibleName("Redraw Plot")
+        self.redraw_plot_button.setToolTip("Redraw and update the plot now.")
+        self.redraw_plot_button.setIcon(
+            erlab.interactive.utils.qtawesome.icon("ph.arrow-clockwise")
+        )
+        self.redraw_plot_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self.redraw_plot_button.setAutoRaise(True)
+        self.redraw_plot_button.clicked.connect(self._redraw_plot_requested)
+        output_action_layout.addWidget(self.redraw_plot_button)
         action_layout.addLayout(output_action_layout)
         root_layout.addLayout(action_layout)
         root_layout.addWidget(self.editor_tabs, 1)
@@ -1088,6 +1235,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.context_menu_requested.connect(
             self._show_operation_context_menu
         )
+        self.operation_list.rows_reordered.connect(self._operation_list_reordered)
         self._operation_list_viewport = self.operation_list.viewport()
         if self._operation_list_viewport is not None:
             self._operation_list_viewport.installEventFilter(self)
@@ -1105,9 +1253,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.operation_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.operation_list.setToolTip(
-            "Checked steps run from top to bottom to build the figure."
         )
         self.recipe_splitter.addWidget(self.operation_list)
 
@@ -1182,7 +1327,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.setUniformRowHeights(True)
         self.source_list.setAlternatingRowColors(True)
         self.source_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.source_list.currentItemChanged.connect(
+            self._source_list_current_item_changed
         )
         self.source_list.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1210,6 +1358,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
         sources_layout.addWidget(self.source_list, 1)
+        self.source_inspector = SourceInspectorWidget(self.step_sources_page)
+        sources_layout.addWidget(self.source_inspector)
 
         self.target_axes_page = QtWidgets.QWidget(self.step_editor_stack)
         self.target_axes_page.setObjectName("figureComposerTargetAxesPage")
@@ -1275,10 +1425,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         setup_layout.setVerticalSpacing(6)
         setup_layout.setColumnStretch(2, 1)
         setup_layout.setColumnStretch(4, 1)
-        self.nrows_spin = QtWidgets.QSpinBox(layout_page)
-        self.nrows_spin.setRange(1, 12)
-        self.ncols_spin = QtWidgets.QSpinBox(layout_page)
-        self.ncols_spin.setRange(1, 12)
+        self.nrows_spin = erlab.interactive.utils.BetterSpinBox(
+            layout_page, integer=True, minimum=1
+        )
+        self.ncols_spin = erlab.interactive.utils.BetterSpinBox(
+            layout_page, integer=True, minimum=1
+        )
         self.width_spin = QtWidgets.QDoubleSpinBox(layout_page)
         self.width_spin.setRange(0.25, 100.0)
         self.width_spin.setDecimals(3)
@@ -1300,6 +1452,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.dpi_spin.setRange(1.0, 10000.0)
         self.dpi_spin.setDecimals(1)
         self.dpi_spin.setSingleStep(10.0)
+        for spinbox in (
+            self.nrows_spin,
+            self.ncols_spin,
+            self.width_spin,
+            self.height_spin,
+            self.width_mm_spin,
+            self.height_mm_spin,
+            self.dpi_spin,
+        ):
+            spinbox.setKeyboardTracking(False)
         self.layout_combo = QtWidgets.QComboBox(layout_page)
         self.layout_combo.addItems(
             ["default", "constrained", "compressed", "tight", "none"]
@@ -1764,6 +1926,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
         self._refresh_source_controls()
+        self._refresh_source_inspector()
 
     def _clear_source_list_widgets(self) -> None:
         for row in range(self.source_list.topLevelItemCount()):
@@ -1834,6 +1997,31 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             shape_label.setPalette(palette)
         item.setSizeHint(_SOURCE_LIST_SHAPE_COLUMN, shape_label.sizeHint())
         self.source_list.setItemWidget(item, _SOURCE_LIST_SHAPE_COLUMN, shape_label)
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, QtWidgets.QTreeWidgetItem)
+    def _source_list_current_item_changed(
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None,
+    ) -> None:
+        if self._updating_source_selection:
+            return
+        source_name = self._source_name_from_list_item(current)
+        if source_name is None:
+            return
+        self._source_inspector_target = source_name
+        self._refresh_source_inspector()
+
+    @staticmethod
+    def _source_name_from_list_item(
+        item: QtWidgets.QTreeWidgetItem | None,
+    ) -> str | None:
+        if item is None:
+            return None
+        source_name = item.data(
+            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
+        )
+        return source_name if isinstance(source_name, str) else None
 
     def _source_refresh_button(self, name: str) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.source_list)
@@ -2058,6 +2246,66 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
             )
             self._set_source_list_row_used(item, source_name in used_sources)
+        self._refresh_source_inspector()
+
+    def _default_source_inspector_target(self) -> str | None:
+        current = self._current_operation()
+        source_states = self._source_by_name()
+        if current is not None:
+            for source_name in self._selected_sources_for_operation(current[1]):
+                if source_name in self._source_data or source_name in source_states:
+                    return source_name
+        source_name = self._source_name_from_list_item(self.source_list.currentItem())
+        if source_name is not None:
+            return source_name
+        if self._recipe.primary_source in self._source_data:
+            return self._recipe.primary_source
+        if self._recipe.sources:
+            return self._recipe.sources[0].name
+        return next(iter(self._source_data), None)
+
+    def _refresh_source_inspector(self) -> None:
+        inspector = getattr(self, "source_inspector", None)
+        if not isinstance(inspector, SourceInspectorWidget):
+            return
+        source_states = self._source_by_name()
+        target = self._source_inspector_target
+        if target is None:
+            target = self._default_source_inspector_target()
+        if (
+            target is not None
+            and target not in self._source_data
+            and target not in source_states
+        ):
+            target = self._default_source_inspector_target()
+        self._source_inspector_target = target
+        self._select_source_list_row_silent(target)
+        current = self._current_operation()
+        operation = None if current is None else current[1]
+        operation_sources = (
+            () if operation is None else self._selected_sources_for_operation(operation)
+        )
+        inspector.set_context(
+            source_name=target,
+            source_state=None if target is None else source_states.get(target),
+            data=None if target is None else self._source_data.get(target),
+            operation_source_names=operation_sources,
+        )
+
+    def _select_source_list_row_silent(self, source_name: str | None) -> None:
+        self._updating_source_selection = True
+        try:
+            if source_name is None:
+                self.source_list.clearSelection()
+                self.source_list.setCurrentIndex(QtCore.QModelIndex())
+                return
+            for row in range(self.source_list.topLevelItemCount()):
+                item = self.source_list.topLevelItem(row)
+                if self._source_name_from_list_item(item) == source_name:
+                    self.source_list.setCurrentItem(item)
+                    return
+        finally:
+            self._updating_source_selection = False
 
     def _rebuild_axes_grid(self) -> None:
         self.axes_selector.set_grid(
@@ -2354,7 +2602,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if render_error is not None:
                     text = f"{text} (render error)"
                 item = QtWidgets.QListWidgetItem(text)
-                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                item.setFlags(
+                    item.flags()
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                    | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+                )
                 item.setCheckState(
                     QtCore.Qt.CheckState.Checked
                     if operation.enabled
@@ -2715,7 +2968,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _batch_options_match(
         self,
         operation: FigureOperationState,
-        options_getter: Callable[[FigureOperationState], Sequence[str]],
+        options_getter: Callable[[FigureOperationState], Sequence[typing.Any]],
     ) -> bool:
         editable = self._editable_operations()
         if len(editable) <= 1:
@@ -2752,17 +3005,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updater: Callable[[int, FigureOperationState], FigureOperationState],
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
-    ) -> None:
+    ) -> bool:
         editable = self._editable_operations()
         if not editable:
-            return
-        self._update_operations_by_ids(
+            return False
+        return self._update_operations_by_ids(
             (operation.operation_id for _index, operation in editable),
             updater,
             render=render,
+            defer_render=defer_render,
             rebuild_editor=rebuild_editor,
             defer_editor_rebuild=defer_editor_rebuild,
             sync_axes=sync_axes,
@@ -2774,6 +3029,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updater: Callable[[int, FigureOperationState], FigureOperationState],
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
@@ -2784,11 +3040,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         operations = list(self._recipe.operations)
         changed = False
+        preview_affected = False
         for index, operation in enumerate(operations):
             if operation.operation_id not in operation_id_set:
                 continue
             updated = updater(index, operation)
-            changed = changed or updated != operation
+            operation_changed = updated != operation
+            changed = changed or operation_changed
+            if operation_changed and self._operation_change_affects_preview(
+                operation, updated
+            ):
+                preview_affected = True
             operations[index] = updated
         if not changed:
             return False
@@ -2807,9 +3069,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        if render:
-            _render_preview(self)
-            self.sigInfoChanged.emit()
+        self._notify_operation_changed(
+            preview_affected=render and preview_affected,
+            defer_render=defer_render,
+        )
         self._write_state()
         return True
 
@@ -2819,6 +3082,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operation: FigureOperationState,
         *,
         render: bool = True,
+        defer_render: bool = False,
         rebuild_editor: bool = False,
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
@@ -2842,10 +3106,48 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        if render:
-            _render_preview(self)
-            self.sigInfoChanged.emit()
+        self._notify_operation_changed(
+            preview_affected=render
+            and self._operation_change_affects_preview(previous_operation, operation),
+            defer_render=defer_render,
+        )
         self._write_state()
+
+    @staticmethod
+    def _operation_change_affects_preview(
+        previous: FigureOperationState,
+        updated: FigureOperationState,
+    ) -> bool:
+        return previous.enabled or updated.enabled
+
+    def _notify_operation_changed(
+        self, *, preview_affected: bool, defer_render: bool = False
+    ) -> None:
+        if preview_affected and self._notify_operation_preview_changed(
+            defer=defer_render
+        ):
+            return
+        self.sigInfoChanged.emit()
+
+    def _notify_operation_preview_changed(self, *, defer: bool = False) -> bool:
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
+            self.sigInfoChanged.emit()
+            return True
+        if defer or self._active_editor_signal_widget is not None:
+            delay_ms = (
+                _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS
+                if self._active_editor_signal_widget is not None
+                else _PREVIEW_RENDER_UPDATE_DELAY_MS
+            )
+            self._queue_preview_render_update(delay_ms=delay_ms)
+            return False
+        self._cancel_preview_render_update()
+        self._redraw_plot()
+        self.sigInfoChanged.emit()
+        return True
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
         if self._updating_controls:
@@ -2862,15 +3164,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             rebuild_editor=True,
         )
 
-    def _queue_preview_render_update(self) -> None:
+    def _queue_preview_render_update(
+        self, *, delay_ms: int = _PREVIEW_RENDER_UPDATE_DELAY_MS
+    ) -> None:
         if self._closing:
+            return
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._cancel_preview_render_update()
+            self._mark_preview_pixmap_stale()
             return
         self._preview_render_update_generation += 1
         generation = self._preview_render_update_generation
         self._preview_render_update_pending = True
         erlab.interactive.utils.single_shot(
             self,
-            _PREVIEW_RENDER_UPDATE_DELAY_MS,
+            delay_ms,
             functools.partial(self._run_queued_preview_render_update, generation),
         )
 
@@ -2888,10 +3197,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             return
         self._preview_render_update_pending = False
+        if not self._auto_redraw_enabled():
+            self._auto_redraw_dirty = True
+            self._mark_preview_pixmap_stale()
+            return
         if self._rendering:
             self._queue_preview_render_update()
             return
-        _render_preview(self)
+        self._redraw_plot()
         self.sigInfoChanged.emit()
 
     def _update_step_action_buttons(self) -> None:
@@ -2925,6 +3238,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     @QtCore.Slot(int)
     @QtCore.Slot(str)
+    @QtCore.Slot(object)
     def _setup_controls_changed(self, _value: object | None = None) -> None:
         if self._updating_controls:
             return
@@ -2991,7 +3305,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3107,7 +3421,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3142,11 +3456,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3169,11 +3481,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3207,11 +3517,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._replace_operation(
             index,
             operation.model_copy(update={"axes": selection}),
-            render=False,
+            defer_render=True,
             sync_axes=False,
         )
-        self.sigInfoChanged.emit()
-        self._queue_preview_render_update()
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
     @QtCore.Slot()
@@ -3223,6 +3531,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 operation_id = self._operation_id_for_item(item)
                 if operation_id is not None:
                     self._set_selected_operation_ids_silent({operation_id})
+        self._source_inspector_target = None
         self._sync_axes_selector()
         self._update_operation_editor()
 
@@ -3377,7 +3686,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_data = dict(source_data)
         self._mark_preview_pixmap_stale()
 
+    def _clear_pending_figure_resize_history_write(self) -> None:
+        self._figure_resize_history_timer.stop()
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_state = None
+        self._figure_resize_history_source_data = None
+
     def _reset_history_stack(self) -> None:
+        self._clear_pending_figure_resize_history_write()
         self._prev_states.clear()
         self._next_states.clear()
         self._prev_source_data_states.clear()
@@ -3386,23 +3702,65 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._prev_source_data_states.append(self._source_data_history_state())
         self._update_history_actions()
 
+    @contextlib.contextmanager
+    def _history_suppressed(self):
+        self._flush_pending_figure_resize_history_write()
+        with super()._history_suppressed():
+            yield
+
+    def _append_history_state(
+        self,
+        state: FigureRecipeState | None = None,
+        source_data: dict[str, xr.DataArray] | None = None,
+    ) -> bool:
+        curr_state = self.tool_status if state is None else state
+        curr_source_data = (
+            self._source_data_history_state() if source_data is None else source_data
+        )
+        last_state = self._prev_states[-1] if self._prev_states else None
+        if self._history_state_equal(last_state, curr_state):
+            return False
+        self._prev_states.append(curr_state)
+        self._prev_source_data_states.append(curr_source_data)
+        self._next_states.clear()
+        self._next_source_data_states.clear()
+        self._update_history_actions()
+        return True
+
+    def _queue_figure_resize_history_write(self) -> None:
+        if not self._write_history:
+            return
+        self._figure_resize_history_pending = True
+        self._figure_resize_history_state = self.tool_status
+        self._figure_resize_history_source_data = self._source_data_history_state()
+        self._figure_resize_history_timer.start()
+
+    @QtCore.Slot()
+    def _flush_pending_figure_resize_history_write(self) -> bool:
+        if not self._figure_resize_history_pending:
+            return False
+        self._figure_resize_history_timer.stop()
+        state = self._figure_resize_history_state
+        source_data = self._figure_resize_history_source_data
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_state = None
+        self._figure_resize_history_source_data = None
+        if not self._write_history or state is None or source_data is None:
+            return False
+        return self._append_history_state(state, source_data)
+
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
-        curr_state = self.tool_status
-        last_state = self._prev_states[-1] if self._prev_states else None
-        if not self._history_state_equal(last_state, curr_state):
-            self._prev_states.append(curr_state)
-            self._prev_source_data_states.append(self._source_data_history_state())
-            self._next_states.clear()
-            self._next_source_data_states.clear()
-            self._update_history_actions()
+        self._flush_pending_figure_resize_history_write()
+        self._append_history_state()
 
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._flush_pending_figure_resize_history_write()
         curr_state = self.tool_status
         source_data = self._source_data_history_state()
         if self._prev_states:
@@ -3416,6 +3774,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def undo(self) -> None:
         """Undo the most recent recorded Figure Composer recipe change."""
+        self._flush_pending_figure_resize_history_write()
         if not self.undoable:
             return
         with self._history_suppressed():
@@ -3428,6 +3787,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def redo(self) -> None:
         """Redo the most recently undone Figure Composer recipe change."""
+        self._flush_pending_figure_resize_history_write()
         if not self.redoable:
             return
         with self._history_suppressed():
@@ -3476,8 +3836,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._sync_axes_selector()
                     self._update_source_status(updated)
                 self._refresh_step_section_button_texts()
-                _render_preview(self)
-                self.sigInfoChanged.emit()
+                if self._operation_change_affects_preview(operation, updated):
+                    self._notify_operation_preview_changed()
                 self._write_state()
                 return
 
@@ -3556,7 +3916,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(self._source_display_name(name) for name in names)
 
     def _source_tooltip(self, name: str) -> str:
-        return _source_display_tooltip(self._source_by_name().get(name), name)
+        return source_metadata_tooltip(
+            self._source_by_name().get(name), name, self._source_data.get(name)
+        )
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
         if self._recipe.setup.layout_mode == "gridspec":
@@ -3784,7 +4146,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3854,7 +4216,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"operations": operations})
         self._refresh_operation_list()
         self.operation_list.setCurrentRow(len(operations) - 1)
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4002,6 +4364,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             updates["line_source"] = rename_map.get(
                 operation.line_source, operation.line_source
             )
+        if operation.method_plot_x is not None:
+            updates["method_plot_x"] = operation.method_plot_x.model_copy(
+                update={
+                    "source": rename_map.get(
+                        operation.method_plot_x.source,
+                        operation.method_plot_x.source,
+                    )
+                }
+            )
+        if operation.method_plot_y is not None:
+            updates["method_plot_y"] = operation.method_plot_y.model_copy(
+                update={
+                    "source": rename_map.get(
+                        operation.method_plot_y.source,
+                        operation.method_plot_y.source,
+                    )
+                }
+            )
         if operation.hv_overlay_source is not None:
             updates["hv_overlay_source"] = rename_map.get(
                 operation.hv_overlay_source, operation.hv_overlay_source
@@ -4061,6 +4441,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             }
         )
         self._refresh_source_list()
+        if renamed_source_data:
+            self.sigDataChanged.emit()
         self._finish_operation_structure_change(
             {operation.operation_id for operation in pasted_operations},
             pasted_operations[0].operation_id,
@@ -4108,6 +4490,62 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             {operation.operation_id for operation in duplicates},
             duplicates[0].operation_id,
         )
+
+    @QtCore.Slot(object, object, object)
+    def _operation_list_reordered(
+        self,
+        operation_ids: object,
+        selected_ids: object,
+        current_id: object,
+    ) -> None:
+        if not isinstance(operation_ids, (tuple, list)):
+            self._refresh_operation_list()
+            return
+        ordered_ids = tuple(
+            operation_id
+            for operation_id in operation_ids
+            if isinstance(operation_id, str)
+        )
+        operation_by_id = {
+            operation.operation_id: operation for operation in self._recipe.operations
+        }
+        if (
+            len(ordered_ids) != len(operation_ids)
+            or len(ordered_ids) != len(operation_by_id)
+            or set(ordered_ids) != set(operation_by_id)
+        ):
+            self._refresh_operation_list()
+            return
+        current_order = tuple(
+            operation.operation_id for operation in self._recipe.operations
+        )
+        if ordered_ids == current_order:
+            return
+        selected_id_set: set[str] = set()
+        if isinstance(selected_ids, (set, frozenset, tuple, list)):
+            selected_id_set = {
+                operation_id
+                for operation_id in selected_ids
+                if isinstance(operation_id, str) and operation_id in operation_by_id
+            }
+        current_operation_id = (
+            current_id
+            if isinstance(current_id, str) and current_id in operation_by_id
+            else None
+        )
+        if not selected_id_set and current_operation_id is not None:
+            selected_id_set = {current_operation_id}
+        if current_operation_id is None:
+            current_operation_id = next(
+                iter(selected_id_set),
+                ordered_ids[0] if ordered_ids else None,
+            )
+
+        operations = tuple(
+            operation_by_id[operation_id] for operation_id in ordered_ids
+        )
+        self._recipe = self._recipe.model_copy(update={"operations": operations})
+        self._finish_operation_structure_change(selected_id_set, current_operation_id)
 
     def _move_current_operation(self, offset: int) -> None:
         indices = self._selected_operation_indices()
@@ -4165,7 +4603,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     break
         self._sync_axes_selector()
         self._update_operation_editor()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4184,7 +4622,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._apply_recipe_to_controls()
         self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -4207,7 +4645,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -4240,7 +4678,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -4263,7 +4701,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -4937,6 +5375,39 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return "\n".join(textwrap.wrap(tooltip, width=58, break_long_words=False))
 
     @staticmethod
+    def _add_form_section(
+        layout: QtWidgets.QFormLayout,
+        title: str,
+        *,
+        object_name: str | None = None,
+    ) -> QtWidgets.QWidget:
+        """Add a lightweight native section header to a form layout."""
+        section = QtWidgets.QWidget(layout.parentWidget())
+        if object_name:
+            section.setObjectName(object_name)
+        section.setProperty("figureComposerSectionHeader", True)
+        section_layout = QtWidgets.QHBoxLayout(section)
+        top_margin = 8 if layout.rowCount() else 0
+        section_layout.setContentsMargins(0, top_margin, 0, 2)
+        section_layout.setSpacing(6)
+
+        label = QtWidgets.QLabel(title, section)
+        label.setProperty("figureComposerSectionHeaderLabel", True)
+        label_font = label.font()
+        label_font.setBold(True)
+        label.setFont(label_font)
+        line = QtWidgets.QFrame(section)
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        if object_name:
+            line.setObjectName(f"{object_name}Line")
+
+        section_layout.addWidget(label)
+        section_layout.addWidget(line, 1)
+        layout.addRow(section)
+        return section
+
+    @staticmethod
     def _add_form_row(
         layout: QtWidgets.QFormLayout,
         label: str,
@@ -5045,6 +5516,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = status.model_copy(update={"operations": operations})
         self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
+        self._sync_figure_window_to_recipe_setup()
+        if getattr(self, "_restoring_from_dataset", False):
+            self._mark_preview_pixmap_stale()
+            return
         _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
@@ -5124,6 +5599,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return self._source_reference_payload(self._recipe.primary_source)
         return self._source_reference_payload(variable_name)
 
+    @classmethod
+    def _missing_saved_tool_data_reference_optional(
+        cls,
+        variable_name: str,
+        reference: Mapping[str, typing.Any],
+        ds: xr.Dataset,
+    ) -> bool:
+        del ds
+        return (
+            variable_name != erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            and reference.get("kind") == "manager_node"
+        )
+
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self.tool_data}
         for source_name, data in self._source_data.items():
@@ -5136,10 +5624,32 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             items[source_name] = data
         return items
 
+    def _persistence_reference_node_uids(self) -> frozenset[str]:
+        return frozenset(
+            source.node_uid
+            for source in self._recipe.sources
+            if source.node_uid is not None
+        )
+
+    def _saved_tool_status(self) -> FigureRecipeState:
+        self._flush_pending_figure_resize_history_write()
+        status = self.tool_status
+        allowed_uids = self._save_tool_data_reference_node_uids
+        if allowed_uids is None:
+            return status
+        sources = tuple(
+            source.model_copy(update={"node_uid": None, "node_snapshot_token": None})
+            if source.node_uid is not None and source.node_uid not in allowed_uids
+            else source
+            for source in status.sources
+        )
+        if sources == status.sources:
+            return status
+        return status.model_copy(update={"sources": sources})
+
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
-        del ds
         source_data = dict(self._source_data)
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
         changed = False
@@ -5155,10 +5665,93 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_data[source.name] = source_data_item
             changed = True
         if not changed:
+            self._restore_persisted_preview_cache(ds)
+            self._queue_post_restore_redraw_if_needed(ds)
             return
         self.set_source_data(source_data)
         self._apply_recipe_to_controls()
-        _render_preview(self, show_window=False)
+        self._restore_persisted_preview_cache(ds)
+        self._queue_post_restore_redraw_if_needed(ds)
+
+    @staticmethod
+    def _saved_tool_window_visible(ds: xr.Dataset) -> bool:
+        state = _qt_state.parse_qt_window_state(ds.attrs.get("tool_window_state"))
+        if state is not None:
+            return state.visible
+        return bool(ds.attrs.get("tool_visible", False))
+
+    def _queue_post_restore_redraw_if_needed(self, ds: xr.Dataset) -> None:
+        if not self._saved_tool_window_visible(ds) or not self._auto_redraw_enabled():
+            return
+        erlab.interactive.utils.single_shot(
+            self,
+            0,
+            functools.partial(self._redraw_plot, show_window=True),
+        )
+
+    def _persisted_preview_cache_pixmap(self) -> QtGui.QPixmap | None:
+        preview = self._preview_pixmap_cache
+        if preview is None or preview.isNull():
+            return None
+        if (
+            preview.width() > _PERSISTED_PREVIEW_CACHE_SIZE.width()
+            or preview.height() > _PERSISTED_PREVIEW_CACHE_SIZE.height()
+        ):
+            return preview.scaled(
+                _PERSISTED_PREVIEW_CACHE_SIZE,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        return QtGui.QPixmap(preview)
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        preview = self._persisted_preview_cache_pixmap()
+        if preview is None:
+            return ds
+
+        data = QtCore.QByteArray()
+        buffer = QtCore.QBuffer(data)
+        if not buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
+            return ds
+        try:
+            if not preview.save(buffer, "PNG"):
+                return ds
+        finally:
+            buffer.close()
+
+        png_bytes = data.data()
+        if len(png_bytes) > _PERSISTED_PREVIEW_CACHE_MAX_BYTES:
+            return ds
+
+        ds = ds.copy(deep=False)
+        ds.attrs[_PERSISTED_PREVIEW_CACHE_ATTR] = base64.b64encode(png_bytes).decode(
+            "ascii"
+        )
+        ds.attrs[_PERSISTED_PREVIEW_CACHE_STALE_ATTR] = bool(self._preview_pixmap_stale)
+        return ds
+
+    def _restore_persisted_preview_cache(self, ds: xr.Dataset) -> None:
+        encoded = ds.attrs.get(_PERSISTED_PREVIEW_CACHE_ATTR)
+        if not isinstance(encoded, str) or not encoded:
+            return
+        try:
+            png_bytes = base64.b64decode(encoded.encode("ascii"), validate=True)
+        except (binascii.Error, ValueError):
+            return
+        if len(png_bytes) > _PERSISTED_PREVIEW_CACHE_MAX_BYTES:
+            return
+        preview = QtGui.QPixmap()
+        if not preview.loadFromData(png_bytes, "PNG"):
+            return
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = bool(
+            ds.attrs.get(_PERSISTED_PREVIEW_CACHE_STALE_ATTR, False)
+        )
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        self._restore_persisted_preview_cache(ds)
 
     @property
     def preview_pixmap(self) -> QtGui.QPixmap | None:
@@ -5353,10 +5946,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._source_data.pop(source.name, None)
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data.update(source_data)
         self._refresh_source_list()
         self._update_source_section()
-        _render_preview(self)
+        self._maybe_redraw_plot()

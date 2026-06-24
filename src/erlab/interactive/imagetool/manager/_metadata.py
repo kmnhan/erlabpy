@@ -19,13 +19,18 @@ class _ManagerToolMetadataQueue:
         self,
         parent: QtCore.QObject,
         flush_callback: Callable[[set[str]], None],
+        *,
+        idle_scheduler: (
+            Callable[[tuple[str, str], Callable[[], None]], None] | None
+        ) = None,
     ) -> None:
         self._flush_callback = flush_callback
+        self._idle_scheduler = idle_scheduler
         self._pending_uids: set[str] = set()
         self._timer = QtCore.QTimer(parent)
         self._timer.setSingleShot(True)
         self._timer.setInterval(300)
-        self._timer.timeout.connect(self.flush)
+        self._timer.timeout.connect(self._request_flush)
 
     @property
     def pending_uids(self) -> frozenset[str]:
@@ -40,6 +45,12 @@ class _ManagerToolMetadataQueue:
         self._pending_uids = set()
         if pending:
             self._flush_callback(pending)
+
+    def _request_flush(self) -> None:
+        if self._idle_scheduler is None:
+            self.flush()
+            return
+        self._idle_scheduler(("tool-metadata", "flush"), self.flush)
 
     def set_interval(self, msec: int) -> None:
         self._timer.setInterval(msec)

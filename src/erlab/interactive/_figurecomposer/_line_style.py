@@ -178,6 +178,7 @@ def update_current_line_kw(
     *,
     aliases: tuple[str, ...] = (),
     clear_stale_cmap: bool = False,
+    clear_stale_line_colormap: bool = False,
 ) -> None:
     if tool._updating_controls:
         return
@@ -193,6 +194,8 @@ def update_current_line_kw(
         updates: dict[str, typing.Any] = {"line_kw": line_kw}
         if clear_stale_cmap:
             updates["cmap"] = None
+        if clear_stale_line_colormap:
+            updates["line_color_mode"] = "manual"
         return operation.model_copy(update=updates)
 
     tool._update_operations(update_operation)

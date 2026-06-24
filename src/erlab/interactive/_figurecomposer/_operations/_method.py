@@ -73,7 +73,16 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
+from erlab.interactive._figurecomposer._code import (
+    _axes_code,
+    _axes_sequence_code,
+    _needs_squeeze_drop,
+)
+from erlab.interactive._figurecomposer._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+    ComboBoxDataControlAdapter,
+)
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_valid_axes_ids,
@@ -90,7 +99,6 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
     StepSection,
     _empty_source_editor,
-    _empty_source_names,
     _uses_no_source_section,
 )
 from erlab.interactive._figurecomposer._rendering import (
@@ -98,9 +106,15 @@ from erlab.interactive._figurecomposer._rendering import (
     _iter_axes,
     _live_layout_axes,
 )
+from erlab.interactive._figurecomposer._source_inspector import source_value_tooltip
+from erlab.interactive._figurecomposer._sources import (
+    _public_source_data,
+    _valid_source_variable,
+)
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
     FigureMethodFamily,
+    FigureMethodPlotValueState,
     FigureOperationKind,
     FigureOperationState,
 )
@@ -128,11 +142,17 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
+from erlab.interactive._figurecomposer._tick_params import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+    TICK_PARAMS_DEFAULT_KWARGS,
+    TickParamsEditorWidget,
+)
 from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
+    import xarray as xr
     from matplotlib.axes import Axes
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -174,6 +194,7 @@ class MethodControlKind(enum.StrEnum):
     BOOL_ARG_COMBO = "bool_arg_combo"
     KWARG_COMBO = "kwarg_combo"
     BOOL_KWARG_COMBO = "bool_kwarg_combo"
+    OPTIONAL_BOOL_KWARG_COMBO = "optional_bool_kwarg_combo"
     INT_KWARG = "int_kwarg"
     FLOAT_KWARG = "float_kwarg"
     SUBPLOTS_ADJUST_KWARG = "subplots_adjust_kwarg"
@@ -183,6 +204,7 @@ class MethodControlKind(enum.StrEnum):
     FLOAT_PAIR_KWARG = "float_pair_kwarg"
     TRANSFORM = "transform"
     COLOR_KWARG = "color_kwarg"
+    TICK_PARAMS = "tick_params"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -461,6 +483,26 @@ def _bool_kwarg_combo(
     )
 
 
+def _optional_bool_kwarg_combo(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    none_label: str = "Default",
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        options=("True", "False"),
+        default=None,
+        none_label=none_label,
+    )
+
+
 def _int_kwarg(
     label: str,
     key: str,
@@ -683,6 +725,83 @@ _FONT_WEIGHT_OPTIONS = (
     "extra bold",
     "black",
 )
+
+
+def _label_subplots_text_controls(
+    object_name_prefix: str,
+    *,
+    loc_default: str,
+    include_generated_label_controls: bool,
+) -> tuple[MethodControlSpec, ...]:
+    controls = [
+        _kwarg_combo(
+            "Location",
+            "loc",
+            _LABEL_LOCATION_OPTIONS,
+            loc_default,
+            f"{object_name_prefix}LocCombo",
+            "Location of the anchored subplot label.",
+        ),
+        _float_pair_kwarg(
+            "Offset",
+            "offset",
+            f"{object_name_prefix}OffsetEdit",
+            "Label offset in display points as dx, dy.",
+            default=(0.0, 0.0),
+        ),
+        _text_kwarg(
+            "Prefix",
+            "prefix",
+            f"{object_name_prefix}PrefixEdit",
+            "Text prepended to each subplot label.",
+            default="",
+        ),
+        _text_kwarg(
+            "Suffix",
+            "suffix",
+            f"{object_name_prefix}SuffixEdit",
+            "Text appended to each subplot label.",
+            default="",
+        ),
+    ]
+    if include_generated_label_controls:
+        controls.extend(
+            (
+                _bool_kwarg_combo(
+                    "Numeric labels",
+                    "numeric",
+                    f"{object_name_prefix}NumericCombo",
+                    "Use numbers instead of letters for generated labels.",
+                    default=False,
+                ),
+                _bool_kwarg_combo(
+                    "Capital letters",
+                    "capital",
+                    f"{object_name_prefix}CapitalCombo",
+                    "Use capital letters for generated alphabetic labels.",
+                    default=False,
+                ),
+            )
+        )
+    controls.extend(
+        (
+            _kwarg_combo(
+                "Font weight",
+                "fontweight",
+                _FONT_WEIGHT_OPTIONS,
+                "normal",
+                f"{object_name_prefix}FontWeightCombo",
+                "Font weight for subplot labels.",
+            ),
+            _literal_kwarg(
+                "Font size",
+                "fontsize",
+                f"{object_name_prefix}FontSizeEdit",
+                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+            ),
+        )
+    )
+    return tuple(controls)
 
 
 def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
@@ -1319,6 +1438,23 @@ AXES_METHODS: dict[str, MethodSpec] = {
             ),
         ),
     ),
+    "tick_params": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="tick_params",
+        label="Tick parameters",
+        tooltip="Runs ax.tick_params on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_kwargs=TICK_PARAMS_DEFAULT_KWARGS,
+        controls=(
+            MethodControlSpec(
+                kind=MethodControlKind.TICK_PARAMS,
+                label="Ticks",
+                tooltip="Compact editor for ax.tick_params keyword arguments.",
+                object_name="figureComposerAxesMethodTickParamsEditor",
+            ),
+        ),
+    ),
     "set_axis_off": MethodSpec(
         family=FigureMethodFamily.AXES,
         name="set_axis_off",
@@ -1617,62 +1753,10 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabLabelSubplotsOrderCombo",
                 "Flattening order used to match labels to axes.",
             ),
-            _kwarg_combo(
-                "Location",
-                "loc",
-                _LABEL_LOCATION_OPTIONS,
-                "upper left",
-                "figureComposerERLabLabelSubplotsLocCombo",
-                "Location of the anchored subplot label.",
-            ),
-            _float_pair_kwarg(
-                "Offset",
-                "offset",
-                "figureComposerERLabLabelSubplotsOffsetEdit",
-                "Label offset in display points as dx, dy.",
-                default=(0.0, 0.0),
-            ),
-            _text_kwarg(
-                "Prefix",
-                "prefix",
-                "figureComposerERLabLabelSubplotsPrefixEdit",
-                "Text prepended to automatically generated labels.",
-                default="",
-            ),
-            _text_kwarg(
-                "Suffix",
-                "suffix",
-                "figureComposerERLabLabelSubplotsSuffixEdit",
-                "Text appended to automatically generated labels.",
-                default="",
-            ),
-            _bool_kwarg_combo(
-                "Numeric labels",
-                "numeric",
-                "figureComposerERLabLabelSubplotsNumericCombo",
-                "Use numbers instead of letters for generated labels.",
-                default=False,
-            ),
-            _bool_kwarg_combo(
-                "Capital letters",
-                "capital",
-                "figureComposerERLabLabelSubplotsCapitalCombo",
-                "Use capital letters for generated alphabetic labels.",
-                default=False,
-            ),
-            _kwarg_combo(
-                "Font weight",
-                "fontweight",
-                _FONT_WEIGHT_OPTIONS,
-                "normal",
-                "figureComposerERLabLabelSubplotsFontWeightCombo",
-                "Font weight for subplot labels.",
-            ),
-            _literal_kwarg(
-                "Font size",
-                "fontsize",
-                "figureComposerERLabLabelSubplotsFontSizeEdit",
-                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+            *_label_subplots_text_controls(
+                "figureComposerERLabLabelSubplots",
+                loc_default="upper left",
+                include_generated_label_controls=True,
             ),
         ),
     ),
@@ -1689,7 +1773,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Values",
                 0,
                 "figureComposerERLabLabelPropertiesValuesEdit",
-                "Dictionary of property values, such as energy=[0, 1].",
+                "Dictionary of property values, such as eV=[0, -0.1].",
                 default={"value": [0]},
             ),
             _int_kwarg(
@@ -1726,6 +1810,11 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabLabelPropertiesOrderCombo",
                 "Flattening order used to match property values to axes.",
+            ),
+            *_label_subplots_text_controls(
+                "figureComposerERLabLabelProperties",
+                loc_default="upper right",
+                include_generated_label_controls=False,
             ),
         ),
     ),
@@ -2421,6 +2510,11 @@ def _build_method_editor(
     tool.operation_editor_layout = layout
     spec = _method_spec(operation)
 
+    tool._add_form_section(
+        layout,
+        "Command",
+        object_name="figureComposerMethodCallSection",
+    )
     family_combo = tool._combo(
         [label for _family, label in _FAMILY_LABELS.items()],
         _FAMILY_LABELS[operation.method_family],
@@ -2498,6 +2592,16 @@ def _build_method_editor(
             ),
         )
 
+    has_value_controls = (
+        bool(spec.controls) or spec.text_values_policy != MethodTextValuesPolicy.NONE
+    )
+    if has_value_controls:
+        tool._add_form_section(
+            layout,
+            "Parameters",
+            object_name="figureComposerMethodValuesSection",
+        )
+
     if spec.text_values_policy != MethodTextValuesPolicy.NONE:
         text_values_text, text_values_mixed = tool._batch_text(
             operation,
@@ -2521,7 +2625,7 @@ def _build_method_editor(
         )
         tool._add_form_row(
             layout,
-            "Text values",
+            "Text",
             text_edit,
             "One text value per line for methods that apply labels or annotations.",
         )
@@ -2541,6 +2645,12 @@ def _build_method_editor(
         )
 
     if spec.allow_extra_kwargs:
+        if has_value_controls:
+            tool._add_form_section(
+                layout,
+                "Advanced",
+                object_name="figureComposerMethodAdvancedSection",
+            )
         kwargs_text, kwargs_mixed = tool._batch_text(
             operation,
             lambda target: _extra_method_kwargs(target, spec),
@@ -2805,42 +2915,9 @@ def _add_method_control_row(
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.PLOT_DATA_ARGS:
-            x_text, x_mixed = tool._batch_text(
-                operation,
-                lambda target: _plot_x_arg_value(target, spec),
-                _format_optional_plot_sequence,
-            )
-            x_edit = tool._line_edit(x_text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(x_edit, x_mixed)
-            x_edit.setObjectName("figureComposerAxesMethodPlotXEdit")
-            tool._connect_line_edit_finished(
-                x_edit,
-                lambda text: _update_current_plot_data_arg(tool, "x", text),
-            )
-            tool._add_form_row(
-                layout,
-                "X values",
-                x_edit,
-                "Optional literal x sequence.\nLeave blank to call ax.plot(y, ...).",
-            )
-            y_text, y_mixed = tool._batch_text(
-                operation,
-                lambda target: _plot_y_arg_value(target, spec),
-                _format_plot_sequence,
-            )
-            y_edit = tool._line_edit(y_text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(y_edit, y_mixed)
-            y_edit.setObjectName("figureComposerAxesMethodPlotYEdit")
-            tool._connect_line_edit_finished(
-                y_edit,
-                lambda text: _update_current_plot_data_arg(tool, "y", text),
-            )
-            tool._add_form_row(
-                layout,
-                "Y values",
-                y_edit,
-                "Required literal y sequence passed to ax.plot.",
-            )
+            _build_plot_data_args_editor(tool, operation, spec, layout)
+        case MethodControlKind.TICK_PARAMS:
+            _build_tick_params_editor(tool, operation, layout)
         case MethodControlKind.STRING_TUPLE_ARG:
             index = _control_arg_index(control)
             text, mixed = tool._batch_text(
@@ -2964,6 +3041,28 @@ def _add_method_control_row(
                 if mixed
                 else str(bool(_method_kwarg_value(operation, key, control.default))),
                 _method_bool_kwarg_callback(tool, key),
+                parent=layout.parentWidget(),
+                mixed=mixed,
+            )
+            combo.setObjectName(control.object_name)
+            tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO:
+            key = _control_key(control)
+
+            def kwarg_value_getter(target: FigureOperationState) -> bool | None:
+                value = _method_kwarg_value(target, key, control.default)
+                return value if isinstance(value, bool) else None
+
+            mixed = tool._batch_is_mixed(
+                operation,
+                kwarg_value_getter,
+            )
+            value = kwarg_value_getter(operation)
+            combo = tool._optional_name_combo(
+                control.options,
+                None if mixed or value is None else str(value),
+                control.none_label or "Default",
+                _method_optional_bool_kwarg_callback(tool, key),
                 parent=layout.parentWidget(),
                 mixed=mixed,
             )
@@ -3339,6 +3438,7 @@ def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
         in {
             MethodControlKind.KWARG_COMBO,
             MethodControlKind.BOOL_KWARG_COMBO,
+            MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
             MethodControlKind.INT_KWARG,
             MethodControlKind.FLOAT_KWARG,
             MethodControlKind.SUBPLOTS_ADJUST_KWARG,
@@ -3349,6 +3449,8 @@ def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
             MethodControlKind.COLOR_KWARG,
         }
     }
+    if any(control.kind == MethodControlKind.TICK_PARAMS for control in spec.controls):
+        keys.update(TICK_PARAMS_CONTROLLED_KWARGS)
     if _method_has_transform_control(spec):
         keys.add("transform")
     return frozenset(keys)
@@ -3380,6 +3482,29 @@ def _update_current_extra_method_kwargs(
         }
         kwargs.update(
             {key: value for key, value in extra_kwargs.items() if key not in controlled}
+        )
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwargs)
+
+
+def _update_current_tick_params_kwargs(
+    tool: FigureComposerTool, tick_kwargs: Mapping[str, typing.Any]
+) -> None:
+    def update_kwargs(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        kwargs = {
+            key: value
+            for key, value in operation.method_kwargs.items()
+            if key not in TICK_PARAMS_CONTROLLED_KWARGS
+        }
+        kwargs.update(
+            {
+                key: value
+                for key, value in tick_kwargs.items()
+                if key in TICK_PARAMS_CONTROLLED_KWARGS
+            }
         )
         return operation.model_copy(update={"method_kwargs": kwargs})
 
@@ -3418,6 +3543,504 @@ def _format_optional_plot_sequence(value: typing.Any) -> str:
     return "" if value is None else _format_plot_sequence(value)
 
 
+_PLOT_DATA_MODE_LABELS = {
+    "entered": "Enter values",
+    "from_data": "Pick from data",
+}
+_PLOT_DATA_VALUE: tuple[str, str | None] = ("data", None)
+
+
+def _is_axes_plot_method(spec: MethodSpec) -> bool:
+    return spec.family == FigureMethodFamily.AXES and spec.name == "plot"
+
+
+def _plot_data_mode_text(mode: str) -> str:
+    return _PLOT_DATA_MODE_LABELS.get(mode, _PLOT_DATA_MODE_LABELS["entered"])
+
+
+def _plot_data_mode_combo(
+    tool: FigureComposerTool,
+    current: str | None,
+    changed: Callable[[str], None],
+    *,
+    parent: QtWidgets.QWidget | None,
+    mixed: bool = False,
+) -> QtWidgets.QComboBox:
+    combo = QtWidgets.QComboBox(parent or tool.operation_editor)
+    tool._mark_editor_control(combo)
+    if mixed:
+        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
+    for mode, text in _PLOT_DATA_MODE_LABELS.items():
+        combo.addItem(text, mode)
+    if mixed:
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        combo.setCurrentIndex(0)
+    elif current is not None:
+        for index in range(combo.count()):
+            if combo.itemData(index) == current:
+                combo.setCurrentIndex(index)
+                break
+    ComboBoxDataControlAdapter(combo).connect_commit(
+        tool._connect_editor_signal,
+        lambda value: changed(str(value)),
+    )
+    return combo
+
+
+def _build_plot_data_args_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    mode_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.method_plot_data_mode
+    )
+    mode_combo = _plot_data_mode_combo(
+        tool,
+        None if mode_mixed else operation.method_plot_data_mode,
+        lambda mode: _update_current_plot_data_mode(tool, mode),
+        parent=layout.parentWidget(),
+        mixed=mode_mixed,
+    )
+    mode_combo.setObjectName("figureComposerAxesMethodPlotDataModeCombo")
+    tool._add_form_row(
+        layout,
+        "Plot data",
+        mode_combo,
+        "Choose whether ax.plot receives entered values or values picked from "
+        "available DataArrays.",
+    )
+    if mode_mixed:
+        return
+    if operation.method_plot_data_mode == "from_data":
+        _build_picked_plot_data_args_editor(tool, operation, layout)
+        return
+    _build_entered_plot_data_args_editor(tool, operation, spec, layout)
+
+
+def _build_tick_params_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    tick_kwargs = {
+        key: value
+        for key, value in operation.method_kwargs.items()
+        if key in TICK_PARAMS_CONTROLLED_KWARGS
+    }
+    mixed = tool._batch_is_mixed(
+        operation,
+        lambda target: {
+            key: value
+            for key, value in target.method_kwargs.items()
+            if key in TICK_PARAMS_CONTROLLED_KWARGS
+        },
+    )
+    editor = TickParamsEditorWidget(
+        {} if mixed else tick_kwargs,
+        parent=layout.parentWidget(),
+    )
+    tool._connect_value_signal(
+        editor,
+        editor.sigTickParamsChanged,
+        lambda kwargs: dict(kwargs),
+        lambda kwargs: _update_current_tick_params_kwargs(tool, kwargs),
+    )
+    tool._add_form_row(
+        layout,
+        "Ticks",
+        tool._mixed_value_widget(editor, mixed=mixed, parent=layout.parentWidget()),
+        "Compact controls for ax.tick_params.",
+    )
+
+
+def _build_entered_plot_data_args_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    x_text, x_mixed = tool._batch_text(
+        operation,
+        lambda target: _plot_x_arg_value(target, spec),
+        _format_optional_plot_sequence,
+    )
+    x_edit = tool._line_edit(x_text, parent=layout.parentWidget())
+    tool._apply_mixed_line_edit(x_edit, x_mixed)
+    x_edit.setObjectName("figureComposerAxesMethodPlotXEdit")
+    tool._connect_line_edit_finished(
+        x_edit,
+        lambda text: _update_current_plot_data_arg(tool, "x", text),
+    )
+    tool._add_form_row(
+        layout,
+        "X values",
+        x_edit,
+        "Optional entered x sequence.\nLeave blank to call ax.plot(y, ...).",
+    )
+    y_text, y_mixed = tool._batch_text(
+        operation,
+        lambda target: _plot_y_arg_value(target, spec),
+        _format_plot_sequence,
+    )
+    y_edit = tool._line_edit(y_text, parent=layout.parentWidget())
+    tool._apply_mixed_line_edit(y_edit, y_mixed)
+    y_edit.setObjectName("figureComposerAxesMethodPlotYEdit")
+    tool._connect_line_edit_finished(
+        y_edit,
+        lambda text: _update_current_plot_data_arg(tool, "y", text),
+    )
+    tool._add_form_row(
+        layout,
+        "Y values",
+        y_edit,
+        "Required entered y sequence passed to ax.plot.",
+    )
+
+
+def _build_picked_plot_data_args_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    layout: QtWidgets.QFormLayout,
+) -> None:
+    _build_picked_plot_data_row(tool, operation, layout, axis="x")
+    _build_picked_plot_data_row(tool, operation, layout, axis="y")
+
+
+def _plot_axis_value_state(
+    operation: FigureOperationState, axis: typing.Literal["x", "y"]
+) -> FigureMethodPlotValueState | None:
+    return operation.method_plot_x if axis == "x" else operation.method_plot_y
+
+
+def _plot_axis_source(
+    operation: FigureOperationState, axis: typing.Literal["x", "y"]
+) -> str | None:
+    state = _plot_axis_value_state(operation, axis)
+    return None if state is None else state.source
+
+
+def _plot_value_combo_data(
+    state: FigureMethodPlotValueState | None,
+) -> tuple[str, str | None] | None:
+    if state is None:
+        return None
+    return (state.kind, state.name if state.kind == "coord" else None)
+
+
+def _plot_value_combo_data_parts(value: typing.Any) -> tuple[str, str | None]:
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and value[0] in {"data", "coord"}
+    ):
+        return str(value[0]), None if value[1] is None else str(value[1])
+    raise ValueError(f"Unknown plot value selection: {value!r}")
+
+
+def _plot_value_display(
+    state: FigureMethodPlotValueState | None,
+) -> str:
+    if state is None:
+        return "Choose values"
+    if state.kind == "data":
+        return "Data values"
+    return state.name or "Missing coordinate"
+
+
+def _plot_coord_by_name(
+    data: xr.DataArray, name: str
+) -> tuple[typing.Hashable, xr.DataArray] | None:
+    coord = data.coords.get(name)
+    if coord is not None:
+        return name, coord
+    for coord_name, coord_data in data.coords.items():
+        if str(coord_name) == name:
+            return coord_name, coord_data
+    return None
+
+
+def _plot_value_options(
+    tool: FigureComposerTool, source: str | None
+) -> tuple[tuple[str, tuple[str, str | None]], ...]:
+    if source is None:
+        return ()
+    data = tool._source_data.get(source)
+    if data is None:
+        return ()
+    data = _public_source_data(data)
+    options: list[tuple[str, tuple[str, str | None]]] = []
+    if data.squeeze(drop=True).ndim == 1:
+        options.append(("Data values", _PLOT_DATA_VALUE))
+    seen = {_PLOT_DATA_VALUE}
+    for coord_name, coord in data.coords.items():
+        combo_data = ("coord", str(coord_name))
+        if combo_data in seen or coord.squeeze(drop=True).ndim != 1:
+            continue
+        seen.add(combo_data)
+        options.append((str(coord_name), combo_data))
+    return tuple(options)
+
+
+def _default_plot_value_state(
+    tool: FigureComposerTool, source: str
+) -> FigureMethodPlotValueState:
+    options = _plot_value_options(tool, source)
+    if options:
+        kind, name = options[0][1]
+        return FigureMethodPlotValueState(
+            source=source,
+            kind=typing.cast("typing.Literal['data', 'coord']", kind),
+            name=name,
+        )
+    return FigureMethodPlotValueState(source=source, kind="data")
+
+
+def _plot_source_combo(
+    tool: FigureComposerTool,
+    current: str | None,
+    changed: Callable[[str | None], None],
+    *,
+    axis: typing.Literal["x", "y"],
+    parent: QtWidgets.QWidget | None,
+    allow_none: bool,
+    mixed: bool = False,
+) -> QtWidgets.QComboBox:
+    combo = QtWidgets.QComboBox(parent or tool.operation_editor)
+    tool._mark_editor_control(combo)
+    if mixed:
+        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
+    if allow_none:
+        combo.addItem("No X DataArray", None)
+    elif current is None:
+        combo.addItem(f"Choose {axis.upper()} DataArray", None)
+    source_names = tool._source_names()
+    for source in source_names:
+        combo.addItem(tool._source_display_name(source), source)
+        combo.setItemData(
+            combo.count() - 1,
+            tool._source_tooltip(source),
+            QtCore.Qt.ItemDataRole.ToolTipRole,
+        )
+    if current is not None and current not in source_names and not mixed:
+        combo.addItem(tool._source_display_name(current), current)
+        combo.setItemData(
+            combo.count() - 1,
+            tool._source_tooltip(current),
+            QtCore.Qt.ItemDataRole.ToolTipRole,
+        )
+    if mixed:
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        combo.setCurrentIndex(0)
+    else:
+        for index in range(combo.count()):
+            if combo.itemData(index) == current:
+                combo.setCurrentIndex(index)
+                break
+    combo.setEnabled(bool(source_names) or current is not None or allow_none)
+    combo.setAccessibleName(f"{axis.upper()} DataArray")
+    combo.setProperty("figureComposerPlotDataRole", f"{axis}_source")
+    combo.setToolTip(_plot_source_combo_tooltip(axis, has_sources=bool(source_names)))
+    ComboBoxDataControlAdapter(combo).connect_commit(
+        tool._connect_editor_signal,
+        lambda value: changed(typing.cast("str | None", value)),
+    )
+    return combo
+
+
+def _plot_values_combo(
+    tool: FigureComposerTool,
+    source: str | None,
+    current: FigureMethodPlotValueState | None,
+    changed: Callable[[typing.Any], None],
+    *,
+    axis: typing.Literal["x", "y"],
+    parent: QtWidgets.QWidget | None,
+    allow_none: bool,
+    mixed: bool = False,
+    enabled: bool = True,
+) -> QtWidgets.QComboBox:
+    combo = QtWidgets.QComboBox(parent or tool.operation_editor)
+    tool._mark_editor_control(combo)
+    if mixed:
+        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
+    if allow_none:
+        combo.addItem("Default x", None)
+    elif current is None:
+        combo.addItem(f"Choose {axis.upper()} values", None)
+    options = _plot_value_options(tool, source)
+    for text, value in options:
+        combo.addItem(text, value)
+        combo.setItemData(
+            combo.count() - 1,
+            _plot_values_item_tooltip(tool, source, axis, value),
+            QtCore.Qt.ItemDataRole.ToolTipRole,
+        )
+    current_data = _plot_value_combo_data(current)
+    if (
+        current_data is not None
+        and current_data not in {value for _text, value in options}
+        and not mixed
+    ):
+        combo.addItem(_plot_value_display(current), current_data)
+    if mixed:
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        combo.setCurrentIndex(0)
+    else:
+        for index in range(combo.count()):
+            if combo.itemData(index) == current_data:
+                combo.setCurrentIndex(index)
+                break
+    combo.setEnabled(enabled and (source is not None or allow_none))
+    combo.setAccessibleName(f"{axis.upper()} values")
+    combo.setProperty("figureComposerPlotDataRole", f"{axis}_values")
+    combo.setToolTip(
+        _plot_values_combo_tooltip(
+            axis,
+            source=source,
+            value_options_match=enabled,
+        )
+    )
+    ComboBoxDataControlAdapter(combo).connect_commit(
+        tool._connect_editor_signal,
+        changed,
+    )
+    return combo
+
+
+def _plot_source_combo_tooltip(
+    axis: typing.Literal["x", "y"], *, has_sources: bool
+) -> str:
+    if not has_sources:
+        return "No Figure Composer DataArrays are available."
+    if axis == "x":
+        return (
+            "Choose the DataArray for optional x values. "
+            "No X DataArray calls ax.plot(y, ...)."
+        )
+    return "Choose the DataArray that supplies required y values for ax.plot."
+
+
+def _plot_values_combo_tooltip(
+    axis: typing.Literal["x", "y"],
+    *,
+    source: str | None,
+    value_options_match: bool,
+) -> str:
+    if not value_options_match:
+        return (
+            f"{axis.upper()} values are disabled because selected ax.plot steps "
+            "have different available choices."
+        )
+    if source is None:
+        if axis == "x":
+            return (
+                "Use default x positions, or choose an X DataArray to pick "
+                "data values or a coordinate."
+            )
+        return "Choose a Y DataArray before choosing y values."
+    if axis == "x":
+        return (
+            "Choose optional x values from the selected DataArray: data values "
+            "or a 1D coordinate."
+        )
+    return (
+        "Choose required y values from the selected DataArray: data values "
+        "or a 1D coordinate."
+    )
+
+
+def _plot_values_item_tooltip(
+    tool: FigureComposerTool,
+    source: str | None,
+    axis: typing.Literal["x", "y"],
+    value: tuple[str, str | None],
+) -> str:
+    return source_value_tooltip(
+        None if source is None else tool._source_data.get(source),
+        value,
+        axis=axis,
+    )
+
+
+def _plot_value_options_for_target(
+    tool: FigureComposerTool,
+    target: FigureOperationState,
+    axis: typing.Literal["x", "y"],
+) -> tuple[tuple[str, tuple[str, str | None]], ...]:
+    return _plot_value_options(tool, _plot_axis_source(target, axis))
+
+
+def _build_picked_plot_data_row(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    layout: QtWidgets.QFormLayout,
+    *,
+    axis: typing.Literal["x", "y"],
+) -> None:
+    current = _plot_axis_value_state(operation, axis)
+    current_source = None if current is None else current.source
+    source_mixed = tool._batch_is_mixed(
+        operation, lambda target: _plot_axis_source(target, axis)
+    )
+    value_mixed = tool._batch_is_mixed(
+        operation,
+        lambda target: _plot_value_combo_data(_plot_axis_value_state(target, axis)),
+    )
+    value_options_match = tool._batch_options_match(
+        operation, lambda target: _plot_value_options_for_target(tool, target, axis)
+    )
+    container = QtWidgets.QWidget(layout.parentWidget())
+    row_layout = QtWidgets.QHBoxLayout(container)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(6)
+    source_combo = _plot_source_combo(
+        tool,
+        None if source_mixed else current_source,
+        lambda source: _update_current_plot_value_source(tool, axis, source),
+        axis=axis,
+        parent=container,
+        allow_none=axis == "x",
+        mixed=source_mixed,
+    )
+    source_combo.setObjectName(f"figureComposerAxesMethodPlot{axis.upper()}SourceCombo")
+    values_combo = _plot_values_combo(
+        tool,
+        None if source_mixed else current_source,
+        None if value_mixed else current,
+        lambda value: _update_current_plot_value_selection(tool, axis, value),
+        axis=axis,
+        parent=container,
+        allow_none=axis == "x",
+        mixed=value_mixed,
+        enabled=not source_mixed and value_options_match,
+    )
+    values_combo.setObjectName(f"figureComposerAxesMethodPlot{axis.upper()}ValuesCombo")
+    if not value_options_match:
+        values_combo.setToolTip(
+            _plot_values_combo_tooltip(
+                axis,
+                source=None if source_mixed else current_source,
+                value_options_match=False,
+            )
+        )
+    row_layout.addWidget(source_combo, 1)
+    row_layout.addWidget(values_combo, 1)
+    tooltip = (
+        "Optional x values. Use No X DataArray to call ax.plot(y, ...)."
+        if axis == "x"
+        else "Required y values picked from a DataArray."
+    )
+    tool._add_form_row(layout, f"{axis.upper()} data", container, tooltip)
+
+
 def _plot_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
     stripped = text.strip()
     if not stripped:
@@ -3446,6 +4069,198 @@ def _update_current_plot_data_arg(
         return operation.model_copy(update={"method_args": args})
 
     tool._update_operations(update_args)
+
+
+def _update_current_plot_data_mode(tool: FigureComposerTool, mode: str) -> None:
+    if mode not in _PLOT_DATA_MODE_LABELS:
+        return
+
+    def update_mode(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updates: dict[str, typing.Any] = {"method_plot_data_mode": mode}
+        if mode == "from_data" and operation.method_plot_y is None:
+            source_names = tool._source_names()
+            if source_names:
+                updates["method_plot_y"] = _default_plot_value_state(
+                    tool, source_names[0]
+                )
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(update_mode, rebuild_editor=True)
+
+
+def _update_current_plot_value_source(
+    tool: FigureComposerTool,
+    axis: typing.Literal["x", "y"],
+    source: str | None,
+) -> None:
+    def update_source(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        state = None if source is None else _default_plot_value_state(tool, source)
+        return operation.model_copy(
+            update={
+                "method_plot_x" if axis == "x" else "method_plot_y": state,
+            }
+        )
+
+    tool._update_operations(update_source, rebuild_editor=True)
+
+
+def _update_current_plot_value_selection(
+    tool: FigureComposerTool,
+    axis: typing.Literal["x", "y"],
+    value: typing.Any,
+) -> None:
+    def update_value(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        current = _plot_axis_value_state(operation, axis)
+        if value is None or current is None:
+            state = None
+        else:
+            kind, name = _plot_value_combo_data_parts(value)
+            state = FigureMethodPlotValueState(
+                source=current.source,
+                kind=typing.cast("typing.Literal['data', 'coord']", kind),
+                name=name if kind == "coord" else None,
+            )
+        return operation.model_copy(
+            update={
+                "method_plot_x" if axis == "x" else "method_plot_y": state,
+            }
+        )
+
+    tool._update_operations(update_value)
+
+
+def _plot_source_label(tool: FigureComposerTool, source: str) -> str:
+    return tool._source_display_name(source)
+
+
+def _plot_value_data(
+    tool: FigureComposerTool, state: FigureMethodPlotValueState
+) -> xr.DataArray:
+    source = tool._source_data.get(state.source)
+    if source is None:
+        raise ValueError(
+            f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
+        )
+    data = _public_source_data(source)
+    if state.kind == "data":
+        value = data.squeeze(drop=True)
+        if value.ndim != 1:
+            raise ValueError("Picked ax.plot data values must be one-dimensional")
+        return value
+    if state.name is None:
+        raise ValueError("Choose a coordinate for ax.plot")
+    coord = _plot_coord_by_name(data, state.name)
+    if coord is None:
+        raise ValueError(
+            f"Coordinate {state.name!r} is not available in "
+            f"DataArray {_plot_source_label(tool, state.source)!r}"
+        )
+    _coord_key, coord_data = coord
+    value = coord_data.squeeze(drop=True)
+    if value.ndim != 1:
+        raise ValueError("Picked ax.plot coordinates must be one-dimensional")
+    return value
+
+
+def _plot_value_code_and_data(
+    tool: FigureComposerTool, state: FigureMethodPlotValueState
+) -> tuple[_RawCode, xr.DataArray]:
+    source = tool._source_data.get(state.source)
+    if source is None:
+        raise ValueError(
+            f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
+        )
+    data = _public_source_data(source)
+    source_code = _valid_source_variable(state.source)
+    if state.kind == "data":
+        value = data.squeeze(drop=True)
+        if value.ndim != 1:
+            raise ValueError("Picked ax.plot data values must be one-dimensional")
+        code = source_code
+        if _needs_squeeze_drop(data):
+            code = f"{code}.squeeze(drop=True)"
+        return _RawCode(f"{code}.values"), value
+    if state.name is None:
+        raise ValueError("Choose a coordinate for ax.plot")
+    coord = _plot_coord_by_name(data, state.name)
+    if coord is None:
+        raise ValueError(
+            f"Coordinate {state.name!r} is not available in "
+            f"DataArray {_plot_source_label(tool, state.source)!r}"
+        )
+    coord_key, coord_data = coord
+    value = coord_data.squeeze(drop=True)
+    if value.ndim != 1:
+        raise ValueError("Picked ax.plot coordinates must be one-dimensional")
+    code = (
+        f"{source_code}.coords[{erlab.interactive.utils._parse_single_arg(coord_key)}]"
+    )
+    if _needs_squeeze_drop(coord_data):
+        code = f"{code}.squeeze(drop=True)"
+    return _RawCode(f"{code}.values"), value
+
+
+def _validate_plot_value_lengths(
+    x_value: xr.DataArray | None, y_value: xr.DataArray
+) -> None:
+    if x_value is not None and x_value.size != y_value.size:
+        raise ValueError("Picked ax.plot X and Y values must have the same length")
+
+
+def _picked_plot_args(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[typing.Any, ...]:
+    if operation.method_plot_y is None:
+        raise ValueError("Choose Y values for ax.plot")
+    y_value = _plot_value_data(tool, operation.method_plot_y)
+    x_value = (
+        None
+        if operation.method_plot_x is None
+        else _plot_value_data(tool, operation.method_plot_x)
+    )
+    _validate_plot_value_lengths(x_value, y_value)
+    if x_value is None:
+        return (y_value.values,)
+    return x_value.values, y_value.values
+
+
+def _picked_plot_code_args(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[typing.Any, ...]:
+    if operation.method_plot_y is None:
+        raise ValueError("Choose Y values for ax.plot")
+    y_code, y_value = _plot_value_code_and_data(tool, operation.method_plot_y)
+    if operation.method_plot_x is None:
+        return (y_code,)
+    x_code, x_value = _plot_value_code_and_data(tool, operation.method_plot_x)
+    _validate_plot_value_lengths(x_value, y_value)
+    return x_code, y_code
+
+
+def _method_call_args(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+) -> tuple[typing.Any, ...]:
+    if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
+        return _picked_plot_args(tool, operation)
+    return _method_args(operation, spec, tool)
+
+
+def _method_code_call_args(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+) -> tuple[typing.Any, ...]:
+    if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
+        return _picked_plot_code_args(tool, operation)
+    return _method_args(operation, spec, tool)
 
 
 def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
@@ -3633,6 +4448,16 @@ def _method_bool_kwarg_callback(
 ) -> Callable[[str], None]:
     def update(text: str) -> None:
         _update_current_method_kwarg(tool, key, text == "True")
+
+    return update
+
+
+def _method_optional_bool_kwarg_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[str | None], None]:
+    def update(text: str | None) -> None:
+        value = None if text is None else text == "True"
+        _update_current_method_kwarg(tool, key, value)
 
     return update
 
@@ -4036,6 +4861,8 @@ def _control_accepts_value(control: MethodControlSpec, value: typing.Any) -> boo
         MethodControlKind.BOOL_KWARG_COMBO,
     }:
         return isinstance(value, bool)
+    if control.kind == MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO:
+        return value is None or isinstance(value, bool)
     return True
 
 
@@ -4172,6 +4999,9 @@ def _method_transfer_updates(
         "method_args": tuple(args),
         "method_kwargs": kwargs,
         "method_call_policy": method_call_policy,
+        "method_plot_data_mode": "entered",
+        "method_plot_x": None,
+        "method_plot_y": None,
         "text_values": text_values,
         "method_transform": "data",
         "method_transform_x": "data",
@@ -4188,6 +5018,14 @@ def _method_transfer_updates(
                 "method_transform_x": operation.method_transform_x,
                 "method_transform_y": operation.method_transform_y,
                 "method_transform_expression": operation.method_transform_expression,
+            }
+        )
+    if _is_axes_plot_method(source_spec) and _is_axes_plot_method(target_spec):
+        updates.update(
+            {
+                "method_plot_data_mode": operation.method_plot_data_mode,
+                "method_plot_x": operation.method_plot_x,
+                "method_plot_y": operation.method_plot_y,
             }
         )
     return updates
@@ -4308,7 +5146,7 @@ def _render_args_kwargs(
     figure: Figure | None = None,
     axis: Axes | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    args = list(_method_args(operation, spec, tool))
+    args = list(_method_call_args(tool, operation, spec))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
     if _method_has_transform_control(spec):
@@ -4341,7 +5179,7 @@ def _code_args_kwargs(
     *,
     axis_code: str | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    args = list(_method_args(operation, spec, tool))
+    args = list(_method_code_call_args(tool, operation, spec))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
     if _method_has_transform_control(spec):
@@ -4533,6 +5371,22 @@ def _required_imports(
     return tuple(imports)
 
 
+def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
+    try:
+        spec = _method_spec(operation)
+    except ValueError:
+        return ()
+    if not (
+        _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data"
+    ):
+        return ()
+    names: list[str] = []
+    for state in (operation.method_plot_x, operation.method_plot_y):
+        if state is not None and state.source not in names:
+            names.append(state.source)
+    return tuple(names)
+
+
 SPEC = OperationSpec(
     kind=FigureOperationKind.METHOD,
     add_actions=(
@@ -4546,7 +5400,7 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=_uses_axes,
     uses_source_section=_uses_no_source_section,
-    source_names=_empty_source_names,
+    source_names=_source_names,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_build_method_editor,
     section_summary=_section_summary,

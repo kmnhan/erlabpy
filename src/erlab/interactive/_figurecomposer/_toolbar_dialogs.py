@@ -20,6 +20,12 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_axis_display_name,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._line_colormap import (
+    LINE_COLOR_CMAP_TRIM_MAX,
+    effective_line_color_coord,
+    line_color_cmap_trim_control_values,
+    line_colormap_active,
+)
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
@@ -34,15 +40,36 @@ from erlab.interactive._figurecomposer._line_style import (
     optional_positive_spinbox_value,
     style_combo_value,
 )
+from erlab.interactive._figurecomposer._norms import (
+    _NORM_CHOICES,
+    _cmap_base_and_reverse,
+    _cmap_with_reverse,
+    _effective_norm_name,
+    _norm_kwarg_fields,
+)
+from erlab.interactive._figurecomposer._operations._line_profile import (
+    _available_line_color_coords,
+    _line_color_mode_from_text,
+    _line_color_mode_text,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_PANEL_IMAGE,
     _PLOT_SLICES_PANEL_LINE,
+    _available_plot_slices_line_color_coords,
+    _norm_clip_from_text,
+    _norm_clip_text,
     _PanelLineStyleEditorWidget,
     _PanelStyleEditorWidget,
     _plot_slices_panel_keys,
     _plot_slices_panel_kind,
     _plot_slices_shape,
     _PlotSlicesPanelKey,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _line_color_mode_from_text as _plot_slices_line_color_mode_from_text,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _line_color_mode_text as _plot_slices_line_color_mode_text,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -69,6 +96,10 @@ from erlab.interactive._figurecomposer._text import (
     _dict_from_text,
     _format_dict,
     _limit_pair_from_text,
+)
+from erlab.interactive._figurecomposer._tick_params import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+    TickParamsEditorWidget,
 )
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
@@ -372,6 +403,10 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_which_combo = QtWidgets.QComboBox(axes_page)
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
+    tick_params_editor = TickParamsEditorWidget(
+        parent=axes_page,
+        object_prefix="figureComposerToolbarAxesTickParams",
+    )
 
     title_tooltip = (
         "Set ax.set_title(...) on every selected axis.\n"
@@ -457,6 +492,12 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         ),
         "Grid visibility and target tick lines for every selected axis.",
     )
+    _add_axis_form_row(
+        form_layout,
+        "Ticks",
+        tick_params_editor,
+        "Compact controls for ax.tick_params on every selected axis.",
+    )
 
     updating = False
     curve_targets: list[_StyleTarget] = []
@@ -479,6 +520,22 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             args=args,
             kwargs=kwargs,
         )
+
+    def tick_params_for_selection() -> dict[str, typing.Any]:
+        selection = current_selection()
+        for operation in tool._recipe.operations:
+            if (
+                operation.kind == FigureOperationKind.METHOD
+                and operation.method_family == FigureMethodFamily.AXES
+                and operation.method_name == "tick_params"
+                and _method_axes_match(operation.axes, selection)
+            ):
+                return {
+                    key: value
+                    for key, value in operation.method_kwargs.items()
+                    if key in TICK_PARAMS_CONTROLLED_KWARGS
+                }
+        return {}
 
     def refresh_style_targets() -> None:
         nonlocal curve_targets, image_targets
@@ -503,7 +560,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             _add_style_placeholder(curves_layout, curves_page)
             return
         if target.target_kind == _STYLE_TARGET_PLOT_SLICES:
-            editor = _PanelLineStyleEditorWidget(
+            editor = _PlotSlicesLineOperationStyleWidget(
+                tool,
                 operation,
                 target.panel_keys,
                 _connect_panel_editor_signal,
@@ -531,8 +589,21 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             _connect_panel_editor_signal(
                 editor, editor.sigPanelStylesChanged, apply_panel_line_styles
             )
+
+            def apply_plot_slices_line_operation(
+                updated: FigureOperationState,
+                *,
+                operation_id: str = target.operation_id,
+            ) -> None:
+                nonlocal expected_operation
+                _replace_operation_by_id(tool, operation_id, updated)
+                expected_operation = updated
+
+            _connect_panel_editor_signal(
+                editor, editor.sigOperationChanged, apply_plot_slices_line_operation
+            )
         else:
-            editor = _LineOperationStyleWidget(operation, curves_page)
+            editor = _LineOperationStyleWidget(tool, operation, curves_page)
 
             def apply_line_operation(
                 updated: FigureOperationState,
@@ -553,6 +624,22 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         if target is None or operation is None:
             _add_style_placeholder(images_layout, images_page)
             return
+        if _is_single_image_plot_slices_target(tool, operation, target):
+            editor = _ImageOperationStyleWidget(operation, images_page)
+
+            def apply_image_operation(
+                updated: FigureOperationState,
+                *,
+                operation_id: str = target.operation_id,
+            ) -> None:
+                _replace_operation_by_id(tool, operation_id, updated)
+
+            _connect_panel_editor_signal(
+                editor, editor.sigOperationChanged, apply_image_operation
+            )
+            images_layout.addWidget(editor)
+            return
+
         editor = _PanelStyleEditorWidget(
             operation,
             target.panel_keys,
@@ -604,6 +691,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     _apply_axis_combo_state(combo, unavailable_state)
                 for combo in (grid_axis_combo, grid_which_combo):
                     combo.setEnabled(False)
+                tick_params_editor.set_tick_params({})
+                tick_params_editor.setEnabled(False)
                 _apply_axis_check_state(grid_check, unavailable_state)
                 return
             _apply_axis_line_edit_state(
@@ -637,6 +726,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             )
             for combo in (grid_axis_combo, grid_which_combo):
                 combo.setEnabled(True)
+            tick_params_editor.setEnabled(True)
+            tick_params_editor.set_tick_params(tick_params_for_selection())
             _apply_axis_check_state(
                 grid_check,
                 _axis_value_state(
@@ -738,6 +829,14 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def grid_combo_activated(_index: int) -> None:
         update_grid()
 
+    def tick_params_changed(kwargs: object) -> None:
+        if updating:
+            return
+        upsert_axis_method(
+            "tick_params",
+            kwargs=dict(typing.cast("Mapping[str, typing.Any]", kwargs)),
+        )
+
     def selection_changed(_selection: object) -> None:
         refresh_from_axis()
 
@@ -752,6 +851,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_check.stateChanged.connect(grid_state_changed)
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
+    tick_params_editor.sigTickParamsChanged.connect(tick_params_changed)
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
     images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)
@@ -785,11 +885,20 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
 
     def __init__(
         self,
+        tool: FigureComposerTool,
         operation: FigureOperationState,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._operation = operation
+
+        self.color_mode_widget = _LineColorModeWidget(
+            tool,
+            operation,
+            line_kind="profile",
+            parent=self,
+        )
+        self.color_mode_widget.sigOperationChanged.connect(self._set_operation)
 
         self.colors_widget = _ColorListEditorWidget(operation.line_colors, self)
         self.colors_widget.setObjectName("figureComposerToolbarCurveColorsWidget")
@@ -798,6 +907,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
             "Color for the plotted profiles.\n"
             "Use one color for all profiles or one color per profile."
         )
+        self.colors_widget.setVisible(not line_colormap_active(operation))
 
         self.style_combo = QtWidgets.QComboBox(self)
         self.style_combo.setObjectName("figureComposerToolbarCurveLineStyleCombo")
@@ -879,7 +989,10 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         layout.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
+        layout.addRow("Color", self.color_mode_widget)
         layout.addRow("Colors", self.colors_widget)
+        self.colors_label = layout.labelForField(self.colors_widget)
+        self._sync_color_widgets()
         layout.addRow("Line style", self.style_combo)
         layout.addRow("Line width", self.width_spin)
         layout.addRow("Marker", self.marker_combo)
@@ -899,11 +1012,20 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
 
     def _set_operation(self, operation: FigureOperationState) -> None:
         self._operation = operation
+        self._sync_color_widgets()
         self.sigOperationChanged.emit(operation)
+
+    def _sync_color_widgets(self) -> None:
+        visible = not line_colormap_active(self._operation)
+        self.colors_widget.setVisible(visible)
+        if self.colors_label is not None:
+            self.colors_label.setVisible(visible)
 
     def _colors_changed(self, colors: Sequence[str]) -> None:
         self._set_operation(
-            self._operation.model_copy(update={"line_colors": tuple(colors)})
+            self._operation.model_copy(
+                update={"line_color_mode": "manual", "line_colors": tuple(colors)}
+            )
         )
 
     def _style_changed(self, _index: int) -> None:
@@ -966,6 +1088,526 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         if value is not None:
             line_kw[key] = value
         self._set_operation(self._operation.model_copy(update={"line_kw": line_kw}))
+
+
+class _PlotSlicesLineOperationStyleWidget(QtWidgets.QWidget):
+    """Recipe-backed line style editor for 1D plot_slices operations."""
+
+    sigOperationChanged = QtCore.Signal(object)
+    sigPanelStylesChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        tool: FigureComposerTool,
+        operation: FigureOperationState,
+        panel_keys: tuple[_PlotSlicesPanelKey, ...],
+        connect_signal: Callable[
+            [QtWidgets.QWidget, typing.Any, Callable[..., None]], None
+        ],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+
+        self.color_mode_widget = _LineColorModeWidget(
+            tool,
+            operation,
+            line_kind="plot_slices",
+            parent=self,
+        )
+        self.panel_editor = _PanelLineStyleEditorWidget(
+            operation,
+            panel_keys,
+            connect_signal,
+            self,
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        form = QtWidgets.QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        form.addRow("Color", self.color_mode_widget)
+        layout.addLayout(form)
+        layout.addWidget(self.panel_editor)
+
+        connect_signal(
+            self,
+            self.color_mode_widget.sigOperationChanged,
+            self._operation_changed,
+        )
+        connect_signal(
+            self,
+            self.panel_editor.sigPanelStylesChanged,
+            self.sigPanelStylesChanged.emit,
+        )
+
+    def _operation_changed(self, operation: FigureOperationState) -> None:
+        self._operation = operation
+        self.sigOperationChanged.emit(operation)
+
+
+class _LineColorModeWidget(QtWidgets.QWidget):
+    """Toolbar color-mode controls for multi-line operations."""
+
+    sigOperationChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        tool: FigureComposerTool,
+        operation: FigureOperationState,
+        *,
+        line_kind: typing.Literal["profile", "plot_slices"],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._tool = tool
+        self._operation = operation
+        self._line_kind = line_kind
+        self._updating = False
+
+        self.mode_combo = QtWidgets.QComboBox(self)
+        self.mode_combo.setObjectName("figureComposerToolbarCurveColorModeCombo")
+        self.mode_combo.addItem("Manual", "manual")
+        self.mode_combo.addItem("By coordinate", "coordinate")
+        mode_text = (
+            _plot_slices_line_color_mode_text(operation.line_color_mode)
+            if line_kind == "plot_slices"
+            else _line_color_mode_text(operation.line_color_mode)
+        )
+        self.mode_combo.setCurrentText(mode_text)
+        self.mode_combo.setToolTip(
+            "Manual: use the typed line colors.\n"
+            "By coordinate: map one numeric coordinate value per line through a "
+            "colormap."
+        )
+
+        self.coordinate_page = QtWidgets.QWidget(self)
+        coordinate_layout = QtWidgets.QVBoxLayout(self.coordinate_page)
+        coordinate_layout.setContentsMargins(0, 0, 0, 0)
+        coordinate_layout.setSpacing(4)
+
+        self.coord_combo = QtWidgets.QComboBox(self.coordinate_page)
+        self.coord_combo.setObjectName("figureComposerToolbarCurveColorCoordCombo")
+        self.coord_combo.setToolTip(
+            "Numeric scalar coordinate used to color each plotted line."
+        )
+
+        cmap_row = QtWidgets.QWidget(self.coordinate_page)
+        cmap_layout = QtWidgets.QHBoxLayout(cmap_row)
+        cmap_layout.setContentsMargins(0, 0, 0, 0)
+        cmap_layout.setSpacing(6)
+        self.cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_row)
+        self.cmap_combo.setObjectName("figureComposerToolbarCurveColorCmapCombo")
+        self.cmap_combo.setToolTip("Colormap used for coordinate-colored lines.")
+        self.cmap_combo.ensure_populated()
+        self.reverse_check = QtWidgets.QCheckBox("Reverse", cmap_row)
+        self.reverse_check.setObjectName(
+            "figureComposerToolbarCurveColorCmapReverseCheck"
+        )
+        self.reverse_check.setToolTip("Reverse the selected line colormap.")
+        cmap_layout.addWidget(self.cmap_combo, 1)
+        cmap_layout.addWidget(self.reverse_check)
+
+        trim_row = QtWidgets.QWidget(self.coordinate_page)
+        trim_layout = QtWidgets.QHBoxLayout(trim_row)
+        trim_layout.setContentsMargins(0, 0, 0, 0)
+        trim_layout.setSpacing(6)
+        trim_tooltip = "Skip fractions from the low and high ends of the colormap."
+        trim_label = QtWidgets.QLabel("Trim", trim_row)
+        trim_label.setToolTip(trim_tooltip)
+        self.trim_lower_spin = _line_color_trim_spin(
+            "figureComposerToolbarCurveColorCmapTrimLowerSpin",
+            trim_tooltip,
+            trim_row,
+        )
+        self.trim_upper_spin = _line_color_trim_spin(
+            "figureComposerToolbarCurveColorCmapTrimUpperSpin",
+            trim_tooltip,
+            trim_row,
+        )
+        trim_layout.addWidget(trim_label)
+        trim_layout.addWidget(QtWidgets.QLabel("Low", trim_row))
+        trim_layout.addWidget(self.trim_lower_spin)
+        trim_layout.addWidget(QtWidgets.QLabel("High", trim_row))
+        trim_layout.addWidget(self.trim_upper_spin)
+        trim_layout.addStretch(1)
+
+        coordinate_layout.addWidget(self.coord_combo)
+        coordinate_layout.addWidget(cmap_row)
+        coordinate_layout.addWidget(trim_row)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.mode_combo)
+        layout.addWidget(self.coordinate_page)
+
+        self.mode_combo.activated.connect(self._mode_changed)
+        self.coord_combo.activated.connect(self._coord_changed)
+        self.cmap_combo.activated.connect(self._cmap_changed)
+        self.reverse_check.stateChanged.connect(self._reverse_changed)
+        self.trim_lower_spin.valueChanged.connect(self._trim_lower_changed)
+        self.trim_upper_spin.valueChanged.connect(self._trim_upper_changed)
+        self._sync_controls()
+
+    def _available_coords(self) -> list[str]:
+        if self._line_kind == "plot_slices":
+            return _available_plot_slices_line_color_coords(self._tool, self._operation)
+        return _available_line_color_coords(self._tool, self._operation)
+
+    def _default_coord(self) -> str | None:
+        if self._line_kind == "plot_slices":
+            return self._operation.slice_dim
+        return self._operation.line_iter_dim
+
+    def _mode_from_text(self, text: str) -> typing.Literal["manual", "coordinate"]:
+        data = self.mode_combo.currentData()
+        if data in ("manual", "coordinate"):
+            return typing.cast("typing.Literal['manual', 'coordinate']", data)
+        if self._line_kind == "plot_slices":
+            return _plot_slices_line_color_mode_from_text(text)
+        return _line_color_mode_from_text(text)
+
+    def _set_operation(self, operation: FigureOperationState) -> None:
+        self._operation = operation
+        self.sigOperationChanged.emit(operation)
+        self._sync_controls()
+
+    def _sync_controls(self) -> None:
+        self._updating = True
+        try:
+            with QtCore.QSignalBlocker(self.mode_combo):
+                self.mode_combo.setCurrentText(
+                    _plot_slices_line_color_mode_text(self._operation.line_color_mode)
+                    if self._line_kind == "plot_slices"
+                    else _line_color_mode_text(self._operation.line_color_mode)
+                )
+            active = line_colormap_active(self._operation)
+            self.coordinate_page.setVisible(active)
+
+            coords = self._available_coords()
+            selected = effective_line_color_coord(
+                self._operation, self._default_coord()
+            )
+            with QtCore.QSignalBlocker(self.coord_combo):
+                self.coord_combo.clear()
+                for coord in coords:
+                    self.coord_combo.addItem(coord, coord)
+                if selected and self.coord_combo.findData(selected) < 0:
+                    self.coord_combo.addItem(selected, selected)
+                if selected:
+                    self.coord_combo.setCurrentIndex(
+                        self.coord_combo.findData(selected)
+                    )
+                elif self.coord_combo.count():
+                    self.coord_combo.setCurrentIndex(0)
+            self.coord_combo.setEnabled(self.coord_combo.count() > 0)
+
+            cmap_base, cmap_reverse = _cmap_base_and_reverse(
+                self._operation.line_color_cmap
+            )
+            with QtCore.QSignalBlocker(self.cmap_combo):
+                self.cmap_combo.setCurrentText(cmap_base)
+            with QtCore.QSignalBlocker(self.reverse_check):
+                self.reverse_check.setChecked(
+                    self._operation.line_color_cmap_reverse or cmap_reverse
+                )
+            trim_lower, trim_upper = line_color_cmap_trim_control_values(
+                self._operation
+            )
+            with QtCore.QSignalBlocker(self.trim_lower_spin):
+                self.trim_lower_spin.setValue(trim_lower)
+            with QtCore.QSignalBlocker(self.trim_upper_spin):
+                self.trim_upper_spin.setValue(trim_upper)
+        finally:
+            self._updating = False
+
+    def _mode_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        mode = self._mode_from_text(self.mode_combo.currentText())
+        updates: dict[str, typing.Any] = {"line_color_mode": mode}
+        if mode == "coordinate":
+            coord = self.coord_combo.currentData()
+            updates["line_color_coord"] = (
+                coord if isinstance(coord, str) and coord else self._default_coord()
+            )
+        self._set_operation(self._operation.model_copy(update=updates))
+
+    def _coord_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        coord = self.coord_combo.currentData()
+        self._set_operation(
+            self._operation.model_copy(
+                update={"line_color_coord": coord if isinstance(coord, str) else None}
+            )
+        )
+
+    def _cmap_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={
+                    "line_color_cmap": _cmap_with_reverse(
+                        self.cmap_combo.currentText(), False
+                    ),
+                    "line_color_cmap_reverse": self.reverse_check.isChecked(),
+                }
+            )
+        )
+
+    def _reverse_changed(self, state: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={
+                    "line_color_cmap": _cmap_with_reverse(
+                        self.cmap_combo.currentText(), False
+                    ),
+                    "line_color_cmap_reverse": (
+                        QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked
+                    ),
+                }
+            )
+        )
+
+    def _trim_lower_changed(self, value: float) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(update={"line_color_cmap_trim_lower": value})
+        )
+
+    def _trim_upper_changed(self, value: float) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(update={"line_color_cmap_trim_upper": value})
+        )
+
+
+def _line_color_trim_spin(
+    object_name: str,
+    tooltip: str,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QDoubleSpinBox:
+    spin = QtWidgets.QDoubleSpinBox(parent)
+    spin.setObjectName(object_name)
+    spin.setRange(0.0, LINE_COLOR_CMAP_TRIM_MAX)
+    spin.setDecimals(2)
+    spin.setSingleStep(0.05)
+    spin.setKeyboardTracking(False)
+    spin.setToolTip(tooltip)
+    line_edit = spin.lineEdit()
+    if line_edit is not None:
+        line_edit.setToolTip(tooltip)
+    return spin
+
+
+class _ImageOperationStyleWidget(QtWidgets.QWidget):
+    """Recipe-backed image style editor for a single image plot."""
+
+    sigOperationChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        operation: FigureOperationState,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+        self._updating = False
+
+        self.cmap_combo = erlab.interactive.colors.ColorMapComboBox(self)
+        self.cmap_combo.setObjectName("figureComposerPanelCmapCombo")
+        self.cmap_combo.setToolTip("Colormap stored on this image step.")
+        self.cmap_combo.ensure_populated()
+        self.cmap_reverse_check = QtWidgets.QCheckBox("Reverse", self)
+        self.cmap_reverse_check.setObjectName("figureComposerPanelCmapReverseCheck")
+        self.cmap_reverse_check.setToolTip("Append _r to this image colormap.")
+
+        self.norm_combo = QtWidgets.QComboBox(self)
+        self.norm_combo.setObjectName("figureComposerPanelNormCombo")
+        self.norm_combo.addItems(list(_NORM_CHOICES))
+        self.norm_combo.setToolTip("Normalization class stored on this image step.")
+
+        self.gamma_edit = self._number_edit("figureComposerPanelGammaEdit")
+        self.vmin_edit = self._number_edit("figureComposerPanelVminEdit")
+        self.vmax_edit = self._number_edit("figureComposerPanelVmaxEdit")
+        self.vcenter_edit = self._number_edit("figureComposerPanelVcenterEdit")
+        self.halfrange_edit = self._number_edit("figureComposerPanelHalfrangeEdit")
+        self.clip_combo = QtWidgets.QComboBox(self)
+        self.clip_combo.setObjectName("figureComposerPanelClipCombo")
+        self.clip_combo.addItems(["default", "False", "True"])
+        self.clip_combo.setToolTip("Norm clip argument for this image step.")
+        self.norm_kwargs_edit = QtWidgets.QLineEdit(self)
+        self.norm_kwargs_edit.setObjectName("figureComposerPanelNormKwargsEdit")
+        self.norm_kwargs_edit.setToolTip(
+            "Extra keyword arguments for this image step's norm constructor."
+        )
+
+        layout = QtWidgets.QFormLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        cmap_row = QtWidgets.QWidget(self)
+        cmap_layout = QtWidgets.QHBoxLayout(cmap_row)
+        cmap_layout.setContentsMargins(0, 0, 0, 0)
+        cmap_layout.setSpacing(6)
+        cmap_layout.addWidget(self.cmap_combo, 1)
+        cmap_layout.addWidget(self.cmap_reverse_check)
+        layout.addRow("Colormap", cmap_row)
+        layout.addRow("Norm", self.norm_combo)
+        for label, widget in (
+            ("Gamma", self.gamma_edit),
+            ("vmin", self.vmin_edit),
+            ("vmax", self.vmax_edit),
+            ("vcenter", self.vcenter_edit),
+            ("halfrange", self.halfrange_edit),
+            ("Clip", self.clip_combo),
+            ("Norm kwargs", self.norm_kwargs_edit),
+        ):
+            layout.addRow(label, widget)
+
+        self.cmap_combo.activated.connect(self._cmap_changed)
+        self.cmap_reverse_check.stateChanged.connect(self._cmap_reverse_changed)
+        self.norm_combo.activated.connect(self._norm_changed)
+        for attr, edit in (
+            ("norm_gamma", self.gamma_edit),
+            ("vmin", self.vmin_edit),
+            ("vmax", self.vmax_edit),
+            ("vcenter", self.vcenter_edit),
+            ("halfrange", self.halfrange_edit),
+        ):
+            edit.editingFinished.connect(
+                lambda attr=attr, edit=edit: self._number_changed(attr, edit)
+            )
+        self.clip_combo.activated.connect(self._clip_changed)
+        self.norm_kwargs_edit.editingFinished.connect(self._norm_kwargs_changed)
+        self._sync_controls()
+
+    @staticmethod
+    def _number_edit(object_name: str) -> QtWidgets.QLineEdit:
+        edit = QtWidgets.QLineEdit()
+        edit.setObjectName(object_name)
+        edit.setToolTip("Leave blank to use the default value.")
+        return edit
+
+    def _set_operation(self, operation: FigureOperationState) -> None:
+        self._operation = operation
+        self.sigOperationChanged.emit(operation)
+        self._sync_controls()
+
+    def _sync_controls(self) -> None:
+        self._updating = True
+        try:
+            cmap_base, cmap_reverse = _cmap_base_and_reverse(self._operation.cmap)
+            with QtCore.QSignalBlocker(self.cmap_combo):
+                self.cmap_combo.setCurrentText(cmap_base)
+            with QtCore.QSignalBlocker(self.cmap_reverse_check):
+                self.cmap_reverse_check.setChecked(cmap_reverse)
+            norm_name = _effective_norm_name(self._operation.norm_name)
+            with QtCore.QSignalBlocker(self.norm_combo):
+                self.norm_combo.setCurrentText(norm_name)
+            self._sync_norm_fields(norm_name)
+        finally:
+            self._updating = False
+
+    def _sync_norm_fields(self, norm_name: str) -> None:
+        norm_fields = set(_norm_kwarg_fields(norm_name))
+        for attr, edit in (
+            ("norm_gamma", self.gamma_edit),
+            ("vmin", self.vmin_edit),
+            ("vmax", self.vmax_edit),
+            ("vcenter", self.vcenter_edit),
+            ("halfrange", self.halfrange_edit),
+        ):
+            field_name = "gamma" if attr == "norm_gamma" else attr
+            edit.setEnabled(field_name in norm_fields)
+            value = getattr(self._operation, attr)
+            with QtCore.QSignalBlocker(edit):
+                edit.setText("" if value is None else f"{value:g}")
+                edit.setModified(False)
+        self.clip_combo.setEnabled("clip" in norm_fields)
+        with QtCore.QSignalBlocker(self.clip_combo):
+            self.clip_combo.setCurrentText(_norm_clip_text(self._operation.norm_clip))
+        self.norm_kwargs_edit.setEnabled(True)
+        with QtCore.QSignalBlocker(self.norm_kwargs_edit):
+            self.norm_kwargs_edit.setText(_format_dict(self._operation.norm_kwargs))
+            self.norm_kwargs_edit.setModified(False)
+
+    def _cmap_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={
+                    "cmap": _cmap_with_reverse(
+                        self.cmap_combo.currentText(),
+                        self.cmap_reverse_check.isChecked(),
+                    )
+                }
+            )
+        )
+
+    def _cmap_reverse_changed(self, state: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={
+                    "cmap": _cmap_with_reverse(
+                        self.cmap_combo.currentText(),
+                        QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked,
+                    )
+                }
+            )
+        )
+
+    def _norm_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={"norm_name": self.norm_combo.currentText()}
+            )
+        )
+
+    def _number_changed(self, attr: str, edit: QtWidgets.QLineEdit) -> None:
+        if self._updating:
+            return
+        text = edit.text().strip()
+        self._set_operation(
+            self._operation.model_copy(update={attr: float(text) if text else None})
+        )
+
+    def _clip_changed(self, _index: int) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={
+                    "norm_clip": _norm_clip_from_text(self.clip_combo.currentText())
+                }
+            )
+        )
+
+    def _norm_kwargs_changed(self) -> None:
+        if self._updating:
+            return
+        self._set_operation(
+            self._operation.model_copy(
+                update={"norm_kwargs": _dict_from_text(self.norm_kwargs_edit.text())}
+            )
+        )
 
 
 def _style_tab_page(
@@ -1229,6 +1871,23 @@ def _replace_operation_by_id(
                 rebuild_editor=rebuild_editor,
             )
             return
+
+
+def _is_single_image_plot_slices_target(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    target: _StyleTarget,
+) -> bool:
+    if (
+        operation.kind != FigureOperationKind.PLOT_SLICES
+        or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+        != _PLOT_SLICES_PANEL_IMAGE
+    ):
+        return False
+    return (
+        len(_plot_slices_panel_keys(tool, operation)) == 1
+        and len(target.panel_keys) == 1
+    )
 
 
 def _update_plot_slices_panel_styles(

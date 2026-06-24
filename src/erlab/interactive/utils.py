@@ -99,6 +99,11 @@ __all__ = [
 
 _LOAD_UI_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
+_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
+
+
+def _manager_perf_timing_enabled() -> bool:
+    return os.environ.get("ERLAB_MANAGER_PERF_TIMING") == "1"
 
 
 def _qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
@@ -917,6 +922,10 @@ _STALE_TOOL_DATA_ENCODING_KEYS = frozenset(
 )
 
 
+class _MissingSavedToolDataReferenceError(ValueError):
+    """Raised when a saved tool-data reference cannot be resolved."""
+
+
 def _tool_data_placeholder() -> xr.DataArray:
     return xr.DataArray(
         np.empty((0,), dtype=np.uint8),
@@ -1121,13 +1130,11 @@ def _parse_single_arg(arg: typing.Any) -> str:
 
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
-        # Otherwise, quote the string
+        # Otherwise, emit a Python string literal with escaped backslashes.
         if arg.startswith("|") and arg.endswith("|"):
             arg = arg[1:-1]
-        elif '"' in arg:
-            arg = f"'''{arg}'''" if "\n" in arg else f"'{arg}'"
         else:
-            arg = f'"""{arg}"""' if "\n" in arg else f'"{arg}"'
+            arg = json.dumps(arg, ensure_ascii=False)
     elif isinstance(arg, tuple):
         inner = ", ".join(_parse_single_arg(item) for item in arg)
         if len(arg) == 1:
@@ -3278,6 +3285,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._write_history = True
+        self._history_write_pending = False
+        self._history_write_timer = QtCore.QTimer(self)
+        self._history_write_timer.setSingleShot(True)
+        self._history_write_timer.setInterval(_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS)
+        self._history_write_timer.timeout.connect(self._flush_pending_history_write)
+        self._restoring_from_dataset = False
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
         self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
@@ -3352,6 +3365,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @contextlib.contextmanager
     def _history_suppressed(self):
+        self._flush_pending_history_write()
         original = bool(self._write_history)
         self._write_history = False
         try:
@@ -3360,6 +3374,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self._write_history = original
 
     def _reset_history_stack(self) -> None:
+        self._history_write_timer.stop()
+        self._history_write_pending = False
         self._prev_states.clear()
         self._next_states.clear()
         self._prev_states.append(self.tool_status)
@@ -3367,19 +3383,51 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
-        if not self._write_history:
+        if not self._write_history or self._restoring_from_dataset:
             return
+        if not self._prev_states:
+            self._prev_states.append(self.tool_status)
+            self._update_history_actions()
+            return
+        self._history_write_pending = True
+        self._history_write_timer.start()
+
+    @QtCore.Slot()
+    def _flush_pending_history_write(self) -> bool:
+        if not self._history_write_pending:
+            return False
+        timing_enabled = _manager_perf_timing_enabled()
+        start_time = time.perf_counter() if timing_enabled else 0.0
+        self._history_write_timer.stop()
+        self._history_write_pending = False
+        if not self._write_history or self._restoring_from_dataset:
+            return False
         curr_state = self.tool_status
         last_state = self._prev_states[-1] if self._prev_states else None
         if not self._history_state_equal(last_state, curr_state):
             self._prev_states.append(curr_state)
             self._next_states.clear()
             self._update_history_actions()
+            if timing_enabled:
+                logger.debug(
+                    "ToolWindow history flush appended state for %s in %.1f ms",
+                    type(self).__name__,
+                    (time.perf_counter() - start_time) * 1000.0,
+                )
+            return True
+        if timing_enabled:
+            logger.debug(
+                "ToolWindow history flush skipped unchanged state for %s in %.1f ms",
+                type(self).__name__,
+                (time.perf_counter() - start_time) * 1000.0,
+            )
+        return False
 
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._flush_pending_history_write()
         curr_state = self.tool_status
         if self._prev_states:
             self._prev_states[-1] = curr_state
@@ -3396,6 +3444,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @QtCore.Slot()
     def undo(self) -> None:
         """Undo the most recent recorded tool state change."""
+        self._flush_pending_history_write()
         if not self.undoable:
             return
         with self._history_suppressed():
@@ -3406,6 +3455,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @QtCore.Slot()
     def redo(self) -> None:
         """Redo the most recently undone tool state change."""
+        self._flush_pending_history_write()
         if not self.redoable:
             return
         with self._history_suppressed():
@@ -4685,11 +4735,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @property
     def _saved_tool_attrs(self) -> dict:
+        self._flush_pending_history_write()
         data_name = self.tool_data.name
         if data_name is None:
             data_name = "<none-value>"
         attrs: dict[str, typing.Any] = {
-            "tool_state": self.tool_status.model_dump_json(),
+            "tool_state": self._saved_tool_status().model_dump_json(),
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
@@ -4710,6 +4761,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 input_provenance.model_dump(mode="json")
             )
         return attrs
+
+    def _saved_tool_status(self) -> M:
+        """Return the state model to serialize for this tool."""
+        return self.tool_status
 
     @classmethod
     def can_save_and_load(cls) -> bool:
@@ -4733,6 +4788,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         """Return named data artifacts that belong to this saved tool window."""
         return {_SAVED_TOOL_DATA_NAME: self.tool_data}
+
+    def _persistence_reference_node_uids(self) -> frozenset[str]:
+        """Return manager node UIDs that saved data references may point to."""
+        return frozenset()
 
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
@@ -4840,6 +4899,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             A dataset containing the data and attributes needed to restore the tool.
 
         """
+        self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
         return self._append_persistence_payload(ds)
 
@@ -4895,26 +4955,37 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         kind = reference.get("kind")
         if kind == "parent_source":
             if source_parent_data is None:
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references parent ImageTool data, but the "
                     "parent data is unavailable."
                 )
             return cls._saved_source_spec_from_attrs(ds).apply(source_parent_data)
         if kind == "manager_node":
             if reference_resolver is None:
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references another manager node, but no "
                     "manager-node resolver is available."
                 )
             resolved = reference_resolver(reference)
             if resolved is None:
                 node_uid = reference.get("node_uid")
-                raise ValueError(
+                raise _MissingSavedToolDataReferenceError(
                     "Saved tool data references a manager node that could not be "
                     f"resolved: {node_uid!r}"
                 )
             return resolved
         raise ValueError(f"Unsupported saved tool data reference kind: {kind!r}")
+
+    @classmethod
+    def _missing_saved_tool_data_reference_optional(
+        cls,
+        variable_name: str,
+        reference: Mapping[str, typing.Any],
+        ds: xr.Dataset,
+    ) -> bool:
+        """Return whether an unresolved saved data reference can be skipped."""
+        del variable_name, reference, ds
+        return False
 
     @classmethod
     def _tool_data_items_from_dataset(
@@ -4928,17 +4999,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         references = cls._saved_tool_data_references(ds)
         data_items: dict[str, xr.DataArray] = {}
         for variable_name, reference in references.items():
-            if variable_name not in ds:
-                raise ValueError(
-                    f"Saved tool data reference points to missing variable "
-                    f"{variable_name!r}"
+            try:
+                data_items[variable_name] = cls._resolve_saved_tool_data_reference(
+                    reference,
+                    ds,
+                    source_parent_data=source_parent_data,
+                    reference_resolver=reference_resolver,
                 )
-            data_items[variable_name] = cls._resolve_saved_tool_data_reference(
-                reference,
-                ds,
-                source_parent_data=source_parent_data,
-                reference_resolver=reference_resolver,
-            )
+            except _MissingSavedToolDataReferenceError:
+                if cls._missing_saved_tool_data_reference_optional(
+                    variable_name, reference, ds
+                ):
+                    continue
+                raise
 
         for variable_name, data_array in ds.data_vars.items():
             if variable_name in data_items:
@@ -5005,10 +5078,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         tool = cls_obj(
             data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
         )
-        with tool._history_suppressed():
-            tool.tool_status = cls_obj.StateModel.model_validate_json(
-                ds.attrs["tool_state"]
-            )
+        previous_restoring = bool(getattr(tool, "_restoring_from_dataset", False))
+        tool._restoring_from_dataset = True
+        try:
+            with tool._history_suppressed():
+                tool.tool_status = cls_obj.StateModel.model_validate_json(
+                    ds.attrs["tool_state"]
+                )
+        finally:
+            tool._restoring_from_dataset = previous_restoring
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         source_spec = None
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
@@ -5130,6 +5208,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         """
         return self.from_dataset(self.to_dataset(), **kwargs)
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._flush_pending_history_write()
+        return super().closeEvent(event)
 
     @property
     def _tool_display_name(self) -> str:

@@ -11,6 +11,7 @@ from erlab.interactive._figurecomposer._operations import (
     _method,
     _photon_energy,
     _plot_slices,
+    _set_palette,
 )
 
 if typing.TYPE_CHECKING:
@@ -25,6 +26,7 @@ if typing.TYPE_CHECKING:
 _OPERATION_SPECS = {
     spec.kind: spec
     for spec in (
+        _set_palette.SPEC,
         _plot_slices.SPEC,
         _line_profile.SPEC,
         _bz_overlay.SPEC,

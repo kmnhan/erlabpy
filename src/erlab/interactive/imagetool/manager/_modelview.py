@@ -684,6 +684,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             except RuntimeError:
                 self.preview_popup.hide()
                 return
+            if pixmap is None or pixmap.isNull():
+                self.preview_popup.hide()
+                return
 
             self._show_popup(
                 height / width,

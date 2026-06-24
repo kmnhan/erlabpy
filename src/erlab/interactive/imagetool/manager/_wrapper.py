@@ -6,6 +6,7 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 
 import contextlib
 import datetime
+import functools
 import keyword
 import logging
 import pathlib
@@ -146,7 +147,7 @@ def _preview_from_imagetool(
     except RuntimeError:
         return fallback_ratio, fallback_pixmap
 
-    if pixmap.isNull():
+    if pixmap is None or pixmap.isNull():
         return fallback_ratio, fallback_pixmap
 
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
@@ -318,6 +319,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_spec: provenance.ToolProvenanceSpec | None = None
         self._source_binding: provenance.ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: provenance.ToolProvenanceSpec | None = None
+        self._detached_live_parent_data: xr.DataArray | None = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
         self._output_id: str | None = None
@@ -372,8 +374,14 @@ class _ManagedWindowNode(QtCore.QObject):
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
         if self.imagetool is not None:
+            manager = self._manager()
+            if manager is not None:
+                manager._unregister_interaction_window(self.imagetool)
             self._detach_imagetool()
         elif self.tool_window is not None:
+            manager = self._manager()
+            if manager is not None:
+                manager._unregister_interaction_window(self.tool_window)
             old = self.tool_window
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigInfoChanged.disconnect(self._handle_tool_info_changed)
@@ -397,6 +405,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._imagetool = value
             self._tool_window = None
             self.manager._install_workspace_save_shortcut(value)
+            self.manager._register_interaction_window(value)
             if self._provenance_spec is not None or self._source_spec is not None:
                 value.set_provenance_spec(self._provenance_spec or self._source_spec)
             value.installEventFilter(self)
@@ -422,6 +431,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._tool_window = tool
         self._imagetool = None
         self.manager._install_workspace_save_shortcut(tool)
+        self.manager._register_interaction_window(tool)
         tool.installEventFilter(self)
         tool.sigInfoChanged.connect(self._handle_tool_info_changed)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
@@ -443,6 +453,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
         manager._install_workspace_save_shortcut(window)
+        manager._register_interaction_window(window)
         if manager._tool_graph.nodes.get(self.uid) is self:
             manager._set_node_window_modified(
                 self.uid,
@@ -841,14 +852,52 @@ class _ManagedWindowNode(QtCore.QObject):
     def snapshot_token(self) -> str:
         return self._snapshot_token
 
-    def _advance_snapshot_token(self) -> None:
+    @staticmethod
+    def _is_live_source_spec(
+        spec: provenance.ToolProvenanceSpec | None,
+    ) -> bool:
+        with contextlib.suppress(TypeError):
+            return provenance.require_live_source_spec(spec) is not None
+        return False
+
+    @property
+    def detached_live_parent_data(self) -> xr.DataArray | None:
+        return self._detached_live_parent_data
+
+    def _set_detached_live_parent_data(
+        self,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
+        parent_data: xr.DataArray | None,
+    ) -> None:
+        if parent_data is None or not self._is_live_source_spec(provenance_spec):
+            self._detached_live_parent_data = None
+            return
+        self._detached_live_parent_data = parent_data.copy(deep=False)
+
+    def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
             return
         self._snapshot_token = uuid.uuid4().hex
-        self.manager.tree_view.refresh(self.uid)
-        self.manager._update_info(uid=self.uid)
-        self.manager._refresh_dependency_dependents(self.uid)
-        self.manager._mark_node_state_dirty(self.uid)
+        if defer_refresh:
+            self.manager._queue_idle_work(
+                ("snapshot-token-refresh", self.uid),
+                functools.partial(self._flush_snapshot_token_refresh, self.uid),
+            )
+            return
+        self._flush_snapshot_token_refresh(self.uid)
+
+    def _flush_snapshot_token_refresh(self, uid: str) -> None:
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager.tree_view.refresh(self.uid)
+        manager._update_info(uid=self.uid)
+        manager._refresh_dependency_dependents(self.uid)
+        manager._mark_node_state_dirty(self.uid)
 
     @property
     def source_state(self) -> _source_state_type:
@@ -883,6 +932,7 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = provenance.parse_tool_provenance_spec(provenance_spec)
+        self._detached_live_parent_data = None
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -983,6 +1033,7 @@ class _ManagedWindowNode(QtCore.QObject):
             source_spec = source_binding.materialize(
                 self.manager._parent_node(self).current_source_data()
             )
+        self._detached_live_parent_data = None
         self._source_spec = provenance.require_live_source_spec(source_spec)
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
@@ -1035,6 +1086,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._source_binding = None
+        self._detached_live_parent_data = None
         self._source_auto_update = bool(auto_update)
         self._output_id = output_id
         if provenance_spec is not None:
@@ -1045,6 +1097,8 @@ class _ManagedWindowNode(QtCore.QObject):
     def set_detached_provenance(
         self,
         provenance_spec: provenance.ToolProvenanceSpec | None,
+        *,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         if provenance_spec is not None and not isinstance(
             provenance_spec,
@@ -1059,6 +1113,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update = False
         self._output_id = None
         self.set_displayed_provenance(provenance_spec)
+        self._set_detached_live_parent_data(provenance_spec, live_parent_data)
         self._set_source_state("fresh")
         self.manager._mark_node_state_dirty(self.uid)
 
@@ -1120,6 +1175,7 @@ class _ManagedWindowNode(QtCore.QObject):
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
         preserve_filter: bool = False,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         accepted_filter_operation = None
         filtered = None
@@ -1144,6 +1200,7 @@ class _ManagedWindowNode(QtCore.QObject):
                     accept=True,
                 )
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
+        self._set_detached_live_parent_data(provenance_spec, live_parent_data)
         self._advance_snapshot_token()
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
@@ -1160,6 +1217,7 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         propagate_descendants: bool = True,
         preserve_filter: bool = False,
+        live_parent_data: xr.DataArray | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
         self._source_spec = None
@@ -1171,25 +1229,38 @@ class _ManagedWindowNode(QtCore.QObject):
             state="fresh",
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
+            live_parent_data=live_parent_data,
         )
 
     def _handle_tool_data_changed(self) -> None:
+        self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
+        self._advance_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
+            return
+        self.manager._queue_idle_work(
+            ("tool-data-refresh", self.uid),
+            functools.partial(self._flush_tool_data_changed, self.uid),
+        )
+
+    def _flush_tool_data_changed(self, uid: str) -> None:
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
             return
         tool_window = self.tool_window
         if tool_window is None:
             return
         if tool_window.source_state == "fresh":
-            self.manager._propagate_source_change_from_uid(self.uid)
+            manager._propagate_source_change_from_uid(self.uid)
         else:
-            self.manager._mark_descendants_source_state(
-                self.uid, tool_window.source_state
-            )
-        self.manager.tree_view.refresh(self.uid)
+            manager._mark_descendants_source_state(self.uid, tool_window.source_state)
+        manager.tree_view.refresh(self.uid)
         if tool_window.source_state == "fresh":
-            self.manager._resume_pending_source_refreshes(self.uid)
+            manager._resume_pending_source_refreshes(self.uid)
 
     def _set_source_auto_update(self, value: bool) -> None:
         self._source_auto_update = bool(value)
@@ -1326,26 +1397,42 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
+        manager._note_interaction_activity()
         manager._mark_tool_info_dirty(self.uid)
+        manager._queue_idle_work(
+            ("tool-info-refresh", self.uid),
+            functools.partial(self._flush_tool_info_changed, self.uid),
+        )
+
+    def _flush_tool_info_changed(self, uid: str) -> None:
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
         manager._update_figure_gallery_icon(self.uid)
-        manager._schedule_tool_metadata_update(self.uid)
+        manager._update_info(uid=self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
         if self.manager._workspace_state.closing_document:
             return
+        self.manager._note_interaction_activity()
         self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
+        self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
+        self._advance_snapshot_token(defer_refresh=True)
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
+        self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
-        self._refresh_node_info()
+        self._advance_snapshot_token(defer_refresh=True)
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:

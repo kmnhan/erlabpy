@@ -207,6 +207,8 @@ def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
 def _clear_selection_dialog(dialog: SelectionDialog) -> None:
     for row in dialog.rows:
         row.use_check.setChecked(False)
+        row.start_none_check.setChecked(False)
+        row.stop_none_check.setChecked(False)
         row.step_check.setChecked(False)
         row.width_check.setChecked(False)
 
@@ -1476,8 +1478,12 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
 
     expr = image_plot._selection_expr_for_cursor("data", 0, (0, 2))
     assert ".qsel.mean((" in expr
-    assert "'a\"b'" in expr
-    assert '"c"' in expr
+    result = _exec_data_fragment(win.slicer_area.data, expr)
+    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        win.slicer_area.data.copy(deep=False)
+    ).isel({'a"b': slice(1, 4), "c": slice(1, 4)})
+    expected = expected.qsel.mean(('a"b', "c"))
+    xarray.testing.assert_identical(result, expected)
 
     win.close()
 
@@ -3802,6 +3808,48 @@ def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None
     namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(
         namespace["derived"].rename(None),
+        expected.rename(None),
+    )
+
+    child.close()
+    win.close()
+
+
+def test_image_open_in_new_window_restores_nonuniform_public_dims(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("sample_temp", "eV", "alpha"),
+        coords={
+            "sample_temp": [10.0, 20.5, 22.0],
+            "eV": np.arange(4.0),
+            "alpha": np.arange(5.0),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    expected = image.make_tool_source_spec().apply(data)
+
+    assert image.current_data.dims == ("sample_temp", "eV")
+    assert "sample_temp_idx" not in image.current_data.dims
+    xarray.testing.assert_identical(
+        image.current_data.rename(None),
+        expected.rename(None),
+    )
+
+    image.open_in_new_window()
+    qtbot.wait_until(
+        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
+        timeout=5000,
+    )
+    child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
+
+    assert child.slicer_area._data.dims == ("sample_temp", "eV")
+    assert child.slicer_area.displayed_data.dims == ("sample_temp", "eV")
+    xarray.testing.assert_identical(
+        child.slicer_area.displayed_data.rename(None),
         expected.rename(None),
     )
 
@@ -7162,6 +7210,16 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
         return original_apply(self, data_array, parent_data=parent_data)
 
     monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _count_apply)
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "setOverrideCursor",
+        lambda *_args: pytest.fail("accept should not set a global cursor"),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "restoreOverrideCursor",
+        lambda: pytest.fail("accept should not restore a global cursor"),
+    )
 
     row = dialog.rows[-1]
     _set_combo_data(row.action_combo, "aggregate")
@@ -7458,6 +7516,133 @@ def test_selection_dialog_isel_range_step_executes_code(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_isel_negative_point_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    _set_combo_data(row.kind_combo, "point")
+    assert row.index_start_spin.minimum() <= -data.sizes["alpha"]
+    row.index_start_spin.setValue(-1)
+
+    expected = data.isel(alpha=-1)
+    assert dialog.source_operations() == [
+        provenance.IselOperation(kwargs={"alpha": -1})
+    ]
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("start", "stop", "expected_slice"),
+    [
+        (-4, -1, slice(-4, -1)),
+        (-1, 1, slice(1, -1)),
+    ],
+)
+def test_selection_dialog_isel_negative_range_executes_code(
+    qtbot, start: int, stop: int, expected_slice: slice
+) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[2]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    _set_combo_data(row.kind_combo, "range")
+    assert row.index_start_spin.minimum() <= -data.sizes["beta"]
+    assert row.index_stop_spin.minimum() <= -data.sizes["beta"]
+    row.index_start_spin.setValue(start)
+    row.index_stop_spin.setValue(stop)
+
+    expected = data.isel(beta=expected_slice)
+    assert dialog.source_operations() == [
+        provenance.IselOperation(kwargs={"beta": expected_slice})
+    ]
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("start_none", "stop_none", "expected_slice"),
+    [
+        (True, False, slice(None, 3)),
+        (False, True, slice(1, None)),
+        (True, True, slice(None, None, 2)),
+    ],
+)
+@pytest.mark.parametrize(
+    ("method", "row_index", "dim"),
+    [
+        ("isel", 0, "alpha"),
+        ("sel", 1, "eV"),
+        ("qsel", 2, "beta"),
+    ],
+)
+def test_selection_dialog_open_ended_range_executes_code(
+    qtbot,
+    method: str,
+    row_index: int,
+    dim: str,
+    start_none: bool,
+    stop_none: bool,
+    expected_slice: slice,
+) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[row_index]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "range")
+    if method == "isel":
+        row.index_start_spin.setValue(1)
+        row.index_stop_spin.setValue(3)
+    else:
+        row.value_start_spin.setValue(1.0)
+        row.value_stop_spin.setValue(3.0)
+    row.start_none_check.setChecked(start_none)
+    row.stop_none_check.setChecked(stop_none)
+    if expected_slice.step is not None:
+        row.step_check.setChecked(True)
+        row.step_spin.setValue(expected_slice.step)
+
+    expected = getattr(data, method)(**{dim: expected_slice})
+    assert row.start_stack.isEnabled() == (not start_none)
+    assert row.stop_stack.isEnabled() == (not stop_none)
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    assert dialog.buttonBox.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
@@ -7562,6 +7747,40 @@ def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_restore_negative_isel_indexers(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    point_operation = provenance.IselOperation(kwargs={"alpha": -1})
+    dialog.restore_transform_operation(point_operation)
+    alpha_row = dialog.rows[0]
+    assert alpha_row.use_check.isChecked()
+    assert alpha_row.kind == "point"
+    assert alpha_row.index_start_spin.value() == -1
+    assert dialog.source_operations() == [point_operation]
+    xarray.testing.assert_identical(
+        dialog.process_data(dialog.public_data), data.isel(alpha=-1)
+    )
+
+    range_operation = provenance.IselOperation(kwargs={"beta": slice(-4, -1)})
+    dialog.restore_transform_operation(range_operation)
+    beta_row = dialog.rows[2]
+    assert beta_row.use_check.isChecked()
+    assert beta_row.kind == "range"
+    assert beta_row.index_start_spin.value() == -4
+    assert beta_row.index_stop_spin.value() == -1
+    assert dialog.source_operations() == [range_operation]
+    xarray.testing.assert_identical(
+        dialog.process_data(dialog.public_data), data.isel(beta=slice(-4, -1))
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
     qtbot,
 ) -> None:
@@ -7582,10 +7801,42 @@ def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
     assert beta_row.width_spin.value() == 1.5
     assert dialog.source_operations() == [qsel_operation]
 
-    with pytest.raises(ValueError, match="Open-ended selections"):
-        dialog.restore_transform_operation(
-            provenance.IselOperation(kwargs={"alpha": slice(None, 3)})
+    for operation, dim, start_none, stop_none, expected in (
+        (
+            provenance.IselOperation(kwargs={"alpha": slice(None, 3)}),
+            "alpha",
+            True,
+            False,
+            data.isel(alpha=slice(None, 3)),
+        ),
+        (
+            provenance.SelOperation(kwargs={"eV": slice(1.0, None)}),
+            "eV",
+            False,
+            True,
+            data.sel(eV=slice(1.0, None)),
+        ),
+        (
+            provenance.QSelOperation(kwargs={"beta": slice(None, None, 2)}),
+            "beta",
+            True,
+            True,
+            data.qsel(beta=slice(None, None, 2)),
+        ),
+    ):
+        dialog.restore_transform_operation(operation)
+        row = next(row for row in dialog.rows if row.dim == dim)
+        assert row.use_check.isChecked()
+        assert row.kind == "range"
+        assert row.start_none_check.isChecked() is start_none
+        assert row.stop_none_check.isChecked() is stop_none
+        assert row.start_stack.isEnabled() == (not start_none)
+        assert row.stop_stack.isEnabled() == (not stop_none)
+        assert dialog.source_operations() == [operation]
+        xarray.testing.assert_identical(
+            dialog.process_data(dialog.public_data), expected
         )
+
     with pytest.raises(ValueError, match="integer strides"):
         dialog.restore_transform_operation(
             provenance.IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})

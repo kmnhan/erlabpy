@@ -23,7 +23,11 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
-from erlab.interactive.imagetool.manager._modelview import _MIME, _RowBadge
+from erlab.interactive.imagetool.manager._modelview import (
+    _MIME,
+    _ImageToolWrapperItemDelegate,
+    _RowBadge,
+)
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
 
@@ -76,6 +80,84 @@ class _InfoRefreshTool(erlab.interactive.utils.ToolWindow[_InfoRefreshToolState]
     def emit_info_text(self, text: str) -> None:
         self._info_text = text
         self.sigInfoChanged.emit()
+
+
+def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeIndex:
+        def internalPointer(self) -> str:
+            return "child-1"
+
+        def data(self, *, role: QtCore.Qt.ItemDataRole) -> str:
+            assert role == QtCore.Qt.ItemDataRole.DisplayRole
+            return "child"
+
+    class _FakePreviewAction:
+        def isChecked(self) -> bool:
+            return True
+
+    class _FakeImageItem:
+        def getViewBox(self) -> object:
+            return types.SimpleNamespace(rect=lambda: QtCore.QRectF(0.0, 0.0, 2.0, 4.0))
+
+        def getPixmap(self) -> None:
+            return None
+
+    child_node = types.SimpleNamespace(
+        uid="child-1",
+        display_text="child",
+        type_badge_text="",
+        source_state="fresh",
+        source_auto_update=False,
+        imagetool=None,
+        tool_window=types.SimpleNamespace(
+            preview_pixmap=None,
+            preview_imageitem=_FakeImageItem(),
+        ),
+    )
+
+    class _FakeManager:
+        preview_action = _FakePreviewAction()
+
+        def _child_node(self, uid: str) -> object:
+            assert uid == "child-1"
+            return child_node
+
+        def dependency_status_for_uid(self, uid: str) -> None:
+            assert uid == "child-1"
+            return
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda *objects: all(obj is not None for obj in objects),
+    )
+    view = QtWidgets.QTreeView()
+    qtbot.addWidget(view)
+    manager = _FakeManager()
+    delegate = _ImageToolWrapperItemDelegate(
+        typing.cast("ImageToolManager", manager),
+        typing.cast("typing.Any", view),
+    )
+    option = QtWidgets.QStyleOptionViewItem()
+    option.rect = QtCore.QRect(0, 0, 160, 28)
+    option.widget = view
+    option.state = QtWidgets.QStyle.StateFlag.State_MouseOver
+    canvas = QtGui.QPixmap(160, 28)
+    canvas.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(canvas)
+    try:
+        delegate._paint_childtool(
+            painter,
+            option,
+            typing.cast("QtCore.QModelIndex", _FakeIndex()),
+        )
+    finally:
+        painter.end()
+
+    assert not delegate.preview_popup.isVisible()
 
 
 def test_drop_mimedata(
@@ -384,8 +466,6 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._tool_metadata_queue.set_interval(1)
-
         child_node = manager._child_node(uid)
         tool._info_text = "updated child info"
         child_node._handle_tool_info_changed()
@@ -396,10 +476,168 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
 
         assert "updated child info" not in manager.text_box.toPlainText()
         assert metadata_updates == []
-        assert manager._tool_metadata_queue.pending_uids == frozenset({uid})
-        manager._tool_metadata_queue.flush()
+        assert (
+            manager._interaction_gate.pending_keys.count(("tool-info-refresh", uid))
+            == 1
+        )
+        manager._flush_idle_work(force=True)
         assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
+
+
+def test_manager_idle_queue_deduplicates_and_waits_for_idle(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        calls: list[str] = []
+
+        manager._note_interaction_activity()
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("old"))
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("new"))
+
+        assert calls == []
+        assert manager._interaction_gate.pending_keys == (("test", "work"),)
+        qtbot.wait_until(lambda: calls == ["new"], timeout=1000)
+        assert manager._interaction_gate.pending_keys == ()
+
+
+def test_manager_idle_queue_stops_when_activity_resumes(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+
+        def first_callback() -> None:
+            calls.append("first")
+            manager._note_interaction_activity()
+
+        manager._queue_idle_work(("test", "first"), first_callback)
+        manager._queue_idle_work(("test", "second"), lambda: calls.append("second"))
+
+        qtbot.wait_until(lambda: calls == ["first"], timeout=1000)
+        assert manager._interaction_gate.pending_keys == (("test", "second"),)
+
+        manager._flush_idle_work(force=True)
+
+        assert calls == ["first", "second"]
+        assert manager._interaction_gate.pending_keys == ()
+
+
+def test_manager_idle_queue_perf_timing_logs(
+    monkeypatch,
+    caplog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    monkeypatch.setenv("ERLAB_MANAGER_PERF_TIMING", "1")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="erlab.interactive.imagetool.manager._interaction",
+    )
+    with manager_context() as manager:
+        calls: list[str] = []
+        manager._queue_idle_work(("test", "work"), lambda: calls.append("work"))
+        manager._flush_idle_work(force=True)
+
+        assert calls == ["work"]
+        assert any(
+            "Manager forced work flush ran 1 callbacks" in record.message
+            for record in caplog.records
+        )
+
+
+def test_childtool_data_changed_deduplicates_descendant_refresh(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        manager._mark_workspace_clean()
+
+        propagated_uids: list[str] = []
+        refreshed_uids: list[str | None] = []
+        monkeypatch.setattr(
+            manager,
+            "_propagate_source_change_from_uid",
+            lambda changed_uid: propagated_uids.append(changed_uid),
+        )
+        monkeypatch.setattr(
+            manager.tree_view,
+            "refresh",
+            lambda target_uid=None: refreshed_uids.append(target_uid),
+        )
+
+        child_node = manager._child_node(uid)
+        child_node._handle_tool_data_changed()
+        child_node._handle_tool_data_changed()
+        child_node._handle_tool_data_changed()
+
+        assert manager._workspace_state.dirty_data == {uid}
+        assert propagated_uids == []
+        assert refreshed_uids == []
+        assert (
+            manager._interaction_gate.pending_keys.count(
+                ("snapshot-token-refresh", uid)
+            )
+            == 1
+        )
+        assert (
+            manager._interaction_gate.pending_keys.count(("tool-data-refresh", uid))
+            == 1
+        )
+
+        manager._flush_idle_work(force=True)
+
+        assert propagated_uids == [uid]
+        assert refreshed_uids == [uid, uid]
+
+
+def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        key_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_A,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            "a",
+        )
+        QtWidgets.QApplication.sendEvent(manager, key_event)
+
+        assert manager._interaction_active
+        qtbot.wait_until(lambda: not manager._interaction_active, timeout=1000)
+
+        edit = QtWidgets.QLineEdit(manager)
+        qtbot.addWidget(edit)
+        focus_event = QtGui.QFocusEvent(QtCore.QEvent.Type.FocusIn)
+        QtWidgets.QApplication.sendEvent(edit, focus_event)
+
+        assert manager._interaction_active
 
 
 def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
@@ -428,10 +666,9 @@ def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
         manager._tool_metadata_queue.set_interval(1)
 
         tool.emit_info_text("updated child info")
-        qtbot.wait_until(
-            lambda: not manager._tool_metadata_queue.is_active(), timeout=1000
-        )
 
+        assert manager._tool_metadata_queue.pending_uids == frozenset()
+        assert not manager._tool_metadata_queue.is_active()
         assert manager.text_box.toHtml() == visible_html
         assert "updated child info" not in manager.text_box.toPlainText()
 
@@ -466,6 +703,55 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
         ] == [manager._workspace_state.dirty_events[-1]]
 
 
+def test_root_imagetool_repeated_history_changes_mark_state_dirty_once(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        workspace = tmp_path / "normal.itws"
+        manager._workspace_state.path = workspace
+        manager._mark_workspace_clean()
+        file_path_calls: list[str] = []
+        modified_calls: list[bool] = []
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowFilePath",
+            lambda _manager, path: file_path_calls.append(path),
+        )
+        monkeypatch.setattr(
+            ImageToolManager,
+            "setWindowModified",
+            lambda _manager, modified: modified_calls.append(modified),
+        )
+
+        root = manager._tool_graph.root_wrappers[0]
+        root._handle_imagetool_state_changed()
+        root._handle_imagetool_state_changed()
+        root._handle_imagetool_state_changed()
+
+        assert manager._workspace_state.dirty_state == {root.uid}
+        assert [
+            event
+            for event in manager._workspace_state.dirty_events
+            if event.uid == root.uid
+        ] == [manager._workspace_state.dirty_events[-1]]
+        assert file_path_calls == []
+        assert modified_calls == []
+
+        manager._flush_idle_work(force=True)
+
+        assert file_path_calls == []
+        assert modified_calls == [True]
+
+
 def test_remove_imagetool_removes_childtools() -> None:
     uid = "child-uid-0"
     removed_uids: list[str] = []
@@ -495,6 +781,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
         _refresh_figure_source_controls=lambda: refresh_calls.append(None),
+        _workspace_state=types.SimpleNamespace(closing_document=False),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),

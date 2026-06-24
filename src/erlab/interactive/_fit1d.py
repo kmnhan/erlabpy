@@ -39,6 +39,7 @@ _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
 _T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
+_FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.10
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
@@ -327,6 +328,7 @@ class _ParameterEditDelegate(QtWidgets.QStyledItemDelegate):
 
 class _ParameterTableModel(QtCore.QAbstractTableModel):
     sigParamsChanged = QtCore.Signal()
+    sigInvalidBounds = QtCore.Signal(str)
 
     _COLUMN_NAMES = ("Parameter", "Value", "StdErr", "Min", "Max", "Vary")
 
@@ -481,23 +483,27 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
             return False
 
         try:
-            if col == 1:
-                param.value = float(value)
-            elif col == 3:
-                param.min = self._parse_bound(value, default=-np.inf)
+            new_value = float(value) if col == 1 else float(param.value)
+            new_min = float(param.min)
+            new_max = float(param.max)
+            if col == 3:
+                new_min = self._parse_bound(value, default=-np.inf)
             elif col == 4:
-                param.max = self._parse_bound(value, default=np.inf)
-            else:
+                new_max = self._parse_bound(value, default=np.inf)
+            elif col != 1:
                 return False
         except (TypeError, ValueError):
             return False
 
-        if param.min > param.max:
-            param.max = param.min
-        if param.value < param.min:
-            param.value = param.min
-        if param.value > param.max:
-            param.value = param.max
+        if not new_min < new_max:
+            self.sigInvalidBounds.emit(str(param.name))
+            return False
+
+        if new_value < new_min:
+            new_value = new_min
+        if new_value > new_max:
+            new_value = new_max
+        param.set(value=new_value, min=new_min, max=new_max)
 
         top_left = self.index(index.row(), 1)
         bottom_right = self.index(index.row(), 4)
@@ -963,6 +969,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._model: lmfit.Model = self._make_default_model()
         else:
             self._model = model
+        self._sanitize_model_convolution_for_x()
 
         self._model_load_path: str | None = None
         if data_name is None:
@@ -1001,6 +1008,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step: int = 0
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
+        self._fit_multi_last_live_refresh: float = 0.0
+        self._fit_multi_live_refresh_pending: bool = False
+        self._fit_multi_refresh_pending: bool = False
+        self._fit_multi_last_elapsed: float | None = None
+        self._fit_multi_sequence_write_history: bool | None = None
+        self._param_bounds_repair_names: list[str] | None = None
         self._write_history = False
 
     def _fit_finished_connection_key(
@@ -1157,6 +1170,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.param_model.sigParamsChanged.connect(self._refresh_slider_from_model)
         self.param_model.sigParamsChanged.connect(self._mark_fit_stale)
         self.param_model.sigParamsChanged.connect(self._write_state)
+        self.param_model.sigInvalidBounds.connect(
+            self._show_invalid_parameter_bounds_warning
+        )
         self._ensure_fit_finished_connections()
 
         self.param_view = QtWidgets.QTableView()
@@ -1488,11 +1504,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _make_default_model(self) -> lmfit.Model:
         return erlab.analysis.fit.models.MultiPeakModel(
             npeaks=1,
-            peak_shapes="lorentzian",
+            peak_shapes="voigt",
             fd=False,
             background="none",
-            convolve=True,
-            segmented=self._auto_segmented(convolve=True),
+            convolve=False,
+            segmented=False,
         )
 
     def _model_option_registry(self) -> dict[str, dict[str, Callable]]:
@@ -1577,7 +1593,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return dict(
             npeaks=self.npeaks_spin.value(),
             peak_shapes=typing.cast(
-                "typing.Literal['lorentzian', 'gaussian']",
+                "typing.Literal['lorentzian', 'gaussian', 'voigt']",
                 self.peak_shape_combo.currentText(),
             ),
             fd=self.fd_check.isChecked(),
@@ -1609,7 +1625,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.peak_shape_label = QtWidgets.QLabel("Peak shape")
         self.peak_shape_combo = QtWidgets.QComboBox()
         self.peak_shape_combo.addItems(["lorentzian", "gaussian", "voigt"])
-        self.peak_shape_combo.setCurrentText("lorentzian")
+        self.peak_shape_combo.setCurrentText("voigt")
 
         self.fd_check = QtWidgets.QCheckBox("Fermi-Dirac")
         self.fd_check.setChecked(False)
@@ -1630,7 +1646,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.degree_spin.setToolTip("Degree of the polynomial background.")
 
         self.convolve_check = QtWidgets.QCheckBox("Convolve")
-        self.convolve_check.setChecked(True)
+        self.convolve_check.setChecked(False)
         self.convolve_check.setToolTip(
             "Convolve peaks with a Gaussian to account for instrumental "
             "broadening.\n"
@@ -1849,6 +1865,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         prev_model = self._model
         prev_widths = dict(self._slider_widths)
         self._model = model
+        self._sanitize_model_convolution_for_x()
         self._model_load_path = model_load_path
 
         if reset_params_from_coord:
@@ -1933,8 +1950,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         with self._history_suppressed():
             self._data_name = status.data_name
             self._model_name = status.model_name
+            repaired_bounds = self._param_bounds_repair_names
+            warn_repaired_bounds = repaired_bounds is None
+            if repaired_bounds is None:
+                repaired_bounds = []
             restored_params = (
-                self._deserialize_params(status.params) if status.params else None
+                self._deserialize_params(status.params, repaired_bounds=repaired_bounds)
+                if status.params
+                else None
             )
             try:
                 model = lmfit.model.Model(lambda x: x)
@@ -1961,6 +1984,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 # Saved params are authoritative during restore; generating model
                 # defaults here can evaluate incomplete deserialized model state.
                 self._model = model
+                self._sanitize_model_convolution_for_x()
                 self._model_load_path = status.model_load_path
                 self._params = restored_params
                 self._initial_params = self._params.copy()
@@ -1992,6 +2016,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     self.domain_min_spin.setValue(status.domain[0])
                     self.domain_max_spin.setValue(status.domain[1])
             self._domain_changed()
+            if warn_repaired_bounds:
+                self._show_repaired_parameter_bounds_warning(repaired_bounds)
 
     def _sanitize_params_from_coord(
         self, params_from_coord: Mapping[str, str]
@@ -2216,6 +2242,21 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return str(self._model.independent_vars[0])
         return str(self._coord_name)
 
+    def _model_eval_values(self, xvals: np.ndarray) -> np.ndarray:
+        indep_var_kwargs = {self._independent_var(): xvals}
+        if "y" in self._model.independent_vars:
+            indep_var_kwargs["y"] = self._normalized_data_values()
+        values = np.asarray(
+            self._model.eval(params=self._params, **indep_var_kwargs),
+            dtype=float,
+        )
+        if values.shape != xvals.shape:
+            raise ValueError(
+                "Model evaluation returned "
+                f"{values.size} values for {xvals.size} x values"
+            )
+        return values
+
     def _update_fit_curve(self) -> None:
         xvals = self._x_values()
         if self._has_non_finite_params():
@@ -2234,22 +2275,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if "y" in self._model.independent_vars:
             x_fine = xvals
         try:
-            indep_var_kwargs = {self._independent_var(): x_fine}
-            if "y" in self._model.independent_vars:
-                indep_var_kwargs["y"] = self._normalized_data_values()
-            y_fine = self._model.eval(params=self._params, **indep_var_kwargs)
+            y_fine = self._model_eval_values(x_fine)
         except Exception:  # pragma: no cover - GUI feedback
             self._show_error("Evaluation failed", "Failed to evaluate model.")
             return
         self.fit_curve.setData(x_fine, y_fine)
-        residuals = self._residuals_from_result(xvals)
-        brushes = self._domain_brushes(xvals)
-        if brushes is None:
-            self.residual_curve.setData(xvals, residuals)
+        try:
+            residuals = self._residuals_from_result(xvals)
+        except Exception:
+            logger.warning("Failed to evaluate fit residuals", exc_info=True)
+            self.residual_curve.setData([], [])
+            self._last_residual = None
         else:
-            self.residual_curve.setData(xvals, residuals, symbolBrush=brushes)
+            brushes = self._domain_brushes(xvals)
+            if brushes is None:
+                self.residual_curve.setData(xvals, residuals)
+            else:
+                self.residual_curve.setData(xvals, residuals, symbolBrush=brushes)
+            self._last_residual = residuals
         self._last_fit_y = y_fine
-        self._last_residual = residuals
         self._update_component_curves(x_fine)
         self._update_peak_lines(xvals)
 
@@ -2259,21 +2303,41 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     ) -> list[tuple[typing.Any, ...]]:
         return [p.__getstate__() for p in params.values()]
 
-    @typing.overload
     @staticmethod
-    def _deserialize_params(
-        state: None,
-    ) -> None: ...
+    def _repair_equal_bound_param_state(
+        pstate: tuple[typing.Any, ...],
+        repaired_bounds: list[str] | None,
+    ) -> tuple[typing.Any, ...] | None:
+        if len(pstate) < 6:
+            return None
+        try:
+            lower = float(pstate[4])
+            upper = float(pstate[5])
+        except (TypeError, ValueError):
+            return None
+        if not (np.isfinite(lower) and lower == upper):
+            return None
 
-    @typing.overload
-    @staticmethod
-    def _deserialize_params(
-        state: list[tuple[typing.Any, ...]],
-    ) -> lmfit.Parameters: ...
+        repaired = list(pstate)
+        lower_bound = float(np.nextafter(lower, -np.inf))
+        upper_bound = float(np.nextafter(lower, np.inf))
+        if np.isclose(lower_bound, upper_bound, atol=1e-13, rtol=1e-13):
+            padding = max(abs(lower), 1.0) * 1e-12
+            lower_bound = lower - padding
+            upper_bound = lower + padding
+        repaired[1] = lower
+        repaired[2] = False
+        repaired[4] = lower_bound
+        repaired[5] = upper_bound
+        if repaired_bounds is not None:
+            repaired_bounds.append(str(pstate[0]))
+        return tuple(repaired)
 
     @staticmethod
     def _deserialize_params(
         state: list[tuple[typing.Any, ...]] | None,
+        *,
+        repaired_bounds: list[str] | None = None,
     ) -> lmfit.Parameters | None:
         if state is None:
             return None
@@ -2282,7 +2346,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         param_list = []
         for pstate in state:
             param = lmfit.Parameter(name="")
-            param.__setstate__(pstate)
+            try:
+                param.__setstate__(pstate)
+            except ValueError as exc:
+                if "min == max" not in str(exc):
+                    raise
+                repaired_state = Fit1DTool._repair_equal_bound_param_state(
+                    pstate, repaired_bounds
+                )
+                if repaired_state is None:
+                    raise
+                param.__setstate__(repaired_state)
             param_list.append(param)
         params.add_many(*param_list)
         return params
@@ -2422,7 +2496,33 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if xvals.size < 3:
             return False
         diffs = np.diff(xvals)
-        return not np.allclose(diffs, diffs[0])
+        return not np.allclose(
+            diffs, diffs[0]
+        ) and self._x_values_support_segmented_convolution(xvals)
+
+    @staticmethod
+    def _x_values_support_segmented_convolution(xvals: np.ndarray) -> bool:
+        if xvals.size < 3 or not np.all(np.isfinite(xvals)):
+            return False
+        from erlab.utils._array_jit import _split_uniform_segments
+
+        try:
+            segments = _split_uniform_segments(
+                np.ascontiguousarray(xvals, dtype=np.float64)
+            )
+        except Exception:
+            return False
+        return sum(segment.size for segment in segments) == xvals.size
+
+    def _sanitize_model_convolution_for_x(self) -> None:
+        func = getattr(self._model, "func", None)
+        if (
+            isinstance(func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction)
+            and func.convolve
+            and func.segmented
+            and not self._x_values_support_segmented_convolution(self._x_values())
+        ):
+            func.segmented = False
 
     def _update_component_curves(self, xvals: np.ndarray) -> None:
         if (
@@ -2510,6 +2610,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             line.refresh_pos()
 
     def _residuals_from_result(self, xvals: np.ndarray) -> np.ndarray:
+        data_values = self._normalized_data_values()
         if (
             self._fit_is_current
             and self._last_result_ds is not None
@@ -2519,13 +2620,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             best_fit = getattr(
                 self._last_result_ds.modelfit_results.compute().item(), "best_fit", None
             )
-            if best_fit is not None and best_fit.size == self._data.size:
-                return self._normalized_data_values() - best_fit
-        indep_var_kwargs = {self._independent_var(): xvals}
-        if "y" in self._model.independent_vars:
-            indep_var_kwargs["y"] = self._normalized_data_values()
-        yvals = self._model.eval(params=self._params, **indep_var_kwargs)
-        return self._normalized_data_values() - yvals
+            if best_fit is not None and np.shape(best_fit) == data_values.shape:
+                return data_values - best_fit
+        yvals = self._model_eval_values(xvals)
+        return data_values - yvals
 
     @staticmethod
     def _params_match_result(ds: xr.Dataset, params: lmfit.Parameters) -> bool:
@@ -2547,7 +2645,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _fit_step_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
         widgets: list[QtWidgets.QWidget] = []
-        for widget in (
+        for candidate in (
             self.plot_widget.viewport(),
             self.param_view.viewport(),
             self.elapsed_value,
@@ -2558,6 +2656,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.bic_value,
             self.fit_multi_button,
         ):
+            widget: object = candidate
             if (
                 isinstance(widget, QtWidgets.QWidget)
                 and erlab.interactive.utils.qt_is_valid(widget)
@@ -2571,11 +2670,116 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if widget.isVisible():
                 widget.repaint()
 
+    def _fit_progress_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
+        widgets: list[QtWidgets.QWidget] = []
+        for candidate in (
+            self.elapsed_value,
+            self.nfev_out_value,
+            self.redchi_value,
+            self.rsq_value,
+            self.aic_value,
+            self.bic_value,
+            self.fit_multi_button,
+        ):
+            widget: object = candidate
+            if (
+                isinstance(widget, QtWidgets.QWidget)
+                and erlab.interactive.utils.qt_is_valid(widget)
+                and not any(widget is existing for existing in widgets)
+            ):
+                widgets.append(widget)
+        return tuple(widgets)
+
+    def _request_fit_progress_paint(self) -> None:
+        for widget in self._fit_progress_paint_widgets():
+            if widget.isVisible():
+                widget.repaint()
+
+    def _fit_multi_sequence_active(self) -> bool:
+        return self._fit_multi_total is not None
+
+    def _fit_multi_live_refresh_due(self) -> bool:
+        now = time.monotonic()
+        if (
+            self._fit_multi_last_live_refresh <= 0.0
+            or now - self._fit_multi_last_live_refresh
+            >= _FIT_MULTI_LIVE_REFRESH_INTERVAL_S
+        ):
+            self._fit_multi_last_live_refresh = now
+            return True
+        return False
+
+    def _begin_fit_multi_history(self) -> None:
+        if self._fit_multi_sequence_write_history is not None:
+            return
+        self._fit_multi_sequence_write_history = self._write_history
+        self._write_history = False
+
+    def _finish_fit_multi_history(self) -> None:
+        write_history = self._fit_multi_sequence_write_history
+        self._fit_multi_sequence_write_history = None
+        if write_history is None:
+            return
+        self._write_history = write_history
+        if write_history:
+            self._replace_last_state()
+
+    def _store_multi_fit_result(
+        self, result_ds: xr.Dataset, t0: float
+    ) -> lmfit.Parameters:
+        self._last_result_ds = result_ds.copy()
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self._params = result.params.copy()
+        self._fit_is_current = True
+        self._fit_multi_last_elapsed = time.perf_counter() - t0
+        self._fit_multi_live_refresh_pending = True
+        self._fit_multi_refresh_pending = True
+        self.sigFitFinished.emit(self._params.copy())
+        return self._params
+
+    def _sync_multi_fit_view(self, *, full: bool = False) -> None:
+        if self._last_result_ds is None:
+            return
+        if full:
+            if not self._fit_multi_refresh_pending:
+                return
+            self._fit_multi_refresh_pending = False
+            self._fit_multi_live_refresh_pending = False
+        elif not self._fit_multi_live_refresh_pending:
+            return
+        else:
+            self._fit_multi_live_refresh_pending = False
+
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self.param_model.set_params(
+            self._params, self._params_from_coord, emit_changed=False
+        )
+        self._update_fit_curve()
+        self._refresh_slider_from_model()
+        self._set_fit_stats(
+            result,
+            elapsed=self._fit_multi_last_elapsed,
+            emit_info=full,
+        )
+        self._sync_fit_result_state(notify=full)
+        self._mark_fit_fresh(emit_info=full)
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
+
+        viewport = self.param_view.viewport()
+        if viewport:  # pragma: no branch
+            viewport.update()
+
     def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
-        self._request_fit_step_paint()
+        if self._fit_multi_sequence_active():
+            if self._fit_multi_live_refresh_due():
+                self._sync_multi_fit_view()
+                self._request_fit_step_paint()
+        else:
+            self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
 
-    def _sync_fit_result_state(self) -> None:
+    def _sync_fit_result_state(self, *, notify: bool = True) -> None:
         pass
 
     def _set_fit_ds(self, result_ds: xr.Dataset, t0: float) -> lmfit.Parameters:
@@ -2720,6 +2924,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(None)
         self._mark_fit_stale()
 
+    def _fit_start_errored(self, *, multi: bool) -> None:
+        self._fit_thread = None
+        self._pending_fit_action = None
+        self._fit_cancel_requested = False
+        self._fit_running_multi = False
+        self._fit_start_time = None
+        self._fit_errored(
+            erlab.interactive.utils._format_traceback(traceback.format_exc())
+        )
+        self._set_fit_running(False, multi=multi)
+
     def _start_fit_worker(
         self,
         fit_data: xr.DataArray,
@@ -2736,23 +2951,24 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._show_warning("Fit running", "A fit is already running.")
             return False
 
-        self._fit_start_time = time.perf_counter()
-        self._fit_running_multi = multi
-        self._fit_cancel_requested = False
-        self._set_fit_running(True, multi=multi, step=step, total=total)
-
-        thread = _FitWorker(
-            fit_data,
-            self._coord_name,
-            self._model,
-            params,
-            max_nfev=self.nfev_spin.value(),
-            method=self.method_combo.currentText(),
-            timeout=self.timeout_spin.value(),
-        )
-        if hasattr(thread, "setServiceLevel"):
-            thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
+        try:
+            thread = _FitWorker(
+                fit_data,
+                self._coord_name,
+                self._model,
+                params,
+                max_nfev=self.nfev_spin.value(),
+                method=self.method_combo.currentText(),
+                timeout=self.timeout_spin.value(),
+            )
+            if hasattr(thread, "setServiceLevel"):
+                thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
+            thread.finished.connect(
+                lambda thread=thread: self._finalize_fit_thread(thread)
+            )
+        except Exception:
+            self._fit_start_errored(multi=multi)
+            return False
 
         def _queue_success(
             result_ds: xr.Dataset, *, thread: _FitWorker = thread
@@ -2776,8 +2992,26 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             )
         )
 
+        was_running_multi = multi and self._fit_running_multi
+        self._fit_start_time = time.perf_counter()
+        self._fit_running_multi = multi
+        self._fit_cancel_requested = False
+        self._set_fit_running(
+            True,
+            multi=multi,
+            step=step,
+            total=total,
+            emit_info=not was_running_multi,
+        )
         self._fit_thread = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._fit_thread = None
+            with contextlib.suppress(Exception):
+                thread.deleteLater()
+            self._fit_start_errored(multi=multi)
+            return False
         return True
 
     def _queue_fit_action(
@@ -2809,9 +3043,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 thread.deleteLater()
             return
         self._fit_cancel_requested = False
-        if action is not None:
-            action()
-        thread.deleteLater()
+        action_failed = False
+        try:
+            if action is not None:
+                action()
+        except Exception:
+            action_failed = True
+            try:
+                self._fit_errored(
+                    erlab.interactive.utils._format_traceback(traceback.format_exc())
+                )
+            finally:
+                self._fit_cancelled()
+        finally:
+            if action_failed:
+                self._pending_fit_action = None
+            thread.deleteLater()
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -2836,8 +3083,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_errored(message)
             self._set_fit_running(False, multi=False)
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=False)
+            return False
+
         return self._start_fit_worker(
-            self._fit_data(),
+            fit_data,
             self._params,
             multi=False,
             on_success=_on_success,
@@ -2850,10 +3103,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._show_warning("Fit running", "A fit is already running.")
             return
 
+        try:
+            fit_data = self._fit_data()
+        except Exception:
+            self._fit_start_errored(multi=True)
+            self._finish_multi_fit()
+            return
+
         self._fit_multi_total = count
         self._fit_multi_step = 0
-        self._fit_multi_fit_data = self._fit_data()
+        self._fit_multi_fit_data = fit_data
         self._fit_multi_params = self._params
+        self._fit_multi_last_live_refresh = time.monotonic()
+        self._fit_multi_live_refresh_pending = False
+        self._fit_multi_refresh_pending = False
+        self._fit_multi_last_elapsed = None
+        self._begin_fit_multi_history()
         self._start_next_multi_fit()
 
     def _start_next_multi_fit(self) -> None:
@@ -2876,7 +3141,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         def _on_success(result_ds: xr.Dataset) -> None:
             if self._fit_start_time is None:
                 return
-            self._fit_multi_params = self._set_fit_ds(result_ds, self._fit_start_time)
+            self._fit_multi_params = self._store_multi_fit_result(
+                result_ds, self._fit_start_time
+            )
             if self._fit_multi_step >= (self._fit_multi_total or 0):
                 self._finish_multi_fit()
             else:
@@ -2906,15 +3173,26 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
 
     def _finish_multi_fit(self) -> None:
+        self._sync_multi_fit_view(full=True)
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_multi_total = None
         self._fit_multi_step = 0
         self._fit_multi_fit_data = None
         self._fit_multi_params = None
+        self._fit_multi_live_refresh_pending = False
+        self._fit_multi_refresh_pending = False
+        self._fit_multi_last_elapsed = None
+        self._finish_fit_multi_history()
 
     def _set_fit_running(
-        self, running: bool, *, multi: bool, step: int = 0, total: int = 0
+        self,
+        running: bool,
+        *,
+        multi: bool,
+        step: int = 0,
+        total: int = 0,
+        emit_info: bool = True,
     ) -> None:
         if running:
             self.fit_button.setEnabled(False)
@@ -2933,7 +3211,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(False)
             self.cancel_fit_button.setText("Cancel")
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def _make_model_code(self, data_name: str) -> tuple[str, str, list[str]]:
         lines: list[str] = []
@@ -3500,7 +3779,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._refresh_slider_from_model()
 
     def _set_fit_stats(
-        self, result: lmfit.model.ModelResult | None, *, elapsed: float | None = None
+        self,
+        result: lmfit.model.ModelResult | None,
+        *,
+        elapsed: float | None = None,
+        emit_info: bool = True,
     ) -> None:
         if result is None:
             self.elapsed_value.setText("—")
@@ -3510,7 +3793,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.rsq_value.setText("—")
             self.aic_value.setText("—")
             self.bic_value.setText("—")
-            self._emit_info_changed()
+            if emit_info:
+                self._emit_info_changed()
             return
         if elapsed is None:
             elapsed = float("nan")
@@ -3533,7 +3817,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.rsq_value.setText(f"{r_squared:.4g}")
         self.aic_value.setText(f"{result.aic:.4g}")
         self.bic_value.setText(f"{result.bic:.4g}")
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def _set_elapsed_status(self, elapsed: float | None, timed_out: bool) -> None:
         if elapsed is None or not np.isfinite(elapsed):
@@ -3555,17 +3840,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _has_non_finite_params(self) -> bool:
         return any(not np.isfinite(param.value) for param in self._params.values())
 
-    def _mark_fit_stale(self) -> None:
+    def _mark_fit_stale(self, *, emit_info: bool = True) -> None:
         self._fit_is_current = False
         self.save_button.setEnabled(False)
         self.copy_button.setEnabled(False)
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
-    def _mark_fit_fresh(self) -> None:
+    def _mark_fit_fresh(self, *, emit_info: bool = True) -> None:
         self._fit_is_current = True
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -3616,6 +3903,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)
 
+    def _show_invalid_parameter_bounds_warning(self, param_name: str) -> None:
+        self._show_warning(
+            "Invalid parameter bounds",
+            f"Parameter '{param_name}' requires a lower bound below its upper bound.",
+        )
+
+    def _show_repaired_parameter_bounds_warning(self, param_names: list[str]) -> None:
+        if not param_names:
+            return
+        unique_names = ", ".join(dict.fromkeys(param_names))
+        self._show_warning(
+            "Parameter bounds repaired",
+            "Saved parameters with equal lower and upper bounds were restored as "
+            f"fixed parameters: {unique_names}.",
+        )
+
     def _show_error(
         self, title: str, text: str, detailed_text: str | None = None
     ) -> None:
@@ -3635,13 +3938,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
         thread = self._fit_thread
+        self._pending_fit_action = None
+        if thread is None:
+            self._fit_cancel_requested = True
+            self._fit_cancelled()
+            self._fit_cancel_requested = False
+            return True
         if thread is not None:
             thread.cancel()
             thread.requestInterruption()
         self._fit_cancel_requested = True
         self.cancel_fit_button.setEnabled(False)
         self.cancel_fit_button.setText("Canceling...")
-        self._pending_fit_action = None
         if wait and thread is not None:
             finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
             if finished:

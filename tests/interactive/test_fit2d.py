@@ -5,6 +5,7 @@ import re
 import types
 import warnings
 
+import lmfit
 import numpy as np
 import pyqtgraph as pg
 import pytest
@@ -12,6 +13,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive._fit2d as fit2d_module
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import provenance
 from tests._qt_helpers import signal_receiver_count
@@ -54,10 +56,36 @@ def _assert_fit_result_dataset_equivalent(
 
 
 def _fit_result_dataset(params, *, nfev: int = 1) -> xr.Dataset:
+    params = params.copy()
+    param_args = ", ".join(("x", *params.keys()))
+    namespace = {"np": np}
+    exec(  # noqa: S102
+        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
+        namespace,
+    )
+    model = lmfit.Model(namespace["_model_func"])
+    result = lmfit.model.ModelResult(
+        model,
+        params,
+        data=np.zeros(3),
+        fcn_args=(np.arange(3, dtype=float),),
+        max_nfev=nfev,
+    )
+    result.params = params.copy()
+    result.nfev = nfev
+    result.redchi = 1.0
+    result.rsquared = 0.9
+    result.aic = 1.0
+    result.bic = 2.0
+
+    return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
+
+
+def _placeholder_fit_result_dataset(params) -> xr.Dataset:
     class _Result:
         def __init__(self) -> None:
             self.params = params.copy()
-            self.nfev = nfev
+            self.nfev = 1
             self.redchi = 1.0
             self.rsquared = 0.9
             self.aic = 1.0
@@ -115,6 +143,13 @@ def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
     win._set_current_index(0)
     win._fit_is_current = True
     win._update_full_fit_saveable()
+    win._update_param_plot_options()
+
+
+def _seed_fit2d_param_results(win: Fit2DTool, params_list) -> None:
+    win._params_full = [params.copy() for params in params_list]
+    win._result_ds_full = [_fit_result_dataset(params) for params in params_list]
+    win._update_param_plot_options()
 
 
 def _lmfit_json_with_callable_pyversion(
@@ -318,7 +353,6 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     win.param_plot_overlay_check.setChecked(True)
 
     status = win.tool_status
-    expected_param_names = list(win._params.keys())
 
     win_restored = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win_restored)
@@ -332,9 +366,9 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     assert [
         win_restored.param_plot_combo.itemText(i)
         for i in range(win_restored.param_plot_combo.count())
-    ] == expected_param_names
-    win_restored.param_plot_combo.setCurrentText("p0_width")
-    assert win_restored.param_plot_overlay_check.isChecked()
+    ] == []
+    assert not win_restored.param_plot_combo.isEnabled()
+    assert not win_restored.param_plot_overlay_check.isChecked()
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
@@ -344,8 +378,9 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     qtbot.addWidget(win_roundtripped)
     assert isinstance(win_roundtripped, Fit2DTool)
     assert win_roundtripped.tool_status.params == status.params
-    win_roundtripped.param_plot_combo.setCurrentText("p0_width")
-    assert win_roundtripped.param_plot_overlay_check.isChecked()
+    assert win_roundtripped.param_plot_combo.count() == 0
+    assert not win_roundtripped.param_plot_combo.isEnabled()
+    assert not win_roundtripped.param_plot_overlay_check.isChecked()
 
 
 @pytest.mark.parametrize("case_name", ["multipeak", "polynomial"])
@@ -446,6 +481,9 @@ def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
     win.y_min_spin.setValue(1)
     win.y_max_spin.setValue(2)
     param_name = win.param_plot_combo.itemText(0)
@@ -466,7 +504,8 @@ def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
     assert win_restored.y_min_spin.value() == 1
     assert win_restored.y_max_spin.value() == 2
     win_restored.param_plot_combo.setCurrentText(param_name)
-    assert win_restored.param_plot_overlay_check.isChecked() is True
+    assert win_restored.param_plot_combo.count() == 0
+    assert win_restored.param_plot_overlay_check.isChecked() is False
 
 
 def test_fit2d_overlay_legend_sync(qtbot) -> None:
@@ -475,6 +514,9 @@ def test_fit2d_overlay_legend_sync(qtbot) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     param_name = win.param_plot_combo.itemText(0)
     win.param_plot_combo.setCurrentText(param_name)
     win.param_plot_overlay_check.setChecked(True)
@@ -505,6 +547,9 @@ def test_fit2d_update_param_plot_overlays_paths(qtbot) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     names = [win.param_plot_combo.itemText(i) for i in range(2)]
     for name in names:
         win._param_plot_overlay_states[name] = True
@@ -889,22 +934,8 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _DummyResult:
-        nfev = 1
-
-    class _DummyResults:
-        def compute(self):
-            return self
-
-        def item(self):
-            return _DummyResult()
-
-    class _DummyDataset:
-        modelfit_results = _DummyResults()
-
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -924,7 +955,7 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(_DummyDataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 
@@ -947,7 +978,16 @@ def test_fit2d_next_step_requests_paint_before_deferred_next_step(
 
     events: list[str] = []
 
-    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
+    monkeypatch.setattr(
+        win, "_refresh_slider_from_model", lambda: events.append("slider")
+    )
+
+    def _update_param_plot(*, notify: bool = True) -> None:
+        events.append(f"plot-{notify}")
+
+    monkeypatch.setattr(win, "_update_param_plot", _update_param_plot)
+    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
     monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
@@ -978,7 +1018,7 @@ def test_fit2d_next_step_requests_paint_before_deferred_next_step(
     events.clear()
     win._run_fit_2d("up")
 
-    assert events == ["start-1", "plot", "paint"]
+    assert events == ["start-1", "curve", "slider", "plot-False", "paint"]
     qtbot.waitUntil(lambda: "start-2" in events, timeout=1000)
     paint_after_first_start = events.index("paint", events.index("start-1"))
     assert paint_after_first_start < events.index("start-2")
@@ -994,6 +1034,7 @@ def test_fit2d_paints_once_between_finished_step_and_next_worker(
 
     events: list[str] = []
 
+    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
     monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
@@ -1027,6 +1068,147 @@ def test_fit2d_paints_once_between_finished_step_and_next_worker(
     assert events == ["start-1", "paint", "start-2"]
 
 
+def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+    clock_values = [100.0, 100.05, 100.30]
+
+    def _monotonic() -> float:
+        return clock_values.pop(0) if clock_values else 100.10
+
+    monkeypatch.setattr(fit2d_module.time, "monotonic", _monotonic)
+    monkeypatch.setattr(
+        win, "_update_param_plot_options", lambda: events.append("options")
+    )
+
+    def _update_param_plot(*, notify: bool = True) -> None:
+        events.append(f"plot-{notify}")
+
+    monkeypatch.setattr(win, "_update_param_plot", _update_param_plot)
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        events.append(f"start-{step}")
+        win._fit_start_time = 0.0
+        on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    events.clear()
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
+        timeout=1000,
+    )
+
+    assert events == [
+        "start-1",
+        "start-2",
+        "options",
+        "plot-False",
+        "paint",
+        "start-3",
+        "options",
+        "plot-True",
+    ]
+
+
+def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+
+    clock_values = [100.0, 100.05, 100.30]
+
+    def _monotonic() -> float:
+        return clock_values.pop(0) if clock_values else 100.10
+
+    refresh_modes: list[tuple[bool, bool, bool]] = []
+    original_refresh = win._refresh_contents_from_index
+
+    def _refresh_contents_from_index(
+        *,
+        mark_fit_stale: bool = True,
+        update_widgets: bool = True,
+        elapsed: float | None = None,
+        emit_info: bool = True,
+        emit_param_changed: bool = True,
+    ) -> None:
+        refresh_modes.append((update_widgets, emit_info, emit_param_changed))
+        original_refresh(
+            mark_fit_stale=mark_fit_stale,
+            update_widgets=update_widgets,
+            elapsed=elapsed,
+            emit_info=emit_info,
+            emit_param_changed=emit_param_changed,
+        )
+
+    started_steps: list[int] = []
+    monkeypatch.setattr(fit2d_module.time, "monotonic", _monotonic)
+    monkeypatch.setattr(
+        win, "_refresh_contents_from_index", _refresh_contents_from_index
+    )
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
+        timeout=1000,
+    )
+
+    assert started_steps == [1, 2, 3]
+    assert sum(not update for update, _, _ in refresh_modes) > 0
+    assert (True, False, False) in refresh_modes
+    assert refresh_modes[-1] == (True, True, True)
+    assert win.y_index_spin.value() == win.y_max_spin.value()
+    assert win._write_history is True
+
+
 def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
     qtbot, monkeypatch
 ) -> None:
@@ -1046,7 +1228,9 @@ def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
     events: list[str] = []
     win.param_model.sigParamsChanged.connect(lambda: param_changed.append(None))
     win.sigFitFinished.connect(lambda params: events.append("finished"))
-    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+    monkeypatch.setattr(
+        win, "_update_param_plot", lambda *, notify=True: events.append("plot")
+    )
 
     win._set_fit_ds(result_ds, 0.0)
 
@@ -1072,6 +1256,84 @@ def test_fit2d_fit_step_paint_widgets_skip_invalid_entries(qtbot) -> None:
     assert sum(widget is duplicate for widget in widgets) == 1
 
 
+def test_fit2d_sequence_state_and_history_edges(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._fit_2d_total = 2
+    win._sync_fit_result_state()
+    assert win._fit_2d_param_plot_refresh_pending
+
+    win._fit_2d_last_live_refresh = fit2d_module.time.monotonic()
+    assert not win._fit_2d_live_refresh_due()
+
+    replaced: list[bool] = []
+    monkeypatch.setattr(win, "_replace_last_state", lambda: replaced.append(True))
+    win._write_history = True
+    win._begin_fit_2d_sequence_history()
+    assert win._fit_2d_sequence_write_history is True
+    assert win._write_history is False
+    win._begin_fit_2d_sequence_history()
+    win._finish_fit_2d_sequence_history()
+    assert win._write_history is True
+    assert replaced == [True]
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        win, "_update_param_plot_options", lambda: events.append("options")
+    )
+    monkeypatch.setattr(
+        win,
+        "_update_param_plot",
+        lambda *, notify=True: events.append(f"plot-{notify}"),
+    )
+
+    win._fit_2d_param_plot_refresh_pending = False
+    win._flush_fit_2d_sequence_param_plot()
+    assert events == []
+    win._flush_fit_2d_sequence_param_plot(force=True, notify=False)
+    assert events == ["options", "plot-False"]
+
+
+def test_fit2d_sequence_view_live_refresh_edges(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        win,
+        "_refresh_contents_from_index",
+        lambda **kwargs: events.append(f"refresh-{kwargs['emit_info']}"),
+    )
+    monkeypatch.setattr(
+        win,
+        "_flush_fit_2d_sequence_param_plot",
+        lambda *, notify=True, force=False: events.append(f"plot-{notify}"),
+    )
+
+    win._fit_2d_live_refresh_pending = False
+    win._sync_fit_2d_sequence_view(0, full=False)
+    assert events == []
+
+    win._fit_2d_live_refresh_pending = True
+    win._sync_fit_2d_sequence_view(0, full=False)
+    assert events == ["refresh-False", "plot-False"]
+
+    events.clear()
+    win._fit_2d_total = 0
+    monkeypatch.setattr(
+        Fit2DTool.__mro__[1],
+        "_defer_next_fit_step",
+        lambda _self, callback: events.append("super") or callback(),
+    )
+    win._defer_next_fit_step(lambda: events.append("callback"))
+    assert events == ["super", "callback"]
+
+
 def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
     qtbot, monkeypatch
 ) -> None:
@@ -1080,22 +1342,8 @@ def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _DummyResult:
-        nfev = 1
-
-    class _DummyResults:
-        def compute(self):
-            return self
-
-        def item(self):
-            return _DummyResult()
-
-    class _DummyDataset:
-        modelfit_results = _DummyResults()
-
     started_steps: list[int] = []
 
-    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1115,7 +1363,7 @@ def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
         started_steps.append(step)
         win._fit_start_time = 0.0
         if step == 1:
-            on_success(_DummyDataset())
+            on_success(_fit_result_dataset(win._params))
             return True
         return False
 
@@ -1210,6 +1458,50 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
     assert win_restored.current_provenance_spec() is not None
+
+
+def test_fit2d_irregular_current_slice_disables_unsafe_segments(
+    qtbot, monkeypatch
+) -> None:
+    sample_temp = np.array([0.0, 1.0, 2.7, 4.1, 7.6, 8.2], dtype=float)
+    alpha = np.array([0.0, 1.0])
+    data = np.vstack(
+        [
+            np.exp(-((sample_temp - 3.0) ** 2) / 5.0),
+            np.exp(-((sample_temp - 4.0) ** 2) / 5.0),
+        ]
+    )
+    darr = xr.DataArray(
+        data,
+        dims=("alpha", "sample_temp"),
+        coords={"alpha": alpha, "sample_temp": sample_temp},
+        name="cut",
+    )
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        npeaks=1,
+        peak_shapes="lorentzian",
+        convolve=True,
+        segmented=True,
+        oversample=3,
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        Fit2DTool,
+        "_show_error",
+        lambda _self, title, text: errors.append((title, text)),
+    )
+
+    win = erlab.interactive.ftool(darr, model=model, execute=False)
+    qtbot.addWidget(win)
+
+    assert isinstance(win, Fit2DTool)
+    assert win._data.dims == ("sample_temp",)
+    assert win._model.func.convolve
+    assert not win._model.func.segmented
+    win._update_fit_curve()
+    assert errors == []
+    assert win._last_residual is not None
+    assert win._last_residual.shape == sample_temp.shape
 
 
 def test_fit2d_persistence_roundtrip_preserves_sparse_results(
@@ -1444,7 +1736,7 @@ def test_fit2d_copy_code_full_inconsistent_params_warning(qtbot, monkeypatch) ->
 
     params1 = win._params.copy()
     params2 = win._params.copy()
-    del params2["p0_height"]
+    del params2["p0_center"]
 
     win._params_full = [params1, params2]
     win._result_ds_full = [xr.Dataset(), xr.Dataset()]
@@ -1479,6 +1771,95 @@ def test_fit2d_run_fit_2d_while_running(qtbot, monkeypatch) -> None:
     assert warnings
 
 
+def test_fit2d_invalid_bound_edit_warns_without_param_update(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param = win.param_model.param_at(0)
+    param.set(value=0.0, min=-1.0, max=2.0)
+    changed: list[bool] = []
+    warnings: list[tuple[str, str]] = []
+    win.param_model.sigParamsChanged.connect(lambda: changed.append(True))
+    monkeypatch.setattr(
+        win,
+        "_show_warning",
+        lambda title, text: warnings.append((title, text)),
+    )
+
+    min_index = win.param_model.index(0, 3)
+    assert not win.param_model.setData(
+        min_index, "2.0", QtCore.Qt.ItemDataRole.EditRole
+    )
+
+    assert (param.value, param.min, param.max) == (0.0, -1.0, 2.0)
+    assert changed == []
+    assert warnings
+
+
+def test_fit2d_start_error_resets_sequence_state(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+    param = win.param_model.param_at(0)
+    param.min = 1.0
+    param.max = 1.0
+
+    win._run_fit_2d("up")
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win._fit_2d_total == 0
+    assert win._fit_2d_indices == []
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit2d_preparation_error_resets_sequence_state(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        win,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    def _raise_fit_data() -> xr.DataArray:
+        raise RuntimeError("unexpected preparation failure")
+
+    monkeypatch.setattr(win, "_fit_data", _raise_fit_data)
+
+    win._run_fit_2d("up")
+
+    assert errors
+    assert win._fit_thread is None
+    assert win._fit_cancel_requested is False
+    assert win._fit_2d_total == 0
+    assert win._fit_2d_indices == []
+    assert win.fit_button.isEnabled()
+    assert not win.cancel_fit_button.isEnabled()
+
+
 def test_fit2d_y_values_no_coord(qtbot) -> None:
     y = np.arange(3)
     data = xr.DataArray(np.ones((3, 5)), dims=("y", "x"))
@@ -1499,8 +1880,9 @@ def test_fit2d_update_param_plot_with_results(qtbot) -> None:
     params = win._params.copy()
     params["p0_center"].set(value=0.25)
     params["p0_center"].stderr = 0.1
-    win._params_full = [params.copy() for _ in range(len(win._params_full))]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
 
     win.param_plot_combo.setCurrentText("p0_center")
     win._update_param_plot()
@@ -1523,8 +1905,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     params_0[center_name].stderr = 0.01
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
-    win._params_full = [params_0, params_1, params_2]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(win, [params_0, params_1, params_2])
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win._param_plot_dataarray(center_name)
@@ -1582,8 +1963,7 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     params_0[center_name].stderr = 0.01
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
-    win._params_full = [params_0, params_1, params_2]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(win, [params_0, params_1, params_2])
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
@@ -1653,8 +2033,9 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     params = win._params.copy()
     params[center_name].set(value=0.1)
     params[center_name].stderr = 0.01
-    win._params_full = [params.copy() for _ in range(len(win._params_full))]
-    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    _seed_fit2d_param_results(
+        win, [params.copy() for _ in range(len(win._params_full))]
+    )
     win.param_plot_combo.setCurrentText(center_name)
 
     with pytest.raises(ValueError, match="Fit2DTool parameter output"):
@@ -1764,7 +2145,7 @@ def test_fit2d_param_plot_context_actions_missing_selection(qtbot, monkeypatch) 
     assert not shown
 
 
-def test_fit2d_param_plot_context_actions_no_data_available(qtbot, monkeypatch) -> None:
+def test_fit2d_param_plot_rejects_cached_guess_params(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1775,12 +2156,112 @@ def test_fit2d_param_plot_context_actions_no_data_available(qtbot, monkeypatch) 
         win, "_show_warning", lambda title, text: warnings.append((title, text))
     )
 
-    win._params_full = [None for _ in win._params_full]
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [None for _ in win._result_ds_full]
+    win._update_param_plot_options()
+
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert not win.param_plot_overlay_check.isEnabled()
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
+
     win.param_plot_combo.setCurrentText("p0_center")
     win.param_plot._show_parameter_values()
 
     assert warnings
-    assert warnings[-1][0] == "No data available"
+    assert warnings[-1][0] == "No parameter selected"
+
+
+def test_fit2d_param_plot_rejects_placeholder_result_objects(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [
+        _placeholder_fit_result_dataset(guessed) for _ in win._result_ds_full
+    ]
+    win._update_param_plot_options()
+
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert not win.param_plot_overlay_check.isEnabled()
+    assert win._param_plot_names() == []
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
+
+
+def test_fit2d_param_plot_rejects_unfitted_model_results(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [
+        _fit_result_dataset(guessed, nfev=0) for _ in win._result_ds_full
+    ]
+    win._update_param_plot_options()
+
+    assert win._param_plot_names() == []
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
+    assert win._param_plot_dataarray("p0_center").size == 0
+
+
+def test_fit2d_index_changes_do_not_expose_guess_params(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._params_full[0] = win._params.copy()
+    win._set_current_index(0)
+    win._update_param_plot_options()
+
+    assert win._params_full[0] is not None
+    assert win.param_plot_combo.count() == 0
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+
+    fitted = win._params.copy()
+    fitted["p0_center"].set(value=0.5)
+    win._result_ds_full[0] = _fit_result_dataset(fitted)
+    win._update_param_plot_options()
+
+    assert "p0_center" in {
+        win.param_plot_combo.itemText(i) for i in range(win.param_plot_combo.count())
+    }
 
 
 def test_fit2d_param_plot_save_dataarray_as_hdf5(
@@ -2029,6 +2510,11 @@ def test_fit2d_param_plot_options_update(qtbot, exp_decay_model) -> None:
     assert isinstance(win, Fit2DTool)
 
     win.set_model(win._make_model_from_choice("MultiPeakModel"))
+    assert win.param_plot_combo.count() == 0
+
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
     combo_items = {
         win.param_plot_combo.itemText(i) for i in range(win.param_plot_combo.count())
     }

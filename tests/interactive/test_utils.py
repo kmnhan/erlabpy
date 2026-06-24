@@ -1,6 +1,7 @@
 import enum
 import importlib
 import json
+import logging
 import sys
 import tempfile
 import types
@@ -116,6 +117,9 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     win.tool_status = _PersistentToolState(value=1)
     win._write_state()
 
+    assert win._history_write_pending
+    assert not win.undoable
+    win._flush_pending_history_write()
     assert win.undoable
     assert undo_action.isEnabled()
 
@@ -155,6 +159,73 @@ def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
     win._update_history_actions()
 
 
+def test_tool_window_history_write_coalesces_burst(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    for value in (1, 2, 3):
+        win.tool_status = _PersistentToolState(value=value)
+        win._write_state()
+
+    assert win._history_write_pending
+    assert tuple(win._prev_states) == (_PersistentToolState(value=0),)
+
+    assert win._flush_pending_history_write()
+    assert tuple(win._prev_states) == (
+        _PersistentToolState(value=0),
+        _PersistentToolState(value=3),
+    )
+
+
+def test_tool_window_history_perf_timing_logs(qtbot, monkeypatch, caplog) -> None:
+    monkeypatch.setenv("ERLAB_MANAGER_PERF_TIMING", "1")
+    caplog.set_level(logging.DEBUG, logger="erlab.interactive.utils")
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+
+    assert win._flush_pending_history_write()
+    assert any(
+        "ToolWindow history flush appended state" in record.message
+        for record in caplog.records
+    )
+
+
+def test_tool_window_undo_flushes_pending_history_write(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+    win.undo()
+
+    assert not win._history_write_pending
+    assert win.tool_status == _PersistentToolState(value=0)
+    assert win.redoable
+
+
+def test_tool_window_suppressed_history_does_not_queue_write(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    with win._history_suppressed():
+        win.tool_status = _PersistentToolState(value=1)
+        win._write_state()
+
+    assert not win._history_write_pending
+    assert tuple(win._prev_states) == (_PersistentToolState(value=0),)
+
+
 def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)
@@ -162,7 +233,7 @@ def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     win._reset_history_stack()
     win.tool_status = _PersistentToolState(value=1)
     win._write_state()
-    assert win.undoable
+    assert win._history_write_pending
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(restored)
@@ -923,6 +994,28 @@ def test_toolwindow_subclass_checks_survive_utils_reload(qtbot) -> None:
 def test_format_kwargs_treats_python_keywords_as_mapping_keys() -> None:
     assert erlab.interactive.utils.format_kwargs({"for": 1}) == '{"for": 1}'
     assert erlab.interactive.utils.format_call_kwargs({"for": 1}) == '**{"for": 1}'
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "$\\Delta y$",
+        "line\\nbreak",
+        'double " quote',
+        "single ' quote",
+    ],
+)
+def test_parse_single_arg_emits_warning_free_literal_string(value: str) -> None:
+    code = f"result = {erlab.interactive.utils._parse_single_arg(value)}"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SyntaxWarning)
+        compiled = compile(code, "<generated>", "exec")
+
+    assert not any(isinstance(warning.message, SyntaxWarning) for warning in caught)
+    namespace: dict[str, typing.Any] = {}
+    exec(compiled, {}, namespace)  # noqa: S102
+    assert namespace["result"] == value
 
 
 def test_generate_code_expands_python_keyword_argument_names() -> None:
@@ -2694,17 +2787,29 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
         )
 
 
-def test_tool_window_rejects_references_to_missing_data_items() -> None:
+def test_tool_window_resolves_references_with_missing_placeholder_variables() -> None:
     ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
     ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
         {"missing": {"kind": "manager_node", "node_uid": "missing"}}
     )
 
-    with pytest.raises(ValueError, match="missing variable"):
+    data_items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda _reference: xr.DataArray(1),
+    )
+
+    xr.testing.assert_identical(data_items["missing"], xr.DataArray(1))
+    xr.testing.assert_identical(
+        data_items[erlab.interactive.utils._SAVED_TOOL_DATA_NAME],
+        xr.DataArray(0, name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME),
+    )
+
+    with pytest.raises(ValueError, match="could not be resolved"):
         erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
             ds,
             source_parent_data=None,
-            reference_resolver=lambda _reference: xr.DataArray(1),
+            reference_resolver=lambda _reference: None,
         )
 
     empty = xr.Dataset()
@@ -2753,6 +2858,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unavailable: list[str] = []
             self.removed: list[str] = []
             self.figure_gallery_updates: list[str] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
 
         def _update_info(self, *, uid: str) -> None:
@@ -2781,6 +2889,29 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
 
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
+
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
 
@@ -2789,6 +2920,12 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _update_figure_gallery_icon(self, uid: str) -> None:
             self.figure_gallery_updates.append(uid)
+
+        def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
+            self._queue_idle_work(
+                ("figure-gallery-icon", uid),
+                lambda: self._update_figure_gallery_icon(uid),
+            )
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)
@@ -2960,6 +3097,9 @@ def test_managed_tool_window_node_detached_update_branches(
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
@@ -2996,6 +3136,29 @@ def test_managed_tool_window_node_detached_update_branches(
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
+
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
 
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
@@ -3171,6 +3334,9 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
+            self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.interaction_activity_count = 0
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -3198,6 +3364,29 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
+
+        def _register_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.registered_interaction_windows.append(widget)
+
+        def _unregister_interaction_window(
+            self, widget: QtWidgets.QWidget | None
+        ) -> None:
+            self.unregistered_interaction_windows.append(widget)
+
+        def _note_interaction_activity(self) -> None:
+            self.interaction_activity_count += 1
+
+        def _queue_idle_work(
+            self,
+            _key: typing.Hashable,
+            callback: typing.Callable[[], None],
+            *,
+            require_idle: bool = True,
+        ) -> None:
+            _ = require_idle
+            callback()
 
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return

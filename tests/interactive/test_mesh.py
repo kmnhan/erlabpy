@@ -294,6 +294,7 @@ def test_meshtool_undo_redo_state_change(qtbot, meshy_data) -> None:
     initial = win.tool_status
     win.roi_hw_spin.setValue(initial.roi_hw + 1)
 
+    assert win._flush_pending_history_write()
     assert win.undoable is True
     assert win.tool_status.roi_hw == initial.roi_hw + 1
 

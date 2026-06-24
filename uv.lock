@@ -938,6 +938,7 @@ complete = [
     { name = "numbagg" },
     { name = "numdifftools" },
     { name = "pillow" },
+    { name = "seaborn" },
     { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "zarr", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
@@ -959,6 +960,7 @@ perf = [
 viz = [
     { name = "hvplot" },
     { name = "ipywidgets" },
+    { name = "seaborn" },
 ]
 
 [package.dev-dependencies]
@@ -1056,6 +1058,7 @@ requires-dist = [
     { name = "qtconsole", specifier = ">=5.6.0" },
     { name = "qtpy", specifier = ">=2.4.1" },
     { name = "scipy", specifier = ">=1.15.0" },
+    { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13.2" },
     { name = "tqdm", specifier = ">=4.66.2" },
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },

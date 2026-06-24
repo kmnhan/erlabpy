@@ -11,6 +11,7 @@ from erlab.analysis.fit.functions.general import (
     _tll_bare,
     active_shirley,
     do_convolve,
+    do_convolve_segments,
     fermi_dirac,
     fermi_dirac_broad,
     fermi_dirac_linbkg,
@@ -23,6 +24,7 @@ from erlab.analysis.fit.functions.general import (
     step_linbkg_broad,
     tll,
 )
+from erlab.utils._array_jit import _split_uniform_segments
 
 KB_EV = 8.617333262145179e-5
 
@@ -106,6 +108,35 @@ def test_do_convolve_descending_axis_matches_ascending() -> None:
     desc = do_convolve(xd, fermi_dirac, resolution=0.05, **params)
 
     np.testing.assert_allclose(desc[::-1], asc, atol=1e-12, rtol=1e-9)
+
+
+def test_do_convolve_segments_accepts_writable_and_readonly_arrays() -> None:
+    x = np.array([0.0, 1.0, 2.0, 4.0, 6.0, 8.0], dtype=np.float64)
+    expected_segments = ([0.0, 1.0, 2.0], [2.0, 4.0, 6.0, 8.0])
+
+    writable_segments = _split_uniform_segments(x)
+    assert [segment.tolist() for segment in writable_segments] == list(
+        expected_segments
+    )
+    assert _split_uniform_segments.nopython_signatures
+
+    x_readonly = x.copy()
+    x_readonly.setflags(write=False)
+    readonly_segments = _split_uniform_segments(x_readonly)
+    assert [segment.tolist() for segment in readonly_segments] == list(
+        expected_segments
+    )
+    assert len(_split_uniform_segments.nopython_signatures) >= 2
+
+    expected = np.concatenate(
+        [np.asarray(segment) ** 2 for segment in writable_segments]
+    )
+    result = do_convolve_segments(
+        x,
+        lambda values: values**2,
+        resolution=0.0,
+    )
+    np.testing.assert_allclose(result, expected)
 
 
 def test_gaussian_wh() -> None:

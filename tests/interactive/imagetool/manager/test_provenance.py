@@ -6,6 +6,7 @@ import typing
 import warnings
 from collections.abc import Callable
 
+import lmfit
 import numpy as np
 import pydantic
 import pytest
@@ -17,6 +18,7 @@ import erlab
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
@@ -139,6 +141,60 @@ def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
         coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
         name=name,
     )
+
+
+def _set_provenance_steps_clipboard(
+    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    *,
+    active_name: str = "derived",
+) -> None:
+    payload_text = json.dumps(
+        {
+            "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": (
+                manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION
+            ),
+            "active_name": active_name,
+            "operations": [
+                operation.model_dump(mode="json") for operation in operations
+            ],
+        },
+        separators=(",", ":"),
+    )
+    mime_data = QtCore.QMimeData()
+    mime_data.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        payload_text.encode("utf-8"),
+    )
+    QtWidgets.QApplication.clipboard().setMimeData(mime_data)
+
+
+def _fit2d_param_result_dataset(params: typing.Any) -> xr.Dataset:
+    params = params.copy()
+    param_args = ", ".join(("x", *params.keys()))
+    namespace = {"np": np}
+    exec(  # noqa: S102
+        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
+        namespace,
+    )
+    result = lmfit.model.ModelResult(
+        lmfit.Model(namespace["_model_func"]),
+        params,
+        data=np.zeros(3),
+        fcn_args=(np.arange(3, dtype=float),),
+        max_nfev=1,
+    )
+    result.params = params.copy()
+    result.nfev = 1
+    return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
+
+
+def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -> None:
+    child._params_full = [params.copy() for params in params_list]
+    child._result_ds_full = [
+        _fit2d_param_result_dataset(params) for params in params_list
+    ]
+    child._update_param_plot_options()
 
 
 def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
@@ -310,8 +366,12 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
     new_dir.mkdir()
     current_spec = _manager_replay_file_spec(old_dir / "a.h5")
     peer_spec = _manager_replay_file_spec(old_dir / "b.h5")
+    multi_suffix_peer_spec = _manager_replay_file_spec(old_dir / "c.scan.h5")
     assert current_spec.file_load_source is not None
     peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
+    multi_suffix_peer_node = types.SimpleNamespace(
+        uid="peer-multi", display_text="Peer Multi"
+    )
     peer = manager_provenance_edit._FileLoadBatchPeer(
         node=typing.cast("typing.Any", peer_node),
         scope="display",
@@ -319,12 +379,19 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
         original_path=old_dir / "b.h5",
         loader_summary="xarray.load_dataarray",
     )
+    multi_suffix_peer = manager_provenance_edit._FileLoadBatchPeer(
+        node=typing.cast("typing.Any", multi_suffix_peer_node),
+        scope="display",
+        spec=multi_suffix_peer_spec,
+        original_path=old_dir / "c.scan.h5",
+        loader_summary="xarray.load_dataarray",
+    )
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     dialog = manager_provenance_edit._FileLoadEditDialog(
         current_spec.file_load_source,
         parent,
-        batch_peers=(peer,),
+        batch_peers=(peer, multi_suffix_peer),
     )
     qtbot.addWidget(dialog)
 
@@ -334,18 +401,28 @@ def test_file_load_edit_dialog_batch_targets_and_path_mapping(
 
     dialog.batch_apply_check.setChecked(True)
     item = dialog.batch_peer_tree.topLevelItem(0)
+    multi_suffix_item = dialog.batch_peer_tree.topLevelItem(1)
     assert not dialog.batch_peer_tree.isHidden()
     assert item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert multi_suffix_item.checkState(0) == QtCore.Qt.CheckState.Checked
     assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
-    assert dialog.selected_batch_peers() == (peer,)
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
+    assert dialog.selected_batch_peers() == (peer, multi_suffix_peer)
 
     dialog.kwargs_edit.setText("engine='h5netcdf', chunks={'x': 1}")
     assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
+
+    dialog.path_edit.setText(str(old_dir / "a.nc"))
+    assert pathlib.Path(item.text(2)) == old_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == old_dir / "c.scan.h5"
 
     dialog.path_edit.setText(str(new_dir / "a.nc"))
-    assert pathlib.Path(item.text(2)) == new_dir / "b.nc"
+    assert pathlib.Path(item.text(2)) == new_dir / "b.h5"
+    assert pathlib.Path(multi_suffix_item.text(2)) == new_dir / "c.scan.h5"
 
     item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+    multi_suffix_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert dialog.selected_batch_peers() == ()
 
 
@@ -729,6 +806,8 @@ def _fake_edit_controller(
     manager = types.SimpleNamespace(
         _metadata_node_uid=metadata_uid,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
+        _selected_imagetool_targets=lambda: (),
+        _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,
         _script_input_can_reload=(
             script_input_can_reload
@@ -762,6 +841,7 @@ def _fake_edit_node(
         is_imagetool=True,
         imagetool=object(),
         parent_uid=parent_uid,
+        detached_live_parent_data=None,
         source_spec=source_spec,
         displayed_provenance_spec=spec,
         displayed_source_spec=source_display_spec,
@@ -5706,6 +5786,88 @@ def test_manager_selection_dialog_opens_child_with_source_spec(
         )
 
 
+def test_manager_batch_selection_replace_qsel_remains_editable(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 2, dtype=float).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={
+            "x": [0.0, 1.0, 2.0],
+            "y": np.arange(4, dtype=float),
+            "z": np.arange(2, dtype=float),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        first = itool(data, manager=False, execute=False)
+        second = itool(data + 100.0, manager=False, execute=False)
+        assert isinstance(first, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(first, show=False)
+        manager.add_imagetool(second, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        select_tools(manager, [0, 1])
+        dialog = SelectionDialog(first.slicer_area, batch_manager=manager)
+        row = dialog.rows[0]
+        row.use_check.setChecked(True)
+        row.value_start_spin.setValue(1.0)
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=1.0).rename(None),
+        )
+
+        select_tools(manager, [0, 1])
+        dialog = SelectionDialog(first.slicer_area, batch_manager=manager)
+        row = dialog.rows[0]
+        row.use_check.setChecked(True)
+        row.kind_combo.setCurrentIndex(
+            row.kind_combo.findData("range", QtCore.Qt.ItemDataRole.UserRole)
+        )
+        row.value_start_spin.setValue(1.0)
+        row.value_stop_spin.setValue(3.0)
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=1.0).qsel(y=slice(1.0, 3.0)).rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        selected_row = manager._selected_derivation_row()
+        assert selected_row is not None
+        assert manager._provenance_edit_controller.can_edit_row(selected_row) == (
+            True,
+            "",
+        )
+
+        def _edit_qsel(dialog: QtWidgets.QDialog) -> None:
+            kwargs_edit = _recorded_operation_field_edit(dialog, 0, "kwargs")
+            kwargs_edit.setText("{'x': 2.0}")
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_qsel)
+
+        assert first.slicer_area._data.sizes["z"] == data.sizes["z"]
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=2.0).qsel(y=slice(1.0, 3.0)).rename(None),
+        )
+
+
 @pytest.mark.parametrize(
     ("output_id", "expected_name"),
     [
@@ -5811,15 +5973,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             lambda: (_ for _ in ()).throw(AssertionError("prompt should not open")),
         )
 
-        param_names = [
-            child.param_plot_combo.itemText(index)
-            for index in range(child.param_plot_combo.count())
-        ]
-        first_param_name, second_param_name = param_names[:2]
-        first_param_index = child.param_plot_combo.findText(first_param_name)
-        second_param_index = child.param_plot_combo.findText(second_param_name)
-        assert first_param_index >= 0
-        assert second_param_index >= 0
+        first_param_name, second_param_name = list(child._params.keys())[:2]
         params_full = []
         for index in range(len(child._params_full)):
             params = child._params.copy()
@@ -5828,8 +5982,12 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             params[second_param_name].set(value=10.0 + index)
             params[second_param_name].stderr = 0.1 + index
             params_full.append(params)
-        child._params_full = params_full
-        child._result_ds_full = [xr.Dataset() for _ in params_full]
+        _seed_fit2d_param_results(child, params_full)
+
+        first_param_index = child.param_plot_combo.findText(first_param_name)
+        second_param_index = child.param_plot_combo.findText(second_param_name)
+        assert first_param_index >= 0
+        assert second_param_index >= 0
 
         child.param_plot_combo.setCurrentIndex(first_param_index)
         assert child.param_plot_combo.currentText() == first_param_name
@@ -7225,7 +7383,8 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
 
         captured_selection: list[list[int]] = []
 
-        def _capture_menu() -> None:
+        def _capture_menu(*, include_row_actions: bool = True) -> None:
+            assert include_row_actions
             captured_selection.append(
                 [
                     manager.metadata_derivation_list.row(item)
@@ -7255,6 +7414,108 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         assert not manager._metadata_revert_step_action.isEnabled()
         assert not manager._metadata_copy_selected_action.isEnabled()
         assert not manager._metadata_delete_step_action.isEnabled()
+
+
+def test_manager_provenance_context_menu_on_empty_space_keeps_paste(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(manager, test_data.qsel.mean("alpha"), spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        select_tools(manager, [0])
+        manager._update_info()
+        select_metadata_rows(manager, [1])
+        _set_provenance_steps_clipboard(
+            (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
+        )
+        menu = manager._build_metadata_derivation_menu(include_row_actions=False)
+        assert menu is not None
+        assert manager._metadata_paste_steps_action in menu.actions()
+        assert manager._metadata_paste_steps_action.isEnabled()
+        assert not manager._metadata_edit_step_action.isEnabled()
+        assert not manager._metadata_revert_step_action.isEnabled()
+        assert not manager._metadata_copy_selected_action.isEnabled()
+        assert not manager._metadata_delete_step_action.isEnabled()
+
+
+def test_manager_provenance_paste_filter_respects_focus_guards(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data()
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, provenance_spec=provenance.full_data())
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._provenance_paste_filter is not None
+        paste_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        paste_calls = 0
+
+        def _record_paste() -> None:
+            nonlocal paste_calls
+            paste_calls += 1
+
+        monkeypatch.setattr(
+            manager,
+            "_paste_provenance_steps_from_clipboard",
+            _record_paste,
+        )
+        monkeypatch.setattr(
+            manager._provenance_paste_filter,
+            "_should_handle_paste",
+            lambda: True,
+        )
+
+        assert manager._provenance_paste_filter.eventFilter(
+            manager.tree_view, paste_event
+        )
+        assert paste_calls == 1
+
+        paste_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        monkeypatch.setattr(
+            manager._provenance_paste_filter,
+            "_should_handle_paste",
+            lambda: False,
+        )
+        assert not manager._provenance_paste_filter.eventFilter(
+            manager.tree_view, paste_event
+        )
+        assert paste_calls == 1
+
+        assert manager_mainwindow._widget_accepts_text_paste(
+            manager.text_box, stop_at=manager
+        )
+        assert not manager_mainwindow._widget_accepts_text_paste(
+            manager.tree_view, stop_at=manager
+        )
 
 
 def test_manager_provenance_context_menu_groups_row_commands(
@@ -8642,18 +8903,35 @@ def test_manager_copy_selected_derivation_code_fallbacks(
 
 def test_manager_derivation_context_menu_ignores_empty_space(
     qtbot,
+    monkeypatch,
 ) -> None:
     list_widget = QtWidgets.QListWidget()
     qtbot.addWidget(list_widget)
+    calls: list[bool] = []
+    menus: list[QtWidgets.QMenu] = []
+    exec_positions: list[QtCore.QPoint] = []
+
+    def build_menu(*, include_row_actions: bool) -> QtWidgets.QMenu:
+        calls.append(include_row_actions)
+        menu = QtWidgets.QMenu()
+        menus.append(menu)
+        return menu
+
+    monkeypatch.setattr(
+        QtWidgets.QMenu, "exec", lambda _self, pos: exec_positions.append(pos)
+    )
     manager = types.SimpleNamespace(
         metadata_derivation_list=list_widget,
-        _build_metadata_derivation_menu=lambda: pytest.fail("unexpected menu"),
+        _build_metadata_derivation_menu=build_menu,
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
     )
 
     controller._show_metadata_derivation_menu(QtCore.QPoint(10, 10))
+
+    assert calls == [False]
+    assert len(exec_positions) == 1
 
 
 def test_manager_paste_steps_validation_error_branches(
@@ -8691,6 +8969,30 @@ def test_manager_paste_steps_validation_error_branches(
             (provenance.AverageOperation(dims=("x",)),),
         )
     assert "pasted provenance steps" in exc_info.value.where
+
+
+def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
+    editable = _fake_edit_node(provenance.full_data(), uid="editable")
+    unavailable = _fake_edit_node(provenance.full_data(), uid="unavailable")
+    unavailable.imagetool = None
+    non_imagetool = _fake_edit_node(provenance.full_data(), uid="non-imagetool")
+    non_imagetool.is_imagetool = False
+    graph_nodes = {
+        editable.uid: editable,
+        unavailable.uid: unavailable,
+        non_imagetool.uid: non_imagetool,
+    }
+    controller = _fake_edit_controller(
+        editable,
+        nodes=graph_nodes,
+        metadata_uid=None,
+    )
+    controller._manager._selected_imagetool_targets = lambda: tuple(graph_nodes)
+
+    assert controller._paste_target_nodes() == [editable]
+    assert controller.can_paste_steps(
+        (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
+    ) == (True, "")
 
 
 def test_manager_paste_detached_steps_uses_replay_spec_fallback(
@@ -9131,6 +9433,124 @@ def test_manager_copy_paste_structured_provenance_steps(
         manager._paste_provenance_steps_from_clipboard()
         assert failures
         xr.testing.assert_identical(dest_tool.slicer_area._data, before)
+
+
+def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    operations = (
+        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
+        provenance.AverageOperation(dims=("z",)),
+    )
+    source_spec = provenance.full_data(*operations)
+    dest_data_a = _provenance_paste_test_data("dest_a") + 100.0
+    dest_data_b = _provenance_paste_test_data("dest_b") + 200.0
+    expected_a = source_spec.apply(dest_data_a)
+    expected_b = source_spec.apply(dest_data_b)
+
+    with manager_context() as manager:
+        tool_a = itool(dest_data_a.copy(deep=True), manager=False, execute=False)
+        tool_b = itool(dest_data_b.copy(deep=True), manager=False, execute=False)
+        assert isinstance(tool_a, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(tool_b, erlab.interactive.imagetool.ImageTool)
+        index_a = manager.add_imagetool(
+            tool_a,
+            show=False,
+            provenance_spec=provenance.full_data(),
+        )
+        index_b = manager.add_imagetool(
+            tool_b,
+            show=False,
+            provenance_spec=provenance.full_data(),
+        )
+        _set_provenance_steps_clipboard(operations)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [index_a, index_b])
+        manager._paste_provenance_steps_from_clipboard()
+
+        xr.testing.assert_identical(tool_a.slicer_area._data, expected_a)
+        xr.testing.assert_identical(tool_b.slicer_area._data, expected_b)
+        assert manager._tool_graph.root_wrappers[index_a].displayed_provenance_spec
+        assert manager._tool_graph.root_wrappers[index_b].displayed_provenance_spec
+
+
+def test_manager_paste_structured_provenance_steps_reports_partial_failures(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    operations = (
+        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
+        provenance.AverageOperation(dims=("z",)),
+    )
+    source_spec = provenance.full_data(*operations)
+    good_data = _provenance_paste_test_data("good") + 100.0
+    bad_data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        name="bad",
+    )
+    expected_good = source_spec.apply(good_data)
+
+    with manager_context() as manager:
+        good_tool = itool(good_data.copy(deep=True), manager=False, execute=False)
+        bad_tool = itool(bad_data.copy(deep=True), manager=False, execute=False)
+        assert isinstance(good_tool, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(bad_tool, erlab.interactive.imagetool.ImageTool)
+        good_index = manager.add_imagetool(
+            good_tool,
+            show=False,
+            provenance_spec=provenance.full_data(),
+        )
+        bad_index = manager.add_imagetool(
+            bad_tool,
+            show=False,
+            provenance_spec=provenance.full_data(),
+        )
+        reports: list[
+            tuple[
+                int,
+                tuple[tuple[str, Exception], ...],
+            ]
+        ] = []
+
+        def _record_partial(
+            pasted_count: int,
+            failures: typing.Sequence[
+                tuple[manager_wrapper._ImageToolWrapper, Exception]
+            ],
+        ) -> None:
+            reports.append(
+                (
+                    pasted_count,
+                    tuple((node.uid, exc) for node, exc in failures),
+                )
+            )
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_partial_paste_failures",
+            _record_partial,
+        )
+        _set_provenance_steps_clipboard(operations)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [good_index, bad_index])
+        manager._paste_provenance_steps_from_clipboard()
+
+        xr.testing.assert_identical(good_tool.slicer_area._data, expected_good)
+        xr.testing.assert_identical(bad_tool.slicer_area._data, bad_data)
+        assert len(reports) == 1
+        assert reports[0][0] == 1
+        assert len(reports[0][1]) == 1
+        assert reports[0][1][0][0] == manager._tool_graph.root_wrappers[bad_index].uid
 
 
 def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(

@@ -38,7 +38,10 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
-from erlab.interactive.imagetool.manager._dialogs import _ChooseFromDataTreeDialog
+from erlab.interactive.imagetool.manager._dialogs import (
+    _ChooseFromDataTreeDialog,
+    _ChooseFromWorkspaceManifestDialog,
+)
 
 from .helpers import (
     action_map_by_object_name,
@@ -2499,6 +2502,65 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
             child_uids[0]
         ]
         assert child_uids[1] not in manager._tool_graph.nodes
+
+
+def test_manager_workspace_load_selection_skips_unchecked_figures(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _SelectedChooseDialog(
+        erlab.interactive.imagetool.manager._workspace_io._ChooseFromDataTreeDialog
+    ):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            root = self._tree_widget.invisibleRootItem()
+            assert root is not None
+            for index in range(root.childCount()):
+                item = root.child(index)
+                if (
+                    item is not None
+                    and item.data(0, QtCore.Qt.ItemDataRole.UserRole) == figure_path
+                ):
+                    item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+                    break
+            else:
+                pytest.fail("figure entry was not shown in the workspace load dialog")
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._workspace_io,
+        "_ChooseFromDataTreeDialog",
+        _SelectedChooseDialog,
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+        figure_uid = manager.add_figuretool(
+            _WorkspaceSweepFigureTool(data + 1), show=False
+        )
+        figure_path = f"figures/{figure_uid}"
+
+        tree = manager._to_datatree()
+        try:
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            manager._from_datatree(tree)
+        finally:
+            tree.close()
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert figure_uid not in manager._tool_graph.nodes
 
 
 def test_manager_workspace_load_migrates_legacy_manual_title_to_data_name(
@@ -5366,7 +5428,7 @@ def test_manager_workspace_window_title_sets_file_path(
 
 
 @pytest.mark.parametrize("dirty_kw", [{"data": True}, {"state": True}])
-def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
+def test_manager_repeated_tool_dirty_event_defers_document_metadata_until_idle(
     monkeypatch,
     tmp_path,
     dirty_kw: dict[str, bool],
@@ -5391,16 +5453,37 @@ def test_manager_repeated_tool_dirty_event_updates_document_metadata_once(
             lambda uid, modified: node_modified_calls.append((uid, modified)),
         )
 
-        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
-        manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        manager._note_interaction_activity()
+        assert manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+        assert not manager._mark_workspace_dirty(uid="n1", **dirty_kw)
+
+        assert manager.is_workspace_modified
+        assert file_path_calls == []
+        assert node_modified_calls == []
+        assert [event.uid for event in manager._workspace_state.dirty_events] == ["n1"]
+        assert manager._workspace_state.dirty_generation == 1
+
+        manager._flush_idle_work(force=True)
 
         assert file_path_calls == [str(workspace)]
-        assert node_modified_calls == [("n1", True)]
+        assert node_modified_calls == []
+
+
+def test_manager_tool_dirty_event_escalates_state_to_data(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        assert manager._mark_workspace_dirty(uid="n1", state=True)
+        assert manager._mark_workspace_dirty(uid="n1", data=True)
+
+        assert manager._workspace_state.dirty_state == {"n1"}
+        assert manager._workspace_state.dirty_data == {"n1"}
         assert [event.uid for event in manager._workspace_state.dirty_events] == [
             "n1",
             "n1",
         ]
-        assert manager._workspace_state.dirty_generation == 2
 
 
 def test_manager_workspace_window_title_clears_file_path_without_workspace(
@@ -5422,7 +5505,7 @@ def test_manager_workspace_window_title_clears_file_path_without_workspace(
             )
             manager._update_workspace_window_title()
 
-        assert file_path_calls == [""]
+        assert file_path_calls == []
         assert "Untitled" in manager.windowTitle()
         assert not manager.isWindowModified()
 
@@ -5483,10 +5566,7 @@ def test_manager_loaded_workspace_association_updates_file_path(
                     workspace_access=access,
                     rebind_data=False,
                 )
-            assert file_path_calls == [
-                str(workspace.resolve()),
-                str(workspace.resolve()),
-            ]
+            assert file_path_calls == [str(workspace.resolve())]
 
         assert manager.workspace_path == str(workspace.resolve())
         assert workspace.name in manager.windowTitle()
@@ -5759,7 +5839,8 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
         {
             "0/imagetool": xr.Dataset(
                 attrs={"itool_title": "Loaded"},
-            )
+            ),
+            "figures/figure/tool": xr.Dataset(attrs={"tool_title": "Figure 1"}),
         }
     )
     try:
@@ -5771,10 +5852,58 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
         )
         qtbot.addWidget(dialog)
 
-        assert dialog._tree_widget.topLevelItemCount() == 1
+        assert dialog._tree_widget.topLevelItemCount() == 2
         assert dialog._tree_widget.topLevelItem(0).text(0) == "7: Loaded"
+        figure_item = dialog._tree_widget.topLevelItem(1)
+        assert figure_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "figures/figure"
+        dialog._uncheck_children()
+        assert figure_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
     finally:
         tree.close()
+
+
+def test_choose_from_workspace_manifest_dialog_selected_paths(qtbot) -> None:
+    manager = QtWidgets.QWidget()
+    manager.next_idx = 7
+    qtbot.addWidget(manager)
+    manifest = {
+        "root_order": ["0", "1"],
+        "nodes": [
+            {
+                "path": "0",
+                "kind": "imagetool",
+                "display_name": "Root A",
+            },
+            {
+                "path": "0/childtools/profile",
+                "kind": "tool",
+                "display_name": "Profile",
+            },
+            {
+                "path": "1",
+                "kind": "imagetool",
+                "display_name": "Root B",
+            },
+            {
+                "path": "figures/n17",
+                "kind": "tool",
+                "display_name": "Figure 1",
+            },
+        ],
+    }
+    dialog = _ChooseFromWorkspaceManifestDialog(manager, manifest)
+    qtbot.addWidget(dialog)
+
+    assert dialog._tree_widget.topLevelItemCount() == 3
+    assert dialog._tree_widget.topLevelItem(0).text(0) == "7: Root A"
+    assert dialog.item_for_path("0/childtools/profile") is not None
+    root_item = dialog.item_for_path("0")
+    assert root_item is not None
+    child_item = dialog.item_for_path("0/childtools/profile")
+    assert child_item is not None
+    dialog._uncheck_children()
+
+    assert dialog.selected_paths() == {"0", "1"}
 
 
 def test_manager_workspace_save_as_locked_target_does_not_write(
@@ -7378,11 +7507,11 @@ def test_manager_workspace_import_appends_without_reassociation(
 ) -> None:
     choose_dialog_calls = {"count": 0}
 
-    class _SelectSecondDialog(_ChooseFromDataTreeDialog):
+    class _SelectSecondDialog(_ChooseFromWorkspaceManifestDialog):
         def __init__(self, *args, **kwargs) -> None:
             choose_dialog_calls["count"] += 1
             super().__init__(*args, **kwargs)
-            first_item = self._tree_widget.topLevelItem(0)
+            first_item = self.item_for_path("0")
             assert first_item is not None
             first_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
 
@@ -7391,7 +7520,7 @@ def test_manager_workspace_import_appends_without_reassociation(
 
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager._workspace_io,
-        "_ChooseFromDataTreeDialog",
+        "_ChooseFromWorkspaceManifestDialog",
         _SelectSecondDialog,
     )
 
@@ -7434,6 +7563,94 @@ def test_manager_workspace_import_appends_without_reassociation(
         assert choose_dialog_calls["count"] == 1
         assert manager.workspace_path == str(current_fname.resolve())
         assert manager.is_workspace_modified
+
+
+def test_manager_workspace_selected_import_uses_manifest_fast_path(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root_a = itool(data, manager=False, execute=False)
+        assert isinstance(root_a, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_a, show=False)
+        child_uid = manager.add_childtool(
+            _WorkspaceSweepChildTool(data + 10), 0, show=False
+        )
+        root_b = itool(data + 1, manager=False, execute=False)
+        assert isinstance(root_b, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_b, show=False)
+        figure_uid = manager.add_figuretool(
+            _WorkspaceSweepFigureTool(data + 20), show=False
+        )
+
+        fname = tmp_path / "manifest-selected-import.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        nodes = manifest["nodes"]
+        paths = {
+            str(entry["path"])
+            for entry in nodes
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+        }
+        root_paths = sorted(path for path in paths if "/" not in path)
+        child_paths = sorted(path for path in paths if "/childtools/" in path)
+        figure_paths = sorted(
+            path
+            for path in paths
+            if path.startswith("figures/") and path.count("/") == 1
+        )
+        assert root_paths == ["0", "1"]
+        assert child_paths == ["0/childtools/" + child_uid]
+        assert figure_paths == ["figures/" + figure_uid]
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        class _SelectRootOnlyDialog(_ChooseFromWorkspaceManifestDialog):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self._uncheck_children()
+                for path in root_paths[1:] + figure_paths:
+                    item = self.item_for_path(path)
+                    assert item is not None
+                    item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_ChooseFromWorkspaceManifestDialog",
+            _SelectRootOnlyDialog,
+        )
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_datatree",
+            lambda *args, **kwargs: pytest.fail(
+                "selected current-schema loads should use manifest h5py path"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=True,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+        assert figure_uid not in manager._tool_graph.nodes
 
 
 def test_manager_workspace_save_as_preserves_live_in_memory_windows(
@@ -8238,12 +8455,100 @@ def test_manager_workspace_dirty_markers_are_node_scoped(
 
         manager._child_node(child_uid).name = "renamed child"
         assert manager.is_workspace_modified
+        assert not manager.isWindowModified()
+        assert not root.isWindowModified()
+        assert not child.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
         assert manager.isWindowModified()
         assert not root.isWindowModified()
         assert child.isWindowModified()
         details = manager._dirty_details_text()
         assert "State modified:\n- renamed child" in details
         assert "Data modified:" not in details
+
+
+def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[tuple[str, object]] = []
+
+        monkeypatch.setattr(manager, "_figure_uids", list)
+        monkeypatch.setattr(
+            manager,
+            "_set_figures_tab_available",
+            lambda available: calls.append(("figures", available)),
+        )
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_update_info",
+            lambda *, uid=None: calls.append(("info", uid)),
+        )
+        monkeypatch.setattr(
+            manager._details_panel,
+            "_update_actions",
+            lambda: calls.append(("actions", None)),
+        )
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_refresh_dependency_dependents",
+            lambda uid: calls.append(("dependency", uid)),
+        )
+        update_figure_gallery_icon = manager._update_figure_gallery_icon
+
+        def _update_figure_gallery_icon(uid: str) -> None:
+            if manager._workspace_ui_refresh_defer_depth > 0:
+                update_figure_gallery_icon(uid)
+                return
+            calls.append(("gallery", uid))
+
+        monkeypatch.setattr(
+            manager,
+            "_update_figure_gallery_icon",
+            _update_figure_gallery_icon,
+        )
+        refresh_figure_source_controls = manager._refresh_figure_source_controls
+
+        def _refresh_figure_source_controls() -> None:
+            if manager._workspace_ui_refresh_defer_depth > 0:
+                refresh_figure_source_controls()
+                return
+            calls.append(("source_controls", None))
+
+        monkeypatch.setattr(
+            manager,
+            "_refresh_figure_source_controls",
+            _refresh_figure_source_controls,
+        )
+
+        with manager._workspace_load_context():
+            manager._sync_figures_ui(select_uid="figure")
+            manager._update_info(uid="figure")
+            manager._update_info(uid="figure")
+            manager._update_actions()
+            manager._update_actions()
+            manager._refresh_dependency_dependents("source")
+            manager._refresh_dependency_dependents("source")
+            manager._update_figure_gallery_icon("figure")
+            manager._schedule_figure_gallery_icon_update("figure")
+            manager._schedule_figure_gallery_icon_update("figure")
+            manager._refresh_figure_source_controls()
+            manager._refresh_figure_source_controls()
+            assert calls == []
+
+        assert calls == [
+            ("figures", False),
+            ("dependency", "source"),
+            ("source_controls", None),
+            ("gallery", "figure"),
+            ("actions", None),
+            ("info", "figure"),
+        ]
 
 
 def test_manager_workspace_save_clears_deferred_dirty_events(
@@ -8271,6 +8576,10 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         QtCore.QTimer.singleShot(0, lambda: manager._mark_node_state_dirty(uid))
         manager._mark_node_state_dirty(uid)
         assert manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
         assert root.isWindowModified()
 
         focus_restored: list[QtWidgets.QWidget | None] = []
@@ -8291,6 +8600,44 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         assert not manager.is_workspace_modified
         assert not root.isWindowModified()
         assert focus_restored == [root]
+
+
+def test_manager_workspace_save_during_active_interaction_uses_dirty_state(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "active-save.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        manager._note_interaction_activity()
+        manager._mark_node_state_dirty(uid)
+
+        assert manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        assert manager.save()
+
+        assert not manager.is_workspace_modified
+        assert not root.isWindowModified()
+
+        manager._flush_idle_work(force=True)
+
+        assert not manager.is_workspace_modified
+        assert not root.isWindowModified()
 
 
 def test_manager_workspace_restore_event_drain_avoids_event_loop(
@@ -8949,10 +9296,6 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         tool = DerivativeTool(data)
         tool_uid = manager.add_childtool(tool, 0, show=False)
 
-        expect_title_placeholder = sys.platform != "darwin"
-        assert ("[*]" in root.windowTitle()) is expect_title_placeholder
-        assert ("[*]" in tool.windowTitle()) is expect_title_placeholder
-
         root.setWindowTitle("stale root title[*]")
         manager._tool_graph.root_wrappers[0].update_title()
         assert "stale root title" not in manager._tool_graph.root_wrappers[0].label_text
@@ -8963,6 +9306,9 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         manager._set_node_window_modified(root_uid, True)
         manager._set_node_window_modified(tool_uid, True)
 
+        expect_title_placeholder = sys.platform != "darwin"
+        assert ("[*]" in root.windowTitle()) is expect_title_placeholder
+        assert ("[*]" in tool.windowTitle()) is expect_title_placeholder
         assert (
             root.windowTitle()
             == manager_widgets._window_title_with_modified_placeholder(
@@ -9760,7 +10106,11 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
 
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
@@ -9791,6 +10141,113 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
         assert manager.ntools == 1
         xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
         assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        current_fname = tmp_path / "current-clean.itws"
+        manager._save_workspace_document(current_fname, force_full=True)
+        manager._adopt_workspace_path(current_fname)
+        manager._mark_workspace_clean()
+
+        def _fail_to_datatree(*_args, **_kwargs):
+            raise AssertionError("clean associated replace load should use file backup")
+
+        monkeypatch.setattr(manager, "_to_datatree", _fail_to_datatree)
+
+        broken_fname = tmp_path / "broken-clean.itws"
+        with h5py.File(broken_fname, "w") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 4
+            h5_file.create_group("0")
+
+        with pytest.raises(ValueError, match="No workspace windows"):
+            manager._load_workspace_file(
+                broken_fname,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+
+        assert manager.workspace_path == str(current_fname.resolve())
+        assert manager.ntools == 1
+        xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
+        assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        current_fname = tmp_path / "current-dirty.itws"
+        manager._save_workspace_document(current_fname, force_full=True)
+        manager._adopt_workspace_path(current_fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_state_dirty(uid)
+        assert manager.is_workspace_modified
+
+        to_datatree_calls = 0
+        original_to_datatree = manager._to_datatree
+
+        def _record_to_datatree(*args, **kwargs):
+            nonlocal to_datatree_calls
+            to_datatree_calls += 1
+            return original_to_datatree(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "_to_datatree", _record_to_datatree)
+
+        broken_fname = tmp_path / "broken-dirty.itws"
+        with h5py.File(broken_fname, "w") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 4
+            h5_file.create_group("0")
+
+        with pytest.raises(ValueError, match="No workspace windows"):
+            manager._load_workspace_file(
+                broken_fname,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+
+        assert to_datatree_calls == 1
+        assert manager.workspace_path == str(current_fname.resolve())
+        assert manager.ntools == 1
+        xarray.testing.assert_equal(manager.get_imagetool(0).slicer_area._data, data)
+        assert manager.is_workspace_modified
 
 
 def test_manager_workspace_load_visible_windows_stays_clean_after_events(

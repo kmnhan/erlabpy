@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import json
 import logging
 import os
 import pathlib
+import time
 import traceback
 import typing
 import uuid
@@ -25,6 +27,7 @@ from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
+    _ChooseFromWorkspaceManifestDialog,
     _is_loader_func,
 )
 from erlab.interactive.imagetool.manager._widgets import (
@@ -62,6 +65,65 @@ if typing.TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+_WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
+
+
+class _WorkspaceLoadProfiler:
+    def __init__(self, path: str | os.PathLike[str] | None) -> None:
+        self._path = None if path is None else os.fspath(path)
+        self._start = time.perf_counter()
+        self._durations: dict[str, float] = {}
+
+    @contextlib.contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._durations[name] = self._durations.get(name, 0.0) + (
+                time.perf_counter() - start
+            )
+
+    def log_summary(self) -> None:
+        detailed = os.environ.get(_WORKSPACE_LOAD_TIMING_ENV) == "1"
+        if not detailed and not logger.isEnabledFor(logging.DEBUG):
+            return
+        total = time.perf_counter() - self._start
+        summary = ", ".join(
+            f"{name}={duration:.3f}s"
+            for name, duration in sorted(
+                self._durations.items(), key=lambda item: item[1], reverse=True
+            )
+        )
+        logger.debug(
+            "Loaded workspace %s in %.3fs%s%s",
+            self._path or "<memory>",
+            total,
+            ": " if summary else "",
+            summary,
+        )
+        if detailed:
+            for name, duration in self._durations.items():
+                logger.debug("Workspace load stage %s: %.3fs", name, duration)
+
+
+class _WorkspaceReplaceBackup:
+    __slots__ = ("file_path", "snapshot", "tree")
+
+    def __init__(
+        self,
+        snapshot: _WorkspaceStateSnapshot,
+        *,
+        tree: xr.DataTree | None = None,
+        file_path: pathlib.Path | None = None,
+    ) -> None:
+        self.snapshot = snapshot
+        self.tree = tree
+        self.file_path = file_path
+
+    def close(self) -> None:
+        if self.tree is not None:
+            self.tree.close()
 
 
 def _workspace_dataset_window_visible(
@@ -137,6 +199,11 @@ class _WorkspaceIOController:
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._loader_state = _manager_workspace.WorkspaceLoaderState()
+        self._workspace_window_state_applied: tuple[str, str, bool] | None = None
+        self._node_window_state_applied: dict[
+            str, tuple[tuple[tuple[int, str], ...], bool]
+        ] = {}
+        self._pending_node_window_modified: dict[str, bool] = {}
 
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
@@ -445,22 +512,40 @@ class _WorkspaceIOController:
             coalesce_if_busy=coalesce_if_busy,
         )
 
-    def _update_workspace_window_title(self) -> None:
+    def _workspace_window_state(self) -> tuple[str, str, bool]:
         if self._manager._workspace_state.path is None:
             window_file_path = ""
         else:
             window_file_path = typing.cast("str", self._manager.workspace_path)
-        self._manager.setWindowFilePath(window_file_path)
         workspace_display_name = (
             "Untitled"
             if self._manager._workspace_state.path is None
             else self._manager._workspace_state.path.name
         )
-        self._manager.setWindowTitle(
+        title = (
             f"{_window_title_with_modified_placeholder(workspace_display_name)}"
             f" - ImageTool Manager #{self._manager.manager_index}"
         )
-        self._manager.setWindowModified(self._manager.is_workspace_modified)
+        return window_file_path, title, self._manager.is_workspace_modified
+
+    def _update_workspace_window_title(self, *, force: bool = True) -> None:
+        if force:
+            self._apply_workspace_window_title()
+            return
+        self._manager._queue_idle_work(
+            ("workspace-window", "title"), self._apply_workspace_window_title
+        )
+
+    def _apply_workspace_window_title(self) -> None:
+        window_file_path, title, modified = self._workspace_window_state()
+        applied = self._workspace_window_state_applied
+        if applied is None or applied[0] != window_file_path:
+            self._manager.setWindowFilePath(window_file_path)
+        if applied is None or applied[1] != title:
+            self._manager.setWindowTitle(title)
+        if applied is None or applied[2] != modified:
+            self._manager.setWindowModified(modified)
+        self._workspace_window_state_applied = (window_file_path, title, modified)
 
     def _release_workspace_lock(self) -> None:
         if self._manager._workspace_state.lock is None:
@@ -609,8 +694,27 @@ class _WorkspaceIOController:
         return "\n\n".join(blocks)
 
     def _set_node_window_modified(self, uid: str, modified: bool) -> None:
+        self._pending_node_window_modified.pop(uid, None)
+        self._apply_node_window_modified(uid, modified)
+
+    def _queue_node_window_modified(self, uid: str, modified: bool) -> None:
+        self._pending_node_window_modified[uid] = modified
+        self._manager._queue_idle_work(
+            ("node-window", uid),
+            functools.partial(self._flush_pending_node_window_modified, uid),
+        )
+
+    def _flush_pending_node_window_modified(self, uid: str) -> None:
+        try:
+            modified = self._pending_node_window_modified.pop(uid)
+        except KeyError:
+            return
+        self._apply_node_window_modified(uid, modified)
+
+    def _apply_node_window_modified(self, uid: str, modified: bool) -> None:
         node = self._manager._tool_graph.nodes.get(uid)
         if node is None:
+            self._node_window_state_applied.pop(uid, None)
             return
         window = node.window
         if node.tool_window is not None:
@@ -625,15 +729,32 @@ class _WorkspaceIOController:
         windows: list[tuple[QtWidgets.QWidget | None, str]] = [(window, base_title)]
         if node.tool_window is not None:
             windows.extend(node.tool_window._managed_secondary_windows())
+        valid_windows: list[tuple[QtWidgets.QWidget, str]] = []
         for target_window, target_title in windows:
             if target_window is None or not erlab.interactive.utils.qt_is_valid(
                 target_window
             ):
                 continue
+            valid_windows.append((target_window, target_title))
+        target_state = (
+            tuple(
+                (id(target_window), target_title)
+                for target_window, target_title in valid_windows
+            ),
+            modified,
+        )
+        if self._node_window_state_applied.get(uid) == target_state and all(
+            target_window.windowTitle()
+            == _window_title_with_modified_placeholder(target_title)
+            for target_window, target_title in valid_windows
+        ):
+            return
+        for target_window, target_title in valid_windows:
             title = _window_title_with_modified_placeholder(target_title)
             if title != target_window.windowTitle():
                 target_window.setWindowTitle(title)
             target_window.setWindowModified(modified)
+        self._node_window_state_applied[uid] = target_state
 
     def _apply_workspace_dirty_event(
         self, event: _manager_workspace._WorkspaceDirtyEvent
@@ -651,12 +772,12 @@ class _WorkspaceIOController:
         added: bool = False,
         removed: str | None = None,
         structure: str | None = None,
-    ) -> None:
+    ) -> bool:
         if (
             self._manager._workspace_state.loading_depth > 0
             or self._manager._workspace_state.saving_depth > 0
         ):
-            return
+            return False
         event = _manager_workspace._WorkspaceDirtyEvent(
             generation=self._manager._workspace_state.dirty_generation + 1,
             uid=uid,
@@ -677,28 +798,30 @@ class _WorkspaceIOController:
             and (event.added or event.data or event.state)
             and not node_was_modified
         ):
-            self._manager._set_node_window_modified(event.uid, True)
-        self._manager._workspace_state.mark_dirty(event)
+            self._queue_node_window_modified(event.uid, True)
+        dirty_changed = self._manager._workspace_state.mark_dirty(event)
         if not was_modified and self._manager.is_workspace_modified:
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
+        return dirty_changed
 
-    def _mark_node_added(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(
+    def _mark_node_added(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(
             uid=uid, added=True, structure="Added window"
         )
 
-    def _mark_node_data_dirty(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(uid=uid, data=True)
+    def _mark_node_data_dirty(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(uid=uid, data=True)
 
-    def _mark_node_state_dirty(self, uid: str) -> None:
-        self._manager._mark_workspace_dirty(uid=uid, state=True)
+    def _mark_node_state_dirty(self, uid: str) -> bool:
+        return self._manager._mark_workspace_dirty(uid=uid, state=True)
 
-    def _mark_tool_info_dirty(self, uid: str) -> None:
+    def _mark_tool_info_dirty(self, uid: str) -> bool:
         if uid not in self._manager._workspace_state.dirty_state:
-            self._manager._mark_node_state_dirty(uid)
+            return self._manager._mark_node_state_dirty(uid)
+        return False
 
-    def _mark_workspace_structure_dirty(self, reason: str) -> None:
-        self._manager._mark_workspace_dirty(structure=reason)
+    def _mark_workspace_structure_dirty(self, reason: str) -> bool:
+        return self._manager._mark_workspace_dirty(structure=reason)
 
     def _mark_workspace_layout_dirty(self) -> None:
         if (
@@ -710,7 +833,7 @@ class _WorkspaceIOController:
         ):
             return
         if self._manager._workspace_state.mark_layout_dirty():
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
 
     def _mark_workspace_options_dirty(self) -> None:
         if (
@@ -720,7 +843,7 @@ class _WorkspaceIOController:
         ):
             return
         if self._manager._workspace_state.mark_options_dirty():
-            self._manager._update_workspace_window_title()
+            self._manager._update_workspace_window_title(force=False)
 
     def _mark_workspace_clean(self) -> None:
         self._manager._workspace_state.mark_clean()
@@ -742,7 +865,10 @@ class _WorkspaceIOController:
 
     @contextlib.contextmanager
     def _workspace_load_context(self) -> Iterator[None]:
-        with self._manager._workspace_state.load_context():
+        with (
+            self._manager._workspace_state.load_context(),
+            self._manager._workspace_ui_refresh_context(),
+        ):
             yield
 
     def _send_workspace_posted_events(self, event_type: QtCore.QEvent.Type) -> None:
@@ -762,6 +888,44 @@ class _WorkspaceIOController:
         return self._manager._workspace_state.snapshot(
             node_uid_counter=self._manager._tool_graph.uid_counter
         )
+
+    def _workspace_file_can_restore_replace_backup(self, path: pathlib.Path) -> bool:
+        try:
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(path)
+            schema_version, _delta_save_count, manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+            )
+        except Exception:
+            logger.debug(
+                "Cannot use workspace file rollback backup for %s",
+                path,
+                exc_info=True,
+            )
+            return False
+        return (
+            schema_version == _manager_workspace._current_workspace_schema_version()
+            and manifest is not None
+        )
+
+    def _workspace_replace_backup_for_load(
+        self,
+        incoming_path: str | os.PathLike[str] | None,
+    ) -> _WorkspaceReplaceBackup:
+        snapshot = self._manager._workspace_state_snapshot()
+        current_path = self._manager._workspace_state.path
+        incoming_resolved = (
+            None if incoming_path is None else pathlib.Path(incoming_path).resolve()
+        )
+        if (
+            current_path is not None
+            and incoming_resolved is not None
+            and current_path != incoming_resolved
+            and not self._manager.is_workspace_modified
+            and current_path.exists()
+            and self._workspace_file_can_restore_replace_backup(current_path)
+        ):
+            return _WorkspaceReplaceBackup(snapshot, file_path=current_path)
+        return _WorkspaceReplaceBackup(snapshot, tree=self._manager._to_datatree())
 
     def _restore_workspace_state_snapshot(
         self, snapshot: _WorkspaceStateSnapshot
@@ -1389,6 +1553,7 @@ class _WorkspaceIOController:
         self,
         tree: xr.DataTree,
         *,
+        root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
@@ -1415,12 +1580,20 @@ class _WorkspaceIOController:
         for figure_key in figure_keys:
             if figure_key not in figures:
                 continue
+            figure_path = f"figures/{figure_key}"
+            item = self._manager._tree_item_child_by_key(root_item, figure_path)
+            if (
+                item is not None
+                and item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+            ):
+                continue
             target = self._manager._load_workspace_node_or_warn(
                 typing.cast("xr.DataTree", figures[figure_key]),
                 parent_target=None,
+                selection_item=item,
                 manifest=manifest,
                 workspace_file_path=workspace_file_path,
-                node_path=f"figures/{figure_key}",
+                node_path=figure_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
             if target is not None:
@@ -1434,7 +1607,11 @@ class _WorkspaceIOController:
         *,
         replace: bool,
         mark_dirty: bool,
+        selected_paths: set[str] | None = None,
+        profiler: _WorkspaceLoadProfiler | None = None,
     ) -> bool:
+        if profiler is None:
+            profiler = _WorkspaceLoadProfiler(fname)
         self._skipped_workspace_nodes = []
         nodes = manifest.get("nodes", ())
         root_order = manifest.get("root_order", ())
@@ -1479,6 +1656,16 @@ class _WorkspaceIOController:
             parent_path, child_key = path.rsplit("/childtools/", maxsplit=1)
             if "/" not in child_key and parent_path in entries_by_path:
                 child_paths[parent_path].append(path)
+
+        if selected_paths is not None:
+            root_paths = [path for path in root_paths if path in selected_paths]
+            figure_paths = [path for path in figure_paths if path in selected_paths]
+            child_paths = {
+                parent_path: [
+                    child_path for child_path in paths if child_path in selected_paths
+                ]
+                for parent_path, paths in child_paths.items()
+            }
 
         def _load_xarray_dataset(
             payload_path: str, *, chunks: typing.Any, load: bool
@@ -1530,20 +1717,27 @@ class _WorkspaceIOController:
             kind = typing.cast("str", entry["kind"])
             is_imagetool = kind == "imagetool"
             payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
-            ds = _load_dataset(payload_path, entry=entry, imagetool=is_imagetool)
-            if is_imagetool:
-                target = self._manager._load_workspace_imagetool_dataset(
-                    ds,
-                    parent_target=parent_target,
-                    node_path=path,
-                    loaded_targets_by_uid=loaded_targets_by_uid,
-                )
-            else:
-                target = self._manager._load_workspace_tool_dataset(
-                    ds,
-                    parent_target=parent_target,
-                    loaded_targets_by_uid=loaded_targets_by_uid,
-                )
+            with profiler.stage("payload read"):
+                ds = _load_dataset(payload_path, entry=entry, imagetool=is_imagetool)
+            stage_name = (
+                "figure restore"
+                if path.startswith("figures/") and not is_imagetool
+                else "tool construction"
+            )
+            with profiler.stage(stage_name):
+                if is_imagetool:
+                    target = self._manager._load_workspace_imagetool_dataset(
+                        ds,
+                        parent_target=parent_target,
+                        node_path=path,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
+                    )
+                else:
+                    target = self._manager._load_workspace_tool_dataset(
+                        ds,
+                        parent_target=parent_target,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
+                    )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
             return target
@@ -1570,18 +1764,18 @@ class _WorkspaceIOController:
             if not mark_dirty
             else contextlib.nullcontext()
         )
-        backup_tree: xr.DataTree | None = None
-        backup_snapshot: _WorkspaceStateSnapshot | None = None
+        backup: _WorkspaceReplaceBackup | None = None
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(self._manager, "Loading workspace..."),
         ):
             try:
                 if replace:
-                    backup_snapshot = self._manager._workspace_state_snapshot()
-                    backup_tree = self._manager._to_datatree()
-                    self._manager.remove_all_tools()
-                    self._manager._drain_workspace_restore_events()
+                    with profiler.stage("rollback backup"):
+                        backup = self._workspace_replace_backup_for_load(fname)
+                    with profiler.stage("ui catch-up"):
+                        self._manager.remove_all_tools()
+                        self._manager._drain_workspace_restore_events()
                 loaded_count = 0
                 for root_path in root_paths:
                     if _load_path_or_warn(root_path) is not None:
@@ -1591,31 +1785,33 @@ class _WorkspaceIOController:
                         loaded_count += 1
                 if loaded_count == 0 and self._skipped_workspace_nodes:
                     self._raise_no_workspace_windows_loaded()
-                self._manager._rebase_loaded_workspace_dependency_refs(
-                    loaded_targets_by_uid
-                )
-                self._manager._restore_workspace_link_groups(
-                    manifest, loaded_targets_by_uid
-                )
+                with profiler.stage("link/layout restore"):
+                    self._manager._rebase_loaded_workspace_dependency_refs(
+                        loaded_targets_by_uid
+                    )
+                    self._manager._restore_workspace_link_groups(
+                        manifest, loaded_targets_by_uid
+                    )
                 if replace:
-                    self._manager._restore_workspace_layout(manifest)
-                    self._restore_workspace_option_overrides(manifest)
-                    self._restore_workspace_loader_state(manifest)
-                    self._restore_standalone_apps_state(manifest)
+                    with profiler.stage("link/layout restore"):
+                        self._manager._restore_workspace_layout(manifest)
+                        self._restore_workspace_option_overrides(manifest)
+                        self._restore_workspace_loader_state(manifest)
+                        self._restore_standalone_apps_state(manifest)
                 if not mark_dirty:
-                    self._manager._drain_workspace_restore_events()
+                    with profiler.stage("ui catch-up"):
+                        self._manager._drain_workspace_restore_events()
             except Exception:
-                if backup_tree is not None and backup_snapshot is not None:
+                if backup is not None:
                     try:
-                        self._manager._restore_replaced_workspace(
-                            backup_tree, backup_snapshot
-                        )
+                        self._restore_replaced_workspace_backup(backup)
                     except Exception:
                         logger.exception("Failed to restore previous workspace")
                 raise
             finally:
-                if backup_tree is not None:
-                    backup_tree.close()
+                if backup is not None:
+                    backup.close()
+                profiler.log_summary()
         return True
 
     def _restore_replaced_workspace(
@@ -1633,6 +1829,47 @@ class _WorkspaceIOController:
             self._manager._drain_workspace_restore_events()
         self._manager._restore_workspace_state_snapshot(snapshot)
 
+    def _restore_replaced_workspace_file(
+        self, path: pathlib.Path, snapshot: _WorkspaceStateSnapshot
+    ) -> None:
+        with self._manager._workspace_load_context():
+            self._manager.remove_all_tools()
+            self._manager._drain_workspace_restore_events()
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(path)
+            schema_version, _delta_save_count, manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+            )
+            if (
+                schema_version == _manager_workspace._current_workspace_schema_version()
+                and manifest is not None
+            ):
+                self._manager._from_h5py_workspace_file(
+                    path,
+                    manifest,
+                    replace=False,
+                    mark_dirty=False,
+                )
+            else:
+                tree = _manager_xarray.open_workspace_datatree(path, chunks=None)
+                self._manager._from_datatree(
+                    tree,
+                    replace=False,
+                    mark_dirty=False,
+                    select=False,
+                    workspace_file_path=path,
+                )
+            self._manager._drain_workspace_restore_events()
+        self._manager._restore_workspace_state_snapshot(snapshot)
+
+    def _restore_replaced_workspace_backup(
+        self, backup: _WorkspaceReplaceBackup
+    ) -> None:
+        if backup.tree is not None:
+            self._manager._restore_replaced_workspace(backup.tree, backup.snapshot)
+            return
+        if backup.file_path is not None:
+            self._restore_replaced_workspace_file(backup.file_path, backup.snapshot)
+
     def _from_datatree(
         self,
         tree: xr.DataTree,
@@ -1641,8 +1878,11 @@ class _WorkspaceIOController:
         mark_dirty: bool = True,
         select: bool = True,
         workspace_file_path: str | os.PathLike[str] | None = None,
+        profiler: _WorkspaceLoadProfiler | None = None,
     ) -> bool:
         """Restore the state of the manager from a DataTree object."""
+        if profiler is None:
+            profiler = _WorkspaceLoadProfiler(workspace_file_path)
         self._skipped_workspace_nodes = []
         opened_tree = tree
         try:
@@ -1680,12 +1920,13 @@ class _WorkspaceIOController:
 
             dialog: _ChooseFromDataTreeDialog | None = None
             if select:
-                dialog = _ChooseFromDataTreeDialog(
-                    self._manager,
-                    tree,
-                    mode="load",
-                    root_keys=root_keys,
-                )
+                with profiler.stage("selection dialog setup"):
+                    dialog = _ChooseFromDataTreeDialog(
+                        self._manager,
+                        tree,
+                        mode="load",
+                        root_keys=root_keys,
+                    )
                 if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                     return False
 
@@ -1694,8 +1935,7 @@ class _WorkspaceIOController:
                 if not mark_dirty
                 else contextlib.nullcontext()
             )
-            backup_tree: xr.DataTree | None = None
-            backup_snapshot: _WorkspaceStateSnapshot | None = None
+            backup: _WorkspaceReplaceBackup | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
             with (
                 maybe_guard,
@@ -1705,61 +1945,68 @@ class _WorkspaceIOController:
             ):
                 try:
                     if replace:
-                        backup_snapshot = self._manager._workspace_state_snapshot()
-                        backup_tree = self._manager._to_datatree()
-                        self._manager.remove_all_tools()
-                        self._manager._drain_workspace_restore_events()
+                        with profiler.stage("rollback backup"):
+                            backup = self._workspace_replace_backup_for_load(
+                                workspace_file_path
+                            )
+                        with profiler.stage("ui catch-up"):
+                            self._manager.remove_all_tools()
+                            self._manager._drain_workspace_restore_events()
                     root_item = (
                         None
                         if dialog is None
                         else dialog._tree_widget.invisibleRootItem()
                     )
-                    loaded_count = self._manager._load_workspace_roots(
-                        tree,
-                        root_keys,
-                        root_item=root_item,
-                        manifest=manifest,
-                        workspace_file_path=workspace_file_path,
-                        loaded_targets_by_uid=loaded_targets_by_uid,
-                    )
-                    loaded_count += self._manager._load_workspace_figures(
-                        tree,
-                        manifest=manifest,
-                        workspace_file_path=workspace_file_path,
-                        loaded_targets_by_uid=loaded_targets_by_uid,
-                    )
+                    with profiler.stage("payload read"):
+                        loaded_count = self._manager._load_workspace_roots(
+                            tree,
+                            root_keys,
+                            root_item=root_item,
+                            manifest=manifest,
+                            workspace_file_path=workspace_file_path,
+                            loaded_targets_by_uid=loaded_targets_by_uid,
+                        )
+                        loaded_count += self._manager._load_workspace_figures(
+                            tree,
+                            root_item=root_item,
+                            manifest=manifest,
+                            workspace_file_path=workspace_file_path,
+                            loaded_targets_by_uid=loaded_targets_by_uid,
+                        )
                     if loaded_count == 0 and self._skipped_workspace_nodes:
                         self._raise_no_workspace_windows_loaded()
-                    self._manager._rebase_loaded_workspace_dependency_refs(
-                        loaded_targets_by_uid
-                    )
-                    self._manager._restore_workspace_link_groups(
-                        manifest, loaded_targets_by_uid
-                    )
+                    with profiler.stage("link/layout restore"):
+                        self._manager._rebase_loaded_workspace_dependency_refs(
+                            loaded_targets_by_uid
+                        )
+                        self._manager._restore_workspace_link_groups(
+                            manifest, loaded_targets_by_uid
+                        )
                     if replace:
-                        self._manager._restore_workspace_layout(manifest)
-                        self._restore_workspace_option_overrides(manifest)
-                        self._restore_workspace_loader_state(manifest)
-                        self._restore_standalone_apps_state(manifest)
+                        with profiler.stage("link/layout restore"):
+                            self._manager._restore_workspace_layout(manifest)
+                            self._restore_workspace_option_overrides(manifest)
+                            self._restore_workspace_loader_state(manifest)
+                            self._restore_standalone_apps_state(manifest)
                     if not mark_dirty:
-                        self._manager._drain_workspace_restore_events()
+                        with profiler.stage("ui catch-up"):
+                            self._manager._drain_workspace_restore_events()
                 except Exception:
-                    if backup_tree is not None and backup_snapshot is not None:
+                    if backup is not None:
                         try:
-                            self._manager._restore_replaced_workspace(
-                                backup_tree, backup_snapshot
-                            )
+                            self._restore_replaced_workspace_backup(backup)
                         except Exception:
                             logger.exception("Failed to restore previous workspace")
                     raise
                 finally:
-                    if backup_tree is not None:
-                        backup_tree.close()
+                    if backup is not None:
+                        backup.close()
             return True
         finally:
             tree.close()
             if tree is not opened_tree:
                 opened_tree.close()
+            profiler.log_summary()
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
         """Restore the state of the manager from a DataTree object.
@@ -2184,6 +2431,39 @@ class _WorkspaceIOController:
             if not has_dirty_ancestor:
                 roots.append(uid)
         return roots
+
+    @staticmethod
+    def _workspace_manifest_node_uids(
+        root_attrs: Mapping[str, typing.Any],
+    ) -> frozenset[str]:
+        manifest = _manager_workspace._workspace_manifest_from_attrs(
+            typing.cast("Mapping[Hashable, typing.Any]", root_attrs)
+        )
+        nodes = manifest.get("nodes", ())
+        if not isinstance(nodes, list):
+            return frozenset()
+        uids: set[str] = set()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            uid = node.get("uid")
+            if uid is not None:
+                uids.add(str(uid))
+        return frozenset(uids)
+
+    def _workspace_stale_reference_rewrite_uids(
+        self, available_uids: frozenset[str]
+    ) -> list[str]:
+        rewrite_uids: list[str] = []
+        for uid, node in self._manager._tool_graph.nodes.items():
+            if node.is_imagetool:
+                continue
+            tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
+            if not tool.can_save_and_load():
+                continue
+            if tool._persistence_reference_node_uids() - available_uids:
+                rewrite_uids.append(uid)
+        return sorted(rewrite_uids, key=self._manager._workspace_node_path)
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
         delta_save_count = self._manager._workspace_state.delta_save_count + 1
@@ -2618,6 +2898,14 @@ class _WorkspaceIOController:
         rewrite_groups: list[tuple[str, dict[str, xr.Dataset]]] = []
         rewritten_uids: set[str] = set()
         for uid in self._manager._workspace_highest_dirty_data_roots():
+            rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
+            rewritten_uids.add(uid)
+            rewritten_uids.update(self._manager._iter_descendant_uids(uid))
+
+        manifest_uids = self._workspace_manifest_node_uids(root_attrs)
+        for uid in self._workspace_stale_reference_rewrite_uids(manifest_uids):
+            if uid in rewritten_uids:
+                continue
             rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._manager._iter_descendant_uids(uid))
@@ -3137,11 +3425,13 @@ class _WorkspaceIOController:
         previous_skipped_nodes = self._skipped_workspace_nodes
         self._missing_workspace_colormaps = []
         self._skipped_workspace_nodes = []
+        profiler = _WorkspaceLoadProfiler(fname)
         try:
             with self._manager._workspace_document_access_context(fname) as access:
-                _manager_workspace._recover_workspace_transactions(access.path)
-                if not select and replace:
-                    try:
+                with profiler.stage("metadata read"):
+                    _manager_workspace._recover_workspace_transactions(access.path)
+                try:
+                    with profiler.stage("metadata read"):
                         root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
                             access.path
                         )
@@ -3150,47 +3440,64 @@ class _WorkspaceIOController:
                                 root_attrs
                             )
                         )
-                        if (
-                            schema_version
-                            == _manager_workspace._current_workspace_schema_version()
-                            and manifest is not None
-                        ):
-                            loaded = self._manager._from_h5py_workspace_file(
-                                access.path,
-                                manifest,
-                                replace=replace,
-                                mark_dirty=mark_dirty,
-                            )
-                            if loaded and associate:
-                                self._manager._associate_loaded_workspace_file(
-                                    access.path,
-                                    schema_version,
-                                    native=native,
-                                    delta_save_count=delta_save_count,
-                                    workspace_access=access,
-                                    rebind_data=False,
+                    if (
+                        schema_version
+                        == _manager_workspace._current_workspace_schema_version()
+                        and manifest is not None
+                    ):
+                        selected_paths: set[str] | None = None
+                        if select:
+                            with profiler.stage("selection dialog setup"):
+                                dialog = _ChooseFromWorkspaceManifestDialog(
+                                    self._manager, manifest
                                 )
-                                if replace:
-                                    self._restore_workspace_option_overrides(manifest)
-                                    self._restore_workspace_loader_state(
-                                        manifest, apply_explorer=False
-                                    )
-                            return self._finish_workspace_file_load(loaded)
-                    except Exception:
-                        logger.debug(
-                            "Failed h5py workspace load path; falling back to DataTree",
-                            exc_info=True,
+                            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                                return self._finish_workspace_file_load(False)
+                            selected_paths = dialog.selected_paths()
+                        loaded = self._manager._from_h5py_workspace_file(
+                            access.path,
+                            manifest,
+                            replace=replace,
+                            mark_dirty=mark_dirty,
+                            selected_paths=selected_paths,
+                            profiler=profiler,
                         )
-                tree = _manager_xarray.open_workspace_datatree(access.path, chunks=None)
-                schema_version, delta_save_count, manifest = (
-                    _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
-                )
+                        if loaded and associate:
+                            self._manager._associate_loaded_workspace_file(
+                                access.path,
+                                schema_version,
+                                native=native,
+                                delta_save_count=delta_save_count,
+                                workspace_access=access,
+                                rebind_data=False,
+                            )
+                            if replace:
+                                self._restore_workspace_option_overrides(manifest)
+                                self._restore_workspace_loader_state(
+                                    manifest, apply_explorer=False
+                                )
+                        return self._finish_workspace_file_load(loaded)
+                except Exception:
+                    logger.debug(
+                        "Failed h5py workspace load path; falling back to DataTree",
+                        exc_info=True,
+                    )
+                with profiler.stage("metadata read"):
+                    tree = _manager_xarray.open_workspace_datatree(
+                        access.path, chunks=None
+                    )
+                    schema_version, delta_save_count, manifest = (
+                        _manager_workspace._workspace_file_metadata_from_attrs(
+                            tree.attrs
+                        )
+                    )
                 loaded = self._manager._from_datatree(
                     tree,
                     replace=replace,
                     mark_dirty=mark_dirty,
                     select=select,
                     workspace_file_path=access.path,
+                    profiler=profiler,
                 )
                 if loaded and associate:
                     self._manager._associate_loaded_workspace_file(

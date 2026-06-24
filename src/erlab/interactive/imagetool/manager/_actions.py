@@ -485,6 +485,7 @@ class _ActionsController:
 
                 replace_kind = ""
                 replace_provenance = None
+                replace_live_parent_data = None
                 if launch_mode == "replace":
                     displayed_source = node.displayed_source_spec
                     if displayed_source is not None:
@@ -504,6 +505,17 @@ class _ActionsController:
                     else:
                         replace_kind = "detached"
                         replace_provenance = detached_provenance
+                    if replace_kind == "detached":
+                        with contextlib.suppress(TypeError):
+                            if (
+                                provenance.require_live_source_spec(replace_provenance)
+                                is not None
+                            ):
+                                replace_live_parent_data = (
+                                    node.detached_live_parent_data
+                                    if node.detached_live_parent_data is not None
+                                    else slicer_area.data
+                                )
 
                 plan.append(
                     (
@@ -516,6 +528,7 @@ class _ActionsController:
                         detached_provenance,
                         replace_kind,
                         replace_provenance,
+                        replace_live_parent_data,
                     )
                 )
             except Exception as exc:
@@ -537,6 +550,7 @@ class _ActionsController:
                 detached_provenance,
                 replace_kind,
                 replace_provenance,
+                replace_live_parent_data,
             ) in plan:
                 if launch_mode == "replace":
                     if replace_provenance is not None:
@@ -547,7 +561,10 @@ class _ActionsController:
                                 state=node.source_state,
                             )
                         else:
-                            node.set_detached_provenance(replace_provenance)
+                            node.set_detached_provenance(
+                                replace_provenance,
+                                live_parent_data=replace_live_parent_data,
+                            )
                     slicer_area.replace_source_data(processed, emit_edited=True)
                     continue
 
@@ -1640,8 +1657,12 @@ class _ActionsController:
             return
         was_figure = self._manager._is_figure_uid(uid)
         self._manager._mark_removed_subtree_dirty(uid)
-        self._manager.tree_view.childtool_removed(uid)
+        closing_document = self._manager._workspace_state.closing_document
+        if not closing_document:
+            self._manager.tree_view.childtool_removed(uid)
         self._manager._remove_uid_target(uid)
+        if closing_document:
+            return
         if was_figure:
             self._manager._sync_figures_ui()
         self._manager._update_actions()

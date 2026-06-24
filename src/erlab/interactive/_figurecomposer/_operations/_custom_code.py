@@ -77,13 +77,11 @@ def _connect_custom_code_editor(
         pending_dirty[0] = False
         code = pending_code[0]
         render_valid_code = render and code_edit.has_valid_python_syntax(code)
-        changed = tool._update_operations_by_ids(
+        tool._update_operations_by_ids(
             operation_ids,
             lambda _index, target: target.model_copy(update={"code": code}),
             render=render_valid_code,
         )
-        if changed and not render_valid_code:
-            tool.sigInfoChanged.emit()
 
     def commit_settled_code(_code: str) -> None:
         commit_code(render=True)
@@ -125,6 +123,7 @@ def _build_custom_code_editor(
         operation.trusted,
         lambda checked: tool._update_current_operation(trusted=checked),
     )
+    trust.setObjectName("figureComposerCustomCodeTrustedCheck")
     tool._add_form_row(
         tool.operation_editor_layout,
         "Trusted",
@@ -161,8 +160,11 @@ def _render_custom(
     fig: Figure,
     axs: typing.Any,
 ) -> None:
-    if not operation.trusted or not operation.code.strip():
+    code = operation.code.strip()
+    if not code:
         return
+    if not operation.trusted:
+        raise ValueError("Custom code is not trusted. Enable Trusted to render it.")
     namespace = _source_namespace(tool, fig, axs)
     # Custom code is the explicit trusted escape hatch in the recipe pipeline.
     exec(operation.code, namespace)  # noqa: S102

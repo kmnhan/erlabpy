@@ -86,6 +86,7 @@ class _FileSystem:
         self._path = pathlib.Path(path)
         self._children: list[_FileSystem] | None = None
         self._children_error: OSError | None = None
+        self._has_children: bool | None = None
 
         self._show_hidden = show_hidden
 
@@ -99,6 +100,7 @@ class _FileSystem:
         self._path = pathlib.Path(path)
         self._children = None
         self._children_error = None
+        self._has_children = None
 
     @property
     def show_hidden(self) -> bool:
@@ -110,6 +112,7 @@ class _FileSystem:
         self._show_hidden = show
         self._children = None
         self._children_error = None
+        self._has_children = None
 
     @property
     def has_children(self) -> bool:
@@ -118,7 +121,15 @@ class _FileSystem:
         This being `True` does not guarantee that the children have been fetched. Use
         the `can_fetch_children` property to check.
         """
-        return self.path.is_dir()
+        if self._has_children is not None:
+            return self._has_children
+        try:
+            self._has_children = self.path.is_dir()
+        except OSError as exc:
+            self._children_error = exc
+            self._children = []
+            self._has_children = False
+        return self._has_children
 
     @property
     def children(self) -> list[_FileSystem]:
@@ -144,6 +155,7 @@ class _FileSystem:
         """Reload the children of the file system."""
         self._children = []
         self._children_error = None
+        self._has_children = None
         if not self.has_children:
             return
         children: list[_FileSystem] = []

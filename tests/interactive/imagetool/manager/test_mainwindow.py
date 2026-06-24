@@ -475,6 +475,60 @@ def test_update_info_handles_legacy_imagetool_preview_attribute(
         assert manager.preview_widget.isVisible()
 
 
+def test_details_panel_update_info_hides_missing_child_preview_pixmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakePreviewWidget:
+        def __init__(self) -> None:
+            self.visible = True
+            self.pixmaps: list[QtGui.QPixmap] = []
+
+        def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+            self.pixmaps.append(pixmap)
+
+        def setVisible(self, visible: bool) -> None:
+            self.visible = visible
+
+    class _FakeImageItem:
+        def getPixmap(self) -> None:
+            return None
+
+    metadata_nodes: list[object] = []
+    preview_widget = _FakePreviewWidget()
+    node = types.SimpleNamespace(
+        uid="child-1",
+        is_imagetool=False,
+        tool_window=types.SimpleNamespace(
+            preview_pixmap=None,
+            preview_pixmap_stale=False,
+            preview_imageitem=_FakeImageItem(),
+        ),
+    )
+    manager = types.SimpleNamespace(
+        text_box=types.SimpleNamespace(setHtml=lambda _html: None),
+        preview_widget=preview_widget,
+        _selected_imagetool_targets=list,
+        _selected_tool_uids=lambda: ["child-1"],
+        _node_for_target=lambda _target: node,
+        _node_info_html=lambda _node: "<p>child</p>",
+        _set_metadata_node=lambda metadata_node: metadata_nodes.append(metadata_node),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda *objects: all(obj is not None for obj in objects),
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._update_info(uid="child-1")
+
+    assert metadata_nodes == [node]
+    assert preview_widget.visible is False
+    assert preview_widget.pixmaps == []
+
+
 def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     preview = manager_widgets._SingleImagePreview()
     qtbot.addWidget(preview)
@@ -493,6 +547,26 @@ def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     preview.setVisible(True)
 
     assert preview.isVisible()
+
+
+def test_single_image_preview_keeps_legacy_stretch_on_resize(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+    pixmap = QtGui.QPixmap(160, 80)
+    pixmap.fill(QtGui.QColor("red"))
+
+    preview.resize(320, 80)
+    preview.setPixmap(pixmap)
+    preview.setVisible(True)
+    qtbot.waitExposed(preview)
+    first_transform = preview.transform()
+
+    preview.resize(120, 300)
+    qtbot.wait(0)
+    second_transform = preview.transform()
+
+    assert first_transform.m11() != pytest.approx(first_transform.m22())
+    assert second_transform.m11() != pytest.approx(second_transform.m22())
 
 
 def test_batch_action_transform_error_paths(
@@ -2727,6 +2801,84 @@ def test_remove_childtool_direct_removal(
 
         manager._remove_childtool(uid)
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
+
+
+def test_shutdown_bulk_remove_skips_final_ui_refresh(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+        previous_closing = manager._workspace_state.closing_document
+        monkeypatch.setattr(
+            manager, "_cleanup_linkers", lambda: calls.append("cleanup")
+        )
+        monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        monkeypatch.setattr(manager, "_update_info", lambda: calls.append("info"))
+
+        try:
+            manager._workspace_state.closing_document = True
+            with manager._bulk_remove_context():
+                assert not manager.updatesEnabled()
+                assert not manager.tree_view.updatesEnabled()
+        finally:
+            manager._workspace_state.closing_document = previous_closing
+
+        assert manager.updatesEnabled()
+        assert manager.tree_view.updatesEnabled()
+        assert calls == []
+
+
+def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    with manager_context() as manager:
+        root_tool = itool(data, manager=False, execute=False)
+        root_index = manager.add_imagetool(root_tool, show=False)
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            manager.tree_view,
+            "childtool_removed",
+            lambda _uid: calls.append("childtool_removed"),
+        )
+        monkeypatch.setattr(
+            manager, "_sync_figures_ui", lambda **_kwargs: calls.append("figures")
+        )
+        monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        monkeypatch.setattr(
+            manager,
+            "_refresh_dependency_dependents",
+            lambda _uid: calls.append("dependents"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_refresh_figure_source_controls",
+            lambda: calls.append("source_controls"),
+        )
+
+        previous_closing = manager._workspace_state.closing_document
+        try:
+            manager._workspace_state.closing_document = True
+            manager.remove_all_tools()
+        finally:
+            manager._workspace_state.closing_document = previous_closing
+
+        assert root_index not in manager._tool_graph.root_wrappers
+        assert figure_uid not in manager._tool_graph.nodes
+        assert calls == []
 
 
 def test_remove_child_imagetool_remove_action(

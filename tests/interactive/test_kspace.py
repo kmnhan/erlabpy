@@ -113,12 +113,14 @@ def _memory_budget(
 def _conversion_estimate_stub(
     *,
     safe: bool = True,
+    final_bytes: int = 8,
+    peak_bytes: int = 8,
 ) -> _kspace_conversion.KspaceConversionEstimate:
     budget = _kspace_conversion.KspaceMemoryBudget(
         total_bytes=4,
         available_bytes=2,
         reserve_bytes=1,
-        safe_budget_bytes=10 if safe else 1,
+        safe_budget_bytes=peak_bytes if safe else max(0, peak_bytes - 1),
     )
     return _kspace_conversion.KspaceConversionEstimate(
         input_dims=(),
@@ -128,8 +130,8 @@ def _conversion_estimate_stub(
         bounds={},
         resolution={},
         total_points=1,
-        final_bytes=8,
-        peak_bytes=8,
+        final_bytes=final_bytes,
+        peak_bytes=peak_bytes,
         memory=budget,
     )
 
@@ -379,10 +381,18 @@ def test_kspace_conversion_estimate_validates_bounds_and_resolution(
         resolution={"kx": 1.0, "ky": 1.0},
     ).is_safe
     estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
-        _conversion_estimate_stub()
+        _conversion_estimate_stub(final_bytes=8, peak_bytes=48)
     )
     assert estimate_text.startswith("Output: scalar\n")
-    assert "Estimated size:" in estimate_text
+    assert "Final array:" in estimate_text
+    assert "Peak memory:" in estimate_text
+    unsafe_estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
+        _conversion_estimate_stub(safe=False, final_bytes=8, peak_bytes=48),
+        preview=True,
+    )
+    assert "Preview unavailable." in unsafe_estimate_text
+    assert "Final array:" in unsafe_estimate_text
+    assert "Peak memory:" in unsafe_estimate_text
     with pytest.raises(ValueError, match="finite"):
         _kspace_conversion.estimate_kspace_conversion(
             data,
@@ -1993,6 +2003,7 @@ def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
 
     win.gamma_widget.setValue(initial.cmap_gamma + 0.1)
 
+    assert win._flush_pending_history_write()
     assert win.undoable
     assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
 

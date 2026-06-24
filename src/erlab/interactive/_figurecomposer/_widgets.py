@@ -80,6 +80,7 @@ _SELECTOR_CORNER_RADIUS = 6.0
 _SELECTOR_BORDER_WIDTH = 1.0
 _SELECTOR_SELECTED_BORDER_WIDTH = 1.6
 _SELECTOR_MUTED_STATUS_COLOR = QtGui.QColor("#59636e")
+_MANAGER_WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME = "managerWorkspaceSaveShortcut"
 
 
 def _blend_qcolors(
@@ -719,6 +720,13 @@ _SHOW_COMPOSER_TOOLITEM = (
     "figure_composer",
     "show_composer",
 )
+_TOOLBAR_ICON_REFRESH_EVENTS = {
+    QtCore.QEvent.Type.ActivationChange,
+    QtCore.QEvent.Type.ApplicationPaletteChange,
+    QtCore.QEvent.Type.EnabledChange,
+    QtCore.QEvent.Type.PaletteChange,
+    QtCore.QEvent.Type.StyleChange,
+}
 
 
 def _noop_toolbar_callback() -> None:
@@ -877,6 +885,19 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         color = self.palette().color(QtGui.QPalette.ColorRole.ButtonText)
         return erlab.interactive.utils.qtawesome.icon(icon_name, color=color)
 
+    def _refresh_icons(self) -> None:
+        erlab.interactive.utils.qtawesome.reset_cache()
+        for callback_name, action in self._actions.items():
+            icon_name = {
+                "zoom": "zoom_to_rect",
+                "pan": "move",
+                "show_composer": "figure_composer",
+                "configure_subplots": "subplots",
+                "edit_parameters": "qt4_editor_options",
+                "save_figure": "filesave",
+            }.get(callback_name, callback_name)
+            action.setIcon(self._icon(icon_name))
+
     def configure_subplots(self, *args: typing.Any) -> typing.Any:
         self._subplot_adjust_callback()
 
@@ -1015,18 +1036,8 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
         self._commit_colorbar_clims(colorbar_before)
 
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
-        if event is not None and event.type() == QtCore.QEvent.Type.PaletteChange:
-            erlab.interactive.utils.qtawesome.reset_cache()
-            for callback_name, action in self._actions.items():
-                icon_name = {
-                    "zoom": "zoom_to_rect",
-                    "pan": "move",
-                    "show_composer": "figure_composer",
-                    "configure_subplots": "subplots",
-                    "edit_parameters": "qt4_editor_options",
-                    "save_figure": "filesave",
-                }.get(callback_name, callback_name)
-                action.setIcon(self._icon(icon_name))
+        if event is not None and event.type() in _TOOLBAR_ICON_REFRESH_EVENTS:
+            self._refresh_icons()
         super().changeEvent(event)
 
 
@@ -1122,12 +1133,43 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
+        if self._is_workspace_save_shortcut_event(event) and (
+            shortcut := self._workspace_save_shortcut()
+        ):
+            shortcut.activated.emit()
+            if event is not None:
+                event.accept()
+            return True
         if self._is_close_shortcut_event(event):
             self.hide()
             if event is not None:
                 event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if (
+            event is not None
+            and event.type() in _TOOLBAR_ICON_REFRESH_EVENTS
+            and erlab.interactive.utils.qt_is_valid(self.toolbar)
+        ):
+            self.toolbar._refresh_icons()
+        super().changeEvent(event)
+
+    def _workspace_save_shortcut(self) -> QtWidgets.QShortcut | None:
+        for shortcut in self.findChildren(QtWidgets.QShortcut):
+            if shortcut.objectName() == _MANAGER_WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME:
+                return shortcut
+        return None
+
+    @staticmethod
+    def _is_workspace_save_shortcut_event(event: QtCore.QEvent | None) -> bool:
+        return (
+            event is not None
+            and event.type() == QtCore.QEvent.Type.ShortcutOverride
+            and isinstance(event, QtGui.QKeyEvent)
+            and event.matches(QtGui.QKeySequence.StandardKey.Save)
+        )
 
     @staticmethod
     def _is_close_shortcut_event(event: QtCore.QEvent | None) -> bool:
@@ -1196,6 +1238,30 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             return
         self._suppress_resize_signal = False
 
+    def _ensure_recallable_geometry(self) -> None:
+        frame = self.frameGeometry()
+        if frame.isEmpty():
+            return
+        screen_geometries = tuple(
+            geometry
+            for screen in QtGui.QGuiApplication.screens()
+            for geometry in (screen.availableGeometry(),)
+            if not geometry.isEmpty()
+        )
+        if not screen_geometries or any(
+            geometry.intersects(frame) for geometry in screen_geometries
+        ):
+            return
+        target_screen = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        if target_screen is None:
+            target_geometry = screen_geometries[0]
+        else:
+            target_geometry = target_screen.availableGeometry()
+            if target_geometry.isEmpty():
+                target_geometry = screen_geometries[0]
+        frame.moveCenter(target_geometry.center())
+        self.move(frame.topLeft())
+
     def show_for_setup(
         self, setup: FigureSubplotsState, title: str, *, activate: bool
     ) -> None:
@@ -1204,11 +1270,14 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self.setAttribute(
             QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, not activate
         )
-        if not self.isVisible():
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
             self.show()
+        self._ensure_recallable_geometry()
         if activate:
-            self.activateWindow()
             self.raise_()
+            self.activateWindow()
 
     def close_from_owner(self) -> None:
         self._closing_from_owner = True
