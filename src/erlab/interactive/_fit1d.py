@@ -2645,7 +2645,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _fit_step_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
         widgets: list[QtWidgets.QWidget] = []
-        for widget in (
+        for candidate in (
             self.plot_widget.viewport(),
             self.param_view.viewport(),
             self.elapsed_value,
@@ -2656,6 +2656,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.bic_value,
             self.fit_multi_button,
         ):
+            widget: object = candidate
             if (
                 isinstance(widget, QtWidgets.QWidget)
                 and erlab.interactive.utils.qt_is_valid(widget)
@@ -2671,7 +2672,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _fit_progress_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
         widgets: list[QtWidgets.QWidget] = []
-        for widget in (
+        for candidate in (
             self.elapsed_value,
             self.nfev_out_value,
             self.redchi_value,
@@ -2680,6 +2681,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.bic_value,
             self.fit_multi_button,
         ):
+            widget: object = candidate
             if (
                 isinstance(widget, QtWidgets.QWidget)
                 and erlab.interactive.utils.qt_is_valid(widget)
