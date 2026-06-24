@@ -116,6 +116,72 @@ class _NotesPlainTextEdit(QtWidgets.QPlainTextEdit):
         self.focus_lost.emit()
 
 
+class _ManagerProvenancePasteFilter(QtCore.QObject):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__(manager)
+        self._manager = manager
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if (
+            event is None
+            or event.type() != QtCore.QEvent.Type.KeyPress
+            or not isinstance(event, QtGui.QKeyEvent)
+            or not event.matches(QtGui.QKeySequence.StandardKey.Paste)
+            or not self._should_handle_paste()
+        ):
+            return super().eventFilter(obj, event)
+        self._manager._paste_provenance_steps_from_clipboard()
+        event.accept()
+        return True
+
+    def _should_handle_paste(self) -> bool:
+        app = QtWidgets.QApplication.instance()
+        if not isinstance(app, QtWidgets.QApplication):
+            return False
+        if app.activeWindow() is not self._manager:
+            return False
+        if (
+            self._manager.inspector_tabs.currentWidget()
+            is not self._manager.metadata_provenance_page
+        ):
+            return False
+        focus_widget = app.focusWidget()
+        if focus_widget is None:
+            return True
+        if (
+            focus_widget is self._manager.metadata_derivation_list
+            or self._manager.metadata_derivation_list.isAncestorOf(focus_widget)
+        ):
+            return False
+        return not _widget_accepts_text_paste(focus_widget, stop_at=self._manager)
+
+
+def _widget_accepts_text_paste(
+    widget: QtWidgets.QWidget, *, stop_at: QtWidgets.QWidget
+) -> bool:
+    current: QtWidgets.QWidget | None = widget
+    while current is not None:
+        if isinstance(
+            current,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            return True
+        if isinstance(current, QtWidgets.QComboBox) and current.isEditable():
+            return True
+        if current is stop_at:
+            return False
+        parent = current.parentWidget()
+        current = parent if isinstance(parent, QtWidgets.QWidget) else None
+    return False
+
+
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
     """Prompt for a Figure Composer target figure and source workflow."""
 
@@ -657,9 +723,12 @@ class ImageToolManager(_ImageToolManagerBase):
 
         qapp = QtWidgets.QApplication.instance()
         self._application_quit_filter: _ApplicationQuitFilter | None = None
+        self._provenance_paste_filter: _ManagerProvenancePasteFilter | None = None
         if isinstance(qapp, QtWidgets.QApplication):
             self._application_quit_filter = _ApplicationQuitFilter(self)
             qapp.installEventFilter(self._application_quit_filter)
+            self._provenance_paste_filter = _ManagerProvenancePasteFilter(self)
+            qapp.installEventFilter(self._provenance_paste_filter)
 
         self._link_registry = _ManagerLinkRegistry()
 
@@ -1433,6 +1502,12 @@ class ImageToolManager(_ImageToolManagerBase):
             ):
                 qapp.removeEventFilter(self._application_quit_filter)
                 self._application_quit_filter = None
+            if (
+                isinstance(qapp, QtWidgets.QApplication)
+                and self._provenance_paste_filter is not None
+            ):
+                qapp.removeEventFilter(self._provenance_paste_filter)
+                self._provenance_paste_filter = None
             for widget in (
                 self.text_box,
                 self.metadata_derivation_list,
@@ -3063,8 +3138,12 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> provenance._ProvenanceDisplayRow | None:
         return self._details_panel._selected_derivation_row()
 
-    def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
-        return self._details_panel._build_metadata_derivation_menu()
+    def _build_metadata_derivation_menu(
+        self, *, include_row_actions: bool = True
+    ) -> QtWidgets.QMenu | None:
+        return self._details_panel._build_metadata_derivation_menu(
+            include_row_actions=include_row_actions
+        )
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
         self._details_panel._show_metadata_derivation_menu(pos)

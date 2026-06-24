@@ -182,6 +182,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_node_uid: str | None
     _notes_node_uid: str | None
     _note_commit_timer: QtCore.QTimer
+    _provenance_paste_filter: QtCore.QObject | None
     _updating_note_editor: bool
     _previous_excepthook: Callable[
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any

@@ -681,12 +681,14 @@ class _DetailsPanelController:
             return row
         return None
 
-    def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
+    def _build_metadata_derivation_menu(
+        self, *, include_row_actions: bool = True
+    ) -> QtWidgets.QMenu | None:
         if self._manager.metadata_derivation_list.count() == 0:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)
-        row = self._manager._selected_derivation_row()
+        row = self._manager._selected_derivation_row() if include_row_actions else None
         edit_enabled, edit_reason = (
             self._manager._provenance_edit_controller.can_edit_row(row)
         )
@@ -708,7 +710,9 @@ class _DetailsPanelController:
         menu.addAction(self._manager._metadata_revert_step_action)
         menu.addSeparator()
 
-        selected_code = self._manager._selected_derivation_code()
+        selected_code = (
+            self._manager._selected_derivation_code() if include_row_actions else None
+        )
         self._manager._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._manager._metadata_copy_selected_action)
         clipboard = QtWidgets.QApplication.clipboard()
@@ -732,9 +736,9 @@ class _DetailsPanelController:
 
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
         item = self._manager.metadata_derivation_list.itemAt(pos)
-        if item is None:
-            return
-        menu = self._manager._build_metadata_derivation_menu()
+        menu = self._manager._build_metadata_derivation_menu(
+            include_row_actions=item is not None
+        )
         if menu is None:
             return
         viewport = self._manager.metadata_derivation_list.viewport()
