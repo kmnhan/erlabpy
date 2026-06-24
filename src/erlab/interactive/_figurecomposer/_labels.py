@@ -423,7 +423,7 @@ def _iter_label_chunks(
             literal_parts.append(char)
             index += 1
             continue
-        end = text.find("}", index + 1)
+        end = _find_label_placeholder_end(text, index)
         if end < 0:
             literal_parts.append(text[index:])
             break
@@ -445,6 +445,21 @@ def _iter_label_chunks(
         index = end + 1
     if literal_parts:
         yield "".join(literal_parts)
+
+
+def _find_label_placeholder_end(text: str, start: int) -> int:
+    depth = 0
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            if depth == 0:
+                return index
+            depth -= 1
+        index += 1
+    return -1
 
 
 def _parse_label_field(

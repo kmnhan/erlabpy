@@ -910,6 +910,89 @@ def test_figure_composer_set_palette_swatch_tooltip_contrast(qtbot) -> None:
     assert "monospace" in light.toolTip()
 
 
+def test_figure_composer_set_palette_helper_fallbacks(qtbot, monkeypatch) -> None:
+    sns = pytest.importorskip("seaborn")
+    swatch = figurecomposer_set_palette._PaletteSwatch(QtGui.QColor("#336699"), 0)
+    qtbot.addWidget(swatch)
+    swatch.contextMenuEvent(None)
+
+    real_import = builtins.__import__
+
+    def import_without_seaborn(
+        name: str,
+        globals_: dict[str, typing.Any] | None = None,
+        locals_: dict[str, typing.Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> typing.Any:
+        if name == "seaborn" or name.startswith("seaborn."):
+            raise ImportError("seaborn is not installed")
+        return real_import(name, globals_, locals_, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_seaborn)
+    assert figurecomposer_set_palette._import_seaborn() is None
+
+    custom_operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_name": "custom_lab_palette"}
+    )
+    options = figurecomposer_set_palette._palette_options(custom_operation, None)
+    assert "custom_lab_palette" in options
+    assert "jet" not in options
+
+    assert (
+        figurecomposer_set_palette._palette_colors(
+            sns, "not-a-real-palette", None, None
+        )
+        == ()
+    )
+    assert figurecomposer_set_palette._palette_icon(None, "deep").isNull()
+
+    class EmptyPalette:
+        @staticmethod
+        def color_palette() -> tuple[typing.Any, ...]:
+            return ()
+
+    fig = plt.figure()
+    try:
+        fig.add_subplot()
+        figurecomposer_set_palette._apply_palette_to_existing_axes(fig, EmptyPalette)
+    finally:
+        plt.close(fig)
+
+    colors_operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "colors", "palette_colors": ()}
+    )
+    assert (
+        figurecomposer_set_palette._palette_display_text(colors_operation)
+        == "Custom colors"
+    )
+    assert figurecomposer_set_palette._palette_call_code(colors_operation) is None
+    assert (
+        figurecomposer_set_palette._code_lines(
+            typing.cast("typing.Any", None), colors_operation
+        )
+        == []
+    )
+
+    monkeypatch.setattr(figurecomposer_set_palette, "_import_seaborn", lambda: None)
+    operation = figurecomposer_set_palette._create_operation(
+        typing.cast("typing.Any", None)
+    )
+    assert operation.label == "set palette"
+    assert figurecomposer_set_palette._display_text(
+        typing.cast("typing.Any", None), operation
+    ).startswith("Skipped Set Palette:")
+    assert "Install seaborn" in figurecomposer_set_palette._tooltip(
+        typing.cast("typing.Any", None), operation
+    )
+    assert (
+        figurecomposer_set_palette._section_summary(
+            typing.cast("typing.Any", None), "other", operation
+        )
+        == ""
+    )
+
+
 def test_figure_composer_set_palette_editor_disables_without_seaborn(
     qtbot, monkeypatch
 ) -> None:
@@ -20179,6 +20262,13 @@ def test_figure_composer_default_line_labels_use_property_labels() -> None:
 def test_figure_composer_label_helper_edges() -> None:
     from erlab.interactive._figurecomposer import _labels as figurecomposer_labels
 
+    assert figurecomposer_labels.label_coord_placeholder_name("") == "field"
+    assert figurecomposer_labels.label_coord_placeholder_name("1 eV") == "_1_eV"
+    assert figurecomposer_labels.label_coord_placeholder_name("class") == "class_"
+    assert figurecomposer_labels._explicit_field_names("{{x}} {sample_temp:.1f}") == {
+        "sample_temp"
+    }
+
     profile = xr.DataArray(
         [1.0],
         dims=("x",),
@@ -20234,6 +20324,7 @@ def test_figure_composer_label_helper_edges() -> None:
             "x": [0.0],
             "sample temp": 20.0,
             "sample-temp": 30.0,
+            "sample_temp": 40.0,
             "class": 1.0,
             "2 theta": 2.0,
         },
@@ -20242,8 +20333,50 @@ def test_figure_composer_label_helper_edges() -> None:
     collision_context = figurecomposer_labels.label_context(collision_profile, index=0)
     assert collision_context["sample_temp"] == 20.0
     assert collision_context["sample_temp_2"] == 30.0
+    assert collision_context["sample_temp_3"] == 40.0
     assert collision_context["class_"] == 1.0
     assert collision_context["_2_theta"] == 2.0
+    mixed_context = {
+        figurecomposer_labels._LABEL_FIELD_SOURCES_KEY: {
+            "sample_temp": "attr",
+            "field": "custom",
+        },
+        figurecomposer_labels._LABEL_FIELD_ORIGINAL_NAMES_KEY: {
+            "sample_temp": "other temp",
+            "field": "other field",
+        },
+    }
+    invalid_metadata_context = {
+        figurecomposer_labels._LABEL_FIELD_SOURCES_KEY: "bad",
+        figurecomposer_labels._LABEL_FIELD_ORIGINAL_NAMES_KEY: "bad",
+    }
+    assert figurecomposer_labels.label_context_field_sources(
+        (spaced_context, invalid_metadata_context, mixed_context)
+    ) == {
+        "x": "coord",
+        "sample_temp": "mixed",
+        "sample_label": "attr",
+        "field": "custom",
+    }
+    assert figurecomposer_labels.label_context_original_field_names(
+        (spaced_context, invalid_metadata_context, mixed_context)
+    ) == {
+        "x": "x",
+        "sample_temp": "",
+        "sample_label": "sample label",
+        "field": "other field",
+    }
+    assert (
+        figurecomposer_labels.label_context_coord_alias(
+            {
+                figurecomposer_labels._LABEL_COORD_ALIASES_KEY: {"x": 1},
+                "x": 0.0,
+            },
+            "x",
+        )
+        == "x"
+    )
+    assert figurecomposer_labels.label_context_coord_alias({}, "missing") is None
     assert figurecomposer_labels.labels_from_text("", (), default="fallback") == ()
     assert figurecomposer_labels.labels_from_text(
         "", (context, context), literal_values=("one",), default=None
@@ -20256,8 +20389,16 @@ def test_figure_composer_label_helper_edges() -> None:
         "$k_{F}$", (context,), default=None
     ) == (r"$k_{F}$",)
     assert figurecomposer_labels.labels_from_text(
-        "{source!r}:{sample_temp:.1f}", (context,)
-    ) == ("'map':20.0",)
+        "{{literal}} {missing", (context,), default=None
+    ) == ("{{literal}} {missing",)
+    assert figurecomposer_labels.labels_from_text(
+        "{source!r}:{sample_temp!s}:{sample_temp!a}:{sample_temp:.1f}",
+        (context,),
+    ) == ("'map':20.0:20.0:20.0",)
+    format_context = {**context, "width": 5}
+    assert figurecomposer_labels.labels_from_text(
+        "{sample_temp:{width}.1f}", (format_context,)
+    ) == (" 20.0",)
     assert figurecomposer_labels.labels_from_text(
         "{sample_temp + 1.5:.1f}", (context,)
     ) == ("21.5",)
@@ -20282,12 +20423,33 @@ def test_figure_composer_label_helper_edges() -> None:
         )
         == r'f"{source}\\{{missing}}"'
     )
+    assert (
+        figurecomposer_labels.label_fstring_code("{{literal}} {missing", {})
+        == r'f"{{literal}} {{missing"'
+    )
+    formatted_code = figurecomposer_labels.label_fstring_code(
+        "{sample_temp!r}:{sample_temp:{width}.1f}",
+        {
+            "sample_temp": figurecomposer_labels.coord_value_expression("sample temp"),
+            "width": "5",
+        },
+    )
+    assert eval(formatted_code, {"profile": spaced_profile}) == "20.0: 20.0"  # noqa: S307
     with pytest.raises(ValueError, match="missing") as exc_info:
         figurecomposer_labels.label_fstring_code("{missing:g}", {"source": "source"})
     error_message = str(exc_info.value)
     assert "not available" in error_message
     assert "missing" in error_message
     assert "Available placeholders" not in error_message
+    with pytest.raises(ValueError, match="basic operators"):
+        figurecomposer_labels.label_fstring_code(
+            "{sample_temp.real}",
+            {
+                "sample_temp": figurecomposer_labels.coord_value_expression(
+                    "sample temp"
+                )
+            },
+        )
     assert figurecomposer_labels.coord_value_expression("sample_temp") == (
         'profile.coords["sample_temp"].values.item()'
     )
