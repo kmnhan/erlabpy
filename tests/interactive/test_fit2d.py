@@ -5,6 +5,7 @@ import re
 import types
 import warnings
 
+import lmfit
 import numpy as np
 import pyqtgraph as pg
 import pytest
@@ -55,10 +56,36 @@ def _assert_fit_result_dataset_equivalent(
 
 
 def _fit_result_dataset(params, *, nfev: int = 1) -> xr.Dataset:
+    params = params.copy()
+    param_args = ", ".join(("x", *params.keys()))
+    namespace = {"np": np}
+    exec(  # noqa: S102
+        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
+        namespace,
+    )
+    model = lmfit.Model(namespace["_model_func"])
+    result = lmfit.model.ModelResult(
+        model,
+        params,
+        data=np.zeros(3),
+        fcn_args=(np.arange(3, dtype=float),),
+        max_nfev=nfev,
+    )
+    result.params = params.copy()
+    result.nfev = nfev
+    result.redchi = 1.0
+    result.rsquared = 0.9
+    result.aic = 1.0
+    result.bic = 2.0
+
+    return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
+
+
+def _placeholder_fit_result_dataset(params) -> xr.Dataset:
     class _Result:
         def __init__(self) -> None:
             self.params = params.copy()
-            self.nfev = nfev
+            self.nfev = 1
             self.redchi = 1.0
             self.rsquared = 0.9
             self.aic = 1.0
@@ -2011,6 +2038,35 @@ def test_fit2d_param_plot_rejects_cached_guess_params(qtbot, monkeypatch) -> Non
 
     assert warnings
     assert warnings[-1][0] == "No parameter selected"
+
+
+def test_fit2d_param_plot_rejects_placeholder_result_objects(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [
+        _placeholder_fit_result_dataset(guessed) for _ in win._result_ds_full
+    ]
+    win._update_param_plot_options()
+
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert not win.param_plot_overlay_check.isEnabled()
+    assert win._param_plot_names() == []
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
 
 
 def test_fit2d_index_changes_do_not_expose_guess_params(qtbot) -> None:

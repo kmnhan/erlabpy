@@ -1175,7 +1175,13 @@ class Fit2DTool(Fit1DTool):
             )
             return None
         params = getattr(result, "params", None)
-        return params if params is not None else None
+        if not isinstance(result, lmfit.model.ModelResult) or params is None:
+            logger.warning(
+                "Ignoring non-ModelResult Fit2D result dataset for parameter plot",
+                extra={"suppress_ui_alert": True},
+            )
+            return None
+        return params
 
     @classmethod
     def _fit_result_params_list(
