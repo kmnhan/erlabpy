@@ -1340,11 +1340,27 @@ def test_manager_close_standalone_app_keeps_ignored_close(
         assert isinstance(standalone, _BusyStandaloneWindow)
         qtbot.wait_until(standalone.isVisible)
 
+        manager._standalone_app_event_filters["stale"] = QtCore.QObject(manager)
+        manager._standalone_app_pending_states["stale"] = {}
+        manager._close_standalone_app("stale")
+
+        assert "stale" not in manager._standalone_app_windows
+        assert "stale" not in manager._standalone_app_event_filters
+        assert "stale" not in manager._standalone_app_pending_states
+
         manager._close_standalone_app("explorer")
 
         assert manager._standalone_app_windows["explorer"] is standalone
         assert manager._standalone_app_event_filters["explorer"] is event_filter
         assert standalone.close_event_count == 1
+        assert standalone.delete_later_count == 0
+
+        manager._standalone_app_event_filters.pop("explorer")
+        manager._close_standalone_app("explorer")
+
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert "explorer" not in manager._standalone_app_event_filters
+        assert standalone.close_event_count == 2
         assert standalone.delete_later_count == 0
 
         standalone.refuse_close = False
@@ -1389,5 +1405,9 @@ def test_manager_close_event_waits_for_busy_standalone_app(
         assert manager.isVisible()
         assert manager._standalone_app_windows["explorer"] is standalone
         assert standalone.close_event_count == 1
+
+        manager.closeEvent(None)
+        assert manager._standalone_app_windows["explorer"] is standalone
+        assert standalone.close_event_count == 2
 
         standalone.refuse_close = False
