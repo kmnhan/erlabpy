@@ -963,7 +963,7 @@ def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
 
 
-def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
+def test_fit1d_multi_step_requests_progress_paint_before_deferred_next_step(
     qtbot, monkeypatch
 ) -> None:
     win = erlab.interactive.ftool(_make_1d_data(), execute=False)
@@ -972,7 +972,10 @@ def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
 
     events: list[str] = []
 
-    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fit_multi_live_refresh_due", lambda: True)
+    monkeypatch.setattr(
+        win, "_request_fit_progress_paint", lambda: events.append("progress")
+    )
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
 
@@ -999,8 +1002,8 @@ def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
 
     win._run_fit_multiple(2)
 
-    assert events == ["start-1", "paint"]
-    qtbot.waitUntil(lambda: events == ["start-1", "paint", "start-2"], timeout=1000)
+    assert events == ["start-1", "progress"]
+    qtbot.waitUntil(lambda: events == ["start-1", "progress", "start-2"], timeout=1000)
 
 
 def test_fit1d_multi_fit_throttles_visible_refreshes(qtbot, monkeypatch) -> None:
@@ -1008,7 +1011,7 @@ def test_fit1d_multi_fit_throttles_visible_refreshes(qtbot, monkeypatch) -> None
     qtbot.addWidget(win)
     assert isinstance(win, Fit1DTool)
 
-    clock_values = [100.0, 100.05, 100.10]
+    clock_values = [100.0, 100.05, 100.30]
 
     def _monotonic() -> float:
         return clock_values.pop(0) if clock_values else 100.10
@@ -1020,7 +1023,9 @@ def test_fit1d_multi_fit_throttles_visible_refreshes(qtbot, monkeypatch) -> None
     monkeypatch.setattr(
         win, "_refresh_slider_from_model", lambda: events.append("slider")
     )
-    monkeypatch.setattr(win, "_set_fit_stats", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        win, "_set_fit_stats", lambda *args, **kwargs: events.append("stats")
+    )
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
 
@@ -1050,7 +1055,7 @@ def test_fit1d_multi_fit_throttles_visible_refreshes(qtbot, monkeypatch) -> None
     )
 
     assert started_steps == [1, 2, 3]
-    assert events == ["curve", "slider", "curve", "slider"]
+    assert events == ["stats", "curve", "slider", "stats"]
     assert win._write_history is True
 
 

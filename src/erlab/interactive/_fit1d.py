@@ -1009,6 +1009,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
         self._fit_multi_last_live_refresh: float = 0.0
+        self._fit_multi_live_refresh_pending: bool = False
         self._fit_multi_refresh_pending: bool = False
         self._fit_multi_last_elapsed: float | None = None
         self._fit_multi_sequence_write_history: bool | None = None
@@ -2668,6 +2669,30 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if widget.isVisible():
                 widget.repaint()
 
+    def _fit_progress_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
+        widgets: list[QtWidgets.QWidget] = []
+        for widget in (
+            self.elapsed_value,
+            self.nfev_out_value,
+            self.redchi_value,
+            self.rsq_value,
+            self.aic_value,
+            self.bic_value,
+            self.fit_multi_button,
+        ):
+            if (
+                isinstance(widget, QtWidgets.QWidget)
+                and erlab.interactive.utils.qt_is_valid(widget)
+                and not any(widget is existing for existing in widgets)
+            ):
+                widgets.append(widget)
+        return tuple(widgets)
+
+    def _request_fit_progress_paint(self) -> None:
+        for widget in self._fit_progress_paint_widgets():
+            if widget.isVisible():
+                widget.repaint()
+
     def _fit_multi_sequence_active(self) -> bool:
         return self._fit_multi_total is not None
 
@@ -2705,17 +2730,33 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._params = result.params.copy()
         self._fit_is_current = True
         self._fit_multi_last_elapsed = time.perf_counter() - t0
+        self._fit_multi_live_refresh_pending = True
         self._fit_multi_refresh_pending = True
         self.sigFitFinished.emit(self._params.copy())
         return self._params
 
-    def _sync_multi_fit_view(self, *, force: bool = False) -> None:
+    def _sync_multi_fit_view(self, *, full: bool = False) -> None:
         if self._last_result_ds is None:
             return
-        if not (force or self._fit_multi_refresh_pending):
+        if full:
+            if not self._fit_multi_refresh_pending:
+                return
+            self._fit_multi_refresh_pending = False
+            self._fit_multi_live_refresh_pending = False
+        elif not self._fit_multi_live_refresh_pending:
             return
-        self._fit_multi_refresh_pending = False
+        else:
+            self._fit_multi_live_refresh_pending = False
+
         result = self._last_result_ds.modelfit_results.compute().item()
+        if not full:
+            self._set_fit_stats(
+                result,
+                elapsed=self._fit_multi_last_elapsed,
+                emit_info=False,
+            )
+            return
+
         self.param_model.set_params(
             self._params, self._params_from_coord, emit_changed=False
         )
@@ -2735,7 +2776,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if self._fit_multi_sequence_active():
             if self._fit_multi_live_refresh_due():
                 self._sync_multi_fit_view()
-                self._request_fit_step_paint()
+                self._request_fit_progress_paint()
         else:
             self._request_fit_step_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
@@ -2953,10 +2994,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             )
         )
 
+        was_running_multi = multi and self._fit_running_multi
         self._fit_start_time = time.perf_counter()
         self._fit_running_multi = multi
         self._fit_cancel_requested = False
-        self._set_fit_running(True, multi=multi, step=step, total=total)
+        self._set_fit_running(
+            True,
+            multi=multi,
+            step=step,
+            total=total,
+            emit_info=not was_running_multi,
+        )
         self._fit_thread = thread
         try:
             thread.start()
@@ -3068,7 +3116,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_step = 0
         self._fit_multi_fit_data = fit_data
         self._fit_multi_params = self._params
-        self._fit_multi_last_live_refresh = 0.0
+        self._fit_multi_last_live_refresh = time.monotonic()
+        self._fit_multi_live_refresh_pending = False
         self._fit_multi_refresh_pending = False
         self._fit_multi_last_elapsed = None
         self._begin_fit_multi_history()
@@ -3126,19 +3175,26 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
 
     def _finish_multi_fit(self) -> None:
-        self._sync_multi_fit_view()
+        self._sync_multi_fit_view(full=True)
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_multi_total = None
         self._fit_multi_step = 0
         self._fit_multi_fit_data = None
         self._fit_multi_params = None
+        self._fit_multi_live_refresh_pending = False
         self._fit_multi_refresh_pending = False
         self._fit_multi_last_elapsed = None
         self._finish_fit_multi_history()
 
     def _set_fit_running(
-        self, running: bool, *, multi: bool, step: int = 0, total: int = 0
+        self,
+        running: bool,
+        *,
+        multi: bool,
+        step: int = 0,
+        total: int = 0,
+        emit_info: bool = True,
     ) -> None:
         if running:
             self.fit_button.setEnabled(False)
@@ -3157,7 +3213,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(False)
             self.cancel_fit_button.setText("Cancel")
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def _make_model_code(self, data_name: str) -> tuple[str, str, list[str]]:
         lines: list[str] = []
@@ -3724,7 +3781,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._refresh_slider_from_model()
 
     def _set_fit_stats(
-        self, result: lmfit.model.ModelResult | None, *, elapsed: float | None = None
+        self,
+        result: lmfit.model.ModelResult | None,
+        *,
+        elapsed: float | None = None,
+        emit_info: bool = True,
     ) -> None:
         if result is None:
             self.elapsed_value.setText("—")
@@ -3734,7 +3795,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.rsq_value.setText("—")
             self.aic_value.setText("—")
             self.bic_value.setText("—")
-            self._emit_info_changed()
+            if emit_info:
+                self._emit_info_changed()
             return
         if elapsed is None:
             elapsed = float("nan")
@@ -3757,7 +3819,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.rsq_value.setText(f"{r_squared:.4g}")
         self.aic_value.setText(f"{result.aic:.4g}")
         self.bic_value.setText(f"{result.bic:.4g}")
-        self._emit_info_changed()
+        if emit_info:
+            self._emit_info_changed()
 
     def _set_elapsed_status(self, elapsed: float | None, timed_out: bool) -> None:
         if elapsed is None or not np.isfinite(elapsed):

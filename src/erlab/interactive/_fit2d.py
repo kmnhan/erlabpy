@@ -432,6 +432,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_start_idx: int = 0
         self._fit_2d_initial_range: tuple[int, int] | None = None
         self._fit_2d_last_live_refresh: float = 0.0
+        self._fit_2d_live_refresh_pending: bool = False
         self._fit_2d_param_plot_refresh_pending: bool = False
         self._fit_2d_last_completed_idx: int | None = None
         self._fit_2d_last_completed_elapsed: float | None = None
@@ -517,7 +518,7 @@ class Fit2DTool(Fit1DTool):
             self._replace_last_state()
 
     def _sync_fit_2d_sequence_view(
-        self, index: int, *, mark_fit_stale: bool = True
+        self, index: int, *, mark_fit_stale: bool = True, full: bool = True
     ) -> None:
         y_vals = self._y_values()
         curr_val = y_vals[index]
@@ -532,6 +533,16 @@ class Fit2DTool(Fit1DTool):
             if index == self._fit_2d_last_completed_idx
             else None
         )
+        if not full:
+            if not self._fit_2d_live_refresh_pending:
+                return
+            self._fit_2d_live_refresh_pending = False
+            if self._last_result_ds is not None:
+                result = self._last_result_ds.modelfit_results.compute().item()
+                self._set_fit_stats(result, elapsed=elapsed, emit_info=False)
+            return
+
+        self._fit_2d_live_refresh_pending = False
         self._refresh_contents_from_index(
             mark_fit_stale=mark_fit_stale,
             elapsed=elapsed,
@@ -553,9 +564,9 @@ class Fit2DTool(Fit1DTool):
                 self._sync_fit_2d_sequence_view(
                     self._fit_2d_last_completed_idx,
                     mark_fit_stale=False,
+                    full=False,
                 )
-            self._flush_fit_2d_sequence_param_plot()
-            self._request_fit_step_paint()
+            self._request_fit_progress_paint()
         erlab.interactive.utils.single_shot(self, 0, callback)
 
     def _build_ui(self) -> None:
@@ -1686,9 +1697,21 @@ class Fit2DTool(Fit1DTool):
         self._mark_fit_stale()
 
     def _set_fit_running(
-        self, running: bool, *, multi: bool, step: int = 0, total: int = 0
+        self,
+        running: bool,
+        *,
+        multi: bool,
+        step: int = 0,
+        total: int = 0,
+        emit_info: bool = True,
     ) -> None:
-        super()._set_fit_running(running, multi=multi, step=step, total=total)
+        super()._set_fit_running(
+            running,
+            multi=multi,
+            step=step,
+            total=total,
+            emit_info=emit_info,
+        )
         self.fit_down_button.setDisabled(running)
         self.fit_up_button.setDisabled(running)
 
@@ -1739,7 +1762,8 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_total = len(self._fit_2d_indices)
         self._fit_2d_direction = direction
         self._fit_2d_start_idx = start_idx
-        self._fit_2d_last_live_refresh = 0.0
+        self._fit_2d_last_live_refresh = time.monotonic()
+        self._fit_2d_live_refresh_pending = False
         self._fit_2d_param_plot_refresh_pending = False
         self._fit_2d_last_completed_idx = None
         self._begin_fit_2d_sequence_history()
@@ -1767,6 +1791,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_is_current = True
         self._fit_2d_last_completed_idx = idx
         self._fit_2d_last_completed_elapsed = time.perf_counter() - t0
+        self._fit_2d_live_refresh_pending = True
         self._fit_2d_param_plot_refresh_pending = True
         self.sigFitFinished.emit(self._params.copy())
         return result
@@ -1862,6 +1887,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_initial_range = None
         self._fit_2d_last_completed_idx = None
         self._fit_2d_last_completed_elapsed = None
+        self._fit_2d_live_refresh_pending = False
         self._update_full_fit_saveable()
         self._flush_fit_2d_sequence_param_plot(force=True)
         self._finish_fit_2d_sequence_history()

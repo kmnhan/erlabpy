@@ -968,7 +968,7 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
 
 
-def test_fit2d_next_step_requests_paint_before_deferred_next_step(
+def test_fit2d_next_step_requests_progress_paint_before_deferred_next_step(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -979,7 +979,10 @@ def test_fit2d_next_step_requests_paint_before_deferred_next_step(
     events: list[str] = []
 
     monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
-    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
+    monkeypatch.setattr(
+        win, "_request_fit_progress_paint", lambda: events.append("progress")
+    )
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1009,13 +1012,13 @@ def test_fit2d_next_step_requests_paint_before_deferred_next_step(
     events.clear()
     win._run_fit_2d("up")
 
-    assert events == ["start-1", "plot", "paint"]
+    assert events == ["start-1", "progress"]
     qtbot.waitUntil(lambda: "start-2" in events, timeout=1000)
-    paint_after_first_start = events.index("paint", events.index("start-1"))
-    assert paint_after_first_start < events.index("start-2")
+    progress_after_first_start = events.index("progress", events.index("start-1"))
+    assert progress_after_first_start < events.index("start-2")
 
 
-def test_fit2d_paints_once_between_finished_step_and_next_worker(
+def test_fit2d_progress_paints_once_between_finished_step_and_next_worker(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -1025,7 +1028,10 @@ def test_fit2d_paints_once_between_finished_step_and_next_worker(
 
     events: list[str] = []
 
-    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fit_2d_live_refresh_due", lambda: True)
+    monkeypatch.setattr(
+        win, "_request_fit_progress_paint", lambda: events.append("progress")
+    )
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1055,7 +1061,7 @@ def test_fit2d_paints_once_between_finished_step_and_next_worker(
     win._run_fit_2d("up")
     qtbot.waitUntil(lambda: events[-1:] == ["start-2"], timeout=1000)
 
-    assert events == ["start-1", "paint", "start-2"]
+    assert events == ["start-1", "progress", "start-2"]
 
 
 def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -> None:
@@ -1065,7 +1071,7 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
     assert isinstance(win, Fit2DTool)
 
     events: list[str] = []
-    clock_values = [100.0, 100.05, 100.10]
+    clock_values = [100.0, 100.05, 100.30]
 
     def _monotonic() -> float:
         return clock_values.pop(0) if clock_values else 100.10
@@ -1075,7 +1081,9 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
         win, "_update_param_plot_options", lambda: events.append("options")
     )
     monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
-    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(
+        win, "_request_fit_progress_paint", lambda: events.append("progress")
+    )
     monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
@@ -1109,10 +1117,8 @@ def test_fit2d_sequence_throttles_expensive_live_refreshes(qtbot, monkeypatch) -
 
     assert events == [
         "start-1",
-        "options",
-        "plot",
-        "paint",
         "start-2",
+        "progress",
         "start-3",
         "options",
         "plot",
@@ -1129,7 +1135,7 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
 
     win.y_index_spin.setValue(win.y_min_spin.value())
 
-    clock_values = [100.0, 100.05, 100.10]
+    clock_values = [100.0, 100.05, 100.30]
 
     def _monotonic() -> float:
         return clock_values.pop(0) if clock_values else 100.10
@@ -1185,7 +1191,7 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
 
     assert started_steps == [1, 2, 3]
     assert refresh_modes.count(False) > refresh_modes.count(True)
-    assert refresh_modes.count(True) == 2
+    assert refresh_modes.count(True) == 1
     assert win.y_index_spin.value() == win.y_max_spin.value()
     assert win._write_history is True
 
