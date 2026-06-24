@@ -44,7 +44,7 @@ else:
 logger = logging.getLogger(__name__)
 
 _P = typing.ParamSpec("_P")
-_FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.25
+_FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.10
 _R = typing.TypeVar("_R")
 
 

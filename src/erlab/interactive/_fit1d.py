@@ -39,7 +39,7 @@ _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
 _T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
-_FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.25
+_FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.10
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
