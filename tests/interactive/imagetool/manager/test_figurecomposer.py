@@ -658,7 +658,9 @@ def _expected_line_colormap_colors(
     return plt.get_cmap(cmap)(normalized)
 
 
-def test_figure_composer_set_palette_editor_preview_and_controls(qtbot) -> None:
+def test_figure_composer_set_palette_editor_preview_and_controls(
+    qtbot, monkeypatch
+) -> None:
     sns = pytest.importorskip("seaborn")
     profile = _figure_composer_profile_source("profile")
     operation = FigureOperationState.set_palette().model_copy(
@@ -678,6 +680,30 @@ def test_figure_composer_set_palette_editor_preview_and_controls(qtbot) -> None:
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
     assert combo is not None
     assert combo.isEnabled()
+    for palette_name in ("deep6", "tab20b", "Accent", "rocket_r", "husl", "viridis_r"):
+        palette_index = combo.findText(palette_name)
+        assert palette_index >= 0
+        assert not combo.itemIcon(palette_index).isNull()
+
+    opened_urls: list[str] = []
+
+    def record_url(url: QtCore.QUrl) -> bool:
+        opened_urls.append(url.toString())
+        return True
+
+    monkeypatch.setattr(QtGui.QDesktopServices, "openUrl", record_url)
+    docs_button = page.findChild(
+        QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
+    )
+    assert docs_button is not None
+    assert docs_button.property("figure_palette_doc_url") == (
+        "https://seaborn.pydata.org/generated/seaborn.set_palette.html"
+    )
+    docs_button.click()
+    assert opened_urls == [
+        "https://seaborn.pydata.org/generated/seaborn.set_palette.html"
+    ]
+
     preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
     assert preview is not None
     swatches = preview.findChildren(
@@ -686,6 +712,9 @@ def test_figure_composer_set_palette_editor_preview_and_controls(qtbot) -> None:
     assert swatches
     expected_first = QtGui.QColor.fromRgbF(*sns.color_palette("deep")[0]).name()
     assert swatches[0].property("palette_color") == expected_first
+    assert swatches[0].toolTip() == expected_first
+    typing.cast("typing.Any", swatches[0]).copy_hex_to_clipboard()
+    assert QtWidgets.QApplication.clipboard().text() == expected_first
 
     _activate_combo_text(combo, "colorblind")
     assert tool.tool_status.operations[0].palette_name == "colorblind"
@@ -743,6 +772,9 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     color_codes = page.findChild(
         QtWidgets.QCheckBox, "figureComposerSetPaletteColorCodesCheck"
     )
+    docs_button = page.findChild(
+        QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
+    )
     preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
     message = page.findChild(
         QtWidgets.QLabel, "figureComposerSetPaletteUnavailableLabel"
@@ -756,6 +788,8 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     assert not desat_spin.isEnabled()
     assert color_codes is not None
     assert not color_codes.isEnabled()
+    assert docs_button is not None
+    assert docs_button.isEnabled()
     assert preview is not None
     assert not preview.isEnabled()
     assert message is not None

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import typing
 
-from qtpy import QtGui, QtWidgets
+import matplotlib.pyplot as plt
+from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -26,33 +28,105 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
-_PALETTE_OPTIONS = (
+_SET_PALETTE_DOC_URL = "https://seaborn.pydata.org/generated/seaborn.set_palette.html"
+_SEABORN_NAMED_PALETTES = (
     "deep",
+    "deep6",
     "muted",
+    "muted6",
     "pastel",
+    "pastel6",
     "bright",
+    "bright6",
     "dark",
+    "dark6",
     "colorblind",
+    "colorblind6",
+)
+_COLORBREWER_QUALITATIVE_PALETTES = (
     "tab10",
     "tab20",
+    "tab20b",
+    "tab20c",
     "Set1",
     "Set2",
     "Set3",
+    "Accent",
     "Paired",
+    "Pastel1",
+    "Pastel2",
+    "Dark2",
+)
+_SEABORN_CONTINUOUS_PALETTES = (
     "rocket",
+    "rocket_r",
     "mako",
+    "mako_r",
     "flare",
+    "flare_r",
     "crest",
-    "viridis",
-    "plasma",
-    "magma",
-    "inferno",
-    "cividis",
+    "crest_r",
     "icefire",
+    "icefire_r",
     "vlag",
+    "vlag_r",
+)
+_SEABORN_SPECIAL_PALETTES = (
+    "hls",
+    "husl",
+    "ch:s=.25,rot=-.25",
+    "light:#5A9",
+    "dark:#5A9_r",
+    "blend:#7AB,#EDA",
 )
 _DESAT_AUTO_VALUE = -0.01
 _PALETTE_COUNT_MAX = 256
+_PALETTE_ICON_SIZE = QtCore.QSize(72, 14)
+_PALETTE_ICON_COLORS = 8
+
+
+class _PaletteSwatch(QtWidgets.QFrame):
+    """Palette preview swatch with copyable hex color."""
+
+    def __init__(
+        self,
+        qcolor: QtGui.QColor,
+        index: int,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        hex_color = qcolor.name()
+        self._hex_color = hex_color
+        self.setObjectName("figureComposerSetPalettePreviewSwatch")
+        self.setProperty("palette_color_index", index)
+        self.setProperty("palette_color", hex_color)
+        self.setAccessibleName(f"Palette color {index + 1}: {hex_color}")
+        self.setToolTip(hex_color)
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setMinimumSize(18, 18)
+        self.setMaximumSize(28, 18)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        border = self.palette().color(QtGui.QPalette.ColorRole.Mid).name()
+        self.setStyleSheet(
+            f"background-color: {hex_color}; border: 1px solid {border};"
+        )
+
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        menu = QtWidgets.QMenu(self)
+        copy_action = menu.addAction("Copy Hex Code")
+        copy_action.setData(self._hex_color)
+        chosen = menu.exec(event.globalPos())
+        if chosen is copy_action:
+            self.copy_hex_to_clipboard()
+        event.accept()
+
+    def copy_hex_to_clipboard(self) -> None:
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:  # pragma: no branch
+            clipboard.setText(self._hex_color)
 
 
 class _PalettePreviewWidget(QtWidgets.QWidget):
@@ -80,27 +154,13 @@ class _PalettePreviewWidget(QtWidgets.QWidget):
             label = QtWidgets.QLabel("No preview", self)
             label.setObjectName("figureComposerSetPalettePreviewUnavailable")
             label.setEnabled(False)
+            label.setToolTip("No colors could be resolved for this palette.")
             layout.addWidget(label)
             layout.addStretch(1)
             return
         for index, color in enumerate(colors):
-            swatch = QtWidgets.QFrame(self)
-            swatch.setObjectName("figureComposerSetPalettePreviewSwatch")
-            swatch.setProperty("palette_color_index", index)
             qcolor = _qt_color(color)
-            swatch.setProperty("palette_color", qcolor.name())
-            swatch.setAccessibleName(f"Palette color {index + 1}")
-            swatch.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-            swatch.setMinimumSize(18, 18)
-            swatch.setMaximumSize(28, 18)
-            swatch.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding,
-                QtWidgets.QSizePolicy.Policy.Fixed,
-            )
-            border = self.palette().color(QtGui.QPalette.ColorRole.Mid).name()
-            swatch.setStyleSheet(
-                f"background-color: {qcolor.name()}; border: 1px solid {border};"
-            )
+            swatch = _PaletteSwatch(qcolor, index, self)
             layout.addWidget(swatch, 1)
         layout.addStretch(1)
 
@@ -118,10 +178,24 @@ def _import_seaborn() -> typing.Any | None:
     return sns
 
 
-def _palette_options(operation: FigureOperationState) -> tuple[str, ...]:
-    if operation.palette_name in _PALETTE_OPTIONS:
-        return _PALETTE_OPTIONS
-    return (*_PALETTE_OPTIONS, operation.palette_name)
+def _palette_options(
+    operation: FigureOperationState, sns: typing.Any | None = None
+) -> tuple[str, ...]:
+    options: list[str] = []
+    if sns is not None:
+        options.extend(getattr(sns.palettes, "QUAL_PALETTES", ()))
+    options.extend(
+        (
+            *_SEABORN_NAMED_PALETTES,
+            *_COLORBREWER_QUALITATIVE_PALETTES,
+            *_SEABORN_CONTINUOUS_PALETTES,
+            *_SEABORN_SPECIAL_PALETTES,
+            *plt.colormaps(),
+        )
+    )
+    if operation.palette_name not in options:
+        options.append(operation.palette_name)
+    return tuple(dict.fromkeys(options))
 
 
 def _palette_call_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]:
@@ -147,6 +221,58 @@ def _palette_colors(
         return tuple(sns.color_palette(palette_name, n_colors=n_colors, desat=desat))
     except (TypeError, ValueError):
         return ()
+
+
+def _palette_hex_colors(colors: typing.Sequence[typing.Any]) -> tuple[str, ...]:
+    return tuple(_qt_color(color).name() for color in colors)
+
+
+def _palette_icon(
+    sns: typing.Any | None,
+    palette_name: str,
+) -> QtGui.QIcon:
+    colors = _palette_hex_colors(
+        _palette_colors(sns, palette_name, _PALETTE_ICON_COLORS, None)
+    )
+    if not colors:
+        return QtGui.QIcon()
+    return QtGui.QIcon(_palette_pixmap(colors))
+
+
+@functools.lru_cache(maxsize=512)
+def _palette_pixmap(
+    hex_colors: tuple[str, ...],
+    width: int = _PALETTE_ICON_SIZE.width(),
+    height: int = _PALETTE_ICON_SIZE.height(),
+) -> QtGui.QPixmap:
+    pixmap = QtGui.QPixmap(width, height)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        color_count = len(hex_colors)
+        for index, color in enumerate(hex_colors):
+            left = round(index * width / color_count)
+            right = round((index + 1) * width / color_count)
+            painter.fillRect(
+                QtCore.QRect(left, 0, max(1, right - left), height),
+                QtGui.QColor(color),
+            )
+        painter.setPen(QtGui.QColor("#808080"))
+        painter.drawRect(0, 0, width - 1, height - 1)
+    finally:
+        painter.end()
+    return pixmap
+
+
+def _apply_palette_combo_icons(
+    combo: QtWidgets.QComboBox,
+    sns: typing.Any | None,
+) -> None:
+    combo.setIconSize(_PALETTE_ICON_SIZE)
+    for index in range(combo.count()):
+        icon = _palette_icon(sns, combo.itemText(index))
+        if not icon.isNull():
+            combo.setItemIcon(index, icon)
 
 
 def _apply_palette_to_existing_axes(fig: Figure, sns: typing.Any) -> None:
@@ -254,7 +380,7 @@ def _editor_sections(
 
     palette_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_name)
     palette_combo = tool._combo(
-        _palette_options(operation),
+        _palette_options(operation, sns),
         None if palette_mixed else operation.palette_name,
         update_palette_name,
         parent=page,
@@ -262,10 +388,36 @@ def _editor_sections(
         enabled=available,
     )
     palette_combo.setObjectName("figureComposerSetPaletteNameCombo")
+    palette_combo.setToolTip(
+        "Palette name passed to seaborn.set_palette. The list includes seaborn "
+        "palettes and Matplotlib colormaps."
+    )
+    _apply_palette_combo_icons(palette_combo, sns)
+
+    palette_row = QtWidgets.QWidget(page)
+    palette_row.setObjectName("figureComposerSetPaletteNameRow")
+    palette_layout = QtWidgets.QHBoxLayout(palette_row)
+    palette_layout.setContentsMargins(0, 0, 0, 0)
+    palette_layout.setSpacing(6)
+    palette_layout.addWidget(palette_combo, 1)
+    docs_button = QtWidgets.QToolButton(palette_row)
+    docs_button.setObjectName("figureComposerSetPaletteDocsButton")
+    docs_button.setText("Docs")
+    docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+    docs_button.setProperty("figure_palette_doc_url", _SET_PALETTE_DOC_URL)
+    docs_button.setToolTip("Open seaborn.set_palette documentation.")
+    tool._connect_editor_signal(
+        docs_button,
+        docs_button.clicked,
+        lambda _checked=False: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl(_SET_PALETTE_DOC_URL)
+        ),
+    )
+    palette_layout.addWidget(docs_button)
     tool._add_form_row(
         layout,
         "Palette",
-        palette_combo,
+        palette_row,
         "Named seaborn or Matplotlib palette passed to seaborn.set_palette.",
     )
 
@@ -359,7 +511,7 @@ def _editor_sections(
         layout,
         "Preview",
         preview,
-        "Colors that seaborn resolves for the current palette settings.",
+        "Hover a color to see its hex code; right-click a color to copy it.",
     )
     return (
         StepSection(
