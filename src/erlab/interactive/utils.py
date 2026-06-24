@@ -99,6 +99,7 @@ __all__ = [
 
 _LOAD_UI_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
+_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 
 
 def _qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
@@ -3280,6 +3281,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._write_history = True
+        self._history_write_pending = False
+        self._history_write_timer = QtCore.QTimer(self)
+        self._history_write_timer.setSingleShot(True)
+        self._history_write_timer.setInterval(_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS)
+        self._history_write_timer.timeout.connect(self._flush_pending_history_write)
         self._restoring_from_dataset = False
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
@@ -3355,6 +3361,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @contextlib.contextmanager
     def _history_suppressed(self):
+        self._flush_pending_history_write()
         original = bool(self._write_history)
         self._write_history = False
         try:
@@ -3363,6 +3370,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self._write_history = original
 
     def _reset_history_stack(self) -> None:
+        self._history_write_timer.stop()
+        self._history_write_pending = False
         self._prev_states.clear()
         self._next_states.clear()
         self._prev_states.append(self.tool_status)
@@ -3370,19 +3379,33 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
-        if not self._write_history:
+        if not self._write_history or self._restoring_from_dataset:
             return
+        self._history_write_pending = True
+        self._history_write_timer.start()
+
+    @QtCore.Slot()
+    def _flush_pending_history_write(self) -> bool:
+        if not self._history_write_pending:
+            return False
+        self._history_write_timer.stop()
+        self._history_write_pending = False
+        if not self._write_history or self._restoring_from_dataset:
+            return False
         curr_state = self.tool_status
         last_state = self._prev_states[-1] if self._prev_states else None
         if not self._history_state_equal(last_state, curr_state):
             self._prev_states.append(curr_state)
             self._next_states.clear()
             self._update_history_actions()
+            return True
+        return False
 
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._flush_pending_history_write()
         curr_state = self.tool_status
         if self._prev_states:
             self._prev_states[-1] = curr_state
@@ -3399,6 +3422,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @QtCore.Slot()
     def undo(self) -> None:
         """Undo the most recent recorded tool state change."""
+        self._flush_pending_history_write()
         if not self.undoable:
             return
         with self._history_suppressed():
@@ -3409,6 +3433,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @QtCore.Slot()
     def redo(self) -> None:
         """Redo the most recently undone tool state change."""
+        self._flush_pending_history_write()
         if not self.redoable:
             return
         with self._history_suppressed():
@@ -4688,6 +4713,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @property
     def _saved_tool_attrs(self) -> dict:
+        self._flush_pending_history_write()
         data_name = self.tool_data.name
         if data_name is None:
             data_name = "<none-value>"
@@ -4851,6 +4877,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             A dataset containing the data and attributes needed to restore the tool.
 
         """
+        self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
         return self._append_persistence_payload(ds)
 
@@ -5159,6 +5186,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         """
         return self.from_dataset(self.to_dataset(), **kwargs)
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._flush_pending_history_write()
+        return super().closeEvent(event)
 
     @property
     def _tool_display_name(self) -> str:

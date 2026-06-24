@@ -116,6 +116,9 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     win.tool_status = _PersistentToolState(value=1)
     win._write_state()
 
+    assert win._history_write_pending
+    assert not win.undoable
+    win._flush_pending_history_write()
     assert win.undoable
     assert undo_action.isEnabled()
 
@@ -155,6 +158,55 @@ def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
     win._update_history_actions()
 
 
+def test_tool_window_history_write_coalesces_burst(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    for value in (1, 2, 3):
+        win.tool_status = _PersistentToolState(value=value)
+        win._write_state()
+
+    assert win._history_write_pending
+    assert tuple(win._prev_states) == (_PersistentToolState(value=0),)
+
+    assert win._flush_pending_history_write()
+    assert tuple(win._prev_states) == (
+        _PersistentToolState(value=0),
+        _PersistentToolState(value=3),
+    )
+
+
+def test_tool_window_undo_flushes_pending_history_write(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+    win.undo()
+
+    assert not win._history_write_pending
+    assert win.tool_status == _PersistentToolState(value=0)
+    assert win.redoable
+
+
+def test_tool_window_suppressed_history_does_not_queue_write(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    with win._history_suppressed():
+        win.tool_status = _PersistentToolState(value=1)
+        win._write_state()
+
+    assert not win._history_write_pending
+    assert tuple(win._prev_states) == (_PersistentToolState(value=0),)
+
+
 def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)
@@ -162,7 +214,7 @@ def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     win._reset_history_stack()
     win.tool_status = _PersistentToolState(value=1)
     win._write_state()
-    assert win.undoable
+    assert win._history_write_pending
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(restored)
