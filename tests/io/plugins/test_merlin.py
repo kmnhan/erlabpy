@@ -307,6 +307,53 @@ def test_load_bcs_unsupported_legacy_tabular_scan(tmp_path) -> None:
         load_bcs(scan_path)
 
 
+def test_load_bcs_modern_numeric_single_motor_scan(tmp_path) -> None:
+    scan_path = tmp_path / "numeric.txt"
+    _write_bcs_text(
+        scan_path,
+        {
+            "Scan Type": "Single Motor Scan",
+            "Version": "3",
+            "Single Motor Scan": {"X Motor": "EPU Gap"},
+            "Motors": {"EPU Gap": 999.0, "Beamline Energy": 30.0},
+            "Notes": {"operator": "test"},
+        },
+        [
+            "Time (s)",
+            "EPU Gap Goal",
+            "EPU Gap Actual",
+            "EPU Gap",
+            "Beam Current",
+            "Const Trace",
+        ],
+        [
+            ["0.0", "20.0", "20.01", "999.0", "500.0", "7.0"],
+            ["1.0", "20.2", "20.21", "999.0", "501.0", "7.0"],
+        ],
+    )
+
+    data = load_bcs(scan_path)
+
+    assert isinstance(data, xr.Dataset)
+    assert data.sizes == {"EPU Gap": 2}
+    assert set(data.data_vars) == {
+        "Time (s)",
+        "EPU Gap Actual",
+        "EPU Gap raw",
+        "Beam Current",
+        "Const Trace",
+    }
+    assert "EPU Gap Goal" not in data.data_vars
+    np.testing.assert_allclose(data["EPU Gap"].values, [20.0, 20.2])
+    np.testing.assert_allclose(data["EPU Gap Actual"].values, [20.01, 20.21])
+    np.testing.assert_allclose(data["EPU Gap raw"].values, [999.0, 999.0])
+    assert data["Beamline Energy"].dims == ()
+    assert float(data["Beamline Energy"]) == 30.0
+    assert "Motors" not in data.attrs
+    assert data.attrs["Scan Type"] == "Single Motor Scan"
+    assert data.attrs["Notes"] == {"operator": "test"}
+
+
 def test_load_bcs_dataarray(tmp_path) -> None:
     scan_path, expected_images = _write_bcs_scan(tmp_path)
 
@@ -560,7 +607,8 @@ def test_load_bcs_text_payload_mismatched_axes(tmp_path) -> None:
         ("DATA\nx\n1\n", "not a valid BCS data file"),
         ("HEADER\n{}\nDATA\n", "missing BCS data table"),
         ("HEADER\n{}\nDATA\nx\n", "contains no BCS data rows"),
-        ("HEADER\n{}\nDATA\nx\n1\n", "contains no BCS payload columns"),
+        ("HEADER\n{}\nDATA\nx\nbad\n", "contains non-numeric BCS data rows"),
+        ("HEADER\n{}\nDATA\nx\ty\n1\n", "contains ragged BCS data rows"),
     ],
 )
 def test_load_bcs_invalid_files(tmp_path, text, match) -> None:
