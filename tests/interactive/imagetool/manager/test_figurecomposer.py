@@ -2264,6 +2264,19 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
         tool.source_list.selectionMode()
         == QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
     )
+    assert (
+        tool.source_list.selectionBehavior()
+        == QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+    )
+    first_item = tool.source_list.topLevelItem(0)
+    assert first_item is not None
+    assert first_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
+    assert tool.source_list.selectedItems() == [first_item]
+    shape_label = tool.source_list.itemWidget(first_item, 2)
+    assert isinstance(shape_label, QtWidgets.QLabel)
+    assert shape_label.testAttribute(
+        QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
+    )
 
     tool.source_inspector.details_button.setChecked(True)
     assert tool.source_inspector.details_scroll.isVisibleTo(tool.source_inspector)
@@ -2272,9 +2285,47 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
     tool.source_list.setCurrentItem(second_item)
+    assert tool.source_list.selectedItems() == [second_item]
     assert tool.source_inspector.source_name() == "profile"
     assert tool.source_inspector.property("figureComposerSourceAlias") == "profile"
     assert tool.source_inspector.property("figureComposerSourceDims") == ("delay",)
+
+
+def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        name="map",
+    )
+    second = xr.DataArray(np.arange(4.0), dims=("delay",), name="profile")
+    tool = FigureComposerTool.from_sources(
+        {"map": first, "profile": second},
+        sources=(
+            FigureSourceState(name="map", label="Map source"),
+            FigureSourceState(name="profile", label="Profile source"),
+        ),
+        operations=(FigureOperationState.plot_slices(label="maps", sources=("map",)),),
+        primary_source="map",
+    )
+    qtbot.addWidget(tool)
+    with qtbot.waitExposed(tool):
+        tool.show()
+
+    second_item = tool.source_list.topLevelItem(1)
+    assert second_item is not None
+    index = tool.source_list.indexFromItem(second_item, 2)
+    rect = tool.source_list.visualRect(index)
+    assert rect.isValid()
+
+    qtbot.mouseClick(
+        tool.source_list.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=rect.center(),
+    )
+
+    assert tool.source_list.currentItem() is second_item
+    assert tool.source_list.selectedItems() == [second_item]
+    assert tool.source_inspector.source_name() == "profile"
 
 
 def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> None:
