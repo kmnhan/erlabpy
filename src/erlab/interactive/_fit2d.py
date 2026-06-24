@@ -1181,6 +1181,16 @@ class Fit2DTool(Fit1DTool):
                 extra={"suppress_ui_alert": True},
             )
             return None
+        try:
+            nfev = int(getattr(result, "nfev", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            nfev = 0
+        if nfev <= 0:
+            logger.debug(
+                "Ignoring unfitted Fit2D result dataset for parameter plot",
+                extra={"suppress_ui_alert": True},
+            )
+            return None
         return params
 
     @classmethod

@@ -2069,6 +2069,35 @@ def test_fit2d_param_plot_rejects_placeholder_result_objects(qtbot) -> None:
     )
 
 
+def test_fit2d_param_plot_rejects_unfitted_model_results(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    guessed = win._params.copy()
+    guessed["p0_center"].set(value=0.25)
+    win._params_full = [guessed.copy() for _ in win._params_full]
+    win._result_ds_full = [
+        _fit_result_dataset(guessed, nfev=0) for _ in win._result_ds_full
+    ]
+    win._update_param_plot_options()
+
+    assert win._param_plot_names() == []
+    assert win.param_plot_combo.count() == 0
+    assert not win.param_plot_combo.isEnabled()
+    assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
+    assert (
+        win.output_imagetool_data(
+            Fit2DTool._parameter_output_id(
+                Fit2DTool.Output.PARAMETER_VALUES, "p0_center"
+            )
+        )
+        is None
+    )
+    assert win._param_plot_dataarray("p0_center").size == 0
+
+
 def test_fit2d_index_changes_do_not_expose_guess_params(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
