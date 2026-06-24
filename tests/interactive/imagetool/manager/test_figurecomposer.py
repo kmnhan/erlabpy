@@ -6222,6 +6222,72 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     assert info_changes == [(4.5, 3.0)]
 
 
+def test_figure_composer_canvas_resize_debounces_history(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool._reset_history_stack()
+
+    initial_history_len = len(tool._prev_states)
+    tool._figure_window_canvas_size_changed(4.0, 2.5)
+    tool._figure_window_canvas_size_changed(4.5, 3.0)
+    tool._figure_window_canvas_size_changed(5.0, 3.5)
+
+    assert tool.tool_status.setup.figsize == (5.0, 3.5)
+    assert tool._figure_resize_history_pending
+    assert len(tool._prev_states) == initial_history_len
+
+    assert tool._flush_pending_figure_resize_history_write()
+    assert not tool._figure_resize_history_pending
+    assert len(tool._prev_states) == initial_history_len + 1
+    assert tool._prev_states[-1].setup.figsize == (5.0, 3.5)
+    assert not tool._flush_pending_figure_resize_history_write()
+
+
+def test_figure_composer_canvas_resize_undo_flushes_history(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool._reset_history_stack()
+
+    initial_size = tool.tool_status.setup.figsize
+    resized_size = (initial_size[0] + 0.75, initial_size[1] + 0.5)
+    tool._figure_window_canvas_size_changed(*resized_size)
+
+    assert tool._figure_resize_history_pending
+    tool.undo()
+
+    assert not tool._figure_resize_history_pending
+    assert tool.tool_status.setup.figsize == initial_size
+    assert not tool.undoable
+    assert tool.redoable
+
+    tool.redo()
+
+    assert tool.tool_status.setup.figsize == tuple(
+        round(value, 4) for value in resized_size
+    )
+
+
+def test_figure_composer_canvas_resize_save_flushes_history(qtbot) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    tool._reset_history_stack()
+
+    tool._figure_window_canvas_size_changed(4.0, 2.5)
+    assert tool._figure_resize_history_pending
+
+    state = FigureRecipeState.model_validate_json(tool.to_dataset().attrs["tool_state"])
+
+    assert not tool._figure_resize_history_pending
+    assert state.setup.figsize == (4.0, 2.5)
+    assert tool._prev_states[-1].setup.figsize == (4.0, 2.5)
+
+
 def test_figure_composer_plot_window_undo_redo_resizes_canvas(qtbot) -> None:
     tool = FigureComposerTool(
         xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})

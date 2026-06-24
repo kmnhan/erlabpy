@@ -151,6 +151,7 @@ _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
 _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS = 300
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
+_FIGURE_RESIZE_HISTORY_DELAY_MS = 250
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
 _PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
@@ -400,6 +401,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_timer = QtCore.QTimer(self)
+        self._figure_resize_history_timer.setSingleShot(True)
+        self._figure_resize_history_timer.setInterval(_FIGURE_RESIZE_HISTORY_DELAY_MS)
+        self._figure_resize_history_timer.timeout.connect(
+            self._flush_pending_figure_resize_history_write
+        )
+        self._figure_resize_history_state: FigureRecipeState | None = None
+        self._figure_resize_history_source_data: dict[str, xr.DataArray] | None = None
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
         self._preview_pixmap_generation = 0
         self._preview_thumbnail_cache: dict[
@@ -684,7 +694,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_controls:
             return
         if self._set_recipe_figsize_from_canvas(
-            width_inches, height_inches, draw=False, emit_info=False
+            width_inches,
+            height_inches,
+            draw=False,
+            emit_info=False,
+            history="deferred",
         ):
             self._queue_figure_resize_render()
 
@@ -958,6 +972,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         draw: bool,
         emit_info: bool,
+        history: typing.Literal["immediate", "deferred"] = "immediate",
     ) -> bool:
         setup = self._recipe.setup
         if math.isclose(width_inches, setup.figsize[0], abs_tol=0.005) and math.isclose(
@@ -981,7 +996,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.canvas.draw()
         if emit_info:
             self.sigInfoChanged.emit()
-        self._write_state()
+        if history == "deferred":
+            self._queue_figure_resize_history_write()
+        else:
+            self._write_state()
         return True
 
     def _show_subplot_adjust_dialog(self) -> None:
@@ -1036,6 +1054,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._flush_pending_editor_commits()
+        self._flush_pending_figure_resize_history_write()
         self._closing = True
         self._cancel_queued_show_figure_window()
         self._figure_resize_render_generation += 1
@@ -3667,7 +3686,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_data = dict(source_data)
         self._mark_preview_pixmap_stale()
 
+    def _clear_pending_figure_resize_history_write(self) -> None:
+        self._figure_resize_history_timer.stop()
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_state = None
+        self._figure_resize_history_source_data = None
+
     def _reset_history_stack(self) -> None:
+        self._clear_pending_figure_resize_history_write()
         self._prev_states.clear()
         self._next_states.clear()
         self._prev_source_data_states.clear()
@@ -3676,23 +3702,65 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._prev_source_data_states.append(self._source_data_history_state())
         self._update_history_actions()
 
+    @contextlib.contextmanager
+    def _history_suppressed(self):
+        self._flush_pending_figure_resize_history_write()
+        with super()._history_suppressed():
+            yield
+
+    def _append_history_state(
+        self,
+        state: FigureRecipeState | None = None,
+        source_data: dict[str, xr.DataArray] | None = None,
+    ) -> bool:
+        curr_state = self.tool_status if state is None else state
+        curr_source_data = (
+            self._source_data_history_state() if source_data is None else source_data
+        )
+        last_state = self._prev_states[-1] if self._prev_states else None
+        if self._history_state_equal(last_state, curr_state):
+            return False
+        self._prev_states.append(curr_state)
+        self._prev_source_data_states.append(curr_source_data)
+        self._next_states.clear()
+        self._next_source_data_states.clear()
+        self._update_history_actions()
+        return True
+
+    def _queue_figure_resize_history_write(self) -> None:
+        if not self._write_history:
+            return
+        self._figure_resize_history_pending = True
+        self._figure_resize_history_state = self.tool_status
+        self._figure_resize_history_source_data = self._source_data_history_state()
+        self._figure_resize_history_timer.start()
+
+    @QtCore.Slot()
+    def _flush_pending_figure_resize_history_write(self) -> bool:
+        if not self._figure_resize_history_pending:
+            return False
+        self._figure_resize_history_timer.stop()
+        state = self._figure_resize_history_state
+        source_data = self._figure_resize_history_source_data
+        self._figure_resize_history_pending = False
+        self._figure_resize_history_state = None
+        self._figure_resize_history_source_data = None
+        if not self._write_history or state is None or source_data is None:
+            return False
+        return self._append_history_state(state, source_data)
+
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
-        curr_state = self.tool_status
-        last_state = self._prev_states[-1] if self._prev_states else None
-        if not self._history_state_equal(last_state, curr_state):
-            self._prev_states.append(curr_state)
-            self._prev_source_data_states.append(self._source_data_history_state())
-            self._next_states.clear()
-            self._next_source_data_states.clear()
-            self._update_history_actions()
+        self._flush_pending_figure_resize_history_write()
+        self._append_history_state()
 
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._flush_pending_figure_resize_history_write()
         curr_state = self.tool_status
         source_data = self._source_data_history_state()
         if self._prev_states:
@@ -3706,6 +3774,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def undo(self) -> None:
         """Undo the most recent recorded Figure Composer recipe change."""
+        self._flush_pending_figure_resize_history_write()
         if not self.undoable:
             return
         with self._history_suppressed():
@@ -3718,6 +3787,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def redo(self) -> None:
         """Redo the most recently undone Figure Composer recipe change."""
+        self._flush_pending_figure_resize_history_write()
         if not self.redoable:
             return
         with self._history_suppressed():
@@ -5562,6 +5632,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _saved_tool_status(self) -> FigureRecipeState:
+        self._flush_pending_figure_resize_history_write()
         status = self.tool_status
         allowed_uids = self._save_tool_data_reference_node_uids
         if allowed_uids is None:
