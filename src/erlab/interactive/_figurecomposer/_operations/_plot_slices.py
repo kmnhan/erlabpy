@@ -17,6 +17,7 @@ from erlab.interactive._figurecomposer._code import (
     _selection_code,
 )
 from erlab.interactive._figurecomposer._defaults import _current_options
+from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._labels import (
     label_context,
     label_coord_placeholder_name,
@@ -2931,14 +2932,19 @@ def _build_plot_slices_editor(
             labels_edit,
             lambda text: update_current_line_label_text(tool, text),
         )
+        label_contexts = _plot_slices_line_label_contexts(tool, operation)
+        labels_widget = legend_label_input_widget(
+            labels_edit,
+            label_contexts,
+            item_name="slice",
+            button_object_name="figureComposerPlotSlicesLineLabelsHelpButton",
+            parent=colors_page,
+        )
         tool._add_form_row(
             colors_layout,
             "Labels",
-            labels_edit,
-            label_text_tooltip(
-                _plot_slices_line_label_contexts(tool, operation),
-                item_name="slice",
-            ),
+            labels_widget,
+            label_text_tooltip(label_contexts, item_name="slice"),
         )
 
         tool._add_form_section(

@@ -808,47 +808,80 @@ def label_text_tooltip(
     item_name: str,
 ) -> str:
     available_fields = _available_field_names(contexts)
-    available = _format_available_placeholders(available_fields)
-    if not available:
+    if not available_fields:
         return (
             f"Enter one label for all {item_name}s, or one comma-separated label "
             f"per {item_name}."
         )
-    alias_lines = _format_alias_tooltip_lines(contexts)
-    lines = [
-        f"Enter one label for all {item_name}s, or comma-separated labels.",
-        "",
-        "Use f-string placeholders:",
-        "  {value:g}",
-        "  {value + 1.5:.1f}",
-        "  {source}, {number}",
-        "",
-        f"Available: {available}",
-    ]
-    if alias_lines:
-        lines.append("")
-        lines.append("Data names:")
-        lines.extend(alias_lines)
-    lines.extend(("", "Plain text and LaTeX braces are kept as typed."))
-    return "\n".join(lines)
+    return (
+        "Enter labels directly or use placeholders; click help for examples "
+        "and coordinate or attr aliases."
+    )
 
 
-def _format_alias_tooltip_lines(
-    contexts: Sequence[Mapping[str, typing.Any]], *, limit: int = 8
-) -> list[str]:
+class LabelPlaceholderHelpRow(typing.NamedTuple):
+    placeholder: str
+    kind: str
+    description: str
+
+
+def label_text_help_placeholder_rows(
+    contexts: Sequence[Mapping[str, typing.Any]],
+    *,
+    item_name: str,
+    limit: int = 64,
+) -> tuple[LabelPlaceholderHelpRow, ...]:
+    rows: list[LabelPlaceholderHelpRow] = []
+    available_fields = _available_field_names(contexts)
+    generic_descriptions = {
+        "value": f"current {item_name} coordinate value",
+        "dim": "dimension name",
+        "number": f"one-based {item_name} number",
+        "index": f"zero-based {item_name} index",
+        "source": "source name",
+    }
+    rows.extend(
+        LabelPlaceholderHelpRow(
+            placeholder=name,
+            kind="built-in",
+            description=generic_descriptions[name],
+        )
+        for name in _GENERIC_PLACEHOLDER_ORDER
+        if name in available_fields
+    )
+
     field_sources = label_context_field_sources(contexts)
     original_names = label_context_original_field_names(contexts)
-    lines: list[str] = []
-    for alias in sorted(original_names):
+    alias_items = sorted(original_names)
+    for alias_index, alias in enumerate(alias_items):
+        if len(rows) >= limit:
+            remaining = len(alias_items) - alias_index
+            rows.append(
+                LabelPlaceholderHelpRow(
+                    placeholder="",
+                    kind="more",
+                    description=f"{max(remaining, 0)} more aliases available",
+                )
+            )
+            break
         original = original_names[alias]
-        if not original or original == alias:
-            continue
+        if not original:
+            original = alias
         source = field_sources.get(alias, "field")
-        lines.append(f"  {{{alias}}} = {source} {original!r}")
-    if len(lines) > limit:
-        remaining = len(lines) - limit
-        return [*lines[:limit], f"  ... plus {remaining} more"]
-    return lines
+        if source == "coord":
+            description = f"coordinate {original!r}"
+        elif source == "attr":
+            description = f"attr {original!r}"
+        else:
+            description = f"{source} {original!r}"
+        rows.append(
+            LabelPlaceholderHelpRow(
+                placeholder=alias,
+                kind=source,
+                description=description,
+            )
+        )
+    return tuple(rows)
 
 
 def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:

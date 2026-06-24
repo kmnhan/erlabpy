@@ -16,6 +16,7 @@ from erlab.interactive._figurecomposer._code import (
     _selection_code,
 )
 from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._labels import (
     attr_value_expression,
     coord_value_expression,
@@ -476,10 +477,17 @@ def _build_line_editor(
         [profile for profile, _source in label_entries],
         [source for _profile, source in label_entries],
     )
+    labels_widget = legend_label_input_widget(
+        labels_edit,
+        label_contexts,
+        item_name="profile",
+        button_object_name="figureComposerLineLabelsHelpButton",
+        parent=style_page,
+    )
     tool._add_form_row(
         style_layout,
         "Labels",
-        labels_edit,
+        labels_widget,
         label_text_tooltip(label_contexts, item_name="profile"),
     )
 

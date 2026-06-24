@@ -19972,10 +19972,18 @@ def test_figure_composer_label_helper_edges() -> None:
     tooltip = figurecomposer_labels.label_text_tooltip(
         (spaced_context,), item_name="profile"
     )
-    assert "\n\nUse f-string placeholders" in tooltip
-    assert "{value + 1.5:.1f}" in tooltip
-    assert "{sample_temp}" in tooltip
-    assert "sample temp" in tooltip
+    assert "\n" not in tooltip
+    assert "data names" not in tooltip.lower()
+    placeholder_rows = {
+        row.placeholder: row
+        for row in figurecomposer_labels.label_text_help_placeholder_rows(
+            (spaced_context,), item_name="profile"
+        )
+    }
+    assert placeholder_rows["sample_temp"].kind == "coord"
+    assert placeholder_rows["sample_temp"].description.endswith("'sample temp'")
+    assert placeholder_rows["sample_label"].kind == "attr"
+    assert placeholder_rows["sample_label"].description.endswith("'sample label'")
     assert (
         figurecomposer_labels.label_editor_text(
             FigureOperationState.line(label="line", source="data").model_copy(
@@ -19984,6 +19992,69 @@ def test_figure_composer_label_helper_edges() -> None:
         )
         == "A, B"
     )
+
+
+def test_figure_composer_line_label_help_button_opens_structured_dialog(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        [1.0, 2.0, 3.0],
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0], "sample temp": 20.0},
+        attrs={"sample label": "annealed"},
+        name="profile",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(
+                    label="profile",
+                    source="profile",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("style")
+    editor = tool.step_editor_stack.currentWidget()
+    labels_edit = editor.findChild(QtWidgets.QLineEdit, "figureComposerLineLabelsEdit")
+    help_button = editor.findChild(
+        QtWidgets.QToolButton, "figureComposerLineLabelsHelpButton"
+    )
+    assert labels_edit is not None
+    assert help_button is not None
+    assert "\n" not in labels_edit.toolTip()
+    assert "\n" not in help_button.toolTip()
+
+    help_button.click()
+    qtbot.waitUntil(
+        lambda: (
+            tool.findChild(QtWidgets.QDialog, "figureComposerLegendLabelsHelpDialog")
+            is not None
+        ),
+        timeout=1000,
+    )
+    dialog = tool.findChild(QtWidgets.QDialog, "figureComposerLegendLabelsHelpDialog")
+    assert dialog is not None
+    table = dialog.findChild(
+        QtWidgets.QTableWidget, "figureComposerLegendLabelsHelpTable"
+    )
+    assert table is not None
+    rows = {
+        table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole): table.item(
+            row, 1
+        ).data(QtCore.Qt.ItemDataRole.UserRole + 1)
+        for row in range(table.rowCount())
+    }
+    assert rows["sample_temp"] == "coord"
+    assert rows["sample_label"] == "attr"
+    dialog.close()
 
 
 def test_figure_composer_plot_slices_line_label_placeholders_codegen(
