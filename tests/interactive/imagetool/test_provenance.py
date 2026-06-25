@@ -1803,6 +1803,32 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
         data.isel(z=slice(0, 1)).squeeze(),
     )
 
+    hidden_dim_spec = provenance.full_data(provenance.SqueezeOperation(dims=("z",)))
+    assert [
+        entry.label for entry in hidden_dim_spec.display_entries(parent_data=data)
+    ] == ["Start from current parent ImageTool data"]
+    assert hidden_dim_spec.display_code(parent_data=data) is None
+
+    specific_squeezed_spec = provenance.full_data(
+        provenance.IselOperation(kwargs={"z": slice(0, 1)}),
+        provenance.SqueezeOperation(dims=("z",), drop=True),
+    )
+    specific_squeezed_entries = specific_squeezed_spec.display_entries(parent_data=data)
+    assert specific_squeezed_entries[-1].label == 'squeeze(dim=("z",), drop=True)'
+    specific_squeezed_code = typing.cast(
+        "str", specific_squeezed_spec.display_code(parent_data=data)
+    )
+    specific_namespace = _exec_generated_code(
+        specific_squeezed_code,
+        {"data": data.copy(deep=True)},
+    )
+    specific_squeezed = specific_namespace["derived"]
+    assert isinstance(specific_squeezed, xr.DataArray)
+    xr.testing.assert_identical(
+        specific_squeezed,
+        data.isel(z=slice(0, 1)).squeeze(dim=("z",), drop=True),
+    )
+
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
@@ -5158,9 +5184,42 @@ def test_console_operations_match_branch_specific_calls() -> None:
         )
         == provenance.SqueezeOperation()
     )
+    assert provenance.SqueezeOperation.from_console_call(
+        call(dataarray_method="squeeze", kwargs={"drop": True})
+    ) == provenance.SqueezeOperation(drop=True)
+    assert provenance.SqueezeOperation.from_console_call(
+        call(dataarray_method="squeeze", args=("z",), kwargs={"drop": True})
+    ) == provenance.SqueezeOperation(dims=("z",), drop=True)
+    assert provenance.SqueezeOperation.from_console_call(
+        call(dataarray_method="squeeze", kwargs={"dim": ("z",)})
+    ) == provenance.SqueezeOperation(dims=("z",))
     assert (
         provenance.SqueezeOperation.from_console_call(
-            call(dataarray_method="squeeze", kwargs={"drop": True})
+            call(dataarray_method="squeeze", args=("z",), kwargs={"dim": "z"})
+        )
+        is None
+    )
+    assert (
+        provenance.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", args=("x", "z"), kwargs={})
+        )
+        is None
+    )
+    assert (
+        provenance.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", kwargs={"axis": 0})
+        )
+        is None
+    )
+    assert (
+        provenance.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", kwargs={"drop": "yes"})
+        )
+        is None
+    )
+    assert (
+        provenance.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", kwargs={"unknown": True})
         )
         is None
     )
@@ -5696,3 +5755,24 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     assert isinstance(derived, xr.DataArray)
     xr.testing.assert_identical(derived, watched_data)
     assert ".squeeze()" not in code
+
+    explicit_source = provenance.selection(
+        provenance.SortCoordOrderOperation(),
+        provenance.SqueezeOperation(drop=True),
+    )
+    explicit_composed = provenance.compose_display_provenance(
+        parent,
+        explicit_source,
+        parent_data=parent_data,
+    )
+    assert explicit_composed is not None
+    explicit_code = explicit_composed.display_code()
+    assert explicit_code is not None
+    assert ".squeeze(drop=True)" in explicit_code
+    explicit_namespace = _exec_generated_code(
+        explicit_code,
+        {"my_1d": watched_data.copy(deep=True)},
+    )
+    explicit_derived = explicit_namespace["derived"]
+    assert isinstance(explicit_derived, xr.DataArray)
+    xr.testing.assert_identical(explicit_derived, watched_data.squeeze(drop=True))

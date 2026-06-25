@@ -66,6 +66,7 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
     SelectionDialog,
     SortByDialog,
+    SqueezeDialog,
     SwapDimsDialog,
     SymmetrizeDialog,
     SymmetrizeNfoldDialog,
@@ -297,6 +298,11 @@ def test_operation_backed_dialog_empty_operation_edges(qtbot, monkeypatch) -> No
     qtbot.addWidget(swap_dialog)
     with pytest.raises(ValueError, match="No dimensions changed"):
         swap_dialog.source_transform_operation()
+
+    squeeze_dialog = SqueezeDialog(win.slicer_area)
+    qtbot.addWidget(squeeze_dialog)
+    with pytest.raises(ValueError, match="No dimensions selected"):
+        squeeze_dialog.source_transform_operation()
 
     rename_dialog = RenameDimsCoordsDialog(win.slicer_area)
     qtbot.addWidget(rename_dialog)
@@ -2139,6 +2145,40 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
     win.close()
 
 
+def test_initial_four_dimensional_layout_sets_splitter_sizes(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4 * 5, dtype=float).reshape((2, 3, 4, 5)),
+        dims=("scan", "pol", "y", "x"),
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    assert all(
+        all(size > 0 for size in sizes) for sizes in win.slicer_area.splitter_sizes
+    )
+    win.close()
+
+
+def test_initial_three_dimensional_layout_hides_four_dimensional_axes(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4, dtype=float).reshape((2, 3, 4)),
+        dims=("scan", "y", "x"),
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    assert area._axes_indices() == (0, 4, 5, 1, 2, 3)
+    for index in (6, 7):
+        plot = area._plots[index]
+        assert plot is not None
+        assert plot.isHidden()
+        assert not plot.plotItem.isVisible()
+    win.close()
+
+
 def test_lazy_secondary_pending_plot_state_cleared_on_dimensionality_change(
     qtbot,
 ) -> None:
@@ -2182,6 +2222,7 @@ def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
     area = win.slicer_area
     plot = area.get_axes(7)
     assert tuple(plot.display_axis) == (3, 2)
+    assert not plot.isVisible()
     assert area._plot_widgets_constructed == 4
     assert area._secondary_plots_materialized
     assert [index for index, item in enumerate(area._plots) if item is not None] == [
@@ -4833,6 +4874,27 @@ def test_itool_squeezes_high_dim_input(qtbot) -> None:
     assert win.slicer_area.data.shape == (5, 5)
     assert win.slicer_area.data.dims == ("a", "c")
     np.testing.assert_array_equal(win.slicer_area.data.values, data.squeeze().values)
+
+    win.close()
+
+
+def test_itool_keeps_four_dimensional_singleton_input(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+        coords={
+            "scan": [0.0],
+            "pol": np.arange(3, dtype=float),
+            "delay": [1.0],
+            "eV": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.shape == data.shape
+    assert win.slicer_area.data.dims == data.dims
+    xr.testing.assert_identical(win.slicer_area.data, data)
 
     win.close()
 
@@ -7595,6 +7657,12 @@ def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
 
+    assert (
+        imagetool_viewer_state._processed_ndim(
+            xr.DataArray(np.zeros((1, 2, 1, 3)), dims=("a", "b", "c", "d"))
+        )
+        == 4
+    )
     assert dialog._processed_ndim_from_shape((5,)) == 2
     assert dialog._processed_ndim_from_shape((2, 1, 3, 1, 4)) == 3
     assert dialog._set_preview_from_metadata(("profile",), (5,))
@@ -8392,6 +8460,91 @@ def test_transform_dialog_restore_operation_roundtrip(
     win.close()
 
 
+def test_squeeze_dialog_restore_operation_roundtrip(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+        coords={
+            "scan": [0.0],
+            "pol": np.arange(3, dtype=float),
+            "delay": [1.0],
+            "eV": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SqueezeDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_transform_operation(provenance.SqueezeOperation(drop=True))
+    assert dialog.source_transform_operation() == provenance.SqueezeOperation(
+        dims=("scan", "delay"),
+        drop=True,
+    )
+
+    operation = provenance.SqueezeOperation(dims=("scan",), drop=True)
+    dialog.restore_transform_operation(operation)
+
+    assert dialog.source_transform_operation() == operation
+    with pytest.raises(ValueError, match="not available"):
+        dialog.restore_transform_operation(provenance.SqueezeOperation(dims=("pol",)))
+
+    dialog.close()
+    win.close()
+
+
+def test_squeeze_dialog_validation_branches(qtbot, monkeypatch) -> None:
+    warnings: list[tuple[object, ...]] = []
+
+    def _record_warning(*args: object) -> QtWidgets.QMessageBox.StandardButton:
+        warnings.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    nonsingleton_data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=("x", "y"),
+    )
+    nonsingleton_win = itool(nonsingleton_data, execute=False)
+    qtbot.addWidget(nonsingleton_win)
+    nonsingleton_dialog = SqueezeDialog(nonsingleton_win.slicer_area)
+    assert nonsingleton_dialog._validate() == QtWidgets.QDialog.DialogCode.Rejected
+    assert len(warnings) == 1
+
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SqueezeDialog(win.slicer_area)
+    for check in dialog.dim_checks.values():
+        check.setChecked(False)
+    dialog.accept()
+    assert len(warnings) == 2
+
+    dialog.dim_checks["scan"].setChecked(True)
+    with pytest.raises(ValueError, match="not available"):
+        dialog.preflight_data(
+            xr.DataArray(np.ones((3, 1, 5)), dims=("pol", "delay", "eV"))
+        )
+    with pytest.raises(ValueError, match="not size 1"):
+        dialog.preflight_data(
+            xr.DataArray(np.ones((2, 3, 1, 5)), dims=("scan", "pol", "delay", "eV"))
+        )
+
+    all_singleton_data = xr.DataArray(np.ones((1, 1)), dims=("x", "y"))
+    all_singleton_win = itool(all_singleton_data, execute=False)
+    qtbot.addWidget(all_singleton_win)
+    all_singleton_dialog = SqueezeDialog(all_singleton_win.slicer_area)
+    all_singleton_dialog.accept()
+    assert len(warnings) == 3
+
+    for win_obj in (nonsingleton_win, win, all_singleton_win):
+        win_obj.close()
+
+
 def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
     qtbot,
 ) -> None:
@@ -8456,6 +8609,7 @@ def test_restore_transform_operation_ignores_unrelated_operations(qtbot) -> None
         LeadingEdgeDialog(win.slicer_area),
         CoarsenDialog(win.slicer_area),
         ThinDialog(win.slicer_area),
+        SqueezeDialog(win.slicer_area),
         SymmetrizeDialog(win.slicer_area),
         SymmetrizeNfoldDialog(win.slicer_area),
         DivideByCoordDialog(win.slicer_area),
@@ -9651,6 +9805,74 @@ def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     assert display_code is not None
     assert "thin(x=2)" in display_code
     assert "x_idx" not in display_code
+
+    win.close()
+
+
+def test_itool_squeeze_dialog(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+        coords={
+            "scan": [0.0],
+            "pol": np.arange(3, dtype=float),
+            "delay": [1.0],
+            "eV": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert "squeezeAct" in win.mnb.action_dict
+
+    def _set_dialog_params(dialog: SqueezeDialog) -> None:
+        assert tuple(dialog.dim_checks) == ("scan", "delay")
+        dialog.drop_check.setChecked(True)
+        assert dialog.source_transform_operation() == provenance.SqueezeOperation(
+            dims=("scan", "delay"),
+            drop=True,
+        )
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._squeeze, pre_call=_set_dialog_params)
+    expected = data.squeeze(dim=("scan", "delay"), drop=True)
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()), expected
+    )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    result = namespace["derived"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(result, expected)
+
+    win.close()
+
+
+def test_itool_squeeze_dialog_cancel_keeps_data(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+        coords={
+            "scan": [0.0],
+            "pol": np.arange(3, dtype=float),
+            "delay": [1.0],
+            "eV": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    accept_dialog(
+        win.mnb._squeeze,
+        accept_call=lambda dialog: dialog.reject(),
+    )
+
+    xarray.testing.assert_identical(win.slicer_area.data, data)
 
     win.close()
 

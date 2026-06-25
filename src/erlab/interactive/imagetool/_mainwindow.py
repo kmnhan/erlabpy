@@ -729,6 +729,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                     "Coarsen": {"triggered": self._coarsen},
                     "Thin": {"triggered": self._thin},
+                    "squeezeAct": {
+                        "text": "Squeeze…",
+                        "triggered": self._squeeze,
+                    },
                     "Symmetrize": {
                         "actions": {
                             "mirrorAct": {
@@ -984,6 +988,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _thin(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.ThinDialog)
+
+    @QtCore.Slot()
+    def _squeeze(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SqueezeDialog)
 
     @QtCore.Slot()
     def _symmetrize(self) -> None:

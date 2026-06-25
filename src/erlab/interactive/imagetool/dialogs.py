@@ -45,6 +45,7 @@ __all__ = [
     "RotationDialog",
     "SelectionDialog",
     "SortByDialog",
+    "SqueezeDialog",
     "SwapDimsDialog",
     "SymmetrizeDialog",
     "SymmetrizeNfoldDialog",
@@ -3202,6 +3203,116 @@ class ThinDialog(DataTransformDialog):
             return
 
         super().accept()
+
+
+class SqueezeDialog(DataTransformDialog):
+    title = "Squeeze Dimensions"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (provenance.SqueezeOperation,)
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_group.setObjectName("squeezeDimensionsGroup")
+        dim_layout = QtWidgets.QGridLayout()
+        dim_group.setLayout(dim_layout)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        singleton_dims = [
+            dim for dim in self._source_data.dims if self._source_data.sizes[dim] == 1
+        ]
+        if singleton_dims:
+            dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+            dim_layout.addWidget(QtWidgets.QLabel("Size"), 0, 1)
+            for row, dim in enumerate(singleton_dims, start=1):
+                check = QtWidgets.QCheckBox(str(dim))
+                check.setObjectName(f"squeezeDimCheck{row}")
+                check.setChecked(True)
+                self.dim_checks[dim] = check
+                dim_layout.addWidget(check, row, 0)
+                dim_layout.addWidget(QtWidgets.QLabel("1"), row, 1)
+        else:
+            dim_layout.addWidget(QtWidgets.QLabel("No singleton dimensions"), 0, 0)
+
+        self.drop_check = QtWidgets.QCheckBox("Drop squeezed coordinates")
+        self.drop_check.setObjectName("squeezeDropCheck")
+
+        self.layout_.addRow(dim_group)
+        self.layout_.addRow("Coordinates", self.drop_check)
+
+    @property
+    def _selected_dims(self) -> tuple[Hashable, ...]:
+        return tuple(dim for dim, check in self.dim_checks.items() if check.isChecked())
+
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        if not self.dim_checks:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Nothing to Squeeze",
+                "The data has no dimensions of size 1.",
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super()._validate()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self._selected_dims:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "Choose at least one dimension to squeeze.",
+            )
+            return
+        if len(self._selected_dims) >= self._source_data.ndim:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Displayable Dimensions",
+                "Squeezing all dimensions would leave no axes to display.",
+            )
+            return
+        super().accept()
+
+    def preflight_data(self, data: xr.DataArray) -> None:
+        selected_dims = self._selected_dims
+        missing_dims = [dim for dim in selected_dims if dim not in data.dims]
+        if missing_dims:
+            raise ValueError(f"Dimensions are not available: {missing_dims!r}")
+        nonsingleton_dims = [dim for dim in selected_dims if data.sizes[dim] != 1]
+        if nonsingleton_dims:
+            raise ValueError(f"Dimensions are not size 1: {nonsingleton_dims!r}")
+        if data.ndim - len(selected_dims) < 1:
+            raise ValueError("Squeeze would remove all dimensions")
+
+    def source_transform_operation(
+        self,
+    ) -> provenance.ToolProvenanceOperation:
+        if not self._selected_dims:
+            raise ValueError("No dimensions selected")
+        return provenance.SqueezeOperation(
+            dims=self._selected_dims,
+            drop=self.drop_check.isChecked(),
+        )
+
+    def restore_transform_operation(
+        self,
+        operation: provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, provenance.SqueezeOperation):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        dims = (
+            tuple(self.dim_checks) if operation.dims is None else tuple(operation.dims)
+        )
+        for dim in dims:
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+        self.drop_check.setChecked(operation.drop)
 
 
 class SymmetrizeDialog(DataTransformDialog):
