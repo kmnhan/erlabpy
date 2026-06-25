@@ -917,6 +917,84 @@ def test_manager_trusted_script_replay_prompt_cancel(
         )
 
 
+def test_manager_trusted_script_replay_safe_and_prompt_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = types.SimpleNamespace(_trusted_script_replay_keys=set())
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    safe_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Offset", code="derived = data + 1"),
+        start_label="Run safe script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_prompt_trusted_script_replay",
+        lambda *_args, **_kwargs: pytest.fail("safe replay should not prompt"),
+    )
+
+    controller._ensure_script_provenance_trusted(safe_spec, reason="reload")
+    prompt_controller = manager_lineage._LineageController(
+        typing.cast("typing.Any", manager)
+    )
+
+    class _FakeMessageBox:
+        class Icon(enum.IntEnum):
+            Warning = 1
+
+        class ButtonRole(enum.IntEnum):
+            AcceptRole = 1
+
+        class StandardButton(enum.IntEnum):
+            Cancel = 1
+
+        def __init__(self, _parent: typing.Any = None) -> None:
+            self._run_button = object()
+            self._cancel_button = object()
+            self.detailed_text = ""
+
+        def setObjectName(self, _name: str) -> None:
+            pass
+
+        def setIcon(self, _icon: enum.IntEnum) -> None:
+            pass
+
+        def setWindowTitle(self, _title: str) -> None:
+            pass
+
+        def setText(self, _text: str) -> None:
+            pass
+
+        def setInformativeText(self, _text: str) -> None:
+            pass
+
+        def setDetailedText(self, text: str) -> None:
+            self.detailed_text = text
+
+        def addButton(
+            self, button: str | enum.IntEnum, _role: enum.IntEnum | None = None
+        ) -> object:
+            if button == "Run Code":
+                return self._run_button
+            return self._cancel_button
+
+        def setDefaultButton(self, _button: typing.Any) -> None:
+            pass
+
+        def exec(self) -> None:
+            pass
+
+        def clickedButton(self) -> object:
+            return self._run_button
+
+    monkeypatch.setattr(manager_lineage.QtWidgets, "QMessageBox", _FakeMessageBox)
+    assert prompt_controller._prompt_trusted_script_replay(
+        _trust_required_script_spec(),
+        reason="reload this result",
+    )
+
+
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -957,6 +1035,57 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     assert ensured == ["reload this result"]
     assert trusted_flags == [True]
     xr.testing.assert_identical(result.data, xr.DataArray([2.0], dims=("x",)))
+
+
+def test_manager_provenance_edit_file_load_helper_edges(tmp_path: pathlib.Path) -> None:
+    source_path = tmp_path / "scan.nc"
+    replacement_path = tmp_path / "replacement.nc"
+    script_spec = provenance.script(
+        start_label="Load script",
+        seed_code=f"loaded = xr.load_dataarray({str(source_path)!r})",
+        active_name="loaded",
+        file_load_source=provenance.FileLoadSource(
+            path=str(source_path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=provenance.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    replacement = _manager_provenance_file_spec(replacement_path)
+
+    assert manager_provenance_edit._file_load_edit_active_name(script_spec) == "loaded"
+    replaced = manager_provenance_edit._replace_file_load_fields(
+        script_spec,
+        replacement,
+    )
+    assert replaced.kind == "script"
+    assert replaced.start_label == replacement.start_label
+    assert replaced.seed_code == replacement.seed_code
+    assert replaced.file_load_source == replacement.file_load_source
+    with pytest.raises(RuntimeError, match="not a file load"):
+        manager_provenance_edit._replace_file_load_fields(
+            script_spec,
+            provenance.full_data(),
+        )
+
+    invalid_filename = FileNotFoundError()
+    invalid_filename.filename = object()
+    assert (
+        manager_provenance_edit._file_not_found_path_from_exception(invalid_filename)
+        is None
+    )
+    nested_missing = FileNotFoundError(2, "No such file", str(source_path))
+    wrapper = RuntimeError("wrapped")
+    wrapper.__cause__ = nested_missing
+    assert (
+        manager_provenance_edit._file_not_found_path_from_exception(wrapper)
+        == source_path
+    )
 
 
 def test_manager_script_code_edit_dialog_uses_python_code_editor(

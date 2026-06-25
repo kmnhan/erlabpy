@@ -26828,6 +26828,110 @@ def test_plot_slices_source_styles_keep_default_cmap_panels() -> None:
     } == {(0, 0): "magma"}
 
 
+def test_manager_figure_operation_helpers_cover_multi_image_edges() -> None:
+    manager = typing.cast(
+        "manager_mainwindow.ImageToolManager",
+        manager_mainwindow.ImageToolManager.__new__(
+            manager_mainwindow.ImageToolManager
+        ),
+    )
+    first_image = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("y", "x"))
+    second_image = xr.DataArray(np.arange(4.0, 8.0).reshape(2, 2), dims=("y", "x"))
+
+    operations = (
+        manager_mainwindow.ImageToolManager._make_figure_operations_for_sources(
+            manager,
+            {"first": first_image, "second": second_image},
+            setup=FigureSubplotsState(nrows=2, ncols=1),
+        )
+    )
+
+    assert [operation.kind for operation in operations] == [
+        FigureOperationKind.PLOT_ARRAY,
+        FigureOperationKind.PLOT_ARRAY,
+    ]
+    assert [operation.axes.axes for operation in operations] == [
+        ((0, 0),),
+        ((1, 0),),
+    ]
+
+    split_by_axes_id = (
+        manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
+            typing.cast("tuple[typing.Any, ...]", operations),
+            FigureAxesSelectionState(axes_ids=("left", "right")),
+        )
+    )
+    assert [operation.axes.axes_ids for operation in split_by_axes_id] == [
+        ("left",),
+        ("right",),
+    ]
+
+
+def test_manager_figure_image_target_helpers_cover_plot_slices_edges() -> None:
+    plot_slices = FigureOperationState.plot_slices(
+        label="slice",
+        sources=("old",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    )
+    plot_array = FigureOperationState.plot_array(label="array", source="old")
+
+    class _FakePlot:
+        is_image = True
+
+        def __init__(self, operation: FigureOperationState) -> None:
+            self.operation = operation
+
+        def figure_composer_operation(
+            self, *, source_name: str
+        ) -> FigureOperationState:
+            return self.operation.model_copy(update={"sources": (source_name,)})
+
+    nodes = {
+        "slice_a": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_slices),))
+            )
+        ),
+        "slice_b": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_slices),))
+            )
+        ),
+        "array": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_array),))
+            )
+        ),
+    }
+    manager = typing.cast(
+        "manager_mainwindow.ImageToolManager",
+        types.SimpleNamespace(_node_for_target=lambda target: nodes[target]),
+    )
+
+    assert (
+        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
+            manager,
+            ("slice_a", "array"),
+            ("first", "second"),
+        )
+        is None
+    )
+    combined = (
+        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
+            manager,
+            ("slice_a", "slice_b"),
+            ("first", "second"),
+        )
+    )
+
+    assert combined is not None
+    assert len(combined) == 1
+    assert combined[0].kind == FigureOperationKind.PLOT_SLICES
+    assert combined[0].sources == ("first", "second")
+    assert combined[0].order == "F"
+
+
 def test_manager_append_to_gridspec_figure_uses_axes_ids(
     qtbot,
     manager_context: Callable[
