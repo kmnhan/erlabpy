@@ -63,8 +63,7 @@ def itool(
           If the Dataset contains multiple displayable DataArrays, ImageTool asks which
           variables to open. Data variables with less than 2 effective dimensions are
           ignored. Variables with more than 4 non-singleton dimensions can be reduced
-          interactively before opening. Dimensions with length 1 are automatically
-          squeezed.
+          interactively before opening.
 
         - A `xarray.DataTree`
 

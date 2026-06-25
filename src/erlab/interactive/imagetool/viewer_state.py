@@ -121,10 +121,6 @@ suppressnanwarning = _SuppressNanWarning()
 def _processed_ndim(darr: xr.DataArray) -> int:
     if darr.ndim == 1:
         nd = 2
-    elif darr.ndim == 4 and any(s == 1 for s in darr.shape):
-        nd = sum(s != 1 for s in darr.shape)
-        if nd == 1:
-            nd = 2
     elif darr.ndim > 4:
         nd = len(tuple(s for s in darr.shape if s != 1))
     else:

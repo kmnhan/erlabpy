@@ -2952,7 +2952,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 hide_operation = target_dims == tuple(current_data.dims)
             # Rule 4: drop squeeze calls that would not remove singleton dimensions.
             elif _operation_is(operation, "squeeze") and current_data is not None:
-                hide_operation = not any(size == 1 for size in current_data.shape)
+                operation_dims = getattr(operation, "dims", None)
+                if operation_dims is None:
+                    hide_operation = not any(size == 1 for size in current_data.shape)
+                else:
+                    hide_operation = not any(
+                        current_data.sizes.get(dim) == 1 for dim in operation_dims
+                    )
             # Rule 5: drop nonuniform restoration when it would not change dimensions.
             elif (
                 _operation_is(operation, "restore_nonuniform_dims")
@@ -3589,7 +3595,11 @@ def compose_display_provenance(
                 continue
             if _operation_is(operation, "sort_coord_order"):
                 continue
-            if _operation_is(operation, "squeeze"):
+            if (
+                _operation_is(operation, "squeeze")
+                and getattr(operation, "dims", None) is None
+                and not getattr(operation, "drop", False)
+            ):
                 saw_squeeze = True
                 continue
             break

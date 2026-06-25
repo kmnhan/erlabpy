@@ -565,6 +565,9 @@ class TransposeOperation(ToolProvenanceOperation):
 
 class SqueezeOperation(ToolProvenanceOperation):
     op: typing.Literal["squeeze"] = "squeeze"
+    batch_available: typing.ClassVar[bool] = True
+    dims: NullableProvenanceHashableTuple = None
+    drop: bool = False
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -572,28 +575,60 @@ class SqueezeOperation(ToolProvenanceOperation):
             call.has_extra_tracked_inputs
             or call.dataarray_method != "squeeze"
             or call.accessor_path
-            or call.args
+            or len(call.args) > 1
         ):
             return None
-        for key, default in {"dim": None, "axis": None, "drop": False}.items():
-            if key not in call.kwargs:
-                continue
-            if not _console_values_equal(call.kwargs[key], default):
-                return None
-        if set(call.kwargs).difference({"dim", "axis", "drop"}):
+        kwargs = dict(call.kwargs)
+        axis = kwargs.pop("axis", None)
+        if not _console_values_equal(axis, None):
             return None
-        return cls()
+        drop = kwargs.pop("drop", False)
+        if not isinstance(drop, bool):
+            return None
+        if call.args:
+            if "dim" in kwargs:
+                return None
+            dim = call.args[0]
+        else:
+            dim = kwargs.pop("dim", None)
+        if kwargs:
+            return None
+        if dim is None:
+            return cls(drop=drop)
+        dims = (dim,) if isinstance(dim, str) or not isinstance(dim, Sequence) else dim
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(
+                dims=typing.cast("tuple[Hashable, ...]", tuple(dims)),
+                drop=drop,
+            )
+        return None
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
-        return data.squeeze()
+        if self.dims is None:
+            return data.squeeze(drop=self.drop)
+        return data.squeeze(dim=tuple(self.dims), drop=self.drop)
 
     def derivation_label(self) -> str:
+        label_kwargs: dict[str, typing.Any] = {}
+        if self.dims is not None:
+            label_kwargs["dim"] = tuple(self.dims)
+        if self.drop:
+            label_kwargs["drop"] = self.drop
+        if label_kwargs:
+            return f"squeeze({_format_derivation_value(label_kwargs)})"
         return "squeeze()"
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return f"{input_name}.squeeze()"
+        kwargs: dict[str, typing.Any] = {}
+        if self.dims is not None:
+            kwargs["dim"] = tuple(self.dims)
+        if self.drop:
+            kwargs["drop"] = self.drop
+        if not kwargs:
+            return f"{input_name}.squeeze()"
+        return f"{input_name}.squeeze({erlab.interactive.utils.format_kwargs(kwargs)})"
 
 
 class RenameOperation(ToolProvenanceOperation):
