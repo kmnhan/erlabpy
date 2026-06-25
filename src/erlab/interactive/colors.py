@@ -531,6 +531,7 @@ class BetterColorBarItem(pg.PlotItem):
         hoverBrush: QtGui.QBrush | str = "#FFFFFF33",
         *,
         show_colormap_edit_menu: bool = True,
+        _defer_context_menu_setup: bool = False,
         **kargs,
     ) -> None:
         super().__init__(parent, **kargs)
@@ -567,23 +568,18 @@ class BetterColorBarItem(pg.PlotItem):
         self._images: set[weakref.ref[BetterImageItem]] = set()
         self._primary_image: weakref.ref[BetterImageItem] | None = None
 
-        # Add colorbar limit editor to context menu
-        self.vb.menu.addSeparator()
-        self._clim_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit color limits")
-        self._clim_widget = _ColorBarLimitWidget(self)
-        self._clim_action = QtWidgets.QWidgetAction(self._clim_menu)
-        self._clim_action.setDefaultWidget(self._clim_widget)
-        self._clim_menu.addAction(self._clim_action)
-
-        self._center_zero_action = self.vb.menu.addAction("Center zero")
-        self._center_zero_action.triggered.connect(self._clim_widget.center_zero)
-
-        if show_colormap_edit_menu:
-            self._cmap_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit colormap")
-            self._cmap_widget = _ColorBarEditWidget(self)
-            self._cmap_action = QtWidgets.QWidgetAction(self._cmap_menu)
-            self._cmap_action.setDefaultWidget(self._cmap_widget)
-            self._cmap_menu.addAction(self._cmap_action)
+        self._context_menu: QtWidgets.QMenu | None = None
+        self._context_menu_ready = False
+        self._show_colormap_edit_menu = show_colormap_edit_menu
+        self._clim_menu: QtWidgets.QMenu | None = None
+        self._clim_widget: _ColorBarLimitWidget | None = None
+        self._clim_action: QtWidgets.QWidgetAction | None = None
+        self._center_zero_action: QtGui.QAction | None = None
+        self._cmap_menu: QtWidgets.QMenu | None = None
+        self._cmap_widget: _ColorBarEditWidget | None = None
+        self._cmap_action: QtWidgets.QWidgetAction | None = None
+        if not _defer_context_menu_setup:
+            self._ensure_context_menu()
 
         if image is not None:
             self.setImageItem(image)
@@ -591,6 +587,57 @@ class BetterColorBarItem(pg.PlotItem):
             self.setLimits(limits)
         self.setLabels(right=("", ""))
         self.set_dimensions()
+
+    def _menu_for_context_setup(self) -> QtWidgets.QMenu | None:
+        ensure_menu = getattr(self.vb, "_ensure_menu", None)
+        if callable(ensure_menu):
+            return ensure_menu()
+        return self.vb.getMenu(None)
+
+    def _ensure_context_menu(self) -> QtWidgets.QMenu | None:
+        menu = self._menu_for_context_setup()
+        if menu is None:
+            return None
+        if self._context_menu_ready and self._context_menu is menu:
+            return menu
+
+        menu.addSeparator()
+        clim_menu = typing.cast("QtWidgets.QMenu", menu.addMenu("Edit color limits"))
+        self._clim_menu = clim_menu
+        clim_widget = _ColorBarLimitWidget(self)
+        self._clim_widget = clim_widget
+        clim_action = QtWidgets.QWidgetAction(clim_menu)
+        self._clim_action = clim_action
+        clim_action.setDefaultWidget(clim_widget)
+        clim_menu.addAction(clim_action)
+        if self.primary_image is not None:
+            clim_widget.region_changed()
+
+        center_zero_action = typing.cast("QtGui.QAction", menu.addAction("Center zero"))
+        self._center_zero_action = center_zero_action
+        center_zero_action.triggered.connect(clim_widget.center_zero)
+
+        if self._show_colormap_edit_menu:
+            cmap_menu = typing.cast("QtWidgets.QMenu", menu.addMenu("Edit colormap"))
+            self._cmap_menu = cmap_menu
+            cmap_widget = _ColorBarEditWidget(self)
+            self._cmap_widget = cmap_widget
+            cmap_action = QtWidgets.QWidgetAction(cmap_menu)
+            self._cmap_action = cmap_action
+            cmap_action.setDefaultWidget(cmap_widget)
+            cmap_menu.addAction(cmap_action)
+
+        self._context_menu = menu
+        self._context_menu_ready = True
+        return menu
+
+    def getMenu(self) -> QtWidgets.QMenu:
+        self._ensure_context_menu()
+        return self.ctrlMenu
+
+    def getContextMenus(self, event) -> QtWidgets.QMenu | None:
+        self._ensure_context_menu()
+        return super().getContextMenus(event)
 
     @property
     def images(self):

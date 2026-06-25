@@ -30,7 +30,10 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
+import erlab.interactive.imagetool.plot_items as imagetool_plot_items
+import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
@@ -4119,6 +4122,25 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
 
         assert target in manager._tool_graph.root_wrappers
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        binding = provenance.ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"x": 0},
+        )
+        bound_ds = saved.to_dataset()
+        bound_ds.attrs["manager_node_uid"] = "bound"
+        bound_ds.attrs.pop("manager_node_live_source_spec", None)
+        bound_ds.attrs["manager_node_live_source_binding"] = json.dumps(
+            binding.model_dump(mode="json")
+        )
+        bound_ds.attrs.pop("itool_name", None)
+
+        bound_target = manager._load_workspace_imagetool_dataset(
+            bound_ds, parent_target=None, node_path="-2"
+        )
+
+        assert manager._node_for_target(bound_target).source_binding == binding
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
 
 def test_manager_load_workspace_tool_dataset_rejects_root_tool(
@@ -9745,6 +9767,227 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         assert not loaded.data_chunked
         assert not loaded.data_file_backed
         np.testing.assert_array_equal(loaded._data.values, data.values)
+
+
+def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profiles(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "profiled-h5py-load.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        root_attrs = manager_workspace._read_workspace_root_attrs_h5py(fname)
+        _, _, manifest = manager_workspace._workspace_file_metadata_from_attrs(
+            root_attrs
+        )
+        assert manifest is not None
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        original_restore_state = imagetool_viewer.ImageSlicerArea._restore_state
+        original_refresh_all = imagetool_viewer.ImageSlicerArea.refresh_all
+        restoring_state: list[imagetool_viewer.ImageSlicerArea] = []
+        refresh_during_restore: list[imagetool_viewer.ImageSlicerArea] = []
+
+        def _record_restore_state(self, *args, **kwargs):
+            restoring_state.append(self)
+            try:
+                return original_restore_state(self, *args, **kwargs)
+            finally:
+                restoring_state.pop()
+
+        def _record_refresh_all(self):
+            if restoring_state and restoring_state[-1] is self:
+                refresh_during_restore.append(self)
+            return original_refresh_all(self)
+
+        monkeypatch.setattr(
+            imagetool_viewer.ImageSlicerArea,
+            "_restore_state",
+            _record_restore_state,
+        )
+        monkeypatch.setattr(
+            imagetool_viewer.ImageSlicerArea,
+            "refresh_all",
+            _record_refresh_all,
+        )
+
+        profiler = manager_workspace_io._WorkspaceLoadProfiler(fname)
+        assert manager._from_h5py_workspace_file(
+            fname,
+            manifest,
+            replace=True,
+            mark_dirty=False,
+            profiler=profiler,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        loaded = manager.get_imagetool(0).slicer_area
+        assert loaded not in refresh_during_restore
+
+        assert profiler._durations["imagetool widget restore"] > 0.0
+        assert profiler._durations["imagetool manager registration"] > 0.0
+        assert "imagetool state restore: layout" in profiler._durations
+        assert "imagetool state refresh" not in profiler._durations
+
+
+def test_manager_h5py_workspace_load_defers_hidden_secondary_plot_widgets(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for index in range(4):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(
+                    _workspace_sweep_data(f"window_{index}"),
+                    _in_manager=True,
+                ),
+                show=False,
+            )
+
+        fname = tmp_path / "lazy-secondary-plots.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        constructed_display_axes: list[tuple[int, ...] | tuple[int, int]] = []
+        original_init = imagetool_plot_items.ItoolGraphicsLayoutWidget.__init__
+
+        def _record_graphics_layout_init(self, *args, **kwargs) -> None:
+            constructed_display_axes.append(tuple(kwargs["display_axis"]))
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            imagetool_plot_items.ItoolGraphicsLayoutWidget,
+            "__init__",
+            _record_graphics_layout_init,
+        )
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+        loaded_areas = [
+            manager.get_imagetool(index).slicer_area for index in range(manager.ntools)
+        ]
+        assert constructed_display_axes == [(0, 1)] * 4
+        assert all(area._plot_widgets_constructed == 1 for area in loaded_areas)
+        assert not any(area._secondary_plots_materialized for area in loaded_areas)
+
+        first_tool = manager.get_imagetool(0)
+        first_tool.show()
+        qtbot.wait_until(
+            lambda: first_tool.slicer_area._secondary_plots_materialized,
+            timeout=5000,
+        )
+        first_area = first_tool.slicer_area
+        assert first_area._plot_widgets_constructed == 8
+        assert first_area._secondary_plot_materialization_duration > 0.0
+        assert len(first_area.axes) == 8
+        assert constructed_display_axes == [
+            (0, 1),
+            (0, 1),
+            (0, 1),
+            (0, 1),
+            (0,),
+            (0, 2),
+            (3,),
+            (2,),
+            (3, 2),
+            (2, 1),
+            (1,),
+        ]
+
+
+def test_hidden_2d_workspace_preview_does_not_build_invalid_secondary_plots(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
+
+        root = erlab.interactive.imagetool.ImageTool(data, _in_manager=True)
+        qtbot.addWidget(root)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "hidden-2d-preview.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        constructed_display_axes: list[tuple[int, ...] | tuple[int, int]] = []
+        original_init = imagetool_plot_items.ItoolGraphicsLayoutWidget.__init__
+
+        def _record_graphics_layout_init(self, *args, **kwargs) -> None:
+            constructed_display_axes.append(tuple(kwargs["display_axis"]))
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            imagetool_plot_items.ItoolGraphicsLayoutWidget,
+            "__init__",
+            _record_graphics_layout_init,
+        )
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded = manager.get_imagetool(0).slicer_area
+        loaded_node = manager._node_for_target(0)
+
+        assert constructed_display_axes == [(0, 1)]
+        assert loaded._plot_widgets_constructed == 1
+        assert not loaded._secondary_plots_materialized
+
+        ratio, pixmap = manager_wrapper._preview_image_for_node(loaded_node)
+        assert isinstance(ratio, float)
+        assert isinstance(pixmap, QtGui.QPixmap)
+        assert not loaded._update_delayed
+        assert constructed_display_axes == [(0, 1)]
+        assert not loaded._secondary_plots_materialized
+
+        assert len(loaded.axes) == 3
+        assert loaded._plot_widgets_constructed == 3
+        assert constructed_display_axes == [(0, 1), (0,), (1,)]
 
 
 def test_manager_workspace_load_preserves_transposed_inverted_axis_limits(

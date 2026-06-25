@@ -310,7 +310,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
         try:
             with np.errstate(divide="ignore"), suppressnanwarning:
                 approx_abs_max = np.nanmax(
-                    np.abs(next(iter(self.slicer_area._imageitems)).image)
+                    np.abs(
+                        next(iter(self.slicer_area._materialized_imageitems())).image
+                    )
                 )
                 self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
         except Exception:
@@ -637,7 +639,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
         try:
             with np.errstate(divide="ignore"), suppressnanwarning:
                 approx_abs_max = np.nanmax(
-                    np.abs(next(iter(self.slicer_area._imageitems)).image)
+                    np.abs(
+                        next(iter(self.slicer_area._materialized_imageitems())).image
+                    )
                 )
                 self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
         except Exception:

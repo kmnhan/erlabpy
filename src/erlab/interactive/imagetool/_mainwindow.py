@@ -100,10 +100,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
-        if state is not None:
-            self.slicer_area.state = state
-        if transpose:
-            self.slicer_area.transpose_main_image()
+        try:
+            if state is not None:
+                self.slicer_area.state = state
+            if transpose:
+                self.slicer_area.transpose_main_image()
+        finally:
+            self.slicer_area._workspace_load_profiler = None
         self._sync_file_load_provenance()
 
         # Allow writing history after initialization
