@@ -593,6 +593,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._connect_plot_signals(index, plot.plotItem)
         if not valid_index:
             plot.setVisible(False)
+            plot.plotItem.setVisible(False)
         if self._in_manager:
             plot.plotItem.ensure_manager_figure_actions()
         return plot
@@ -2146,7 +2147,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if ndim_changed:
             if secondary_plots_were_materialized:
+                materialized = self._secondary_plots_materialized
                 self._ensure_secondary_plots()
+                if materialized:
+                    self.adjust_layout()
             else:
                 self.adjust_layout()
 
@@ -3475,6 +3479,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             plot = self._plots[i]
             if plot is not None:
                 plot.setVisible(visible)
+                plot.plotItem.setVisible(visible)
 
         # reserve space, only hide plotItem
         if self._plots[3] is not None:

@@ -841,13 +841,13 @@ class ArraySlicer(QtCore.QObject):
         if data.size == 0:
             raise ValueError("Data must not be empty.")
 
+        if data.ndim > 4 or (data.ndim == 4 and any(s == 1 for s in data.shape)):
+            # Try squeezing
+            data = data.squeeze()
+
         if data.ndim == 1:
             # Promote 1D data to 2D by adding a dummy dimension
             data = data.expand_dims("stack_dim", axis=-1)
-
-        if data.ndim > 4:
-            # Try squeezing
-            data = data.squeeze()
 
         if data.ndim < 2:
             raise ValueError("Data must have at least two dimensions.")

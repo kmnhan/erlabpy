@@ -2139,6 +2139,40 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
     win.close()
 
 
+def test_initial_four_dimensional_layout_sets_splitter_sizes(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4 * 5, dtype=float).reshape((2, 3, 4, 5)),
+        dims=("scan", "pol", "y", "x"),
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    assert all(
+        all(size > 0 for size in sizes) for sizes in win.slicer_area.splitter_sizes
+    )
+    win.close()
+
+
+def test_initial_three_dimensional_layout_hides_four_dimensional_axes(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4, dtype=float).reshape((2, 3, 4)),
+        dims=("scan", "y", "x"),
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    assert area._axes_indices() == (0, 4, 5, 1, 2, 3)
+    for index in (6, 7):
+        plot = area._plots[index]
+        assert plot is not None
+        assert plot.isHidden()
+        assert not plot.plotItem.isVisible()
+    win.close()
+
+
 def test_lazy_secondary_pending_plot_state_cleared_on_dimensionality_change(
     qtbot,
 ) -> None:
@@ -2182,6 +2216,7 @@ def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
     area = win.slicer_area
     plot = area.get_axes(7)
     assert tuple(plot.display_axis) == (3, 2)
+    assert not plot.isVisible()
     assert area._plot_widgets_constructed == 4
     assert area._secondary_plots_materialized
     assert [index for index, item in enumerate(area._plots) if item is not None] == [
@@ -4832,6 +4867,27 @@ def test_itool_squeezes_high_dim_input(qtbot) -> None:
 
     assert win.slicer_area.data.shape == (5, 5)
     assert win.slicer_area.data.dims == ("a", "c")
+    np.testing.assert_array_equal(win.slicer_area.data.values, data.squeeze().values)
+
+    win.close()
+
+
+def test_itool_squeezes_four_dimensional_singleton_input(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
+        dims=("scan", "pol", "delay", "eV"),
+        coords={
+            "scan": [0.0],
+            "pol": np.arange(3, dtype=float),
+            "delay": [1.0],
+            "eV": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.shape == (3, 5)
+    assert win.slicer_area.data.dims == ("pol", "eV")
     np.testing.assert_array_equal(win.slicer_area.data.values, data.squeeze().values)
 
     win.close()
