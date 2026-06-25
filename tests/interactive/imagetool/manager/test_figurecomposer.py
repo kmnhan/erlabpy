@@ -2964,6 +2964,39 @@ def test_manager_default_figure_seed_uses_public_nonuniform_dims(
     assert "sample_temp_idx" not in operation.model_dump_json()
 
 
+def test_manager_default_figure_seed_keeps_mixed_higher_dimensional_sources(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    profile = xr.DataArray(np.arange(4.0), dims=("eV",), name="profile")
+    image_stack = xr.DataArray(
+        np.arange(24.0).reshape(3, 2, 4),
+        dims=("sample_temp", "alpha", "eV"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0],
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1, 0.2],
+        },
+        name="map",
+    )
+
+    with manager_context() as manager:
+        line_operation, map_operation = manager._make_figure_operations_for_sources(
+            {"profile": profile, "map": image_stack},
+            setup=FigureSubplotsState(nrows=2, ncols=1),
+        )
+
+    assert line_operation.kind == FigureOperationKind.LINE
+    assert line_operation.line_source == "profile"
+    assert line_operation.axes.axes == ((0, 0),)
+    assert map_operation.kind == FigureOperationKind.PLOT_SLICES
+    assert map_operation.sources == ("map",)
+    assert map_operation.axes.axes == ((1, 0),)
+    assert map_operation.slice_dim == "sample_temp"
+    assert map_operation.slice_values == (15.0,)
+
+
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert "" not in figurecomposer_line_style.LINE_STYLE_OPTIONS
     assert " " not in figurecomposer_line_style.LINE_STYLE_OPTIONS

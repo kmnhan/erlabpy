@@ -2252,6 +2252,18 @@ class ImageToolManager(_ImageToolManagerBase):
             return float(coord.values[int(coord.size // 2)])
         return None
 
+    def _figure_default_slice_selection(
+        self, data: xr.DataArray
+    ) -> tuple[str | None, tuple[float, ...]]:
+        slice_dim = None
+        slice_values: tuple[float, ...] = ()
+        if data.ndim > 2:
+            slice_dim = str(data.dims[0])
+            value = self._figure_middle_coordinate_value(data, slice_dim)
+            if value is not None:
+                slice_values = (value,)
+        return slice_dim, slice_values
+
     def _make_figure_operations_for_sources(
         self,
         source_data: Mapping[str, xr.DataArray],
@@ -2291,13 +2303,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         if all(data.ndim > 1 for data in squeezed):
             first = squeezed[0]
-            slice_dim = None
-            slice_values: tuple[float, ...] = ()
-            if first.ndim > 2:
-                slice_dim = str(first.dims[0])
-                value = self._figure_middle_coordinate_value(first, slice_dim)
-                if value is not None:
-                    slice_values = (value,)
+            slice_dim, slice_values = self._figure_default_slice_selection(first)
             operation = FigureOperationState.plot_slices(
                 label="plot_slices",
                 sources=source_names,
@@ -2326,6 +2332,17 @@ class ImageToolManager(_ImageToolManagerBase):
                         label=source_name,
                         source=source_name,
                         axes=FigureAxesSelectionState(axes=((row, 0),)),
+                    )
+                )
+            else:
+                slice_dim, slice_values = self._figure_default_slice_selection(data)
+                operations.append(
+                    FigureOperationState.plot_slices(
+                        label=source_name,
+                        sources=(source_name,),
+                        axes=FigureAxesSelectionState(axes=((row, 0),)),
+                        slice_dim=slice_dim,
+                        slice_values=slice_values,
                     )
                 )
         return tuple(operations)
