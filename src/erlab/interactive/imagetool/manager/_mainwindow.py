@@ -2350,7 +2350,10 @@ class ImageToolManager(_ImageToolManagerBase):
     def _figure_operations_from_image_targets(
         self, targets: tuple[int | str, ...], source_names: tuple[str, ...]
     ) -> tuple[typing.Any, ...] | None:
-        from erlab.interactive._figurecomposer import FigureOperationKind
+        from erlab.interactive._figurecomposer import (
+            FigureOperationKind,
+            FigureOperationState,
+        )
         from erlab.interactive._figurecomposer._seeding import (
             plot_slices_operation_with_source_styles,
         )
@@ -2383,6 +2386,50 @@ class ImageToolManager(_ImageToolManagerBase):
             operation.kind == FigureOperationKind.PLOT_ARRAY
             for operation in source_operations
         ):
+            if len(source_operations) > 1 and all(
+                len(operation.map_selections) == 1 for operation in source_operations
+            ):
+                first_operation = source_operations[0]
+                updates = {
+                    "transpose": first_operation.transpose,
+                    "xlim": first_operation.xlim,
+                    "ylim": first_operation.ylim,
+                    "crop": first_operation.crop,
+                    "axis": first_operation.axis,
+                    "colorbar": first_operation.colorbar,
+                    "hide_colorbar_ticks": first_operation.hide_colorbar_ticks,
+                    "annotate": first_operation.annotate,
+                    "cmap": first_operation.cmap,
+                    "gamma": first_operation.gamma,
+                    "norm_name": first_operation.norm_name,
+                    "norm_gamma": first_operation.norm_gamma,
+                    "norm_clip": first_operation.norm_clip,
+                    "norm_kwargs": dict(first_operation.norm_kwargs),
+                    "vmin": first_operation.vmin,
+                    "vmax": first_operation.vmax,
+                    "vcenter": first_operation.vcenter,
+                    "halfrange": first_operation.halfrange,
+                    "colorbar_kw": dict(first_operation.colorbar_kw),
+                    "extra_kwargs": dict(first_operation.extra_kwargs),
+                }
+                operation = FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=source_names,
+                    map_selections=tuple(
+                        selection
+                        for source_operation in source_operations
+                        for selection in source_operation.map_selections
+                    ),
+                ).model_copy(update=updates)
+                if len(source_names) > 1:
+                    operation = operation.model_copy(update={"order": "F"})
+                return (
+                    plot_slices_operation_with_source_styles(
+                        operation,
+                        tuple(source_operations),
+                        selections_per_source=1,
+                    ),
+                )
             return tuple(source_operations)
         if any(
             operation.kind != FigureOperationKind.PLOT_SLICES
