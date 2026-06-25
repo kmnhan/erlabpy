@@ -186,20 +186,30 @@ _SCRIPT_REPLAY_ALLOWED_BUILTINS = {
     "bool": bool,
     "complex": complex,
     "dict": dict,
+    "enumerate": enumerate,
     "float": float,
+    "ImportError": ImportError,
     "int": int,
     "len": len,
     "list": list,
     "max": max,
     "min": min,
     "range": range,
+    "reversed": reversed,
     "set": set,
     "slice": slice,
     "str": str,
     "sum": sum,
     "tuple": tuple,
+    "zip": zip,
 }
-_SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS = {"erlab", "matplotlib", "numpy", "xarray"}
+_SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS = {
+    "erlab",
+    "matplotlib",
+    "numpy",
+    "seaborn",
+    "xarray",
+}
 _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.AsyncFor,
     ast.AsyncFunctionDef,
@@ -212,7 +222,6 @@ _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.Match,
     ast.Nonlocal,
     ast.Raise,
-    ast.Try,
     ast.While,
     ast.With,
     ast.Yield,
@@ -3816,9 +3825,33 @@ def _validate_script_replay_code(code: str) -> None:
                 f"Script replay code contains unsupported {type(node).__name__}"
             )
 
+    def validate_optional_import_try(node: ast.Try) -> None:
+        if (
+            node.finalbody
+            or len(node.handlers) != 1
+            or not node.body
+            or any(
+                not isinstance(statement, ast.Import | ast.ImportFrom)
+                for statement in node.body
+            )
+        ):
+            raise TypeError("Script replay code contains unsupported Try")
+        handler = node.handlers[0]
+        if (
+            handler.name is not None
+            or not isinstance(handler.type, ast.Name)
+            or handler.type.id != "ImportError"
+            or len(handler.body) != 1
+            or not isinstance(handler.body[0], ast.Pass)
+        ):
+            raise TypeError("Script replay code contains unsupported Try")
+
     for node in ast.walk(module):
         if isinstance(node, ast.Import | ast.ImportFrom):
             validate_import(node)
+            continue
+        if isinstance(node, ast.Try):
+            validate_optional_import_try(node)
             continue
         if isinstance(node, _SCRIPT_REPLAY_FORBIDDEN_NODES):
             raise TypeError(

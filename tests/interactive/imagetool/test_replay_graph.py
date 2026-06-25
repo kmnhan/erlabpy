@@ -180,6 +180,42 @@ class Child(Base, metaclass=data_5):
         {},
     )
     assert {"item", "derived"}.issubset(loop_else_names)
+    comprehension_names = {"float", "profiles", "sum"}
+    _replay_graph._validate_script_code_names(
+        "line_color_values = [\n"
+        '    float(profile.coords["sample_temp"].values.item())\n'
+        "    for profile in profiles\n"
+        "]\n"
+        "profile_names = {profile.name for profile in profiles}\n"
+        "profile_map = {profile.name: profile for profile in profiles}\n"
+        "profile_total = sum(profile.sum() for profile in profiles)",
+        comprehension_names,
+        {},
+    )
+    assert {
+        "line_color_values",
+        "profile_names",
+        "profile_map",
+        "profile_total",
+    }.issubset(comprehension_names)
+    assert "profile" not in comprehension_names
+    generated_builtin_names = {
+        *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        "values",
+    }
+    _replay_graph._validate_script_code_names(
+        "indexed = [value for index, value in enumerate(values)]\n"
+        "reordered = list(reversed(values))",
+        generated_builtin_names,
+        {},
+    )
+    assert {"indexed", "reordered"}.issubset(generated_builtin_names)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph._validate_script_code_names(
+            "line_color_values = [missing + profile for profile in profiles]",
+            {"profiles"},
+            {},
+        )
     with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
         _replay_graph._validate_script_code_names(
             "for holder.profile in profiles:\n    pass",
@@ -1803,6 +1839,117 @@ def test_replay_graph_allows_for_loop_with_script_input() -> None:
     assert len(namespace["fig"]) == 2
     xr.testing.assert_identical(namespace["fig"][0], xr.DataArray(3.0))
     xr.testing.assert_identical(namespace["fig"][1], xr.DataArray(12.0))
+
+
+def test_replay_graph_allows_comprehension_with_script_input_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_data = xr.DataArray(
+        np.asarray([[2.0, 4.0], [10.0, 14.0]]),
+        dims=("sample_temp", "eV"),
+        coords={
+            "sample_temp": [10.0, 50.0],
+            "eV": [-0.3, -0.2],
+            "mesh_current": ("sample_temp", [2.0, 2.0]),
+        },
+        name="D10cu",
+    )
+    source_path = tmp_path / "source.nc"
+    source_data.to_netcdf(source_path)
+    source_spec = _file_spec(source_path).model_copy(
+        update={
+            "replay_stages": (
+                provenance.ReplayStage(
+                    source_kind="public_data",
+                    operations=(
+                        provenance.DivideByCoordOperation(coord_name="mesh_current"),
+                    ),
+                ),
+            ),
+        }
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Build figure",
+            code=(
+                "fig = []\n"
+                "profile_data = data_3\n"
+                "profiles = list(profile_data.transpose('sample_temp', ...))\n"
+                "line_color_values = [\n"
+                '    float(profile.coords["sample_temp"].values.item())\n'
+                "    for profile in profiles\n"
+                "]\n"
+                "for profile, color in zip(\n"
+                "    profiles,\n"
+                "    line_color_values,\n"
+                "    strict=True,\n"
+                "):\n"
+                "    fig.append(float(profile.sum().values) + color)"
+            ),
+        ),
+        start_label="Build figure",
+        active_name="fig",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_3",
+                label="ImageTool 3: D10cu",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "for profile in profiles" in code
+    assert namespace["fig"] == [13.0, 62.0]
+
+
+def test_replay_graph_display_emits_user_code_blocked_by_replay_allowlist(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
+    source_path = tmp_path / "source.nc"
+    source_data.to_netcdf(source_path)
+    source_spec = _file_spec(source_path)
+    script_input = provenance.ScriptInput(
+        name="data_0",
+        label="ImageTool 0",
+        provenance_spec=source_spec,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code=("import os\nwith open(os.devnull):\n    pass\nderived = data_0 + 1"),
+        ),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(script_input,),
+    )
+
+    assert not provenance.script_provenance_replayable(spec)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
+        _replay_graph.compile_replay_graph(spec)
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "import os" in code
+    assert "with open(os.devnull):" in code
+    xr.testing.assert_identical(namespace["derived"], source_data + 1)
+
+    unresolved_spec = spec.model_copy(
+        update={
+            "operations": (
+                provenance.ScriptCodeOperation(
+                    label="User code",
+                    code="derived = data_0 + missing",
+                ),
+            ),
+        },
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph.compile_replay_graph(unresolved_spec, display=True)
 
 
 @pytest.mark.parametrize(

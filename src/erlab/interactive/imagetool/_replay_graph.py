@@ -9,6 +9,7 @@ shared file loads and shared structured operations are emitted or replayed once.
 from __future__ import annotations
 
 import ast
+import builtins
 import json
 import keyword
 import symtable
@@ -163,14 +164,17 @@ def _code_uses_name(code: str, name: str) -> bool:
 
 
 class _CurrentScopeNames(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, local_names: set[str] | None = None) -> None:
         self.loads: set[str] = set()
         self.stores: set[str] = set()
+        self._local_names = set(local_names or ())
 
     def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load):
+        if isinstance(node.ctx, ast.Load) and node.id not in self._local_names:
             self.loads.add(node.id)
-        elif isinstance(node.ctx, (ast.Store, ast.Del)):
+        elif isinstance(node.ctx, (ast.Store, ast.Del)) and node.id not in (
+            self._local_names
+        ):
             self.stores.add(node.id)
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -201,6 +205,18 @@ class _CurrentScopeNames(ast.NodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._visit_argument_expressions(node.args)
 
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, node.key, node.value)
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.stores.add(node.name)
         for decorator in node.decorator_list:
@@ -224,6 +240,27 @@ class _CurrentScopeNames(ast.NodeVisitor):
         ):
             if arg.annotation is not None:
                 self.visit(arg.annotation)
+
+    def _visit_comprehension(
+        self, generators: Sequence[ast.comprehension], *value_nodes: ast.AST
+    ) -> None:
+        local_names = set(self._local_names)
+        for generator in generators:
+            self._visit_with_local_names(generator.iter, local_names)
+            target_names = _CurrentScopeNames(local_names)
+            target_names.visit(generator.target)
+            self.loads.update(target_names.loads)
+            local_names.update(target_names.stores)
+            for condition in generator.ifs:
+                self._visit_with_local_names(condition, local_names)
+        for node in value_nodes:
+            self._visit_with_local_names(node, local_names)
+
+    def _visit_with_local_names(self, node: ast.AST, local_names: set[str]) -> None:
+        names = _CurrentScopeNames(local_names)
+        names.visit(node)
+        self.loads.update(names.loads)
+        self.stores.update(names.stores)
 
 
 def _statement_scope_names(stmt: ast.stmt) -> _CurrentScopeNames:
@@ -338,6 +375,42 @@ def _validate_script_code_names(
             function_dependencies.update(branch_dependencies)
             return
 
+        if isinstance(stmt, ast.Try):
+            available_before = set(available_names)
+            dependencies_before = dict(function_dependencies)
+
+            for body_stmt in stmt.body:
+                validate_stmt(body_stmt)
+            available_after_body = set(available_names)
+            dependencies_after_body = dict(function_dependencies)
+
+            for handler in stmt.handlers:
+                available_names.clear()
+                available_names.update(available_before)
+                function_dependencies.clear()
+                function_dependencies.update(dependencies_before)
+                if handler.type is not None:
+                    handler_names = _CurrentScopeNames()
+                    handler_names.visit(handler.type)
+                    require_loads(handler_names)
+                if handler.name is not None:
+                    available_names.add(handler.name)
+                for handler_stmt in handler.body:
+                    validate_stmt(handler_stmt)
+
+            available_names.clear()
+            available_names.update(available_after_body)
+            function_dependencies.clear()
+            function_dependencies.update(dependencies_after_body)
+            for orelse_stmt in stmt.orelse:
+                validate_stmt(orelse_stmt)
+
+            available_names.clear()
+            available_names.update(available_before)
+            function_dependencies.clear()
+            function_dependencies.update(dependencies_before)
+            return
+
         names = _statement_scope_names(stmt)
         require_loads(names)
         if isinstance(stmt, ast.FunctionDef):
@@ -381,6 +454,7 @@ def _validate_script_provenance(
     *,
     external_input_names: set[str] | None = None,
     allow_free_seed_names: bool = False,
+    strict_replay_code: bool = True,
 ) -> None:
     if spec.kind != "script":
         raise ReplayGraphError("Expected script provenance")
@@ -389,6 +463,10 @@ def _validate_script_provenance(
             "Script provenance cannot be replayed without active_name"
         )
 
+    builtin_names = set(_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS)
+    if not strict_replay_code:
+        builtin_names.update(vars(builtins))
+
     available_names = {
         "erlab",
         "np",
@@ -396,7 +474,7 @@ def _validate_script_provenance(
         "xr",
         "xarray",
         *_REPLAY_ALIASES,
-        *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        *builtin_names,
     }
     if spec.script_inputs:
         available_names.update(script_input.name for script_input in spec.script_inputs)
@@ -408,10 +486,18 @@ def _validate_script_provenance(
     current_name: str | None = spec.active_name if active_available else None
     if spec.seed_code:
         has_replay_step = True
-        try:
-            _provenance_framework._validate_script_replay_code(spec.seed_code)
-        except (TypeError, ValueError) as exc:
-            raise ReplayGraphError(str(exc)) from exc
+        if strict_replay_code:
+            try:
+                _provenance_framework._validate_script_replay_code(spec.seed_code)
+            except (TypeError, ValueError) as exc:
+                raise ReplayGraphError(str(exc)) from exc
+        else:
+            try:
+                ast.parse(spec.seed_code, mode="exec")
+            except SyntaxError as exc:
+                raise ReplayGraphError(
+                    "Script replay code is not valid Python"
+                ) from exc
         if allow_free_seed_names:
             module = ast.parse(spec.seed_code, mode="exec")
             for stmt in module.body:
@@ -447,10 +533,18 @@ def _validate_script_provenance(
             if not operation.copyable or operation.code is None:
                 raise ReplayGraphError("Script provenance contains non-replayable code")
             has_replay_step = True
-            try:
-                _provenance_framework._validate_script_replay_code(operation.code)
-            except (TypeError, ValueError) as exc:
-                raise ReplayGraphError(str(exc)) from exc
+            if strict_replay_code:
+                try:
+                    _provenance_framework._validate_script_replay_code(operation.code)
+                except (TypeError, ValueError) as exc:
+                    raise ReplayGraphError(str(exc)) from exc
+            else:
+                try:
+                    ast.parse(operation.code, mode="exec")
+                except SyntaxError as exc:
+                    raise ReplayGraphError(
+                        "Script replay code is not valid Python"
+                    ) from exc
             _validate_script_code_names(
                 operation.code,
                 available_names,
@@ -652,6 +746,7 @@ def _compile_spec(
             allow_free_seed_names=display
             and not parsed.script_inputs
             and not external_inputs,
+            strict_replay_code=not display,
         )
         bindings: list[tuple[str, str]] = []
         if parsed.script_inputs:

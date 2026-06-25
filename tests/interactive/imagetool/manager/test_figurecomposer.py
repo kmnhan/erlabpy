@@ -113,7 +113,12 @@ from erlab.interactive._figurecomposer._toolbar_dialogs import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import (
+    _provenance_framework,
+    _replay_graph,
+    itool,
+    provenance,
+)
 from erlab.io.exampledata import generate_hvdep_cuts
 from tests.interactive.imagetool.manager.helpers import (
     InMemoryClipboard,
@@ -640,6 +645,39 @@ def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
         coords={"eV": eV, "kx": kx},
         name=name,
     )
+
+
+def _figure_composer_replay_source_state(
+    name: str,
+    label: str | None = None,
+) -> FigureSourceState:
+    source_spec = provenance.script(
+        start_label=f"Build {label or name}",
+        seed_code="derived = xr.DataArray([0.0], dims=('x',))",
+        active_name="derived",
+    )
+    return FigureSourceState(
+        name=name,
+        label=label or name,
+        provenance_spec=source_spec.model_dump(mode="json"),
+    )
+
+
+def _assert_figure_composer_provenance_replayable(
+    tool: FigureComposerTool,
+    *,
+    case_label: str,
+) -> str:
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    try:
+        graph = _replay_graph.compile_replay_graph(spec, display=True)
+        return _replay_graph.emit_replay_code(graph, output_name="fig")
+    except _replay_graph.ReplayGraphError as exc:
+        pytest.fail(
+            f"{case_label} generated Figure Composer provenance is not replayable: "
+            f"{exc}\n\nGenerated code:\n{tool.generated_code()}"
+        )
 
 
 def _expected_line_colormap_colors(
@@ -6188,6 +6226,144 @@ def test_figure_composer_provenance_includes_sources_and_build_step(
     assert code is not None
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["fig"], Figure)
+
+
+def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> None:
+    image = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 0.0, 1.0], "ky": [-1.0, 0.0, 1.0]},
+        name="image",
+    )
+    volume = _figure_composer_image_source("volume")
+    profile_map = _figure_composer_line_slice_source("profile_map")
+    plotting_tool = FigureComposerTool.from_sources(
+        {
+            "image": image,
+            "volume": volume,
+            "profile_map": profile_map,
+        },
+        sources=(
+            _figure_composer_replay_source_state("image"),
+            _figure_composer_replay_source_state("volume"),
+            _figure_composer_replay_source_state("profile_map"),
+        ),
+        setup=FigureSubplotsState(nrows=2, ncols=2),
+        operations=(
+            FigureOperationState.set_palette(),
+            FigureOperationState.plot_array(
+                label="image",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ).model_copy(update={"cmap": "viridis", "colorbar": "right"}),
+            FigureOperationState.plot_slices(
+                label="cuts",
+                sources=("volume",),
+                axes=FigureAxesSelectionState(axes=((0, 1),)),
+                slice_dim="eV",
+                slice_values=(-0.5, 0.5),
+            ).model_copy(
+                update={
+                    "annotate": False,
+                    "cmap": "terrain_r",
+                    "line_label_text": "{number}: {eV:g}",
+                    "line_color_mode": "coordinate",
+                    "line_color_coord": "eV",
+                }
+            ),
+            FigureOperationState.line(
+                label="profiles",
+                source="profile_map",
+                axes=FigureAxesSelectionState(axes=((1, 0),)),
+            ).model_copy(
+                update={
+                    "line_iter_dim": "eV",
+                    "line_color_mode": "coordinate",
+                    "line_color_coord": "eV",
+                    "line_color_cmap": "plasma",
+                    "line_normalize": "mean",
+                }
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="set_title",
+                axes=FigureAxesSelectionState(axes=((1, 0),)),
+                args=("Profiles",),
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.ERLAB,
+                name="clean_labels",
+                axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (1, 0), (1, 1))),
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.FIGURE,
+                name="supxlabel",
+                args=("Shared coordinate",),
+            ),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(plotting_tool)
+
+    hvdep_kconv = _photon_energy_source()
+    overlay_tool = FigureComposerTool.from_sources(
+        {
+            "image": image,
+            "hvdep_kconv": hvdep_kconv,
+        },
+        sources=(
+            _figure_composer_replay_source_state("image"),
+            _figure_composer_replay_source_state("hvdep_kconv"),
+        ),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        operations=(
+            FigureOperationState.plot_array(
+                label="momentum",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ),
+            FigureOperationState.bz_overlay(
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+                mode="out_of_plane",
+            ).model_copy(
+                update={
+                    "bz_bounds": (-2.0, 2.0, -2.0, 2.0),
+                    "bz_midpoints": True,
+                    "line_kw": {"color": "tab:orange"},
+                }
+            ),
+            FigureOperationState.photon_energy_overlay(
+                source="hvdep_kconv",
+                axes=FigureAxesSelectionState(axes=((0, 1),)),
+                binding_energy=-0.3,
+            ).model_copy(
+                update={
+                    "photon_energies": (30.0, 45.0),
+                    "legend_kw": {"title": "Photon energy"},
+                }
+            ),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(overlay_tool)
+
+    tools = {
+        "core plotting": plotting_tool,
+        "overlays": overlay_tool,
+    }
+    covered_kinds = {
+        operation.kind
+        for tool in tools.values()
+        for operation in tool.tool_status.operations
+    }
+    assert covered_kinds == set(FigureOperationKind) - {FigureOperationKind.CUSTOM}
+
+    for case_label, tool in tools.items():
+        code = _assert_figure_composer_provenance_replayable(
+            tool,
+            case_label=case_label,
+        )
+        assert "fig, axs = plt.subplots" in code
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):
@@ -21436,6 +21612,16 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         [{"label": "alpha:1:0.1"}, {"label": "beta:2:0.1"}],
         [{"label": "alpha:3:0.2"}, {"label": "beta:4:0.2"}],
     ]
+    for code in (by_slice, by_source, grid, fortran_grid):
+        available_names = {
+            *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+            "slice_values",
+        }
+        _replay_graph._validate_script_code_names(
+            f"line_kw = {code}",
+            available_names,
+            {},
+        )
 
     styled = figurecomposer_plot_slices._plot_slices_styled_label_line_kw_code(
         operation.model_copy(

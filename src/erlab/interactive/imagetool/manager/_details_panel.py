@@ -797,10 +797,15 @@ class _DetailsPanelController:
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str:
         unavailable_labels: list[str] = []
+        replayable_input_labels = self._replayable_script_input_labels(
+            node.displayed_provenance_spec
+        )
         for entry in node.derivation_entries[1:]:
             if entry.code is not None:
                 continue
             label = " ".join(entry.label.split())
+            if label in replayable_input_labels:
+                continue
             if label and label not in unavailable_labels:
                 unavailable_labels.append(label)
 
@@ -813,6 +818,23 @@ class _DetailsPanelController:
                 )
             )
         return "The replay graph could not be emitted as Python code."
+
+    def _replayable_script_input_labels(
+        self,
+        spec: provenance.ToolProvenanceSpec | None,
+    ) -> set[str]:
+        if spec is None or spec.kind != "script":
+            return set()
+        replayable_labels: set[str] = set()
+        for script_input in spec.script_inputs:
+            try:
+                _replay_graph.script_inputs_code((script_input,), display=True)
+            except _replay_graph.ReplayGraphError:
+                continue
+            replayable_labels.add(
+                " ".join(f"Use {script_input.name} from {script_input.label}".split())
+            )
+        return replayable_labels
 
     def _unavailable_replay_code_traceback(
         self, node: _ImageToolWrapper | _ManagedWindowNode

@@ -8899,6 +8899,44 @@ def test_manager_copy_selected_derivation_code_fallbacks(
     controller._copy_selected_derivation_code()
 
 
+def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> None:
+    source_spec = provenance.script(
+        start_label="Build source",
+        seed_code="derived = xr.DataArray([1.0], dims=('x',))",
+        active_name="derived",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Run opaque code",
+            code=None,
+            copyable=False,
+        ),
+        start_label="Build figure",
+        active_name="fig",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_3",
+                label="ImageTool 3: D10cu",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    node = types.SimpleNamespace(
+        displayed_provenance_spec=spec,
+        derivation_entries=spec.derivation_entries(),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", types.SimpleNamespace())
+    )
+
+    details = controller._unavailable_replay_code_details(
+        typing.cast("typing.Any", node)
+    )
+
+    assert "Run opaque code" in details
+    assert "Use data_3 from ImageTool 3: D10cu" not in details
+
+
 def test_manager_derivation_context_menu_ignores_empty_space(
     qtbot,
 ) -> None:
