@@ -1952,6 +1952,105 @@ def test_replay_graph_display_emits_user_code_blocked_by_replay_allowlist(
         _replay_graph.compile_replay_graph(unresolved_spec, display=True)
 
 
+def test_replay_graph_trusted_user_code_executes_blocked_constructs() -> None:
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code=(
+                "import os\n"
+                "with open(os.devnull):\n"
+                "    pass\n"
+                "derived = data + int(os.path.exists(os.devnull))"
+            ),
+        ),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data", label="Input"),),
+    )
+
+    assert not provenance.script_provenance_replayable(spec)
+    assert provenance.script_provenance_requires_trust(spec)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
+        _replay_graph.compile_replay_graph(spec, external_inputs={"data": data})
+
+    result = provenance.replay_script_provenance(
+        spec,
+        {"data": data},
+        trusted_user_code=True,
+    )
+
+    xr.testing.assert_identical(result, data + 1)
+
+
+def test_replay_graph_trusted_user_code_still_validates_result_type() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Bad output", code="derived = 1"),
+        start_label="Run user code",
+        active_name="derived",
+    )
+
+    with pytest.raises(TypeError, match="did not produce"):
+        provenance.replay_script_provenance(
+            spec,
+            {"data": data},
+            trusted_user_code=True,
+        )
+
+
+def test_replay_graph_trusted_user_code_replays_nested_scripts(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = xr.DataArray([1.0, 2.0], dims=("x",))
+    source_path = tmp_path / "source.nc"
+    source.to_netcdf(source_path)
+    source_spec = _file_spec(source_path)
+    nested_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code="import os\nderived = data_0 + int(os.path.exists(os.devnull))",
+        ),
+        start_label="Run nested code",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use nested",
+            code="derived = data_1 * 2",
+        ),
+        start_label="Run outer code",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_1",
+                label="Nested",
+                provenance_spec=nested_spec,
+            ),
+        ),
+    )
+
+    assert provenance.script_provenance_replayable(spec)
+    assert provenance.script_provenance_requires_trust(spec)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="recorded operation"):
+        _replay_graph.rebuild_script_provenance(spec)
+
+    result, rebuilt = _replay_graph.rebuild_script_provenance(
+        spec,
+        trusted_user_code=True,
+    )
+
+    assert rebuilt.kind == "script"
+    xr.testing.assert_identical(result, (source + 1) * 2)
+
+
 @pytest.mark.parametrize(
     ("code", "message"),
     [

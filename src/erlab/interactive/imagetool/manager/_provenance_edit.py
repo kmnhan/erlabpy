@@ -11,12 +11,14 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+import erlab.interactive.utils
 from erlab.interactive.imagetool import _kspace_conversion, dialogs, provenance
 from erlab.interactive.imagetool._load_source import (
     _load_provenance_from_file_details,
     _loader_callable_text,
 )
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
+from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -606,6 +608,63 @@ class _RecordedOperationEditDialog(QtWidgets.QDialog):
         super().accept()
 
 
+class _ScriptCodeEditDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        operation: provenance.ScriptCodeOperation,
+        parent: QtWidgets.QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("managerProvenanceScriptCodeEditDialog")
+        self.setWindowTitle("Edit Python Code")
+        self.setModal(True)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.code_edit = erlab.interactive.utils.PythonCodeEditor(self)
+        self.code_edit.setObjectName("managerProvenanceScriptCodeEditor")
+        self.code_edit.setPlainText(operation.code or "")
+        self.code_edit.setPlaceholderText("# Write Python code here")
+        self.code_edit.setMinimumHeight(260)
+        self.code_edit.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+        self.code_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self.code_edit.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.code_edit.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        layout.addWidget(self.code_edit)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.button_box.setObjectName("managerProvenanceScriptCodeEditButtonBox")
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def code(self) -> str:
+        return self.code_edit.toPlainText()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        try:
+            ast.parse(self.code(), mode="exec")
+        except SyntaxError as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Python Code",
+                f"Python code is not valid: {exc}",
+            )
+            return
+        super().accept()
+
+
 def _operation_title(operation: provenance.ToolProvenanceOperation) -> str:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -813,6 +872,8 @@ class _ProvenanceEditController:
                     active_name=active_name,
                     contains_script=contains_script,
                 )
+            except _TrustedScriptReplayCancelled:
+                return
             except Exception as exc:
                 failures.append((node, exc))
             else:
@@ -907,12 +968,19 @@ class _ProvenanceEditController:
         current_data = node.current_source_data()
         try:
             if local.kind == "script":
+                trusted_user_code = provenance.script_provenance_requires_trust(local)
+                if trusted_user_code:
+                    self._manager._ensure_script_provenance_trusted(
+                        local,
+                        reason="paste these provenance steps",
+                    )
                 data = provenance.replay_script_provenance(
                     local,
                     {
                         "data": current_data,
                         "derived": current_data,
                     },
+                    trusted_user_code=trusted_user_code,
                 )
             else:
                 data = local.apply(current_data)
@@ -920,6 +988,8 @@ class _ProvenanceEditController:
                 data,
                 copy_values=False,
             )
+        except _TrustedScriptReplayCancelled:
+            raise
         except Exception as exc:
             raise _ProvenanceReplayFailure(
                 f"{where}: replaying the requested provenance",
@@ -975,7 +1045,10 @@ class _ProvenanceEditController:
                     )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
-            if not provenance.script_provenance_replayable(candidate):
+            if not (
+                provenance.script_provenance_replayable(candidate)
+                or provenance.script_provenance_requires_trust(candidate)
+            ):
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
@@ -1008,12 +1081,19 @@ class _ProvenanceEditController:
         operation = spec._operation_for_ref(row.edit_ref)
         if operation is None:
             return False, "This operation is not available."
-        if isinstance(operation, provenance.ScriptCodeOperation):
-            return False, "Free-form script steps are not editable."
+        script_operation = isinstance(operation, provenance.ScriptCodeOperation)
+        if script_operation:
+            if operation.code is None or not operation.copyable:
+                return False, "This script step does not contain editable code."
+            if spec.kind == "script":
+                return True, ""
         if spec.kind == "script":
             input_spec = spec._prefix_before_ref(row.edit_ref)
-            if not provenance.script_provenance_replayable(input_spec):
-                return False, "This script step cannot be replayed automatically."
+            if not (
+                provenance.script_provenance_replayable(input_spec)
+                or provenance.script_provenance_requires_trust(input_spec)
+            ):
+                return False, "This script step cannot be replayed."
         active_filter_ref = self._active_filter_ref(node, spec)
         if (
             spec.kind in {"full_data", "public_data", "selection"}
@@ -1022,6 +1102,8 @@ class _ProvenanceEditController:
             and node.detached_live_parent_data is None
         ):
             return False, "This live row needs a parent source to replay."
+        if script_operation:
+            return True, ""
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
             reason = _uneditable_operation_reason(operation)
@@ -1070,8 +1152,11 @@ class _ProvenanceEditController:
         if candidate == spec:
             return False, "Already at this provenance step."
         if spec.kind == "script":
-            if not provenance.script_provenance_replayable(candidate):
-                return False, "This script step cannot be replayed automatically."
+            if not (
+                provenance.script_provenance_replayable(candidate)
+                or provenance.script_provenance_requires_trust(candidate)
+            ):
+                return False, "This script step cannot be replayed."
             if not all(
                 self._manager._script_input_can_reload(
                     script_input,
@@ -1103,6 +1188,8 @@ class _ProvenanceEditController:
                 self._edit_file_load_row(node, row)
             else:
                 self._edit_operation_row(node, row)
+        except _TrustedScriptReplayCancelled:
+            return
         except Exception as exc:
             if self._handle_missing_source_file(
                 node,
@@ -1144,6 +1231,8 @@ class _ProvenanceEditController:
                 repair_root_candidate,
                 where="validating the provenance revert target",
             )
+        except _TrustedScriptReplayCancelled:
+            return
         except Exception as exc:
             if self._handle_missing_source_file(
                 node,
@@ -1202,6 +1291,8 @@ class _ProvenanceEditController:
                 repair_root_candidate,
                 where="validating the provenance delete target",
             )
+        except _TrustedScriptReplayCancelled:
+            return
         except Exception as exc:
             if self._handle_missing_source_file(
                 node,
@@ -1691,6 +1782,9 @@ class _ProvenanceEditController:
         operation = spec._operation_for_ref(ref)
         if operation is None:
             raise RuntimeError("Selected operation is not available")
+        if isinstance(operation, provenance.ScriptCodeOperation):
+            self._edit_script_code_operation_row(node, row, spec, ref, operation)
+            return
         dialog_match = _dialog_match_for_operation_ref(spec, ref)
         if dialog_match is None:
             raise RuntimeError("No editing dialog is available for this step")
@@ -1719,6 +1813,27 @@ class _ProvenanceEditController:
             row.scope,
             root_candidate,
             where="validating the edited provenance step",
+        )
+
+    def _edit_script_code_operation_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: provenance._ProvenanceDisplayRow,
+        spec: provenance.ToolProvenanceSpec,
+        ref: provenance._ProvenanceStepRef,
+        operation: provenance.ScriptCodeOperation,
+    ) -> None:
+        dialog = _ScriptCodeEditDialog(operation, self._manager)
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return
+        replacement = operation.model_copy(update={"code": dialog.code()})
+        candidate = spec._replace_operation_ref(ref, (replacement,))
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited Python code",
         )
 
     def _edited_recorded_operations(
@@ -1780,6 +1895,8 @@ class _ProvenanceEditController:
                 scope,
                 base_candidate,
             )
+        except _TrustedScriptReplayCancelled:
+            raise
         except Exception as exc:
             replay_target = (
                 "provenance before the active display filter"
@@ -1929,6 +2046,11 @@ class _ProvenanceEditController:
         if spec.kind == "file":
             return self._replay_file_candidate(spec), spec
         if spec.kind in {"full_data", "public_data", "selection"}:
+            if any(
+                isinstance(operation, provenance.ScriptCodeOperation)
+                for operation in spec.operations
+            ):
+                return self._replay_live_script_candidate(node, scope, spec), spec
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
                 return spec.apply(parent.current_source_data()), spec
@@ -1943,6 +2065,58 @@ class _ProvenanceEditController:
             )
             return result.data, result.provenance_spec
         raise RuntimeError("Unsupported provenance kind")
+
+    def _replay_live_script_candidate(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+    ) -> xr.DataArray:
+        if scope == "source" and node.parent_uid is not None:
+            parent = self._manager._parent_node(node)
+            parent_data = parent.current_source_data()
+        else:
+            parent_data = node.detached_live_parent_data
+            if parent_data is None:
+                raise RuntimeError("Live provenance needs a parent source to replay")
+        data = provenance.ToolProvenanceSpec._starting_data_for_kind(
+            typing.cast(
+                "typing.Literal['full_data', 'public_data', 'selection']",
+                spec.kind,
+            ),
+            parent_data,
+        )
+        for operation in spec.operations:
+            if not isinstance(operation, provenance.ScriptCodeOperation):
+                data = operation.apply(data, parent_data=parent_data)
+                continue
+            step_spec = provenance.script(
+                operation,
+                start_label=operation.label,
+                seed_code="derived = data",
+                active_name="derived",
+            )
+            replay_inputs = {
+                "data": data,
+                "derived": data,
+                "parent_data": parent_data,
+            }
+            trusted_user_code = provenance.script_provenance_requires_trust(
+                step_spec,
+                external_input_names=set(replay_inputs),
+            )
+            if trusted_user_code:
+                self._manager._ensure_script_provenance_trusted(
+                    step_spec,
+                    reason="apply this provenance step",
+                    external_input_names=set(replay_inputs),
+                )
+            data = provenance.replay_script_provenance(
+                step_spec,
+                replay_inputs,
+                trusted_user_code=trusted_user_code,
+            )
+        return data
 
     def _replay_file_candidate(
         self,

@@ -3088,7 +3088,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     operation.derivation_entry(),
                     edit_ref=(
                         None
-                        if _operation_is(operation, "script_code")
+                        if (
+                            _operation_is(operation, "script_code")
+                            and (
+                                getattr(operation, "code", None) is None
+                                or not getattr(operation, "copyable", False)
+                            )
+                        )
                         else _ProvenanceStepRef(
                             "operation", operation_index=operation_index
                         )
@@ -3880,9 +3886,23 @@ def script_provenance_replayable(
     return _replay_graph.script_provenance_replayable(spec)
 
 
+def script_provenance_requires_trust(
+    spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    external_input_names: set[str] | None = None,
+) -> bool:
+    """Return whether script provenance can replay only after user trust."""
+    return _replay_graph.script_provenance_requires_trust(
+        spec,
+        external_input_names=external_input_names,
+    )
+
+
 def replay_script_provenance(
     spec: ToolProvenanceSpec | Mapping[str, typing.Any],
     inputs: Mapping[str, xr.DataArray],
+    *,
+    trusted_user_code: bool = False,
 ) -> xr.DataArray:
     """Execute script provenance from already resolved input arrays.
 
@@ -3891,7 +3911,11 @@ def replay_script_provenance(
     the replayed :class:`xarray.DataArray`.
     """
     try:
-        return _replay_graph.replay_script_provenance(spec, inputs)
+        return _replay_graph.replay_script_provenance(
+            spec,
+            inputs,
+            trusted_user_code=trusted_user_code,
+        )
     except _replay_graph.ReplayGraphError as exc:
         if "non-replayable" in str(exc):
             raise ValueError(str(exc)) from exc

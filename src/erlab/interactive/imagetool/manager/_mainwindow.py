@@ -670,6 +670,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.manager_index = self._manager_record.index
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+        self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
         self._details_panel = _DetailsPanelController(self)
@@ -4266,6 +4267,19 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._lineage_controller._rebuild_script_provenance(
             spec,
             target_node_uid=target_node_uid,
+        )
+
+    def _ensure_script_provenance_trusted(
+        self,
+        spec: provenance.ToolProvenanceSpec,
+        *,
+        reason: str,
+        external_input_names: set[str] | None = None,
+    ) -> None:
+        self._lineage_controller._ensure_script_provenance_trusted(
+            spec,
+            reason=reason,
+            external_input_names=external_input_names,
         )
 
     def _node_can_reload_script_inputs(

@@ -70,6 +70,10 @@ class _ScriptRebuildError(RuntimeError):
         self.details = details
 
 
+class _TrustedScriptReplayCancelled(RuntimeError):
+    """Raised when the user declines to execute trusted replay code."""
+
+
 def _manager_settings() -> QtCore.QSettings:
     return QtCore.QSettings(
         QtCore.QSettings.Format.IniFormat,

@@ -18,6 +18,7 @@ import erlab
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
@@ -818,6 +819,7 @@ def _fake_edit_controller(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,
         ),
+        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
         _update_info=lambda **_kwargs: None,
     )
     return manager_provenance_edit._ProvenanceEditController(
@@ -850,6 +852,320 @@ def _fake_edit_node(
             _accepted_filter_provenance_operation=active_filter
         ),
     )
+
+
+def _trust_required_script_spec() -> provenance.ToolProvenanceSpec:
+    return provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code="import os\nderived = data_0 + int(os.path.exists(os.devnull))",
+        ),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+
+
+def test_manager_trusted_script_replay_prompt_is_session_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = types.SimpleNamespace(_trusted_script_replay_keys=set())
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    spec = _trust_required_script_spec()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        controller,
+        "_prompt_trusted_script_replay",
+        lambda _spec, *, reason: prompts.append(reason) or True,
+    )
+
+    controller._ensure_script_provenance_trusted(spec, reason="reload this result")
+    controller._ensure_script_provenance_trusted(spec, reason="reload this result")
+    changed_spec = spec.model_copy(
+        update={
+            "operations": (
+                provenance.ScriptCodeOperation(
+                    label="User code",
+                    code=(
+                        "import os\n"
+                        "derived = data_0 + int(os.path.exists(os.devnull)) + 1"
+                    ),
+                ),
+            ),
+        }
+    )
+    controller._ensure_script_provenance_trusted(changed_spec, reason="reload")
+
+    assert prompts == ["reload this result", "reload"]
+
+
+def test_manager_trusted_script_replay_prompt_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = types.SimpleNamespace(_trusted_script_replay_keys=set())
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    monkeypatch.setattr(
+        controller,
+        "_prompt_trusted_script_replay",
+        lambda _spec, *, reason: False,
+    )
+
+    with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
+        controller._ensure_script_provenance_trusted(
+            _trust_required_script_spec(),
+            reason="reload this result",
+        )
+
+
+def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _trust_required_script_spec()
+    ensured: list[str] = []
+    trusted_flags: list[bool] = []
+    manager = types.SimpleNamespace(
+        _script_input_can_reload=lambda *_args, **_kwargs: True,
+        _ensure_script_provenance_trusted=lambda _spec, *, reason: ensured.append(
+            reason
+        ),
+        _resolve_live_script_input_for_reload=lambda *_args, **_kwargs: None,
+    )
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    node = types.SimpleNamespace(
+        is_imagetool=True,
+        imagetool=object(),
+        provenance_spec=spec,
+        uid="node",
+    )
+
+    def rebuild_script_provenance(
+        spec_arg: provenance.ToolProvenanceSpec,
+        **kwargs: typing.Any,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        trusted_flags.append(bool(kwargs["trusted_user_code"]))
+        return xr.DataArray([2.0], dims=("x",)), spec_arg
+
+    monkeypatch.setattr(
+        manager_lineage._replay_graph,
+        "rebuild_script_provenance",
+        rebuild_script_provenance,
+    )
+
+    assert controller._node_can_reload_script_inputs(typing.cast("typing.Any", node))
+    result = controller._rebuild_script_provenance(spec)
+
+    assert ensured == ["reload this result"]
+    assert trusted_flags == [True]
+    xr.testing.assert_identical(result.data, xr.DataArray([2.0], dims=("x",)))
+
+
+def test_manager_script_code_edit_dialog_uses_python_code_editor(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = manager_provenance_edit._ScriptCodeEditDialog(
+        provenance.ScriptCodeOperation(
+            label="Evaluate console expression",
+            code="derived = data_0 + 1",
+        ),
+        parent,
+    )
+    qtbot.addWidget(dialog)
+
+    code_edit = dialog.findChild(
+        erlab.interactive.utils.PythonCodeEditor,
+        "managerProvenanceScriptCodeEditor",
+    )
+    assert code_edit is not None
+    assert isinstance(code_edit.highlighter, erlab.interactive.utils.PythonHighlighter)
+    assert code_edit.lineWrapMode() == QtWidgets.QTextEdit.LineWrapMode.NoWrap
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args: warnings.append("warning"),
+    )
+    code_edit.setPlainText("derived =")
+    dialog.accept()
+
+    assert warnings == ["warning"]
+    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_edit_script_code_row_replaces_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Evaluate console expression",
+            code="derived = data_0 + 1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(spec))
+    candidates: list[provenance.ToolProvenanceSpec] = []
+
+    class FakeDialog:
+        def __init__(
+            self,
+            operation: provenance.ScriptCodeOperation,
+            _parent: QtWidgets.QWidget,
+        ) -> None:
+            assert operation.code == "derived = data_0 + 1"
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def code(self) -> str:
+            return "derived = data_0 + 2"
+
+    monkeypatch.setattr(manager_provenance_edit, "_ScriptCodeEditDialog", FakeDialog)
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: candidates.append(candidate),
+    )
+
+    controller.edit_row(spec.display_rows()[2])
+
+    assert len(candidates) == 1
+    assert isinstance(candidates[0].operations[0], provenance.ScriptCodeOperation)
+    assert candidates[0].operations[0].code == "derived = data_0 + 2"
+
+
+def test_manager_edit_nested_script_code_row_replaces_nested_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested = provenance.script(
+        provenance.ScriptCodeOperation(label="Offset input", code="derived = data + 1"),
+        start_label="Build nested",
+        seed_code="data = xr.DataArray([1.0], dims=('x',))",
+        active_name="derived",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Use nested", code="derived = data_0"),
+        start_label="Run parent",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Nested",
+                provenance_spec=nested,
+            ),
+        ),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(spec))
+    candidates: list[provenance.ToolProvenanceSpec] = []
+
+    class FakeDialog:
+        def __init__(self, *_args: typing.Any) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def code(self) -> str:
+            return "derived = data + 3"
+
+    monkeypatch.setattr(manager_provenance_edit, "_ScriptCodeEditDialog", FakeDialog)
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: candidates.append(candidate),
+    )
+
+    controller.edit_row(spec.display_rows()[1].children[1])
+
+    nested_candidate = candidates[0].script_inputs[0].parsed_provenance_spec()
+    assert nested_candidate is not None
+    assert nested_candidate.operations[0].code == "derived = data + 3"
+
+
+def test_manager_edit_live_script_code_row_replays_with_data_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_data = xr.DataArray([1.0, 2.0], dims=("x",))
+    spec = provenance.full_data(
+        provenance.ScriptCodeOperation(
+            label="Live user code",
+            code="derived = derived + 1",
+        )
+    )
+    node = _fake_edit_node(spec)
+    node.detached_live_parent_data = parent_data
+    controller = _fake_edit_controller(node)
+    applied: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec]] = []
+
+    class FakeDialog:
+        def __init__(
+            self,
+            operation: provenance.ScriptCodeOperation,
+            _parent: QtWidgets.QWidget,
+        ) -> None:
+            assert operation.code == "derived = derived + 1"
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def code(self) -> str:
+            return "derived = derived + 3"
+
+    monkeypatch.setattr(manager_provenance_edit, "_ScriptCodeEditDialog", FakeDialog)
+    monkeypatch.setattr(
+        controller,
+        "_replace_node_data",
+        lambda _node, _scope, data, candidate, _filter: applied.append(
+            (data, candidate)
+        ),
+    )
+
+    row = spec.display_rows()[1]
+    assert controller.can_edit_row(row) == (True, "")
+    controller.edit_row(row)
+
+    assert len(applied) == 1
+    xr.testing.assert_identical(applied[0][0], parent_data + 3)
+    assert applied[0][1].kind == "full_data"
+    assert applied[0][1].operations[0].code == "derived = derived + 3"
+
+
+def test_manager_edit_script_code_trust_cancel_does_not_show_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="User code", code="derived = data_0 + 1"),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    controller = _fake_edit_controller(_fake_edit_node(spec))
+    failures: list[object] = []
+
+    class FakeDialog:
+        def __init__(self, *_args: typing.Any) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def code(self) -> str:
+            return "import os\nderived = data_0 + int(os.path.exists(os.devnull))"
+
+    def cancel_validate(*_args: typing.Any, **_kwargs: typing.Any) -> None:
+        raise manager_widgets._TrustedScriptReplayCancelled
+
+    monkeypatch.setattr(manager_provenance_edit, "_ScriptCodeEditDialog", FakeDialog)
+    monkeypatch.setattr(controller, "_validate_and_replace", cancel_validate)
+    monkeypatch.setattr(controller, "_show_failed", lambda *args: failures.append(args))
+
+    controller.edit_row(spec.display_rows()[2])
+
+    assert failures == []
 
 
 def test_manager_provenance_file_load_batch_peer_matching(
@@ -1819,7 +2135,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     controller = _fake_edit_controller(_fake_edit_node(script_with_structured_step))
     script_code_row, structured_row = script_with_structured_step.display_rows()[2:]
-    assert not controller.can_edit_row(script_code_row)[0]
+    assert controller.can_edit_row(script_code_row) == (True, "")
     assert controller.can_edit_row(structured_row) == (True, "")
 
     controller = _fake_edit_controller(
@@ -1846,7 +2162,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert script_with_composed_structured_step is not None
     script_code_row, sort_row = script_with_composed_structured_step.display_rows()[3:]
-    assert not controller.can_edit_row(script_code_row)[0]
+    assert controller.can_edit_row(script_code_row) == (True, "")
     controller = _fake_edit_controller(
         _fake_edit_node(script_with_composed_structured_step)
     )
@@ -7560,7 +7876,7 @@ def test_manager_provenance_context_menu_groups_row_commands(
         assert actions[separator_index + 1] is manager._metadata_delete_step_action
 
 
-def test_manager_provenance_script_operation_rows_are_not_editable_v1(
+def test_manager_provenance_unresolved_script_prefix_blocks_structured_edit(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -7814,7 +8130,10 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         select_tools(manager, [1])
         manager._update_info()
         script_code_row, structured_row = spec.display_rows()[2:]
-        assert not manager._provenance_edit_controller.can_edit_row(script_code_row)[0]
+        assert manager._provenance_edit_controller.can_edit_row(script_code_row) == (
+            True,
+            "",
+        )
         assert manager._provenance_edit_controller.can_edit_row(structured_row) == (
             True,
             "",

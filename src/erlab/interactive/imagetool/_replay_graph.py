@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import json
 import keyword
 import symtable
@@ -60,16 +61,22 @@ class ReplayGraph:
         "display",
         "nodes",
         "output_key",
+        "trusted_user_code",
     )
 
     def __init__(
-        self, *, reserved_names: set[str] | None = None, display: bool = False
+        self,
+        *,
+        reserved_names: set[str] | None = None,
+        display: bool = False,
+        trusted_user_code: bool = False,
     ) -> None:
         self.nodes: list[ReplayNode] = []
         self._cacheable_keys: dict[str, str] = {}
         self._reserved_names = set(reserved_names or ())
         self.aliases: list[tuple[str, str]] = []
         self.display = bool(display)
+        self.trusted_user_code = bool(trusted_user_code)
         self.output_key: str | None = None
 
     @property
@@ -667,6 +674,7 @@ def _compile_spec(
     spec: typing.Any,
     *,
     display: bool,
+    trusted_user_code: bool,
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
 ) -> str:
@@ -746,7 +754,7 @@ def _compile_spec(
             allow_free_seed_names=display
             and not parsed.script_inputs
             and not external_inputs,
-            strict_replay_code=not display,
+            strict_replay_code=not display and not trusted_user_code,
         )
         bindings: list[tuple[str, str]] = []
         if parsed.script_inputs:
@@ -785,6 +793,7 @@ def _compile_spec(
                         graph,
                         input_spec,
                         display=display,
+                        trusted_user_code=trusted_user_code,
                         external_inputs=external_inputs,
                         live_input_resolver=live_input_resolver,
                     )
@@ -1023,6 +1032,7 @@ def compile_replay_graph(
     spec: typing.Any,
     *,
     display: bool = False,
+    trusted_user_code: bool = False,
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
 ) -> ReplayGraph:
@@ -1032,11 +1042,16 @@ def compile_replay_graph(
     reserved_names = _reserved_names_from_spec(parsed)
     if external_inputs:
         reserved_names.update(external_inputs)
-    graph = ReplayGraph(reserved_names=reserved_names, display=display)
+    graph = ReplayGraph(
+        reserved_names=reserved_names,
+        display=display,
+        trusted_user_code=trusted_user_code,
+    )
     graph.output_key = _compile_spec(
         graph,
         parsed,
         display=display,
+        trusted_user_code=trusted_user_code,
         external_inputs=external_inputs,
         live_input_resolver=live_input_resolver,
     )
@@ -1607,6 +1622,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
             graph,
             input_spec,
             display=display,
+            trusted_user_code=False,
             external_inputs=None,
             live_input_resolver=None,
         )
@@ -1668,8 +1684,13 @@ def _execute_replay_graph(
             )
         elif node.kind == "script":
             codes = typing.cast("tuple[str, ...]", node.payload["codes"])
+            replay_builtins = (
+                vars(builtins)
+                if graph.trusted_user_code
+                else _provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS
+            )
             namespace: dict[str, typing.Any] = {
-                "__builtins__": _provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+                "__builtins__": replay_builtins,
                 "erlab": erlab,
                 "np": np,
                 "numpy": np,
@@ -1740,11 +1761,103 @@ def script_provenance_replayable(spec: typing.Any) -> bool:
     return True
 
 
+def _script_provenance_validates(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+    strict_replay_code: bool,
+) -> bool:
+    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
+    if parsed is None or parsed.kind != "script":
+        return False
+    try:
+        _validate_script_provenance(
+            parsed,
+            external_input_names=external_input_names,
+            strict_replay_code=strict_replay_code,
+        )
+    except (ReplayGraphError, TypeError, ValueError):
+        return False
+    return True
+
+
+def script_provenance_requires_trust(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+) -> bool:
+    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
+    if parsed is None or parsed.kind != "script":
+        return False
+    strict_replayable = _script_provenance_validates(
+        parsed,
+        external_input_names=external_input_names,
+        strict_replay_code=True,
+    )
+    trusted_replayable = _script_provenance_validates(
+        parsed,
+        external_input_names=external_input_names,
+        strict_replay_code=False,
+    )
+    current_requires_trust = not strict_replayable and trusted_replayable
+    if current_requires_trust:
+        return True
+    if not strict_replayable:
+        return False
+    for script_input in parsed.script_inputs:
+        input_spec = script_input.parsed_provenance_spec()
+        if script_provenance_requires_trust(input_spec):
+            return True
+    return False
+
+
+def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
+    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
+    if parsed is None or parsed.kind != "script":
+        return None
+    operations = []
+    for operation in parsed.operations:
+        if getattr(operation, "op", None) != "script_code":
+            continue
+        operations.append(
+            {
+                "code": getattr(operation, "code", None),
+                "copyable": bool(getattr(operation, "copyable", False)),
+            }
+        )
+    inputs = []
+    for script_input in parsed.script_inputs:
+        input_payload = _script_trust_payload(script_input.parsed_provenance_spec())
+        if input_payload is None:
+            continue
+        inputs.append({"name": script_input.name, "payload": input_payload})
+    return {
+        "active_name": parsed.active_name,
+        "inputs": inputs,
+        "operations": operations,
+        "seed_code": parsed.seed_code,
+    }
+
+
+def script_provenance_trust_key(spec: typing.Any) -> str | None:
+    payload = _script_trust_payload(spec)
+    if payload is None:
+        return None
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def replay_script_provenance(
     spec: typing.Any,
     inputs: Mapping[str, xr.DataArray],
+    *,
+    trusted_user_code: bool = False,
 ) -> xr.DataArray:
-    graph = compile_replay_graph(spec, external_inputs=inputs)
+    graph = compile_replay_graph(
+        spec,
+        external_inputs=inputs,
+        trusted_user_code=trusted_user_code,
+    )
     return execute_replay_graph(graph)
 
 
@@ -1754,6 +1867,7 @@ def rebuild_script_provenance(
     live_input_resolver: LiveInputResolver | None = None,
     cache: dict[str, xr.DataArray] | None = None,
     depth: int = 0,
+    trusted_user_code: bool = False,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = _provenance_framework.parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
@@ -1762,7 +1876,14 @@ def rebuild_script_provenance(
         raise ReplayGraphError(
             "Nested script provenance exceeded the maximum reload depth"
         )
-    if not script_provenance_replayable(parsed):
+    if trusted_user_code:
+        replayable = _script_provenance_validates(
+            parsed,
+            strict_replay_code=False,
+        )
+    else:
+        replayable = script_provenance_replayable(parsed)
+    if not replayable:
         raise ReplayGraphError(
             "The recorded operation cannot be replayed automatically"
         )
@@ -1817,7 +1938,14 @@ def rebuild_script_provenance(
                 )
                 continue
             if input_spec.kind == "script":
-                if not script_provenance_replayable(input_spec):
+                if trusted_user_code:
+                    input_replayable = _script_provenance_validates(
+                        input_spec,
+                        strict_replay_code=False,
+                    )
+                else:
+                    input_replayable = script_provenance_replayable(input_spec)
+                if not input_replayable:
                     raise ReplayGraphError(
                         "The recorded operation cannot be replayed automatically"
                     )
@@ -1839,5 +1967,9 @@ def rebuild_script_provenance(
         return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})
 
     rebuilt_spec = resolve_inputs(parsed, depth)
-    graph = compile_replay_graph(rebuilt_spec, live_input_resolver=resolve_live)
+    graph = compile_replay_graph(
+        rebuilt_spec,
+        live_input_resolver=resolve_live,
+        trusted_user_code=trusted_user_code,
+    )
     return execute_replay_graph(graph, cache=cache), rebuilt_spec

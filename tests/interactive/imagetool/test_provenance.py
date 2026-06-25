@@ -2531,7 +2531,7 @@ def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None
         for row in parsed.display_rows()
         if row.replay_ref is not None and row.replay_ref.kind == "operation"
     ]
-    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    assert [row.edit_ref is not None for row in rows] == [True, True, True]
     data = _base_data()
     replayed = provenance.replay_script_provenance(
         parsed,
@@ -2920,7 +2920,7 @@ def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
         for row in composed.display_rows()
         if row.replay_ref is not None and row.replay_ref.kind == "operation"
     ]
-    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    assert [row.edit_ref is not None for row in rows] == [True, True, True]
     derived = provenance.replay_script_provenance(
         composed,
         {
@@ -3546,7 +3546,10 @@ def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
         "script_input",
         script_input_index=0,
     )
-    assert script_rows[2].edit_ref is None
+    assert script_rows[2].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert script_rows[2].replay_ref == provenance._ProvenanceStepRef(
         "operation",
         operation_index=0,
@@ -3709,14 +3712,19 @@ def test_script_provenance_supports_named_console_inputs() -> None:
     assert rows[1].children[0].replay_ref == provenance._ProvenanceStepRef("start")
     assert rows[1].children[0].script_input_path == (0,)
     assert rows[1].children[1].entry.label == "Offset left input"
-    assert rows[1].children[1].edit_ref is None
+    assert rows[1].children[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation", operation_index=0
+    )
     assert rows[1].children[1].replay_ref == provenance._ProvenanceStepRef(
         "operation", operation_index=0
     )
     assert rows[1].children[1].script_input_path == (0,)
     assert rows[2].children[0].entry.label == "Load right"
     assert rows[2].children[0].script_input_path == (1,)
-    assert rows[3].edit_ref is None
+    assert rows[3].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert rows[3].replay_ref == provenance._ProvenanceStepRef(
         "operation",
         operation_index=0,
