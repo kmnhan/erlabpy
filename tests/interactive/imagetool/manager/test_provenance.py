@@ -8788,7 +8788,6 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             full_result.rename(None),
             data.qsel.mean("x").qsel.mean("y").rename(None),
         )
-        assert ".rename(" not in copied[-1]
 
         manual = xr.DataArray(
             np.arange(5, dtype=float) + 100.0,
@@ -9187,6 +9186,111 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     assert derivation_list.uniformRowHeights()
 
 
+def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
+    source_spec = provenance.script(
+        start_label="Build source",
+        seed_code="derived = xr.DataArray([1.0], dims=('x',))",
+        active_name="derived",
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = data_10"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_10",
+                label="ImageTool 10: stale",
+                node_uid="n16",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    source_node = types.SimpleNamespace(
+        uid="n16",
+        parent_uid=None,
+        is_imagetool=True,
+        name="3 V",
+        type_badge_text=None,
+        _childtool_indices=[],
+    )
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _tool_graph=types.SimpleNamespace(
+            nodes={"n16": source_node},
+            root_wrappers={4: source_node},
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=spec.display_rows(),
+    )
+
+    controller._set_metadata_node(node)
+
+    input_item = derivation_list.topLevelItem(1)
+    assert input_item is not None
+    assert input_item.text() == "Use data_10 from ImageTool 4: 3 V"
+    assert "ImageTool 10" not in input_item.text()
+
+
+def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = data_10"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_10",
+                label="ImageTool 10: stale",
+                node_uid="missing",
+            ),
+        ),
+    )
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _tool_graph=types.SimpleNamespace(nodes={}, root_wrappers={}),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=spec.display_rows(),
+    )
+
+    controller._set_metadata_node(node)
+    details = controller._unavailable_replay_code_details(
+        typing.cast("typing.Any", node)
+    )
+
+    input_item = derivation_list.topLevelItem(1)
+    assert input_item is not None
+    assert input_item.text() == "Missing source for data_10"
+    assert "ImageTool 10" not in input_item.text()
+    assert "Missing source for data_10 (recorded as ImageTool 10: stale)" in details
+
+
 def test_manager_copy_selected_derivation_code_fallbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9243,6 +9347,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
     node = types.SimpleNamespace(
         displayed_provenance_spec=spec,
         derivation_entries=spec.derivation_entries(),
+        derivation_display_rows=spec.display_rows(),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", types.SimpleNamespace())
@@ -10419,7 +10524,6 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert not provenance.uses_default_replay_input(copied[-1])
-        assert ".rename(" not in copied[-1]
 
         namespace = _exec_generated_code(
             copied[-1], {"source_data": data.copy(deep=True)}

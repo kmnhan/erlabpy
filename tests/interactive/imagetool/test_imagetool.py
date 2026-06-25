@@ -6803,10 +6803,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    assert ".rename(" not in display_code
-    xarray.testing.assert_identical(
-        derived.rename(None), data.qsel.mean("x").rename(None)
-    )
+    xarray.testing.assert_identical(derived, data.qsel.mean("x"))
     win.close()
 
 
@@ -6896,8 +6893,7 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    assert ".rename(" not in display_code
-    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+    xarray.testing.assert_identical(derived, expected)
 
     win.close()
 
@@ -10708,13 +10704,10 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
     display_code = win.provenance_spec.display_code()
     assert display_code is not None
     assert "mesh_current" in display_code
-    assert ".rename(" not in display_code
     assert "x_idx" not in display_code
     namespace = {"data": data.copy(deep=True)}
     exec(display_code, {}, namespace)  # noqa: S102
-    xarray.testing.assert_identical(
-        namespace["derived"].rename(None), (data / data.mesh_current).rename(None)
-    )
+    xarray.testing.assert_identical(namespace["derived"], (data / data.mesh_current))
 
     win.close()
 

@@ -30,7 +30,12 @@ def _exec_generated_code(
     return namespace
 
 
-def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
+def _file_replay_source(
+    path: pathlib.Path | str,
+    *,
+    selected_index: int = 0,
+    load_code: str | None = None,
+):
     return provenance.FileLoadSource(
         path=str(path),
         loader_label="xarray.load_dataarray",
@@ -41,6 +46,7 @@ def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
             target="xarray.load_dataarray",
             selected_index=selected_index,
         ),
+        load_code=load_code,
     )
 
 
@@ -712,6 +718,190 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
         shared_stage.apply(source)
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_replay_graph_dedupes_matching_script_file_seed(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    file_spec = provenance.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    center_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Extract center values",
+            code="center_values = derived.mean('x')",
+        ),
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        active_name="center_values",
+        file_load_source=load_source,
+    )
+    corrected_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Correct with center values",
+            code="derived = data_0 - data_1",
+        ),
+        provenance.RenameOperation(name="corrected"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="ImageTool 4: scan",
+                provenance_spec=file_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="ImageTool 4.0: center_values",
+                provenance_spec=center_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", corrected_spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert code.count("xr.load_dataarray") == 1
+    assert ".rename('corrected')" in code
+    xr.testing.assert_identical(
+        namespace["derived"],
+        (source - source.mean()).rename("corrected"),
+    )
+
+
+@pytest.mark.parametrize(
+    "updated_load_source",
+    [
+        lambda path, other_path, source: source.model_copy(
+            update={
+                "path": str(other_path),
+                "load_code": f"data = xr.load_dataarray({str(other_path)!r})",
+            }
+        ),
+        lambda _path, _other_path, source: source.model_copy(
+            update={"kwargs_text": "engine='h5netcdf'"}
+        ),
+        lambda _path, _other_path, source: source.model_copy(
+            update={
+                "replay_call": source.replay_call.model_copy(
+                    update={
+                        "selection": provenance.FileDataSelection(
+                            kind="parsed_index",
+                            value=1,
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_replay_graph_keeps_distinct_file_load_sources_separate(
+    tmp_path: pathlib.Path,
+    updated_load_source,
+) -> None:
+    path = tmp_path / "scan.nc"
+    other_path = tmp_path / "other.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    (source + 10.0).to_netcdf(other_path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    other_load_source = updated_load_source(path, other_path, load_source)
+    first_spec = provenance.file_load(
+        start_label="Load first",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    second_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = derived"),
+        start_label="Load second",
+        seed_code=typing.cast("str", other_load_source.load_code).replace(
+            "data =",
+            "derived =",
+            1,
+        ),
+        active_name="derived",
+        file_load_source=other_load_source,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 2
+
+
+def test_replay_graph_does_not_normalize_mismatched_script_file_seed(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    other_path = tmp_path / "other.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    (source + 10.0).to_netcdf(other_path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    first_spec = provenance.file_load(
+        start_label="Load first",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    mismatched_script_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = derived"),
+        start_label="Load mismatched",
+        seed_code=f"derived = xr.load_dataarray({str(other_path)!r})",
+        active_name="derived",
+        file_load_source=load_source,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Mismatched",
+                provenance_spec=mismatched_script_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 2
 
 
 def test_replay_graph_handles_structured_script_operations(
@@ -1439,7 +1629,7 @@ def test_replay_graph_disables_numbagg_only_during_execution() -> None:
     assert replayed.attrs["use_numbagg_during_replay"] is False
 
 
-def test_replay_graph_display_skips_whole_array_rename(
+def test_replay_graph_display_preserves_whole_array_rename(
     tmp_path: pathlib.Path,
 ) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
@@ -1464,8 +1654,38 @@ def test_replay_graph_display_skips_whole_array_rename(
     )
     code = _replay_graph.emit_replay_code(graph, output_name="derived")
 
-    assert ".rename(" not in code
-    xr.testing.assert_identical(_exec_generated_code(code)["derived"], data)
+    assert ".rename('renamed')" in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["derived"], data.rename("renamed")
+    )
+
+
+def test_replay_graph_display_preserves_structured_final_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    file_spec = provenance.compose_full_provenance(
+        _file_spec(path),
+        provenance.full_data(provenance.RenameOperation(name="renamed")),
+    )
+    live_spec = provenance.full_data(provenance.RenameOperation(name="renamed"))
+    assert file_spec is not None
+
+    file_code = typing.cast("str", file_spec.display_code())
+    live_code = typing.cast("str", live_spec.display_code(parent_data=data))
+
+    assert ".rename('renamed')" in file_code
+    assert ".rename('renamed')" in live_code
+    xr.testing.assert_identical(
+        _exec_generated_code(file_code)["derived"],
+        data.rename("renamed"),
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(live_code, {"data": data})["derived"],
+        data.rename("renamed"),
+    )
 
 
 def test_replay_graph_display_keeps_name_rename_before_script_code(

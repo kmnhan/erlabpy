@@ -121,6 +121,7 @@ _REPLAY_ALIASES = {
 }
 _REPLAY_RESERVED_PUBLIC_NAMES = {"data", "derived", "tools"}
 _REPLAY_TEMP_PREFIX = "_itool_replay_"
+_FILE_LOAD_OUTPUT_SENTINEL = "_itool_file_load_output"
 
 
 def _canonical_key(kind: str, payload: Mapping[str, typing.Any]) -> str:
@@ -639,6 +640,140 @@ def _file_seed_code_parts(seed_code: str, active_name: str) -> tuple[str | None,
     return setup_code, load_code
 
 
+def _single_assignment_output_name(code: str) -> str | None:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return None
+    output_name: str | None = None
+    for stmt in module.body:
+        target: ast.expr | None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target = stmt.targets[0]
+        elif isinstance(stmt, ast.AnnAssign):
+            target = stmt.target
+        else:
+            continue
+        if not isinstance(target, ast.Name):
+            return None
+        if output_name is not None:
+            return None
+        output_name = target.id
+    return output_name
+
+
+def _canonical_file_load_code(code: str, output_name: str) -> str:
+    module = ast.parse(code, mode="exec")
+
+    class FileLoadOutputCanonicalizer(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id == output_name:
+                return ast.copy_location(
+                    ast.Name(_FILE_LOAD_OUTPUT_SENTINEL, ctx=node.ctx),
+                    node,
+                )
+            return node
+
+    canonical = typing.cast("ast.Module", FileLoadOutputCanonicalizer().visit(module))
+    return ast.unparse(ast.fix_missing_locations(canonical))
+
+
+def _file_load_key_payload(
+    load_source: typing.Any,
+    *,
+    setup_code: str | None,
+    load_code: str,
+    active_name: str,
+) -> dict[str, typing.Any]:
+    payload = typing.cast(
+        "dict[str, typing.Any]",
+        load_source.model_dump(mode="json"),
+    )
+    payload["setup_code"] = setup_code
+    payload["load_code"] = _canonical_file_load_code(load_code, active_name)
+    return payload
+
+
+def _add_file_load_node(
+    graph: ReplayGraph,
+    load_source: typing.Any,
+    *,
+    setup_code: str | None,
+    load_code: str,
+    active_name: str,
+) -> str:
+    setup_key = None
+    if setup_code:
+        setup_key = graph.add_node(
+            _canonical_key("setup", {"code": setup_code}),
+            "setup",
+            payload={"code": setup_code},
+        )
+    return graph.add_node(
+        _canonical_key(
+            "file_load",
+            _file_load_key_payload(
+                load_source,
+                setup_code=setup_code,
+                load_code=load_code,
+                active_name=active_name,
+            ),
+        ),
+        "file_load",
+        parents=() if setup_key is None else (setup_key,),
+        payload={
+            "active_name": active_name,
+            "load_source": load_source,
+            "load_code": load_code,
+        },
+    )
+
+
+def _script_seed_file_load_parts(
+    seed_code: str,
+    *,
+    active_name: str,
+    load_source: typing.Any,
+) -> tuple[str | None, str, str] | None:
+    seed_output_name = _provenance_framework._script_codes_output_name(
+        (seed_code,),
+        active_name=active_name,
+        current_name=None,
+    )
+    if seed_output_name is None:
+        return None
+    try:
+        seed_setup_code, seed_load_code = _file_seed_code_parts(
+            seed_code,
+            seed_output_name,
+        )
+    except ReplayGraphError:
+        return None
+
+    recorded_load_code = getattr(load_source, "load_code", None)
+    if recorded_load_code is None:
+        return None
+    recorded_output_name = _single_assignment_output_name(recorded_load_code)
+    if recorded_output_name is None:
+        return None
+    try:
+        recorded_setup_code, recorded_load_part = _file_seed_code_parts(
+            recorded_load_code,
+            recorded_output_name,
+        )
+    except ReplayGraphError:
+        return None
+
+    if (recorded_setup_code or None) != (seed_setup_code or None):
+        return None
+    if _canonical_file_load_code(
+        recorded_load_part,
+        recorded_output_name,
+    ) != _canonical_file_load_code(seed_load_code, seed_output_name):
+        return None
+    return seed_setup_code, seed_load_code, seed_output_name
+
+
 def _operation_replay_code(
     operation: typing.Any,
     *,
@@ -692,25 +827,12 @@ def _compile_spec(
             parsed.seed_code,
             parsed.active_name,
         )
-        setup_key = None
-        if setup_code:
-            setup_key = graph.add_node(
-                _canonical_key("setup", {"code": setup_code}),
-                "setup",
-                payload={"code": setup_code},
-            )
-        current_key = graph.add_node(
-            _canonical_key(
-                "file_load",
-                parsed.file_load_source.model_dump(mode="json"),
-            ),
-            "file_load",
-            parents=() if setup_key is None else (setup_key,),
-            payload={
-                "active_name": parsed.active_name,
-                "load_source": parsed.file_load_source,
-                "load_code": load_code,
-            },
+        current_key = _add_file_load_node(
+            graph,
+            parsed.file_load_source,
+            setup_code=setup_code,
+            load_code=load_code,
+            active_name=parsed.active_name,
         )
         for stage in parsed.replay_stages:
             source_parent_key = current_key
@@ -915,8 +1037,28 @@ def _compile_spec(
             for name in names:
                 current_bindings = bind_name(name, script_current_key)
 
-        if parsed.seed_code and not apply_simple_alias(parsed.seed_code):
-            pending_codes.append(parsed.seed_code)
+        if parsed.seed_code:
+            seed_file_load_parts = None
+            if parsed.file_load_source is not None:
+                seed_file_load_parts = _script_seed_file_load_parts(
+                    parsed.seed_code,
+                    active_name=active_name,
+                    load_source=parsed.file_load_source,
+                )
+            if seed_file_load_parts is None:
+                if not apply_simple_alias(parsed.seed_code):
+                    pending_codes.append(parsed.seed_code)
+            else:
+                seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
+                script_current_key = _add_file_load_node(
+                    graph,
+                    parsed.file_load_source,
+                    setup_code=seed_setup_code,
+                    load_code=seed_load_code,
+                    active_name=seed_output_name,
+                )
+                current_name = seed_output_name
+                current_bindings = bind_name(seed_output_name, script_current_key)
         operations = tuple(parsed.operations)
         context_bindings_by_index: dict[int, list[str]] = {}
         for binding in parsed.script_context_bindings:
@@ -927,24 +1069,12 @@ def _compile_spec(
             if context_names := context_bindings_by_index.get(index):
                 apply_context_binding(context_names)
             if display:
-                if getattr(operation, "op", None) == "rename" and not any(
-                    getattr(later_operation, "op", None) == "script_code"
-                    for later_operation in operations[index + 1 :]
-                ):
-                    continue
                 entry = operation.derivation_entry()
                 if entry.code in {
                     "derived = derived.isel()",
                     "derived = derived.qsel()",
                     "derived = derived.sel()",
                 } or _provenance_framework._is_internal_sort_coord_order_entry(entry):
-                    continue
-                if _provenance_framework._is_whole_array_rename_entry(
-                    entry
-                ) and not any(
-                    getattr(later_operation, "op", None) == "script_code"
-                    for later_operation in operations[index + 1 :]
-                ):
                     continue
             if getattr(operation, "op", None) == "script_code":
                 operation_code = typing.cast(

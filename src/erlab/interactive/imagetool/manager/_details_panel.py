@@ -5,6 +5,7 @@ import json
 import logging
 import traceback
 import typing
+from dataclasses import replace
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -32,6 +33,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import pathlib
+    from collections.abc import Iterable
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
@@ -251,11 +253,147 @@ class _DetailsPanelController:
 
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
-            for row in node.derivation_display_rows:
+            for row in self._current_derivation_display_rows(node):
                 self._manager.metadata_derivation_list.addItem(
                     self._metadata_derivation_item(row)
                 )
         self._manager._update_metadata_pane()
+
+    def _script_input_current_node_label(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> str:
+        graph = getattr(self._manager, "_tool_graph", None)
+        path: list[int] = []
+        current = node
+        while current.parent_uid is not None:
+            parent = graph.nodes.get(current.parent_uid) if graph is not None else None
+            if parent is None or current.uid not in parent._childtool_indices:
+                path = []
+                break
+            path.append(parent._childtool_indices.index(current.uid))
+            current = parent
+        else:
+            if graph is not None:
+                for root_index, wrapper in graph.root_wrappers.items():
+                    if wrapper.uid == current.uid:
+                        path = [root_index, *reversed(path)]
+                        break
+
+        display_index = ".".join(str(index) for index in path) if path else node.uid
+        label = (
+            f"ImageTool {display_index}"
+            if node.is_imagetool
+            else f"{node.type_badge_text or 'Tool'} {display_index}"
+        )
+        if node.name:
+            label += f": {node.name}"
+        return label
+
+    def _script_input_row_label(
+        self,
+        script_input: provenance.ScriptInput,
+        *,
+        include_history: bool,
+    ) -> str:
+        graph = getattr(self._manager, "_tool_graph", None)
+        node_uid = script_input.node_uid
+        if graph is not None and node_uid is not None:
+            node = graph.nodes.get(node_uid)
+            if node is not None:
+                return (
+                    f"Use {script_input.name} from "
+                    f"{self._script_input_current_node_label(node)}"
+                )
+            label = f"Missing source for {script_input.name}"
+            if include_history:
+                label += f" (recorded as {script_input.label})"
+            return label
+        return f"Use {script_input.name} from {script_input.label}"
+
+    @staticmethod
+    def _script_input_for_row(
+        spec: provenance.ToolProvenanceSpec | None,
+        row: provenance._ProvenanceDisplayRow,
+    ) -> provenance.ScriptInput | None:
+        ref = row.replay_ref
+        if (
+            spec is None
+            or ref is None
+            or ref.kind != "script_input"
+            or ref.script_input_index is None
+        ):
+            return None
+        current = spec
+        for index in row.script_input_path:
+            if current.kind != "script" or index >= len(current.script_inputs):
+                return None
+            nested = current.script_inputs[index].parsed_provenance_spec()
+            if nested is None:
+                return None
+            current = nested
+        if current.kind != "script" or ref.script_input_index >= len(
+            current.script_inputs
+        ):
+            return None
+        return current.script_inputs[ref.script_input_index]
+
+    def _current_derivation_display_row(
+        self,
+        row: provenance._ProvenanceDisplayRow,
+        spec: provenance.ToolProvenanceSpec | None,
+        *,
+        include_history: bool,
+    ) -> provenance._ProvenanceDisplayRow:
+        children = tuple(
+            self._current_derivation_display_row(
+                child,
+                spec,
+                include_history=include_history,
+            )
+            for child in row.children
+        )
+        script_input = self._script_input_for_row(spec, row)
+        label = (
+            None
+            if script_input is None
+            else self._script_input_row_label(
+                script_input,
+                include_history=include_history,
+            )
+        )
+        if label is None and children == row.children:
+            return row
+        entry = row.entry if label is None else replace(row.entry, label=label)
+        return replace(row, entry=entry, children=children)
+
+    def _current_derivation_display_rows(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        include_history: bool = False,
+    ) -> list[provenance._ProvenanceDisplayRow]:
+        spec = node.displayed_provenance_spec
+        return [
+            self._current_derivation_display_row(
+                row,
+                spec,
+                include_history=include_history,
+            )
+            for row in node.derivation_display_rows
+        ]
+
+    @staticmethod
+    def _flatten_derivation_rows(
+        rows: Iterable[provenance._ProvenanceDisplayRow],
+    ) -> list[provenance._ProvenanceDisplayRow]:
+        flattened: list[provenance._ProvenanceDisplayRow] = []
+        for row in rows:
+            flattened.append(row)
+            flattened.extend(
+                _DetailsPanelController._flatten_derivation_rows(row.children)
+            )
+        return flattened
 
     def _metadata_derivation_item(
         self,
@@ -800,7 +938,11 @@ class _DetailsPanelController:
         replayable_input_labels = self._replayable_script_input_labels(
             node.displayed_provenance_spec
         )
-        for entry in node.derivation_entries[1:]:
+        rows = self._flatten_derivation_rows(
+            self._current_derivation_display_rows(node, include_history=True)
+        )
+        for row in rows[1:]:
+            entry = row.entry
             if entry.code is not None:
                 continue
             label = " ".join(entry.label.split())
@@ -832,7 +974,12 @@ class _DetailsPanelController:
             except _replay_graph.ReplayGraphError:
                 continue
             replayable_labels.add(
-                " ".join(f"Use {script_input.name} from {script_input.label}".split())
+                " ".join(
+                    self._script_input_row_label(
+                        script_input,
+                        include_history=True,
+                    ).split()
+                )
             )
         return replayable_labels
 

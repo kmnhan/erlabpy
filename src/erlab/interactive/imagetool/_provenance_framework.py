@@ -2834,11 +2834,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     "derived = derived.qsel()",
                     "derived = derived.sel()",
                 } or _is_internal_sort_coord_order_entry(entry)
-                if not hide_operation and _is_whole_array_rename_entry(entry):
-                    hide_operation = not any(
-                        _operation_is(later_operation, "script_code")
-                        for later_operation in operations[index + 1 :]
-                    )
             # Rule 1: drop empty selection operations.
             elif _operation_is(operation, "qsel", "isel", "sel"):
                 hide_operation = not getattr(operation, "decoded_kwargs", {})
@@ -2868,18 +2863,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     ).dims
                     == current_data.dims
                 )
-            # Rule 6: hide whole-array name changes in derivation display. Dimension
-            # and coordinate renames use RenameDimsCoordsOperation and remain visible.
-            elif _operation_is(operation, "rename"):
-                hide_operation = not any(
-                    _operation_is(later_operation, "script_code")
-                    for later_operation in operations[index + 1 :]
-                )
-
             if not hide_operation:
                 streamlined.append((index, operation))
 
-            # Rule 7: keep anything ambiguous. If replaying an operation fails while
+            # Rule 6: keep anything ambiguous. If replaying an operation fails while
             # building the heuristic context, stop making data-dependent decisions for
             # later steps and preserve them verbatim.
             if current_data is None or parent_data is None:
