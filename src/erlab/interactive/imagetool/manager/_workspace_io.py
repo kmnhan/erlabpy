@@ -107,6 +107,17 @@ class _WorkspaceLoadProfiler:
                 logger.debug("Workspace load stage %s: %.3fs", name, duration)
 
 
+@contextlib.contextmanager
+def _workspace_load_stage(
+    profiler: _WorkspaceLoadProfiler | None, name: str
+) -> Iterator[None]:
+    if profiler is None:
+        yield
+    else:
+        with profiler.stage(name):
+            yield
+
+
 class _WorkspaceReplaceBackup:
     __slots__ = ("file_path", "snapshot", "tree")
 
@@ -1090,139 +1101,152 @@ class _WorkspaceIOController:
         parent_target: int | str | None,
         node_path: str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        profiler: _WorkspaceLoadProfiler | None = None,
     ) -> int | str:
-        uid = ds.attrs.get("manager_node_uid")
-        provenance_spec = ds.attrs.get("manager_node_provenance_spec")
-        live_source_spec = ds.attrs.get("manager_node_live_source_spec")
-        live_source_binding = ds.attrs.get("manager_node_live_source_binding")
-        parse_provenance_spec = provenance.parse_tool_provenance_spec
-        parsed_provenance_spec = None
-        if provenance_spec is not None:
-            try:
-                provenance_payload = typing.cast(
-                    "Mapping[str, typing.Any]",
-                    json.loads(provenance_spec),
+        with _workspace_load_stage(profiler, "imagetool metadata restore"):
+            uid = ds.attrs.get("manager_node_uid")
+            provenance_spec = ds.attrs.get("manager_node_provenance_spec")
+            live_source_spec = ds.attrs.get("manager_node_live_source_spec")
+            live_source_binding = ds.attrs.get("manager_node_live_source_binding")
+            parse_provenance_spec = provenance.parse_tool_provenance_spec
+            parsed_provenance_spec = None
+            if provenance_spec is not None:
+                try:
+                    provenance_payload = typing.cast(
+                        "Mapping[str, typing.Any]",
+                        json.loads(provenance_spec),
+                    )
+                    parsed_provenance_spec = parse_provenance_spec(provenance_payload)
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved manager provenance for node %s",
+                        uid,
+                        exc_info=True,
+                    )
+            parsed_source_spec = None
+            if live_source_spec is not None:
+                try:
+                    source_payload = typing.cast(
+                        "Mapping[str, typing.Any]",
+                        json.loads(live_source_spec),
+                    )
+                    parsed_source_spec = provenance.require_live_source_spec(
+                        parse_provenance_spec(source_payload)
+                    )
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved manager source provenance for node %s",
+                        uid,
+                        exc_info=True,
+                    )
+            parsed_source_binding = None
+            if parsed_source_spec is None and live_source_binding is not None:
+                try:
+                    binding_payload = typing.cast(
+                        "Mapping[str, typing.Any]",
+                        json.loads(live_source_binding),
+                    )
+                    binding_type = provenance.ImageToolSelectionSourceBinding
+                    parsed_source_binding = binding_type.model_validate(binding_payload)
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved manager source binding for node %s",
+                        uid,
+                        exc_info=True,
+                    )
+            kwargs: dict[str, typing.Any] = {
+                "uid": uid,
+                "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
+                "created_time": ds.attrs.get("manager_node_added_at"),
+                "note": ds.attrs.get("manager_node_note"),
+                "provenance_spec": parsed_provenance_spec,
+                "source_spec": parsed_source_spec,
+                "source_binding": (
+                    parsed_source_binding if parsed_source_spec is None else None
+                ),
+                "output_id": ds.attrs.get("manager_node_output_id"),
+                "source_auto_update": bool(
+                    ds.attrs.get("manager_node_source_auto_update", False)
+                ),
+                "source_state": typing.cast(
+                    "_ManagedWindowNode._source_state_type",
+                    ds.attrs.get("manager_node_source_state", "fresh"),
+                ),
+            }
+            window_visible = _workspace_dataset_window_visible(ds, "itool")
+            tool_kwargs: dict[str, typing.Any] = {
+                "_in_manager": True,
+                "_defer_state_refresh": True,
+                "_defer_secondary_plots": not window_visible,
+            }
+            if profiler is not None:
+                tool_kwargs["_workspace_load_profiler"] = profiler
+            if _ITOOL_DATA_NAME in ds and ds[_ITOOL_DATA_NAME].chunks is not None:
+                tool_kwargs["auto_compute"] = False
+            legacy_name = _legacy_saved_title_data_name(ds, parsed_provenance_spec)
+            if legacy_name is not None:
+                ds = ds.copy(deep=False)
+                ds.attrs["itool_name"] = legacy_name
+            elif "itool_name" not in ds.attrs:
+                ds = ds.copy(deep=False)
+                ds.attrs["itool_name"] = ""
+            ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
+
+        with _workspace_load_stage(profiler, "imagetool widget restore"):
+            tool = ImageTool.from_dataset(ds, **tool_kwargs)
+
+        with _workspace_load_stage(profiler, "imagetool manager registration"):
+            if parent_target is not None:
+                target = self._manager.add_imagetool_child(
+                    tool,
+                    parent_target,
+                    show=window_visible,
+                    **kwargs,
                 )
-                parsed_provenance_spec = parse_provenance_spec(provenance_payload)
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved manager provenance for node %s",
-                    uid,
-                    exc_info=True,
+                self._manager._record_workspace_loaded_imagetool_target(
+                    ds, target, loaded_targets_by_uid
                 )
-        parsed_source_spec = None
-        if live_source_spec is not None:
-            try:
-                source_payload = typing.cast(
-                    "Mapping[str, typing.Any]",
-                    json.loads(live_source_spec),
+                return target
+
+            kwargs.pop("output_id", None)
+            kwargs["source_input_ndim"] = typing.cast(
+                "int | None",
+                ds.attrs.get("manager_node_source_input_ndim"),
+            )
+            watched_varname = ds.attrs.get("manager_node_watched_varname")
+            watched_uid = ds.attrs.get("manager_node_watched_uid")
+            if watched_varname is not None and watched_uid is not None:
+                kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
+                kwargs["watched_workspace_link_id"] = (
+                    None
+                    if ds.attrs.get("manager_node_watched_workspace_link_id") is None
+                    else str(ds.attrs["manager_node_watched_workspace_link_id"])
                 )
-                parsed_source_spec = provenance.require_live_source_spec(
-                    parse_provenance_spec(source_payload)
+                kwargs["watched_source_label"] = (
+                    None
+                    if ds.attrs.get("manager_node_watched_source_label") is None
+                    else str(ds.attrs["manager_node_watched_source_label"])
                 )
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved manager source provenance for node %s",
-                    uid,
-                    exc_info=True,
+                kwargs["watched_source_uid"] = (
+                    None
+                    if ds.attrs.get("manager_node_watched_source_uid") is None
+                    else str(ds.attrs["manager_node_watched_source_uid"])
                 )
-        parsed_source_binding = None
-        if parsed_source_spec is None and live_source_binding is not None:
-            try:
-                binding_payload = typing.cast(
-                    "Mapping[str, typing.Any]",
-                    json.loads(live_source_binding),
-                )
-                binding_type = provenance.ImageToolSelectionSourceBinding
-                parsed_source_binding = binding_type.model_validate(binding_payload)
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved manager source binding for node %s",
-                    uid,
-                    exc_info=True,
-                )
-        kwargs: dict[str, typing.Any] = {
-            "uid": uid,
-            "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
-            "created_time": ds.attrs.get("manager_node_added_at"),
-            "note": ds.attrs.get("manager_node_note"),
-            "provenance_spec": parsed_provenance_spec,
-            "source_spec": parsed_source_spec,
-            "source_binding": (
-                parsed_source_binding if parsed_source_spec is None else None
-            ),
-            "output_id": ds.attrs.get("manager_node_output_id"),
-            "source_auto_update": bool(
-                ds.attrs.get("manager_node_source_auto_update", False)
-            ),
-            "source_state": typing.cast(
-                "_ManagedWindowNode._source_state_type",
-                ds.attrs.get("manager_node_source_state", "fresh"),
-            ),
-        }
-        tool_kwargs: dict[str, typing.Any] = {"_in_manager": True}
-        if _ITOOL_DATA_NAME in ds and ds[_ITOOL_DATA_NAME].chunks is not None:
-            tool_kwargs["auto_compute"] = False
-        legacy_name = _legacy_saved_title_data_name(ds, parsed_provenance_spec)
-        if legacy_name is not None:
-            ds = ds.copy(deep=False)
-            ds.attrs["itool_name"] = legacy_name
-        elif "itool_name" not in ds.attrs:
-            ds = ds.copy(deep=False)
-            ds.attrs["itool_name"] = ""
-        ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
-        tool = ImageTool.from_dataset(ds, **tool_kwargs)
-        if parent_target is not None:
-            target = self._manager.add_imagetool_child(
+                # Loaded watched rows stay watched, but are disconnected until
+                # a notebook explicitly reconnects them.
+                kwargs["watched_connected"] = False
+            preferred_index: int | None = None
+            if node_path is not None and "/" not in node_path:
+                with contextlib.suppress(ValueError):
+                    preferred_index = int(node_path)
+                if preferred_index is not None and preferred_index < 0:
+                    preferred_index = None
+            target = self._manager.add_imagetool(
                 tool,
-                parent_target,
-                show=_workspace_dataset_window_visible(ds, "itool"),
+                show=window_visible,
+                index=preferred_index,
                 **kwargs,
             )
-            self._manager._record_workspace_loaded_imagetool_target(
-                ds, target, loaded_targets_by_uid
-            )
-            return target
-
-        kwargs.pop("output_id", None)
-        kwargs["source_input_ndim"] = typing.cast(
-            "int | None",
-            ds.attrs.get("manager_node_source_input_ndim"),
-        )
-        watched_varname = ds.attrs.get("manager_node_watched_varname")
-        watched_uid = ds.attrs.get("manager_node_watched_uid")
-        if watched_varname is not None and watched_uid is not None:
-            kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
-            kwargs["watched_workspace_link_id"] = (
-                None
-                if ds.attrs.get("manager_node_watched_workspace_link_id") is None
-                else str(ds.attrs["manager_node_watched_workspace_link_id"])
-            )
-            kwargs["watched_source_label"] = (
-                None
-                if ds.attrs.get("manager_node_watched_source_label") is None
-                else str(ds.attrs["manager_node_watched_source_label"])
-            )
-            kwargs["watched_source_uid"] = (
-                None
-                if ds.attrs.get("manager_node_watched_source_uid") is None
-                else str(ds.attrs["manager_node_watched_source_uid"])
-            )
-            # Loaded watched rows stay watched, but are disconnected until
-            # a notebook explicitly reconnects them.
-            kwargs["watched_connected"] = False
-        preferred_index: int | None = None
-        if node_path is not None and "/" not in node_path:
-            with contextlib.suppress(ValueError):
-                preferred_index = int(node_path)
-            if preferred_index is not None and preferred_index < 0:
-                preferred_index = None
-        target = self._manager.add_imagetool(
-            tool,
-            show=_workspace_dataset_window_visible(ds, "itool"),
-            index=preferred_index,
-            **kwargs,
-        )
         self._manager._record_workspace_loaded_imagetool_target(
             ds, target, loaded_targets_by_uid
         )
@@ -1234,55 +1258,59 @@ class _WorkspaceIOController:
         *,
         parent_target: int | str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        profiler: _WorkspaceLoadProfiler | None = None,
     ) -> int | str:
-        source_parent_data: xr.DataArray | None = None
-        if parent_target is not None:
-            source_parent_data = self._manager._node_for_target(
-                parent_target
-            ).current_source_data()
+        with _workspace_load_stage(profiler, "tool reference restore"):
+            source_parent_data: xr.DataArray | None = None
+            if parent_target is not None:
+                source_parent_data = self._manager._node_for_target(
+                    parent_target
+                ).current_source_data()
 
-        def _tool_data_reference_resolver(
-            payload: Mapping[str, typing.Any],
-        ) -> xr.DataArray | None:
-            node_uid = payload.get("node_uid")
-            if not isinstance(node_uid, str) or not node_uid:
-                return None
-            target: int | str = node_uid
-            if loaded_targets_by_uid is not None:
-                target = loaded_targets_by_uid.get(node_uid, node_uid)
-            try:
-                return self._manager._node_for_target(target).current_source_data()
-            except (KeyError, ValueError):
-                return None
+            def _tool_data_reference_resolver(
+                payload: Mapping[str, typing.Any],
+            ) -> xr.DataArray | None:
+                node_uid = payload.get("node_uid")
+                if not isinstance(node_uid, str) or not node_uid:
+                    return None
+                target: int | str = node_uid
+                if loaded_targets_by_uid is not None:
+                    target = loaded_targets_by_uid.get(node_uid, node_uid)
+                try:
+                    return self._manager._node_for_target(target).current_source_data()
+                except (KeyError, ValueError):
+                    return None
 
-        tool: erlab.interactive.utils.ToolWindow = (
-            erlab.interactive.utils.ToolWindow.from_dataset(
-                ds,
-                _source_parent_data=source_parent_data,
-                _tool_data_reference_resolver=_tool_data_reference_resolver,
+        with _workspace_load_stage(profiler, "tool widget restore"):
+            tool: erlab.interactive.utils.ToolWindow = (
+                erlab.interactive.utils.ToolWindow.from_dataset(
+                    ds,
+                    _source_parent_data=source_parent_data,
+                    _tool_data_reference_resolver=_tool_data_reference_resolver,
+                )
             )
-        )
-        if parent_target is None:
-            if tool.manager_collection != "figures":
-                raise ValueError("Workspace tool node has no parent")
-            target = self._manager.add_figuretool(
-                tool,
-                show=_workspace_dataset_window_visible(ds, "tool"),
-                uid=ds.attrs.get("manager_node_uid"),
-                snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
-                created_time=ds.attrs.get("manager_node_added_at"),
-                note=ds.attrs.get("manager_node_note"),
-            )
-        else:
-            target = self._manager.add_childtool(
-                tool,
-                parent_target,
-                show=_workspace_dataset_window_visible(ds, "tool"),
-                uid=ds.attrs.get("manager_node_uid"),
-                snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
-                created_time=ds.attrs.get("manager_node_added_at"),
-                note=ds.attrs.get("manager_node_note"),
-            )
+        with _workspace_load_stage(profiler, "tool manager registration"):
+            if parent_target is None:
+                if tool.manager_collection != "figures":
+                    raise ValueError("Workspace tool node has no parent")
+                target = self._manager.add_figuretool(
+                    tool,
+                    show=_workspace_dataset_window_visible(ds, "tool"),
+                    uid=ds.attrs.get("manager_node_uid"),
+                    snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                    created_time=ds.attrs.get("manager_node_added_at"),
+                    note=ds.attrs.get("manager_node_note"),
+                )
+            else:
+                target = self._manager.add_childtool(
+                    tool,
+                    parent_target,
+                    show=_workspace_dataset_window_visible(ds, "tool"),
+                    uid=ds.attrs.get("manager_node_uid"),
+                    snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                    created_time=ds.attrs.get("manager_node_added_at"),
+                    note=ds.attrs.get("manager_node_note"),
+                )
         self._manager._record_workspace_loaded_tool_target(
             ds, target, loaded_targets_by_uid
         )
@@ -1719,25 +1747,21 @@ class _WorkspaceIOController:
             payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
             with profiler.stage("payload read"):
                 ds = _load_dataset(payload_path, entry=entry, imagetool=is_imagetool)
-            stage_name = (
-                "figure restore"
-                if path.startswith("figures/") and not is_imagetool
-                else "tool construction"
-            )
-            with profiler.stage(stage_name):
-                if is_imagetool:
-                    target = self._manager._load_workspace_imagetool_dataset(
-                        ds,
-                        parent_target=parent_target,
-                        node_path=path,
-                        loaded_targets_by_uid=loaded_targets_by_uid,
-                    )
-                else:
-                    target = self._manager._load_workspace_tool_dataset(
-                        ds,
-                        parent_target=parent_target,
-                        loaded_targets_by_uid=loaded_targets_by_uid,
-                    )
+            if is_imagetool:
+                target = self._manager._load_workspace_imagetool_dataset(
+                    ds,
+                    parent_target=parent_target,
+                    node_path=path,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
+                    profiler=profiler,
+                )
+            else:
+                target = self._manager._load_workspace_tool_dataset(
+                    ds,
+                    parent_target=parent_target,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
+                    profiler=profiler,
+                )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
             return target

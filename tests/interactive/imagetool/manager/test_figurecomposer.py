@@ -26499,11 +26499,12 @@ def test_manager_child_imagetool_gets_figure_context_actions(
     ],
 ) -> None:
     def action_names(tool: erlab.interactive.imagetool.ImageTool) -> set[str]:
-        return {
-            action.objectName()
-            for plot in tool.slicer_area.axes
-            for action in plot.vb.menu.actions()
-        }
+        names: set[str] = set()
+        for plot in tool.slicer_area.axes:
+            menu = plot.vb.getMenu(None)
+            assert menu is not None
+            names.update(action.objectName() for action in menu.actions())
+        return names
 
     with manager_context() as manager:
         itool(
@@ -26527,12 +26528,27 @@ def test_manager_child_imagetool_gets_figure_context_actions(
             execute=False,
         )
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        assert "itool_plot_with_matplotlib_action" not in action_names(child)
+        assert all(plot.vb.menu is None for plot in child.slicer_area.axes)
+        assert all(
+            plot._plot_with_matplotlib_action is None for plot in child.slicer_area.axes
+        )
 
         manager.add_imagetool_child(child, 0, show=False)
 
+        assert all(plot.vb.menu is None for plot in child.slicer_area.axes)
         assert "itool_plot_with_matplotlib_action" in action_names(child)
         assert "itool_append_to_figure_action" in action_names(child)
+        main_plot = child.slicer_area.axes[0]
+        main_plot.vb.setMenuEnabled(False)
+        assert main_plot.vb.menu is None
+        main_plot.vb.setMenuEnabled(True)
+        rebuilt_menu = main_plot.vb.getMenu(None)
+        assert rebuilt_menu is not None
+        rebuilt_action_names = {
+            action.objectName() for action in rebuilt_menu.actions()
+        }
+        assert "itool_plot_with_matplotlib_action" in rebuilt_action_names
+        assert "itool_append_to_figure_action" in rebuilt_action_names
 
 
 def test_manager_workspace_restores_figures_ui(

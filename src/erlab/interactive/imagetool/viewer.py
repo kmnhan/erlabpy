@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 import typing
 import uuid
 import weakref
@@ -34,7 +35,7 @@ from erlab.interactive.imagetool._viewer_dialogs import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Hashable, Iterable, Mapping
+    from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 
     import qtawesome
 
@@ -245,16 +246,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         plotdata_cls=None,
         options_model: AppOptions | None = None,
         _in_manager: bool = False,
+        _defer_state_refresh: bool = False,
+        _defer_secondary_plots: bool = False,
+        _workspace_load_profiler: typing.Any = None,
     ) -> None:
         super().__init__(parent)
         self._options_model = options_model or erlab.interactive.options.model
         self.qapp = typing.cast(
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
-        from erlab.interactive.imagetool.plot_items import (
-            ItoolColorBar,
-            ItoolGraphicsLayoutWidget,
-        )
+        from erlab.interactive.imagetool.plot_items import ItoolColorBar
 
         # Handle default values
         opts = self._options_model
@@ -269,6 +270,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
         self._update_delayed: bool = _in_manager  #: Internal flag for delayed updates
+        self._defer_state_refresh = _defer_state_refresh
+        self._defer_secondary_plots = _defer_secondary_plots
+        self._secondary_plots_materialized = False
+        self._secondary_plot_materialization_duration = 0.0
+        self._plot_widgets_constructed = 0
+        self._pending_plotitem_states: list[PlotItemState] | None = None
+        self._pending_splitter_sizes: list[list[int]] | None = None
+        self._axes_signals_connected = False
+        self._axes_signal_connected_indices: set[int] = set()
+        self._workspace_load_profiler = _workspace_load_profiler
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -373,69 +384,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.axis_inversions: dict[str, bool] = {}
         # Dictionary of inverted view state for each plotted data dimension.
 
-        pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
-        self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(0, 1),
-                axis_enabled=(1, 0, 0, 1),
-                image=True,
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(0,),
-                axis_enabled=(1, 1, 0, 0),
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(1,),
-                axis_enabled=(0, 0, 1, 1),
-                is_vertical=True,
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(2,),
-                axis_enabled=(0, 1, 1, 0),
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                image=True,
-                display_axis=(0, 2),
-                axis_enabled=(1, 0, 0, 0),
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(2, 1),
-                axis_enabled=(0, 0, 0, 1),
-                image=True,
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(3,),
-                axis_enabled=(0, 1, 1, 0),
-                **pkw,
-            ),
-            ItoolGraphicsLayoutWidget(
-                self,
-                display_axis=(3, 2),
-                axis_enabled=(0, 1, 1, 0),
-                image=True,
-                **pkw,
-            ),
-        )
-        for i in (1, 4):
-            self._splitters[2].addWidget(self._plots[i])
-        for i in (6, 3, 7):
-            self._splitters[3].addWidget(self._plots[i])
-        self._splitters[5].addWidget(self._plots[0])
-        for i in (5, 2):
-            self._splitters[6].addWidget(self._plots[i])
+        self._plot_item_kw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
+        self._plots: list[ItoolGraphicsLayoutWidget | None] = [None] * 8
+        self._build_axes_widget(0)
+        if not self._defer_secondary_plots:
+            self._ensure_secondary_plots()
 
         self._file_path: pathlib.Path | None = None
         self._load_func: _LoadFunc | None = None
@@ -470,16 +423,234 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 vmax = self.array_slicer.nanmax
             self.set_colormap(levels_locked=True, levels=(vmin, vmax))
 
-        if state is not None:
-            self.state = state
+        try:
+            if state is not None:
+                self.state = state
 
-        if transpose:
-            self.transpose_main_image()
+            if transpose:
+                self.transpose_main_image()
+        finally:
+            if state is not None:
+                self._workspace_load_profiler = None
 
     @property
     def _associated_tools_list(self) -> list[QtWidgets.QWidget]:
         with self._assoc_tools_lock:
             return list(self._associated_tools.values())
+
+    @staticmethod
+    def _axes_widget_kwargs(index: int) -> dict[str, typing.Any]:
+        specs: tuple[dict[str, typing.Any], ...] = (
+            {
+                "display_axis": (0, 1),
+                "axis_enabled": (1, 0, 0, 1),
+                "image": True,
+            },
+            {"display_axis": (0,), "axis_enabled": (1, 1, 0, 0)},
+            {
+                "display_axis": (1,),
+                "axis_enabled": (0, 0, 1, 1),
+                "is_vertical": True,
+            },
+            {"display_axis": (2,), "axis_enabled": (0, 1, 1, 0)},
+            {
+                "image": True,
+                "display_axis": (0, 2),
+                "axis_enabled": (1, 0, 0, 0),
+            },
+            {
+                "display_axis": (2, 1),
+                "axis_enabled": (0, 0, 0, 1),
+                "image": True,
+            },
+            {"display_axis": (3,), "axis_enabled": (0, 1, 1, 0)},
+            {
+                "display_axis": (3, 2),
+                "axis_enabled": (0, 1, 1, 0),
+                "image": True,
+            },
+        )
+        return specs[index].copy()
+
+    def _slice_axes_indices(self) -> tuple[int, ...]:
+        match self.data.ndim:
+            case 2:
+                return ()
+            case 3:
+                return (4, 5)
+            case 4:
+                return (4, 5, 7)
+            case _:
+                raise ValueError("Data must have 2 to 4 dimensions")
+
+    def _profile_axes_indices(self) -> tuple[int, ...]:
+        match self.data.ndim:
+            case 2:
+                return (1, 2)
+            case 3:
+                return (1, 2, 3)
+            case 4:
+                return (1, 2, 3, 6)
+            case _:
+                raise ValueError("Data must have 2 to 4 dimensions")
+
+    def _image_axes_indices(self) -> tuple[int, ...]:
+        return (0, *self._slice_axes_indices())
+
+    def _axes_indices(self) -> tuple[int, ...]:
+        return (*self._image_axes_indices(), *self._profile_axes_indices())
+
+    @staticmethod
+    def _secondary_plot_construction_order() -> tuple[int, ...]:
+        return (1, 4, 6, 3, 7, 5, 2)
+
+    def _secondary_plot_indices(self) -> tuple[int, ...]:
+        if not hasattr(self, "_data"):
+            return self._secondary_plot_construction_order()
+        valid_indices = set(self._axes_indices())
+        return tuple(
+            index
+            for index in self._secondary_plot_construction_order()
+            if index in valid_indices
+        )
+
+    def _axes_index_valid(self, index: int) -> bool:
+        return not hasattr(self, "_data") or index in self._axes_indices()
+
+    def _add_axes_widget_to_splitter(
+        self, index: int, widget: ItoolGraphicsLayoutWidget
+    ) -> None:
+        if index in (1, 4):
+            self._splitters[2].addWidget(widget)
+        elif index in (6, 3, 7):
+            self._splitters[3].addWidget(widget)
+        elif index == 0:
+            self._splitters[5].addWidget(widget)
+        elif index in (5, 2):
+            self._splitters[6].addWidget(widget)
+        else:
+            raise IndexError(f"Invalid ImageTool axes index {index}")
+
+    def _pending_plotitem_state(self, index: int) -> PlotItemState | None:
+        if self._pending_plotitem_states is None:
+            return None
+        try:
+            state_index = self._axes_indices().index(index)
+        except ValueError:
+            return None
+        if state_index >= len(self._pending_plotitem_states):
+            return None
+        return self._pending_plotitem_states[state_index]
+
+    def _apply_pending_plotitem_state(self, index: int, plot: ItoolPlotItem) -> None:
+        plotitem_state = self._pending_plotitem_state(index)
+        if plotitem_state is not None:
+            plot._serializable_state = plotitem_state
+
+    def _sync_materialized_plot(self, index: int, plot: ItoolPlotItem) -> None:
+        if not hasattr(self, "_array_slicer") or not self._axes_index_valid(index):
+            return
+        while len(plot.slicer_data_items) < self.n_cursors:
+            plot.add_cursor(update=False)
+        while len(plot.slicer_data_items) > self.n_cursors:
+            plot.remove_cursor(len(plot.slicer_data_items) - 1)
+        self._apply_pending_plotitem_state(index, plot)
+        plot.set_cursor_colors(self.cursor_colors)
+        plot.set_active_cursor(self.current_cursor)
+        plot.set_cursor_visible(self.toggle_cursor_act.isChecked())
+        plot.refresh_labels()
+        plot.update_manual_range()
+        plot.update_axis_inversions()
+
+    def _connect_plot_signals(self, index: int, plot: ItoolPlotItem) -> None:
+        if index in self._axes_signal_connected_indices:
+            return
+        plot.connect_signals()
+        self._axes_signal_connected_indices.add(index)
+
+    def _build_axes_widget(self, index: int) -> ItoolGraphicsLayoutWidget:
+        plot = self._plots[index]
+        if plot is None:
+            from erlab.interactive.imagetool.plot_items import ItoolGraphicsLayoutWidget
+
+            plot_kwargs = self._axes_widget_kwargs(index)
+            plot_kwargs.update(self._plot_item_kw)
+            plot = ItoolGraphicsLayoutWidget(self, **plot_kwargs)
+            self._plots[index] = plot
+            self._plot_widgets_constructed += 1
+            self._add_axes_widget_to_splitter(index, plot)
+        valid_index = self._axes_index_valid(index)
+        self._sync_materialized_plot(index, plot.plotItem)
+        if self._axes_signals_connected and valid_index:
+            self._connect_plot_signals(index, plot.plotItem)
+        if not valid_index:
+            plot.setVisible(False)
+        if self._in_manager:
+            plot.plotItem.ensure_manager_figure_actions()
+        return plot
+
+    def _ensure_secondary_plots(self) -> None:
+        if self._secondary_plots_materialized:
+            return
+        start = time.perf_counter()
+        self._secondary_plots_materialized = True
+        try:
+            with (
+                self.history_suppressed(),
+                self.link_sync_suppressed(),
+                self._workspace_load_stage("imagetool secondary plot materialize"),
+            ):
+                for index in self._secondary_plot_indices():
+                    self._build_axes_widget(index)
+                if hasattr(self, "_array_slicer"):
+                    self.adjust_layout()
+                    if self._pending_splitter_sizes is not None:
+                        self._apply_splitter_sizes(self._pending_splitter_sizes)
+                        self._pending_splitter_sizes = None
+                    self.refresh_all(only_plots=True)
+                    self.set_colormap(**self.colormap_properties, update=False)
+                    self.lock_levels(self.levels_locked)
+        except Exception:
+            self._secondary_plots_materialized = False
+            raise
+        finally:
+            self._secondary_plot_materialization_duration += time.perf_counter() - start
+
+    def _plot_widget_for_index(self, index: int) -> ItoolGraphicsLayoutWidget:
+        if not 0 <= index < len(self._plots):
+            raise IndexError(f"Invalid ImageTool axes index {index}")
+        if index != 0:
+            self._ensure_secondary_plots()
+        plot = self._plots[index]
+        if plot is None:
+            plot = self._build_axes_widget(index)
+        return plot
+
+    def _materialized_axes_for_indices(
+        self, indices: tuple[int, ...]
+    ) -> tuple[ItoolPlotItem, ...]:
+        return tuple(
+            plot.plotItem
+            for index in indices
+            if (plot := self._plots[index]) is not None
+        )
+
+    def _materialized_slices(self) -> tuple[ItoolPlotItem, ...]:
+        return self._materialized_axes_for_indices(self._slice_axes_indices())
+
+    def _materialized_profiles(self) -> tuple[ItoolPlotItem, ...]:
+        return self._materialized_axes_for_indices(self._profile_axes_indices())
+
+    def _materialized_images(self) -> tuple[ItoolPlotItem, ...]:
+        return self._materialized_axes_for_indices(self._image_axes_indices())
+
+    def _materialized_axes(self) -> tuple[ItoolPlotItem, ...]:
+        return self._materialized_axes_for_indices(self._axes_indices())
+
+    def _materialized_imageitems(self) -> tuple[ItoolImageItem, ...]:
+        return tuple(
+            im for ax in self._materialized_images() for im in ax.slicer_data_items
+        )
 
     @property
     def parent_title(self) -> str:
@@ -567,6 +738,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         with self.history_suppressed(), self.link_sync_suppressed():
             self._restore_state(state)
 
+    @contextlib.contextmanager
+    def _workspace_load_stage(self, name: str) -> Iterator[None]:
+        stage = getattr(self._workspace_load_profiler, "stage", None)
+        if callable(stage):
+            with stage(name):
+                yield
+        else:
+            yield
+
+    def _state_refresh_deferred(self) -> bool:
+        return self._defer_state_refresh and self._update_delayed
+
     def _restore_state(
         self,
         state: ImageSlicerState,
@@ -574,108 +757,135 @@ class ImageSlicerArea(QtWidgets.QWidget):
         emit_filter_edited: bool = False,
     ) -> None:
         logger.debug("Restoring state...")
-        parent = self.parent()
-        if hasattr(parent, "_set_controls_visible"):
-            typing.cast("typing.Any", parent)._set_controls_visible(
-                bool(state.get("controls_visible", True))
-            )
+        with self._workspace_load_stage("imagetool state restore: layout"):
+            parent = self.parent()
+            if hasattr(parent, "_set_controls_visible"):
+                typing.cast("typing.Any", parent)._set_controls_visible(
+                    bool(state.get("controls_visible", True))
+                )
 
-        if "splitter_sizes" in state:
-            self.splitter_sizes = state["splitter_sizes"]
+            if "splitter_sizes" in state:
+                self.splitter_sizes = state["splitter_sizes"]
 
-        plotitem_states = state.get("plotitem_states", None)
-        if plotitem_states is not None:  # pragma: no branch
-            for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
-                ax._serializable_state = plotitem_state
-        logger.debug("Restored plotitem states")
-
-        self.make_cursors(state["cursor_colors"], update=False)
-        self.sigCursorCountChanged.emit(self.n_cursors)
-        self.sigCursorColorsChanged.emit()
-        logger.debug("Restored cursor number and colors")
-
-        self.set_current_cursor(state["current_cursor"], update=False)
-        logger.debug("Restored current cursor")
-
-        self.array_slicer.state = state["slice"]
-        self.sigBinChanged.emit(self.current_cursor, tuple(range(self.data.ndim)))
-        for ax in self.axes:
-            if ax.is_image:
-                ax.sync_guidelines_to_active_cursor()
-        logger.debug("Restored array slicer state")
-
-        self.set_manual_limits(state.get("manual_limits", {}))
-        logger.debug("Restored manual limits")
-
-        axis_inversions = state.get("axis_inversions", None)
-        if axis_inversions is None:
-            axis_inversions = self._axis_inversions_from_plotitem_states(
-                plotitem_states
-            )
-        self.axis_inversions = self._normalized_axis_inversions(axis_inversions)
-        self.apply_axis_inversions()
-        logger.debug("Restored axis inversions")
-
-        file_path = state.get("file_path", None)
-        if file_path is not None:
-            self._file_path = pathlib.Path(file_path)
-
-        load_func = state.get("load_func", None)
-        if load_func is not None:
-            fn: str = load_func[0]
-            if ":" in fn:
-                self._load_func = load_func
-                try:
-                    mod_name, qual = fn.split(":")
-                    mod = importlib.import_module(mod_name)
-                    func_obj = mod
-                    for attr in qual.split("."):
-                        func_obj = getattr(func_obj, attr)
-                    self._load_func = (
-                        typing.cast("Callable", func_obj),
-                        *load_func[1:],
+            plotitem_states = state.get("plotitem_states", None)
+            if plotitem_states is not None:  # pragma: no branch
+                if len(plotitem_states) != len(self._axes_indices()):
+                    raise ValueError(
+                        "Saved ImageTool plot state does not match current layout"
                     )
-                except Exception:
+                self._pending_plotitem_states = list(plotitem_states)
+                for index, ax in zip(
+                    self._axes_indices(), self._materialized_axes(), strict=False
+                ):
+                    self._apply_pending_plotitem_state(index, ax)
+            logger.debug("Restored plotitem states")
+
+        with self._workspace_load_stage("imagetool state restore: cursors"):
+            self.make_cursors(state["cursor_colors"], update=False)
+            self.sigCursorCountChanged.emit(self.n_cursors)
+            self.sigCursorColorsChanged.emit()
+            logger.debug("Restored cursor number and colors")
+
+            self.set_current_cursor(state["current_cursor"], update=False)
+            logger.debug("Restored current cursor")
+
+            self.array_slicer.state = state["slice"]
+            self.sigBinChanged.emit(self.current_cursor, tuple(range(self.data.ndim)))
+            for ax in self._materialized_axes():
+                if ax.is_image:
+                    ax.sync_guidelines_to_active_cursor()
+            logger.debug("Restored array slicer state")
+
+        with self._workspace_load_stage("imagetool state restore: axes"):
+            self.set_manual_limits(state.get("manual_limits", {}))
+            logger.debug("Restored manual limits")
+
+            axis_inversions = state.get("axis_inversions", None)
+            if axis_inversions is None:
+                self._ensure_secondary_plots()
+                axis_inversions = self._axis_inversions_from_plotitem_states(
+                    plotitem_states
+                )
+            self.axis_inversions = self._normalized_axis_inversions(axis_inversions)
+            self.apply_axis_inversions()
+            logger.debug("Restored axis inversions")
+
+        with self._workspace_load_stage("imagetool state restore: source"):
+            file_path = state.get("file_path", None)
+            if file_path is not None:
+                self._file_path = pathlib.Path(file_path)
+
+            load_func = state.get("load_func", None)
+            if load_func is not None:
+                fn: str = load_func[0]
+                if ":" in fn:
+                    self._load_func = load_func
+                    try:
+                        mod_name, qual = fn.split(":")
+                        mod = importlib.import_module(mod_name)
+                        func_obj = mod
+                        for attr in qual.split("."):
+                            func_obj = getattr(func_obj, attr)
+                        self._load_func = (
+                            typing.cast("Callable", func_obj),
+                            *load_func[1:],
+                        )
+                    except Exception:
+                        self._load_func = None
+                elif fn in erlab.io.loaders:
+                    self._load_func = (fn, *load_func[1:])
+                else:
                     self._load_func = None
-            elif fn in erlab.io.loaders:
-                self._load_func = (fn, *load_func[1:])
-            else:
-                self._load_func = None
 
-        if file_path is not None:
-            self.sigDataChanged.emit()
-            logger.debug("Restored file path")
+            if file_path is not None and not self._state_refresh_deferred():
+                self.sigDataChanged.emit()
+                logger.debug("Restored file path")
 
-        self._restore_filter_operation_from_state(
-            state.get("filter_operation", None),
-            emit_edited=emit_filter_edited,
-        )
-        logger.debug("Restored filter operation")
-
-        # Restore colormap settings
-        try:
-            self.set_colormap(**state.get("color", {}), update=False)
-        except Exception:
-            erlab.utils.misc.emit_user_level_warning(
-                "Failed to restore colormap settings, skipping"
+        with self._workspace_load_stage("imagetool state restore: filter"):
+            self._restore_filter_operation_from_state(
+                state.get("filter_operation", None),
+                emit_edited=emit_filter_edited,
             )
-        logger.debug("Restored colormap settings")
+            logger.debug("Restored filter operation")
 
-        self.refresh_all()
-        logger.debug("Refreshed after state restoration")
+        with self._workspace_load_stage("imagetool state restore: color"):
+            try:
+                self.set_colormap(**state.get("color", {}), update=False)
+            except Exception:
+                erlab.utils.misc.emit_user_level_warning(
+                    "Failed to restore colormap settings, skipping"
+                )
+            logger.debug("Restored colormap settings")
 
-        self.cursor_colors = [pg.mkColor(c) for c in state["cursor_colors"]]
-        for ax in self.axes:
-            ax.set_cursor_colors(self.cursor_colors)
-        self.sigCursorColorsChanged.emit()
-        logger.debug("Reapplied saved cursor colors")
+        if self._state_refresh_deferred():
+            logger.debug("Deferred refresh after state restoration")
+        else:
+            with self._workspace_load_stage("imagetool state refresh"):
+                self.refresh_all()
+            logger.debug("Refreshed after state restoration")
+
+        with self._workspace_load_stage("imagetool state restore: cursor colors"):
+            self.cursor_colors = [pg.mkColor(c) for c in state["cursor_colors"]]
+            for ax in self._materialized_axes():
+                ax.set_cursor_colors(self.cursor_colors)
+            self.sigCursorColorsChanged.emit()
+            logger.debug("Reapplied saved cursor colors")
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
+        if self._pending_splitter_sizes is not None:
+            return copy.deepcopy(self._pending_splitter_sizes)
         return [s.sizes() for s in self._splitters]
 
     @splitter_sizes.setter
     def splitter_sizes(self, sizes: list[list[int]]) -> None:
+        if self._secondary_plots_materialized:
+            self._apply_splitter_sizes(sizes)
+            self._pending_splitter_sizes = None
+        else:
+            self._pending_splitter_sizes = copy.deepcopy(sizes)
+
+    def _apply_splitter_sizes(self, sizes: list[list[int]]) -> None:
         for s, size in zip(self._splitters, sizes, strict=True):
             s.setSizes(size)
 
@@ -726,33 +936,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._colorbar.cb.setLimits(requested_levels)
         self._colorbar.cb.setSpanRegion(requested_levels)
         if self.levels_locked:
-            for im in self._imageitems:
+            for im in self._materialized_imageitems():
                 im.setLevels(requested_levels, update=False)
                 im.updateImage()
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
-        match self.data.ndim:
-            case 2:
-                return ()
-            case 3:
-                return tuple(self.get_axes(ax) for ax in (4, 5))
-            case 4:  # pragma: no branch
-                return tuple(self.get_axes(ax) for ax in (4, 5, 7))
-            case _:
-                raise ValueError("Data must have 2 to 4 dimensions")
+        self._ensure_secondary_plots()
+        return tuple(self.get_axes(ax) for ax in self._slice_axes_indices())
 
     @property
     def profiles(self) -> tuple[ItoolPlotItem, ...]:
-        match self.data.ndim:
-            case 2:
-                profile_axes: tuple[int, ...] = (1, 2)
-            case 3:
-                profile_axes = (1, 2, 3)
-            case _:
-                profile_axes = (1, 2, 3, 6)
-
-        return tuple(self.get_axes(ax) for ax in profile_axes)
+        self._ensure_secondary_plots()
+        return tuple(self.get_axes(ax) for ax in self._profile_axes_indices())
 
     @property
     def main_image(self) -> ItoolPlotItem:
@@ -761,12 +957,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def images(self) -> tuple[ItoolPlotItem, ...]:
-        return (self.main_image, *self.slices)
+        self._ensure_secondary_plots()
+        return tuple(self.get_axes(ax) for ax in self._image_axes_indices())
 
     @property
     def axes(self) -> tuple[ItoolPlotItem, ...]:
         """Currently valid subset of self._plots."""
-        return self.images + self.profiles
+        self._ensure_secondary_plots()
+        return tuple(self.get_axes(ax) for ax in self._axes_indices())
 
     @property
     def _imageitems(self) -> tuple[ItoolImageItem, ...]:
@@ -1548,12 +1746,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
     def connect_axes_signals(self) -> None:
-        for ax in self.axes:
-            ax.connect_signals()
+        self._axes_signals_connected = True
+        for index in self._axes_indices():
+            plot = self._plots[index]
+            if plot is not None:
+                self._connect_plot_signals(index, plot.plotItem)
 
     def disconnect_axes_signals(self) -> None:
-        for ax in self.axes:
-            ax.disconnect_signals()
+        for index in tuple(self._axes_signal_connected_indices):
+            plot = self._plots[index]
+            if plot is not None:
+                plot.plotItem.disconnect_signals()
+        self._axes_signal_connected_indices.clear()
+        self._axes_signals_connected = False
 
     def connect_signals(self) -> None:
         self.connect_axes_signals()
@@ -1608,7 +1813,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 if reverse:
                     value = 1 - value
                 color = cmap.map(value, mode=cmap.QCOLOR)
-                for ax in self.axes:
+                for ax in self._materialized_axes():
                     self.cursor_colors[cursor_idx] = color
                     ax.set_cursor_color(cursor_idx, color)
             self.sigCursorColorsChanged.emit()
@@ -1654,7 +1859,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         coord_or_rect_list = []
         arrays_list_flat = []
 
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             objs, coord_or_rects, arrays = ax.collect_dask_objects(cursor, axes)
             if objs:
                 obj_list.append(objs)
@@ -1672,7 +1877,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         arrays_it = iter(arrays_list_flat)
 
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             for c in cursor:
                 ax.refresh_cursor(c)
 
@@ -1704,10 +1909,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.array_slicer.get_value(self.current_cursor, axis, uniform=uniform)
 
     def get_axes_widget(self, index: int) -> ItoolGraphicsLayoutWidget:
-        return self._plots[index]
+        return self._plot_widget_for_index(index)
 
     def get_axes(self, index: int) -> ItoolPlotItem:
-        return self._plots[index].plotItem
+        return self._plot_widget_for_index(index).plotItem
 
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
@@ -1723,7 +1928,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         self.sigIndexChanged.emit(tuple(c for c in range(self.n_cursors)), axes)
         if not only_plots:
-            for ax in self.axes:
+            for ax in self._materialized_axes():
                 ax.refresh_labels()
                 ax.update_manual_range()  # Handle axis limits (in case of transpose)
                 ax.update_axis_inversions()
@@ -1893,8 +2098,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         ndim_changed: bool = True
         cursors_reset: bool = True
+        had_array_slicer = hasattr(self, "_array_slicer")
+        secondary_plots_were_materialized = self._secondary_plots_materialized
         try:
-            if hasattr(self, "_array_slicer"):
+            if had_array_slicer:
                 if self._array_slicer._obj.ndim == _processed_ndim(self._data):
                     ndim_changed = False
                 cursors_reset = self._array_slicer.set_array(
@@ -1925,9 +2132,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.connect_signals()
         self.axis_inversions = self._normalized_axis_inversions(self.axis_inversions)
+        if had_array_slicer and ndim_changed:
+            self._secondary_plots_materialized = False
 
         if ndim_changed:
-            self.adjust_layout()
+            if secondary_plots_were_materialized:
+                self._ensure_secondary_plots()
+            else:
+                self.adjust_layout()
 
         if self.current_cursor > self.n_cursors - 1:
             self.set_current_cursor(self.n_cursors - 1, update=False)
@@ -1992,10 +2204,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _update_if_delayed(self) -> None:
         if self._update_delayed:
             self._update_delayed = False
-            self.sigDataChanged.emit()
-            logger.debug("Data refresh triggered (delayed)")
+            with self.history_suppressed(), self.link_sync_suppressed():
+                self.sigDataChanged.emit()
+                logger.debug("Data refresh triggered (delayed)")
 
-            self.refresh_colormap()
+                self.refresh_colormap()
 
     @property
     def reloadable(self) -> bool:
@@ -2530,7 +2743,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             for dim, limits in manual_limits.items()
             if dim in valid_dims
         }
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.update_manual_range()
 
     def _normalized_axis_inversions(
@@ -2560,7 +2773,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return axis_inversions
 
     def apply_axis_inversions(self) -> None:
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.update_axis_inversions()
 
     @link_slicer
@@ -2593,7 +2806,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 target.set_manual_limits(self.manual_limits)
 
         # Set manual limits for all other axes
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             if ax is not axes:
                 ax.update_manual_range()
 
@@ -2798,7 +3011,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # is expensive and can be flaky on some Qt backends.
             color = pg.mkColor(colors[0])
             self.cursor_colors[0] = color
-            for ax in self.axes:
+            for ax in self._materialized_axes():
                 ax.set_cursor_colors(self.cursor_colors)
             if update:
                 self.refresh_all()
@@ -2828,7 +3041,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.cursor_colors.append(QtGui.QColor(color))
 
         self.current_cursor = self.n_cursors - 1
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.add_cursor(update=False)
         if update:
             self._colorbar.cb.level_change()  # <- why is this required?
@@ -2852,7 +3065,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         elif self.current_cursor > index:  # pragma: no branch
             self.current_cursor -= 1
 
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.remove_cursor(index)
         if update:
             self.refresh_current()
@@ -2866,7 +3079,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def toggle_cursor_visibility(self) -> None:
         """Toggle the visibility of the cursor lines."""
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.set_cursor_visible(self.toggle_cursor_act.isChecked())
 
     def color_for_cursor(self, index: int) -> QtGui.QColor:
@@ -2892,7 +3105,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         self.array_slicer._cursor_color_params = None
         self.cursor_colors = [pg.mkColor(c) for c in colors]
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.set_cursor_colors(self.cursor_colors)
         self.sigCursorColorsChanged.emit()
 
@@ -2981,7 +3194,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if levels is not None:
             self.levels = levels
 
-        for im in self._imageitems:
+        for im in self._materialized_imageitems():
             im.set_pg_colormap(pg_colormap, update=update)
         self.sigViewOptionChanged.emit()
 
@@ -3004,7 +3217,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.levels_locked:
             levels = self.array_slicer.limits
             self._colorbar.cb.setLimits(levels)
-        for im in self._imageitems:
+        for im in self._materialized_imageitems():
             if self.levels_locked:
                 im.setLevels(levels, update=False)
             else:
@@ -3239,10 +3452,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         for i in range(8):
             visible: bool = i not in invalid
-            self.get_axes_widget(i).setVisible(visible)
+            plot = self._plots[i]
+            if plot is not None:
+                plot.setVisible(visible)
 
         # reserve space, only hide plotItem
-        self.get_axes(3).setVisible(self.data.ndim != 2)
+        if self._plots[3] is not None:
+            self.get_axes(3).setVisible(self.data.ndim != 2)
 
         self._colorbar.set_dimensions(
             width=self.HORIZ_PAD + 30,
@@ -3252,7 +3468,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         # Remove all ROI since they may not be valid anymore
-        for ax in self.axes:
+        for ax in self._materialized_axes():
             ax.clear_rois()
 
     def _cursor_name(self, i: int) -> str:
@@ -3284,3 +3500,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if style is not None:
                 self.qapp.setStyle(style.name())
         super().changeEvent(evt)
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        self._ensure_secondary_plots()
+        super().showEvent(event)

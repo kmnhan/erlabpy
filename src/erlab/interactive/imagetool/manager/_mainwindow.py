@@ -3519,12 +3519,14 @@ class ImageToolManager(_ImageToolManagerBase):
         parent_target: int | str | None,
         node_path: str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        profiler: typing.Any | None = None,
     ) -> int | str:
         return self._workspace_controller._load_workspace_imagetool_dataset(
             ds,
             parent_target=parent_target,
             node_path=node_path,
             loaded_targets_by_uid=loaded_targets_by_uid,
+            profiler=profiler,
         )
 
     def _load_workspace_tool_dataset(
@@ -3533,11 +3535,13 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         parent_target: int | str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        profiler: typing.Any | None = None,
     ) -> int | str:
         return self._workspace_controller._load_workspace_tool_dataset(
             ds,
             parent_target=parent_target,
             loaded_targets_by_uid=loaded_targets_by_uid,
+            profiler=profiler,
         )
 
     @staticmethod

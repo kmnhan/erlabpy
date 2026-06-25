@@ -389,9 +389,11 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
                 win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
         logger.info("Test alt key menu")
-        main_image.vb.menu.popup(QtCore.QPoint(0, 0))
-        main_image.vb.menu.eventFilter(
-            main_image.vb.menu,
+        viewbox_menu = main_image.vb.getMenu(None)
+        assert viewbox_menu is not None
+        viewbox_menu.popup(QtCore.QPoint(0, 0))
+        viewbox_menu.eventFilter(
+            viewbox_menu,
             QtGui.QKeyEvent(
                 QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
             ),
@@ -2006,6 +2008,142 @@ def test_point_value_context_menu_selects_associated_coord(qtbot) -> None:
     win.close()
 
 
+def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot = win.slicer_area.main_image
+    assert plot.vb.menu is None
+    colorbar = win.slicer_area._colorbar.cb
+    assert colorbar.vb.menu is None
+
+    plot.getMenu()
+    menu = plot.vb.menu
+    assert menu is not None
+    first_actions = tuple(menu.actions())
+
+    assert (
+        sum(
+            action.objectName() == "itool_add_polygon_roi_action"
+            for action in first_actions
+        )
+        == 1
+    )
+
+    assert plot.vb.getMenu(None) is menu
+    assert tuple(menu.actions()) == first_actions
+
+    plot.getMenu()
+    assert tuple(menu.actions()) == first_actions
+
+    plot.vb.setMenuEnabled(False)
+    assert plot.vb.menu is None
+    plot.vb.setMenuEnabled(True)
+    rebuilt_menu = plot.vb.getMenu(None)
+    assert rebuilt_menu is not None
+    assert rebuilt_menu is not menu
+    assert (
+        sum(
+            action.objectName() == "itool_add_polygon_roi_action"
+            for action in rebuilt_menu.actions()
+        )
+        == 1
+    )
+
+    colorbar_menu = colorbar.vb.getMenu(None)
+    assert colorbar_menu is not None
+    assert (
+        sum(
+            action.objectName() == "itool_copy_color_limits_action"
+            for action in colorbar_menu.actions()
+        )
+        == 1
+    )
+    colorbar.vb.setMenuEnabled(False)
+    assert colorbar.vb.menu is None
+    colorbar.vb.setMenuEnabled(True)
+    rebuilt_colorbar_menu = colorbar.vb.getMenu(None)
+    assert rebuilt_colorbar_menu is not None
+    assert rebuilt_colorbar_menu is not colorbar_menu
+    assert (
+        sum(
+            action.objectName() == "itool_copy_color_limits_action"
+            for action in rebuilt_colorbar_menu.actions()
+        )
+        == 1
+    )
+    win.close()
+
+
+def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
+    data_2d = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    win = ImageTool(data_2d, _in_manager=True, _defer_secondary_plots=True)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    assert area._plot_widgets_constructed == 1
+    assert [index for index, plot in enumerate(area._plots) if plot is not None] == [0]
+
+    assert len(area.axes) == 3
+    assert area._secondary_plots_materialized
+    assert area._plot_widgets_constructed == 3
+    assert [index for index, plot in enumerate(area._plots) if plot is not None] == [
+        0,
+        1,
+        2,
+    ]
+
+    data_3d = xr.DataArray(np.arange(8.0).reshape(2, 2, 2), dims=("x", "y", "z"))
+    area.set_data(data_3d)
+    assert area._secondary_plots_materialized
+    assert area._plot_widgets_constructed == 6
+
+    axes = area.axes
+    assert len(axes) == 6
+    assert area._secondary_plots_materialized
+    assert area._plot_widgets_constructed == 6
+    assert {tuple(ax.display_axis) for ax in axes} == {
+        (0, 1),
+        (0, 2),
+        (2, 1),
+        (0,),
+        (1,),
+        (2,),
+    }
+    win.close()
+
+
+def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    win = ImageTool(data, _in_manager=True, _defer_secondary_plots=True)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    plot = area.get_axes(7)
+    assert tuple(plot.display_axis) == (3, 2)
+    assert area._plot_widgets_constructed == 4
+    assert area._secondary_plots_materialized
+    assert [index for index, item in enumerate(area._plots) if item is not None] == [
+        0,
+        1,
+        2,
+        7,
+    ]
+    assert 7 not in area._axes_signal_connected_indices
+
+    data_4d = xr.DataArray(
+        np.arange(16.0).reshape(2, 2, 2, 2), dims=("x", "y", "z", "t")
+    )
+    area.set_data(data_4d)
+    assert area._secondary_plots_materialized
+    assert len(area.axes) == 8
+    assert 7 in area._axes_signal_connected_indices
+    win.close()
+
+
 def test_profile_menu_opens_associated_coord_targets(
     qtbot, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2044,7 +2182,9 @@ def test_profile_menu_opens_associated_coord_targets(
     profile._refresh_associated_coord_menu()
     assert profile._associated_coord_menu is not None
     assert profile._associated_coord_menu.menuAction().isVisible()
-    plot_actions = profile.vb.menu.actions()
+    plot_menu = profile.vb.getMenu(None)
+    assert plot_menu is not None
+    plot_actions = plot_menu.actions()
     menu_index = plot_actions.index(profile._associated_coord_menu.menuAction())
     assert plot_actions[menu_index - 1].isSeparator()
     assert plot_actions[menu_index - 1].isVisible()
@@ -3458,7 +3598,11 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
     assert win.slicer_area._colorbar.cb._copy_limits() == str((1.0, 23.0))
 
     # Test color limits editor
-    clw = win.slicer_area._colorbar.cb._clim_menu.actions()[0].defaultWidget()
+    colorbar_menu = win.slicer_area._colorbar.cb.vb.getMenu(None)
+    assert colorbar_menu is not None
+    clim_menu = win.slicer_area._colorbar.cb._clim_menu
+    assert clim_menu is not None
+    clw = clim_menu.actions()[0].defaultWidget()
     assert clw.min_spin.value() == win.slicer_area.levels[0]
     assert clw.max_spin.value() == win.slicer_area.levels[1]
     clw.min_spin.setValue(1.0)
@@ -6527,9 +6671,11 @@ def test_itool_roi_lifecycle(qtbot) -> None:
     qtbot.addWidget(win)
 
     plot_item = win.slicer_area.main_image
+    menu = plot_item.vb.getMenu(None)
+    assert menu is not None
     add_roi_action = next(
         act
-        for act in plot_item.vb.menu.actions()
+        for act in menu.actions()
         if act.objectName() == "itool_add_polygon_roi_action"
     )
     add_roi_action.trigger()

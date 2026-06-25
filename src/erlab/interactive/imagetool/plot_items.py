@@ -379,6 +379,57 @@ class _OptionKeyMenuFilter(QtCore.QObject):
         return super().eventFilter(obj, event)
 
 
+class ItoolViewBox(pg.ViewBox):
+    """ViewBox that defers expensive menu construction until first use."""
+
+    def __init__(self, *args, enableMenu: bool = True, **kwargs) -> None:
+        super().__init__(*args, enableMenu=False, **kwargs)
+        self.state["enableMenu"] = enableMenu
+        self._itool_menu_populator: collections.abc.Callable[[], object] | None = None
+        self._itool_menu_resetters: list[collections.abc.Callable[[], None]] = []
+        self._itool_populating_menu = False
+
+    def _ensure_menu(self) -> QtWidgets.QMenu | None:
+        menu = typing.cast("QtWidgets.QMenu | None", getattr(self, "menu", None))
+        if menu is None and self.menuEnabled():
+            pg.ViewBox._applyMenuEnabled(self)
+            menu = typing.cast("QtWidgets.QMenu | None", getattr(self, "menu", None))
+        return menu
+
+    def _populate_itool_menu(self) -> None:
+        populator = self._itool_menu_populator
+        if populator is None or self._itool_populating_menu:
+            return
+        self._itool_populating_menu = True
+        try:
+            populator()
+        finally:
+            self._itool_populating_menu = False
+
+    def _reset_itool_menu_state(self) -> None:
+        for resetter in tuple(self._itool_menu_resetters):
+            resetter()
+
+    def _applyMenuEnabled(self) -> None:
+        menu = typing.cast("QtWidgets.QMenu | None", getattr(self, "menu", None))
+        if not self.menuEnabled() and menu is not None:
+            self._reset_itool_menu_state()
+            menu.setParent(None)
+            self.menu = None
+
+    def getMenu(self, ev=None) -> QtWidgets.QMenu | None:
+        menu = self._ensure_menu()
+        if menu is not None:
+            self._populate_itool_menu()
+        return menu
+
+    def getContextMenus(self, event) -> list[QtGui.QAction]:
+        menu = self.getMenu(event)
+        if menu is None or not self.menuEnabled():
+            return []
+        return menu.actions()
+
+
 class ItoolPlotItem(pg.PlotItem):
     """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
 
@@ -400,11 +451,13 @@ class ItoolPlotItem(pg.PlotItem):
         plotdata_cls=None,
         **item_kw,
     ) -> None:
+        view_box = ItoolViewBox(enableMenu=True)
         super().__init__(
+            viewBox=view_box,
             axisItems={
                 a: erlab.interactive.utils.BetterAxisItem(a)
                 for a in ("left", "right", "top", "bottom")
-            }
+            },
         )
         self._axis_enabled = axis_enabled
 
@@ -416,7 +469,21 @@ class ItoolPlotItem(pg.PlotItem):
         self.is_image = image
         self._item_kw = item_kw
 
-        self.setup_actions()
+        self._context_menu: QtWidgets.QMenu | None = None
+        self._context_menu_ready = False
+        self._manager_figure_actions_requested = False
+        self._associated_coord_menu: QtWidgets.QMenu | None = None
+        self._associated_coord_menu_separator_above: QtGui.QAction | None = None
+        self._associated_coord_menu_separator_below: QtGui.QAction | None = None
+        self._plot_with_matplotlib_action: QtGui.QAction | None = None
+        self._append_to_figure_action: QtGui.QAction | None = None
+        self._new_window_separator: QtGui.QAction | None = None
+        self._new_window_action: QtGui.QAction | None = None
+        self._menu_filter: _OptionKeyMenuFilter | None = None
+        view_box._itool_menu_populator = self._ensure_context_menu
+        view_box._itool_menu_resetters.append(self._reset_context_menu)
+        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
+            self.setContextMenuActionVisible(act, False)
 
         if image_cls is None:  # pragma: no branch
             self.image_cls = ItoolImageItem
@@ -503,44 +570,56 @@ class ItoolPlotItem(pg.PlotItem):
         self._last_axis_inversions = self._viewbox_axis_inversions()
 
     def setup_actions(self) -> None:
-        self._associated_coord_menu: QtWidgets.QMenu | None = None
-        self._associated_coord_menu_separator_above: QtGui.QAction | None = None
-        self._associated_coord_menu_separator_below: QtGui.QAction | None = None
-        self._plot_with_matplotlib_action: QtGui.QAction | None = None
-        self._append_to_figure_action: QtGui.QAction | None = None
-        self._new_window_separator: QtGui.QAction | None = None
-        self._new_window_action: QtGui.QAction | None = None
-        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
-            self.setContextMenuActionVisible(act, False)
+        self._ensure_context_menu()
+
+    def _reset_context_menu(self) -> None:
+        self._context_menu = None
+        self._context_menu_ready = False
+        self._associated_coord_menu = None
+        self._associated_coord_menu_separator_above = None
+        self._associated_coord_menu_separator_below = None
+        self._plot_with_matplotlib_action = None
+        self._append_to_figure_action = None
+        self._new_window_separator = None
+        self._new_window_action = None
+        self._menu_filter = None
+
+    def _ensure_context_menu(self) -> QtWidgets.QMenu | None:
+        raw_menu = typing.cast("ItoolViewBox", self.vb)._ensure_menu()
+        if raw_menu is None:
+            return None
+        if self._context_menu_ready and self._context_menu is raw_menu:
+            return raw_menu
+        menu = typing.cast("typing.Any", raw_menu)
 
         for i in (0, 1):
             # Hide unnecessary menu items
-            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
-            self.vb.menu.ctrl[i].label.setVisible(False)
+            menu.ctrl[i].linkCombo.setVisible(False)
+            menu.ctrl[i].label.setVisible(False)
 
         if self.is_image:
             # ROI actions
-            self.vb.menu.addSeparator()
-            poly_roi_action = self.vb.menu.addAction("Add Polygon ROI")
+            menu.addSeparator()
+            poly_roi_action = menu.addAction("Add Polygon ROI")
             poly_roi_action.setObjectName("itool_add_polygon_roi_action")
             poly_roi_action.triggered.connect(self.add_roi)
 
-        self.vb.menu.addSeparator()
+        menu.addSeparator()
 
-        save_action = self.vb.menu.addAction("Save data as HDF5…")
+        save_action = menu.addAction("Save data as HDF5…")
         save_action.triggered.connect(self.save_current_data)
 
-        copy_code_action = self.vb.menu.addAction("Copy selection code")
+        copy_code_action = menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
-        self.vb.menu.addSeparator()
+        menu.addSeparator()
 
-        if self.slicer_area._in_manager:
-            self.ensure_manager_figure_actions()
+        if self.slicer_area._in_manager or self._manager_figure_actions_requested:
+            self._add_manager_figure_actions(menu)
 
-        self._new_window_separator = self.vb.menu.addSeparator()
+        self._new_window_separator = menu.addSeparator()
 
-        itool_action = self.vb.menu.addAction("New Window")
+        itool_action = menu.addAction("New Window")
         itool_action.triggered.connect(self.open_in_new_window)
         itool_action.setIcon(qtawesome.icon("mdi6.export"))
         itool_action.setIconVisibleInMenu(True)
@@ -555,26 +634,26 @@ class ItoolPlotItem(pg.PlotItem):
 
         if self.is_image:
             # Actions that open new windows
-            goldtool_action = self.vb.menu.addAction("goldtool")
+            goldtool_action = menu.addAction("goldtool")
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
-            restool_action = self.vb.menu.addAction("restool")
+            restool_action = menu.addAction("restool")
             restool_action.triggered.connect(self.open_in_restool)
 
-            dtool_action = self.vb.menu.addAction("dtool")
+            dtool_action = menu.addAction("dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
 
-            ftool_action = self.vb.menu.addAction("ftool")
+            ftool_action = menu.addAction("ftool")
             ftool_action.triggered.connect(self.open_in_ftool)
 
             croppable_actions.extend(
                 (goldtool_action, restool_action, dtool_action, ftool_action)
             )
 
-            self.vb.menu.addSeparator()
+            menu.addSeparator()
 
             # Aspect ratio lock checkbox
-            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
+            equal_aspect_action = menu.addAction("Equal aspect ratio")
             equal_aspect_action.setCheckable(True)
             equal_aspect_action.setChecked(False)
             equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
@@ -589,7 +668,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
             # AdjustCT-like action
-            adjust_color_action = self.vb.menu.addAction("Normalize to View")
+            adjust_color_action = menu.addAction("Normalize to View")
             adjust_color_action.setToolTip(
                 "Set color limits from the currently visible area of this image.\n"
                 "Similar to 'AdjustCT' in Igor Pro."
@@ -610,53 +689,61 @@ class ItoolPlotItem(pg.PlotItem):
             _set_icons()
 
         else:
-            ftool_action = self.vb.menu.addAction("ftool")
+            ftool_action = menu.addAction("ftool")
             ftool_action.triggered.connect(self.open_in_ftool)
             ftool_action.setIcon(qtawesome.icon("mdi6.export"))
             ftool_action.setIconVisibleInMenu(True)
             croppable_actions.append(ftool_action)
 
-            self.vb.menu.addSeparator()
+            menu.addSeparator()
 
-            norm_action = self.vb.menu.addAction("Normalize by mean")
+            norm_action = menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
             norm_action.toggled.connect(self.set_normalize)
 
-            self._associated_coord_menu_separator_above = self.vb.menu.addSeparator()
+            self._associated_coord_menu_separator_above = menu.addSeparator()
             self._associated_coord_menu_separator_above.setVisible(False)
-            self._associated_coord_menu = self.vb.menu.addMenu(
-                "Open Associated Coordinate"
-            )
+            self._associated_coord_menu = menu.addMenu("Open Associated Coordinate")
             typing.cast(
                 "QtGui.QAction", self._associated_coord_menu.menuAction()
             ).setVisible(False)
-            self._associated_coord_menu_separator_below = self.vb.menu.addSeparator()
+            self._associated_coord_menu_separator_below = menu.addSeparator()
             self._associated_coord_menu_separator_below.setVisible(False)
-            self.vb.menu.aboutToShow.connect(self._refresh_associated_coord_menu)
+            menu.aboutToShow.connect(self._refresh_associated_coord_menu)
 
         if self.is_image:
-            self.vb.menu.addSeparator()
+            menu.addSeparator()
 
-        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
-        self.vb.menu.installEventFilter(self._menu_filter)
+        self._menu_filter = _OptionKeyMenuFilter(menu, croppable_actions)
+        menu.installEventFilter(self._menu_filter)
+        self._context_menu = raw_menu
+        self._context_menu_ready = True
+        return raw_menu
 
     def ensure_manager_figure_actions(self) -> None:
+        self._manager_figure_actions_requested = True
+        if self._plot_with_matplotlib_action is not None:
+            return
+        if self._context_menu_ready and self._context_menu is not None:
+            self._add_manager_figure_actions(self._context_menu)
+
+    def _add_manager_figure_actions(self, menu: QtWidgets.QMenu) -> None:
         if self._plot_with_matplotlib_action is not None:
             return
         insert_before = self._new_window_separator or self._new_window_action
-        plot_action = QtGui.QAction("New Figure", self.vb.menu)
+        plot_action = QtGui.QAction("New Figure", menu)
         plot_action.setObjectName("itool_plot_with_matplotlib_action")
         plot_action.triggered.connect(self.plot_with_matplotlib)
-        append_action = QtGui.QAction("Append to Figure", self.vb.menu)
+        append_action = QtGui.QAction("Append to Figure", menu)
         append_action.setObjectName("itool_append_to_figure_action")
         append_action.triggered.connect(self.append_to_matplotlib_figure)
         if insert_before is None:
-            self.vb.menu.addAction(plot_action)
-            self.vb.menu.addAction(append_action)
+            menu.addAction(plot_action)
+            menu.addAction(append_action)
         else:
-            self.vb.menu.insertAction(insert_before, plot_action)
-            self.vb.menu.insertAction(insert_before, append_action)
+            menu.insertAction(insert_before, plot_action)
+            menu.insertAction(insert_before, append_action)
         self._plot_with_matplotlib_action = plot_action
         self._append_to_figure_action = append_action
 
@@ -792,6 +879,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def _refresh_associated_coord_menu(self) -> None:
+        self._ensure_context_menu()
         menu = self._associated_coord_menu
         if menu is None:
             return
@@ -2760,7 +2848,12 @@ class ItoolPlotItem(pg.PlotItem):
             vb.setAspectLocked(False)
 
     def getMenu(self) -> QtWidgets.QMenu:
+        self._ensure_context_menu()
         return self.ctrlMenu
+
+    def getContextMenus(self, event) -> QtWidgets.QMenu | None:
+        self._ensure_context_menu()
+        return super().getContextMenus(event)
 
     def getViewBox(self) -> pg.ViewBox:
         # override for type hinting
@@ -3296,11 +3389,39 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
                 for a in ("left", "right", "top", "bottom")
             },
         )
+        kwargs.setdefault("viewBox", ItoolViewBox(enableMenu=True))
         kwargs["show_colormap_edit_menu"] = False
+        kwargs["_defer_context_menu_setup"] = True
         super().__init__(**kwargs)
 
-        copy_action = self.vb.menu.addAction("Copy color limits to clipboard")
+        self._copy_limits_action: QtGui.QAction | None = None
+        if isinstance(self.vb, ItoolViewBox):
+            self.vb._itool_menu_populator = self._ensure_context_menu
+            self.vb._itool_menu_resetters.append(self._reset_context_menu)
+
+    def _ensure_context_menu(self) -> QtWidgets.QMenu | None:
+        menu = super()._ensure_context_menu()
+        if menu is None or self._copy_limits_action is not None:
+            return menu
+        copy_action = typing.cast(
+            "QtGui.QAction", menu.addAction("Copy color limits to clipboard")
+        )
+        copy_action.setObjectName("itool_copy_color_limits_action")
         copy_action.triggered.connect(self._copy_limits)
+        self._copy_limits_action = copy_action
+        return menu
+
+    def _reset_context_menu(self) -> None:
+        self._context_menu = None
+        self._context_menu_ready = False
+        self._clim_menu = None
+        self._clim_widget = None
+        self._clim_action = None
+        self._center_zero_action = None
+        self._cmap_menu = None
+        self._cmap_widget = None
+        self._cmap_action = None
+        self._copy_limits_action = None
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
@@ -3315,7 +3436,7 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
 
     @property
     def images(self):
-        return [weakref.ref(x) for x in self.slicer_area._imageitems]
+        return [weakref.ref(x) for x in self.slicer_area._materialized_imageitems()]
 
     @property
     def primary_image(self):

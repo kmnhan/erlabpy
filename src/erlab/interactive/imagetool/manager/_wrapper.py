@@ -422,7 +422,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
             value.slicer_area._in_manager = True
             value.remove_act.setVisible(True)
-            for plot in value.slicer_area.axes:
+            for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
             return
 
@@ -1297,6 +1297,9 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         if obj == self.window and event_type in tracked_event_types:
             if self.imagetool is not None and event_type == QtCore.QEvent.Type.Show:
+                erlab.interactive.utils.single_shot(
+                    self.slicer_area, 0, self.slicer_area._ensure_secondary_plots
+                )
                 erlab.interactive.utils.single_shot(
                     self.slicer_area, 0, self.slicer_area._update_if_delayed
                 )
