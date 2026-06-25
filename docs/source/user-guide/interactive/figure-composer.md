@@ -14,22 +14,18 @@ steps that each correspond to a plotting operation.
 
 ## Opening Figure Composer
 
-There are three main entry points:
+Open data in ImageTool Manager, then use one of these entry points:
 
 - From ImageTool, right-click an image or line plot and choose {guilabel}`New Figure`.
-  This creates a new figure seeded from the selected image.
   - If multiple cursors exist, a figure with multiple axes is created. This is useful
     for quickly generating comparison figures with several slices of the same data.
-- From ImageTool, choose {guilabel}`Append to Figure` from the same context menu to add
-  the current plot to an existing figure.
-- From the manager, select one or more ImageTool rows and click
+- From the same menu, choose {guilabel}`Append to Figure` to add the current plot to an
+  existing figure.
+- From ImageTool Manager, select one or more ImageTool rows and click
   {guilabel}`Add to Figure…` in the right-click context menu of the selection.
 
-Figures are listed in the manager's {guilabel}`Figures` tab, which is hidden until a
+Figures are listed in the manager's {guilabel}`Figures` tab, which appears after a
 figure is created.
-
-A Figure Composer is comprised of two main windows: the window that contains all the
-controls, and the Matplotlib figure window that shows the rendered figure.
 
 (figure-composer-layout)=
 
@@ -47,7 +43,7 @@ and optional width or height ratios. This is the quickest way to create a row of
 constant-energy maps or a stacked image/profile figure.
 
 Use {guilabel}`GridSpec` mode when the figure needs axes that span several cells or
-nested regions created with {class}`matplotlib.gridspec.GridSpec` Drag in the GridSpec
+nested regions created with {class}`matplotlib.gridspec.GridSpec`. Drag in the GridSpec
 editor to create rectangular axes or nested grids. Open a nested grid to edit it in
 place, then use the breadcrumb controls to return to the parent grid. Axis labels are
 optional; the composer generates stable names for code when labels are left blank.
@@ -68,9 +64,14 @@ the figure state created by earlier steps.
 Every step has a type, a target (axes or figure), and a set of controls for the
 arguments of the plotting or styling calls it generates.
 
-There are several step types, each with a different set of controls for the generated code:
+There are several step types, each with a different set of controls for the generated
+code:
 
-- {guilabel}`Plot Slices` as an interface to {func}`erlab.plotting.plot_slices`.
+- {guilabel}`Set Palette` to set the line color cycle with {func}`seaborn.set_palette`.
+- {guilabel}`Image Plot` for one two-dimensional image on one axes. Uses
+  {func}`erlab.plotting.plot_array`.
+- {guilabel}`Slice Plot` for plotting multiple slices on multiple axes. Uses
+  {func}`erlab.plotting.plot_slices`.
 - {guilabel}`Line/Profile` for extracted one-dimensional profiles. This also provides an
   ability to create MDC/EDC stack plots. You can either use this step as a simple
   interface to {meth}`xarray.DataArray.plot` with 1D data, or use it to extract multiple
@@ -84,7 +85,7 @@ There are several step types, each with a different set of controls for the gene
   colorbar and annotation utilities.
 - {guilabel}`Axes Method` for a subset of Matplotlib `ax.*` methods.
 - {guilabel}`Figure Method` for a subset of Matplotlib `fig.*` methods.
-- {guilabel}`Custom Code` for arbitrary code snippets.
+- {guilabel}`Python` for arbitrary code snippets.
 
 ### Editing steps
 
@@ -123,9 +124,9 @@ When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the
 - {guilabel}`Add New Step` adds the selected ImageTool data and appends a plotting step.
 - {guilabel}`Add Source Only` adds the selected ImageTool data to the figure without
   creating or changing recipe steps.
-- {guilabel}`Replace Source` keeps the existing figure recipe intact but swaps one source
-  to use data from the selected ImageTool. This is useful when you have formatted a
-  figure and want to reuse the same recipe, axes, styles, and generated variable names
+- {guilabel}`Replace Source` keeps the existing figure recipe intact but swaps one
+  source to use data from the selected ImageTool. This is useful when you have formatted
+  a figure and want to reuse the same recipe, axes, styles, and generated variable names
   with updated or comparable data.
 
 The {guilabel}`Sources` view also provides refresh controls. Click the row button next
@@ -168,16 +169,19 @@ replay code that includes all analysis steps.
 
 [Matplotlib stylesheets](https://matplotlib.org/stable/users/explain/customizing.html)
 are a powerful way to control the styling of all figure elements. Figure Composer
-applies the Matplotlib stylesheets configured in the interactive settings dialog in
-{menuselection}`File --> Settings`. These stylesheets affect new figure defaults such as
-size, dpi, and export settings, as well as the styling of all figure elements.
+applies the Matplotlib stylesheets configured in the shared {guilabel}`Settings`
+window. These stylesheets affect new figure defaults such as size, dpi, and export
+settings, as well as the styling of all figure elements.
 
 To add custom Matplotlib stylesheets:
 
-1. Open {menuselection}`File --> Settings`.
-2. In {menuselection}`Figure --> Stylesheets`, select {guilabel}`Open Folder`.
+1. Open the shared settings window: on macOS, choose {menuselection}`Preferences…` from
+   the application menu next to {fab}`apple` (macOS) or {menuselection}`File -->
+   Settings` (Windows/Linux).
+2. Select {guilabel}`Figure Composer` in the sidebar. In the {guilabel}`Stylesheets`
+   option, click {guilabel}`Open Folder`.
 3. Copy `*.mplstyle` files into that folder.
-4. Select {guilabel}`Reload` to update the stylesheet list.
+4. Click {guilabel}`Reload` to update the stylesheet list.
 5. Add the stylesheet by name. The name shown in settings is the file name without the
    `.mplstyle` suffix.
 

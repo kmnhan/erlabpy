@@ -26,7 +26,11 @@ import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive._figurecomposer import FigureOperationKind, FigureOperationState
+from erlab.interactive._figurecomposer import (
+    FigureDataSelectionState,
+    FigureOperationKind,
+    FigureOperationState,
+)
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
@@ -1311,11 +1315,10 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
     win.slicer_area.array_slicer.set_bin(0, 2, 3)
 
     operation = main_image.figure_composer_operation(source_name="data")
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.slice_dim == "beta"
-    assert operation.slice_values == (2.0,)
-    assert operation.slice_width == pytest.approx(3.0)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert len(operation.map_selections) == 1
+    assert operation.map_selections[0].qsel["beta"] == pytest.approx(2.0)
+    assert operation.map_selections[0].qsel["beta_width"] == pytest.approx(3.0)
     assert operation.extra_kwargs == {}
 
     win.close()
@@ -1572,7 +1575,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
         FigureSourceState,
     )
 
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert operation.sources == ("data_0",)
     assert isinstance(operation.transpose, bool)
     assert isinstance(operation.crop, bool)
@@ -1583,7 +1586,7 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     assert operation.norm_gamma == pytest.approx(1.5)
     assert operation.vmin == pytest.approx(0.0)
     assert operation.vmax == pytest.approx(124.0)
-    assert operation.same_limits is True
+    assert operation.same_limits is False
     assert "custom_code" not in created[0]
 
     composer = FigureComposerTool.from_sources(
@@ -1651,10 +1654,10 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     assert warnings_shown == []
     operation = created[0]["operation"]
     assert isinstance(operation, FigureOperationState)
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.slice_dim == "Track Shift"
-    assert operation.slice_values == (2.0,)
-    assert operation.map_selections == ()
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.map_selections == (
+        FigureDataSelectionState(source="data_0", qsel={"Track Shift": 2.0}),
+    )
 
     win.close()
 
@@ -1754,10 +1757,10 @@ def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
     assert operation.ylim == (0.5, 2.5)
     assert operation.cmap == "magma"
     assert operation.norm_gamma == pytest.approx(0.3)
-    assert operation.map_selections == ()
-    assert operation.slice_dim == "Track_Shift"
-    assert operation.slice_values == (2.0,)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.map_selections == (
+        FigureDataSelectionState(source="data_0", qsel={"Track_Shift": 2.0}),
+    )
 
     from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 
@@ -1768,22 +1771,6 @@ def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
         primary_source="data_0",
     )
     qtbot.addWidget(composer)
-
-    dim_combo = composer.findChild(
-        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
-    )
-    values_edit = composer.findChild(
-        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
-    )
-    slice_kwargs_edit = composer.findChild(
-        QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
-    )
-    assert dim_combo is not None
-    assert values_edit is not None
-    assert slice_kwargs_edit is not None
-    assert dim_combo.currentText() == "Track_Shift"
-    assert values_edit.text() == "2"
-    assert slice_kwargs_edit.text() == ""
 
     import matplotlib.pyplot as plt
 
@@ -3290,6 +3277,70 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     assert not win.slicer_area.reloadable
     with pytest.raises(RuntimeError, match="provenance"):
         win.slicer_area._fetch_for_provenance_reload()
+
+    safe_seed = (
+        "import xarray\n\n"
+        f"derived = xarray.load_dataarray({str(source_file)!r}, engine='h5netcdf')"
+    )
+    safe_load_source = _file_source(source_file).model_copy(
+        update={
+            "kwargs_text": 'engine="h5netcdf"',
+            "load_code": safe_seed,
+            "replay_call": provenance.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={"engine": "h5netcdf"},
+                selected_index=0,
+            ),
+        }
+    )
+    safe_script_spec = provenance.script(
+        start_label="Load script-backed file",
+        seed_code=safe_seed,
+        active_name="derived",
+        file_load_source=safe_load_source,
+    ).append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    win.set_provenance_spec(safe_script_spec)
+    assert win.slicer_area.reloadable
+    assert win.slicer_area._provenance_reload_unavailable_reason() is None
+
+    updated = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",))
+    updated.to_netcdf(source_file, engine="h5netcdf")
+    xarray.testing.assert_identical(
+        win.slicer_area._fetch_for_provenance_reload(),
+        updated.mean("x"),
+    )
+
+    missing_script_file = tmp_path / "missing-script.h5"
+    win.set_provenance_spec(
+        safe_script_spec.model_copy(
+            update={
+                "file_load_source": safe_load_source.model_copy(
+                    update={"path": str(missing_script_file)}
+                )
+            }
+        )
+    )
+    assert not win.slicer_area.reloadable
+    unavailable_reasons.clear()
+    win.slicer_area.reload()
+    assert str(missing_script_file) in unavailable_reasons[-1]
+    with pytest.raises(FileNotFoundError):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    trusted_script_spec = safe_script_spec.append_operations(
+        provenance.ScriptCodeOperation(
+            label="Trusted code",
+            code="derived = globals()['derived']",
+        )
+    )
+    win.set_provenance_spec(trusted_script_spec)
+    assert not win.slicer_area.reloadable
+    reason = win.slicer_area._provenance_reload_unavailable_reason()
+    assert reason is not None
+    assert "trust" in reason.lower()
 
     win.set_provenance_spec(
         provenance.file_load(
@@ -7088,10 +7139,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    assert ".rename(" not in display_code
-    xarray.testing.assert_identical(
-        derived.rename(None), data.qsel.mean("x").rename(None)
-    )
+    xarray.testing.assert_identical(derived, data.qsel.mean("x"))
     win.close()
 
 
@@ -7181,8 +7229,7 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    assert ".rename(" not in display_code
-    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+    xarray.testing.assert_identical(derived, expected)
 
     win.close()
 
@@ -10993,13 +11040,10 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
     display_code = win.provenance_spec.display_code()
     assert display_code is not None
     assert "mesh_current" in display_code
-    assert ".rename(" not in display_code
     assert "x_idx" not in display_code
     namespace = {"data": data.copy(deep=True)}
     exec(display_code, {}, namespace)  # noqa: S102
-    xarray.testing.assert_identical(
-        namespace["derived"].rename(None), (data / data.mesh_current).rename(None)
-    )
+    xarray.testing.assert_identical(namespace["derived"], (data / data.mesh_current))
 
     win.close()
 

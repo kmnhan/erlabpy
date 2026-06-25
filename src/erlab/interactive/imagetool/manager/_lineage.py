@@ -18,6 +18,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_TOOLTIPS,
     _ScriptRebuildError,
     _ScriptRebuildResult,
+    _TrustedScriptReplayCancelled,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -39,6 +40,62 @@ logger = logging.getLogger(__name__)
 class _LineageController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+
+    @staticmethod
+    def _script_provenance_runnable(
+        spec: provenance.ToolProvenanceSpec,
+    ) -> bool:
+        return provenance.script_provenance_replayable(
+            spec
+        ) or provenance.script_provenance_requires_trust(spec)
+
+    def _ensure_script_provenance_trusted(
+        self,
+        spec: provenance.ToolProvenanceSpec,
+        *,
+        reason: str,
+        external_input_names: set[str] | None = None,
+    ) -> None:
+        if not provenance.script_provenance_requires_trust(
+            spec,
+            external_input_names=external_input_names,
+        ):
+            return
+        trust_key = _replay_graph.script_provenance_trust_key(spec)
+        if (
+            trust_key is not None
+            and trust_key in self._manager._trusted_script_replay_keys
+        ):
+            return
+        if not self._prompt_trusted_script_replay(spec, reason=reason):
+            raise _TrustedScriptReplayCancelled
+        if trust_key is not None:
+            self._manager._trusted_script_replay_keys.add(trust_key)
+
+    def _prompt_trusted_script_replay(
+        self,
+        spec: provenance.ToolProvenanceSpec,
+        *,
+        reason: str,
+    ) -> bool:
+        msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setObjectName("managerTrustedScriptReplayDialog")
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Run Recorded Python Code")
+        msg_box.setText("Run recorded Python code?")
+        msg_box.setInformativeText(
+            f"ImageTool cannot verify this recorded code as safe to replay "
+            f"automatically. It needs to run Python code to {reason}."
+        )
+        if code := spec.derivation_code():
+            msg_box.setDetailedText(code)
+        run_button = msg_box.addButton(
+            "Run Code", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", cancel_button))
+        msg_box.exec()
+        return msg_box.clickedButton() is run_button
 
     def _dependency_refs_for_uid(
         self, uid: str
@@ -156,12 +213,47 @@ class _LineageController:
         spec = script_input.parsed_provenance_spec()
         if spec is None:
             return False
-        if spec.kind == "file" and spec.file_load_source is not None:
-            return pathlib.Path(spec.file_load_source.path).exists()
+        source_status = provenance.file_load_source_status(spec)
+        if source_status != "no-file-load-source":
+            return source_status != "missing-file"
         for nested_input in spec.script_inputs:
             if cls._script_input_has_recorded_file(nested_input):
                 return True
         return False
+
+    @staticmethod
+    def _file_load_source_unavailable_reason(
+        spec: provenance.ToolProvenanceSpec,
+        label: str,
+    ) -> str | None:
+        source_status = provenance.file_load_source_status(spec)
+        load_source = spec.file_load_source
+        if source_status == "no-file-load-source" or load_source is None:
+            return (
+                f"{label} has no recorded source file. Reopen the input or recreate "
+                "the result from reloadable inputs, then try again."
+            )
+        file_path = pathlib.Path(load_source.path)
+        if source_status == "missing-file":
+            return (
+                f"The source file for {label} is not available:\n"
+                f"{file_path}\n\n"
+                "Reconnect the drive or restore the file, then try again."
+            )
+        replay_call = load_source.replay_call
+        if source_status == "no-replay-call" or replay_call is None:
+            return (
+                f"{label} has file provenance, but the loader information needed "
+                "to read it is missing. Reopen the input or recreate the result "
+                "from reloadable inputs, then try again."
+            )
+        if source_status == "missing-loader":
+            return (
+                f"The saved loader {replay_call.target!r} for {label} is not "
+                "available in this ImageTool session. Reopen the input from its "
+                "file with an available loader."
+            )
+        return None
 
     @classmethod
     def _dependency_ref_has_recorded_file(
@@ -385,21 +477,14 @@ class _LineageController:
                 return True
         if spec is None:
             return False
+        source_status = provenance.file_load_source_status(spec)
+        if source_status != "no-file-load-source" and source_status != "loadable":
+            return False
         if spec.kind == "file":
-            if spec.file_load_source is None:
-                return False
-            replay_call = spec.file_load_source.replay_call
-            return (
-                replay_call is not None
-                and pathlib.Path(spec.file_load_source.path).exists()
-                and (
-                    replay_call.kind != "erlab_loader"
-                    or replay_call.target in erlab.io.loaders
-                )
-            )
+            return source_status == "loadable"
         if spec.kind != "script":
             return False
-        return provenance.script_provenance_replayable(spec) and all(
+        return self._script_provenance_runnable(spec) and all(
             self._manager._script_input_can_reload(
                 nested_input,
                 target_node_uid=target_node_uid,
@@ -431,50 +516,23 @@ class _LineageController:
                 "input or recreate the result from reloadable inputs, then try "
                 "again."
             )
-        if spec.kind == "file":
-            if spec.file_load_source is None:
-                return (
-                    f"{script_input.label} has no recorded source file. Reopen "
-                    "the input or recreate the result from reloadable inputs, "
-                    "then try again."
-                )
-            file_path = pathlib.Path(spec.file_load_source.path)
-            if not file_path.exists():
-                return (
-                    f"The source file for {script_input.label} is not available:\n"
-                    f"{file_path}\n\n"
-                    "Reconnect the drive or restore the file, then try again."
-                )
-            replay_call = spec.file_load_source.replay_call
-            if replay_call is None:
-                return (
-                    f"{script_input.label} has file provenance, but the loader "
-                    "information needed to read it is missing. Reopen the input "
-                    "or recreate the result from reloadable inputs, then try "
-                    "again."
-                )
-            if (
-                replay_call.kind == "erlab_loader"
-                and replay_call.target not in erlab.io.loaders
-            ):
-                return (
-                    f"The saved loader {replay_call.target!r} for "
-                    f"{script_input.label} is not available in this ImageTool "
-                    "session. Reopen the input from its file with an available "
-                    "loader."
-                )
-            return None
+        if spec.kind == "file" or provenance.has_file_load_source(spec):
+            reason = self._file_load_source_unavailable_reason(spec, script_input.label)
+            if reason is not None:
+                return reason
+            if spec.kind == "file":
+                return None
         if spec.kind != "script":
             return (
                 f"{script_input.label} has recorded provenance that cannot be "
                 "reloaded. Reopen the input or recreate the result from "
                 "reloadable inputs, then try again."
             )
-        if not provenance.script_provenance_replayable(spec):
+        if not self._script_provenance_runnable(spec):
             return (
                 f"{script_input.label} was created from recorded code that "
-                "cannot be replayed automatically. Recreate the result from "
-                "reloadable inputs to enable reload."
+                "cannot be replayed. Recreate the result from reloadable "
+                "inputs to enable reload."
             )
         for nested_input in spec.script_inputs:
             reason = self._manager._script_input_unavailable_reason(
@@ -506,10 +564,19 @@ class _LineageController:
             )
 
         try:
+            trusted_user_code = provenance.script_provenance_requires_trust(spec)
+            if trusted_user_code:
+                self._manager._ensure_script_provenance_trusted(
+                    spec,
+                    reason="reload this result",
+                )
             data, rebuilt_spec = _replay_graph.rebuild_script_provenance(
                 spec,
                 live_input_resolver=_resolve_live_input,
+                trusted_user_code=trusted_user_code,
             )
+        except _TrustedScriptReplayCancelled:
+            raise
         except _replay_graph.ReplayGraphError as exc:
             raise _ScriptRebuildError(
                 "Could not reload data.",
@@ -535,7 +602,7 @@ class _LineageController:
             and spec is not None
             and spec.kind == "script"
             and bool(spec.script_inputs)
-            and provenance.script_provenance_replayable(spec)
+            and self._script_provenance_runnable(spec)
             and all(
                 self._manager._script_input_can_reload(
                     script_input,
@@ -565,17 +632,22 @@ class _LineageController:
             return None
 
         spec = node.provenance_spec
+        if spec is not None and (
+            spec.kind == "file" or provenance.has_file_load_source(spec)
+        ):
+            reason = self._file_load_source_unavailable_reason(spec, "This result")
+            if reason is not None:
+                return reason
         if spec is not None and spec.kind == "script":
             if not spec.script_inputs:
                 return (
                     "This result has no recorded inputs. Reopen or recreate it "
                     "from reloadable inputs to enable reload."
                 )
-            if not provenance.script_provenance_replayable(spec):
+            if not self._script_provenance_runnable(spec):
                 return (
                     "This result was created from recorded code that cannot be "
-                    "replayed automatically. Recreate it from reloadable inputs "
-                    "to enable reload."
+                    "replayed. Recreate it from reloadable inputs to enable reload."
                 )
             for script_input in spec.script_inputs:
                 reason = self._manager._script_input_unavailable_reason(
@@ -1002,6 +1074,8 @@ class _LineageController:
                 spec,
                 target_node_uid=node.uid,
             )
+        except _TrustedScriptReplayCancelled:
+            return False
         except _ScriptRebuildError as exc:
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,

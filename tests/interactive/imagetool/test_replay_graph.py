@@ -30,7 +30,12 @@ def _exec_generated_code(
     return namespace
 
 
-def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
+def _file_replay_source(
+    path: pathlib.Path | str,
+    *,
+    selected_index: int = 0,
+    load_code: str | None = None,
+):
     return provenance.FileLoadSource(
         path=str(path),
         loader_label="xarray.load_dataarray",
@@ -41,6 +46,7 @@ def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
             target="xarray.load_dataarray",
             selected_index=selected_index,
         ),
+        load_code=load_code,
     )
 
 
@@ -180,6 +186,47 @@ class Child(Base, metaclass=data_5):
         {},
     )
     assert {"item", "derived"}.issubset(loop_else_names)
+    comprehension_names = {"float", "profiles", "sum"}
+    _replay_graph._validate_script_code_names(
+        "line_color_values = [\n"
+        '    float(profile.coords["sample_temp"].values.item())\n'
+        "    for profile in profiles\n"
+        "]\n"
+        "profile_names = {profile.name for profile in profiles}\n"
+        "profile_map = {profile.name: profile for profile in profiles}\n"
+        "profile_total = sum(profile.sum() for profile in profiles)",
+        comprehension_names,
+        {},
+    )
+    assert {
+        "line_color_values",
+        "profile_names",
+        "profile_map",
+        "profile_total",
+    }.issubset(comprehension_names)
+    assert "profile" not in comprehension_names
+    comprehension_condition_names = _replay_graph._statement_scope_names(
+        ast.parse("values = [item for item in data if item > threshold]").body[0]
+    )
+    assert {"data", "threshold"}.issubset(comprehension_condition_names.loads)
+    assert "item" not in comprehension_condition_names.loads
+    generated_builtin_names = {
+        *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        "values",
+    }
+    _replay_graph._validate_script_code_names(
+        "indexed = [value for index, value in enumerate(values)]\n"
+        "reordered = list(reversed(values))",
+        generated_builtin_names,
+        {},
+    )
+    assert {"indexed", "reordered"}.issubset(generated_builtin_names)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph._validate_script_code_names(
+            "line_color_values = [missing + profile for profile in profiles]",
+            {"profiles"},
+            {},
+        )
     with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
         _replay_graph._validate_script_code_names(
             "for holder.profile in profiles:\n    pass",
@@ -212,6 +259,12 @@ class Child(Base, metaclass=data_5):
         new_branch_dependencies,
     )
     assert new_branch_dependencies["choose"] == {"data", "fallback"}
+    exception_names = {"data", "ValueError"}
+    _replay_graph._validate_script_code_names(
+        "try:\n    data\nexcept ValueError as exc:\n    derived = exc",
+        exception_names,
+        {},
+    )
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
         _replay_graph._validate_script_provenance(
@@ -255,7 +308,74 @@ class Child(Base, metaclass=data_5):
                 script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
             )
         )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
+        _replay_graph._validate_script_provenance(
+            provenance.script(
+                start_label="Run script",
+                active_name="derived",
+                replay_stages=(
+                    provenance.ReplayStage(
+                        source_kind="full_data",
+                        operations=(provenance.AverageOperation(dims=("x",)),),
+                    ),
+                ),
+            )
+        )
+    invalid_stage_spec = provenance.script(
+        start_label="Run script",
+        seed_code="derived = 1",
+        active_name="derived",
+    ).model_copy(
+        update={
+            "replay_stages": (
+                provenance.ReplayStage.model_construct(
+                    source_kind="full_data",
+                    operations=(
+                        provenance.ScriptCodeOperation(
+                            label="Opaque",
+                            code=None,
+                            copyable=False,
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="non-replayable"):
+        _replay_graph._validate_script_provenance(invalid_stage_spec)
     assert not _replay_graph.script_provenance_replayable(None)
+    assert not _replay_graph._script_provenance_validates(
+        provenance.script(
+            start_label="Run script",
+            seed_code="derived =",
+            active_name="derived",
+        ),
+        strict_replay_code=False,
+    )
+    assert not _replay_graph._script_provenance_validates(
+        provenance.script(
+            provenance.ScriptCodeOperation(label="Broken", code="derived ="),
+            start_label="Run script",
+            seed_code="derived = 0",
+            active_name="derived",
+        ),
+        strict_replay_code=False,
+    )
+    assert not _replay_graph._script_provenance_validates(
+        None,
+        strict_replay_code=True,
+    )
+    assert (
+        _replay_graph._single_assignment_output_name("derived: xr.DataArray = data")
+        == "derived"
+    )
+    assert _replay_graph._single_assignment_output_name("derived =") is None
+    assert _replay_graph._single_assignment_output_name("obj.value = data") is None
+    assert (
+        _replay_graph._single_assignment_output_name("first = data\nsecond = data")
+        is None
+    )
+    assert _replay_graph.script_provenance_trust_key(None) is None
 
 
 def test_replay_graph_script_context_binding_error_paths() -> None:
@@ -676,6 +796,337 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
         shared_stage.apply(source)
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_replay_graph_replays_script_with_preserved_file_stage(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        name="scan",
+    )
+    source.to_netcdf(path)
+    file_spec = _file_spec(path).append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    local = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Center profile",
+            code="result = derived - derived.mean()",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+    )
+
+    spec = provenance.compose_full_provenance(file_spec, local)
+    assert spec is not None
+    assert spec.kind == "script"
+    assert len(spec.replay_stages) == 1
+    assert isinstance(spec.replay_stages[0].operations[0], provenance.AverageOperation)
+
+    replayed = provenance.replay_script_provenance(spec, {})
+
+    expected_input = provenance.AverageOperation(dims=("x",)).apply(
+        source,
+        parent_data=source,
+    )
+    xr.testing.assert_identical(replayed, expected_input - expected_input.mean())
+    code = typing.cast("str", spec.display_code())
+    assert code.count("xr.load_dataarray") == 1
+    assert "result =" in code
+    xr.testing.assert_identical(_exec_generated_code(code)["result"], replayed)
+
+
+def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        name="scan",
+    )
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Crop source",
+            code="derived = derived.isel(x=slice(0, 2))",
+        ),
+        start_label="Run parent script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    local = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset profile",
+            code="result = derived + 1",
+        ),
+        start_label="Run local script",
+        active_name="result",
+        replay_stages=(
+            provenance.ReplayStage.from_source_spec(
+                provenance.full_data(provenance.AverageOperation(dims=("x",)))
+            ),
+        ),
+    )
+
+    spec = provenance.compose_full_provenance(parent, local)
+    assert spec is not None
+    assert spec.kind == "script"
+    assert spec.replay_stages == ()
+
+    replayed = provenance.replay_script_provenance(spec, {"data": source})
+
+    expected = source.isel(x=slice(0, 2)).qsel.mean(("x",)) + 1
+    xr.testing.assert_identical(replayed, expected)
+    code = typing.cast("str", spec.display_code())
+    assert code.startswith("result =")
+    assert code.index(".isel(") < code.index(".qsel.mean(")
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": source})["result"],
+        replayed,
+    )
+
+
+def test_replay_graph_dedupes_matching_script_file_seed(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    file_spec = provenance.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    center_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Extract center values",
+            code="center_values = derived.mean('x')",
+        ),
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        active_name="center_values",
+        file_load_source=load_source,
+    )
+    corrected_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Correct with center values",
+            code="derived = data_0 - data_1",
+        ),
+        provenance.RenameOperation(name="corrected"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="ImageTool 4: scan",
+                provenance_spec=file_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="ImageTool 4.0: center_values",
+                provenance_spec=center_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", corrected_spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert code.count("xr.load_dataarray") == 1
+    assert ".rename('corrected')" in code
+    xr.testing.assert_identical(
+        namespace["derived"],
+        (source - source.mean()).rename("corrected"),
+    )
+
+
+def test_replay_graph_script_seed_file_load_parts_rejects_mismatches(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    seed_code = f"derived = xr.load_dataarray({str(path)!r})"
+
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            "print(data)",
+            active_name="derived",
+            load_source=load_source,
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            "derived =",
+            active_name="derived",
+            load_source=load_source,
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(update={"load_code": None}),
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(
+                update={"load_code": "data.value = xr.load_dataarray('scan.nc')"}
+            ),
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(
+                update={"load_code": "setup = 1\ndata = xr.load_dataarray('scan.nc')"}
+            ),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "updated_load_source",
+    [
+        lambda path, other_path, source: source.model_copy(
+            update={
+                "path": str(other_path),
+                "load_code": f"data = xr.load_dataarray({str(other_path)!r})",
+            }
+        ),
+        lambda _path, _other_path, source: source.model_copy(
+            update={"kwargs_text": "engine='h5netcdf'"}
+        ),
+        lambda _path, _other_path, source: source.model_copy(
+            update={
+                "replay_call": source.replay_call.model_copy(
+                    update={
+                        "selection": provenance.FileDataSelection(
+                            kind="parsed_index",
+                            value=1,
+                        )
+                    }
+                )
+            }
+        ),
+    ],
+)
+def test_replay_graph_keeps_distinct_file_load_sources_separate(
+    tmp_path: pathlib.Path,
+    updated_load_source,
+) -> None:
+    path = tmp_path / "scan.nc"
+    other_path = tmp_path / "other.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    (source + 10.0).to_netcdf(other_path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    other_load_source = updated_load_source(path, other_path, load_source)
+    first_spec = provenance.file_load(
+        start_label="Load first",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    second_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = derived"),
+        start_label="Load second",
+        seed_code=typing.cast("str", other_load_source.load_code).replace(
+            "data =",
+            "derived =",
+            1,
+        ),
+        active_name="derived",
+        file_load_source=other_load_source,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Second",
+                provenance_spec=second_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 2
+
+
+def test_replay_graph_does_not_normalize_mismatched_script_file_seed(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    other_path = tmp_path / "other.nc"
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="scan")
+    source.to_netcdf(path)
+    (source + 10.0).to_netcdf(other_path)
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    first_spec = provenance.file_load(
+        start_label="Load first",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=load_source,
+    )
+    mismatched_script_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = derived"),
+        start_label="Load mismatched",
+        seed_code=f"derived = xr.load_dataarray({str(other_path)!r})",
+        active_name="derived",
+        file_load_source=load_source,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="First",
+                provenance_spec=first_spec,
+            ),
+            provenance.ScriptInput(
+                name="data_1",
+                label="Mismatched",
+                provenance_spec=mismatched_script_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 2
 
 
 def test_replay_graph_handles_structured_script_operations(
@@ -1403,7 +1854,7 @@ def test_replay_graph_disables_numbagg_only_during_execution() -> None:
     assert replayed.attrs["use_numbagg_during_replay"] is False
 
 
-def test_replay_graph_display_skips_whole_array_rename(
+def test_replay_graph_display_preserves_whole_array_rename(
     tmp_path: pathlib.Path,
 ) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
@@ -1428,8 +1879,38 @@ def test_replay_graph_display_skips_whole_array_rename(
     )
     code = _replay_graph.emit_replay_code(graph, output_name="derived")
 
-    assert ".rename(" not in code
-    xr.testing.assert_identical(_exec_generated_code(code)["derived"], data)
+    assert ".rename('renamed')" in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["derived"], data.rename("renamed")
+    )
+
+
+def test_replay_graph_display_preserves_structured_final_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    file_spec = provenance.compose_full_provenance(
+        _file_spec(path),
+        provenance.full_data(provenance.RenameOperation(name="renamed")),
+    )
+    live_spec = provenance.full_data(provenance.RenameOperation(name="renamed"))
+    assert file_spec is not None
+
+    file_code = typing.cast("str", file_spec.display_code())
+    live_code = typing.cast("str", live_spec.display_code(parent_data=data))
+
+    assert ".rename('renamed')" in file_code
+    assert ".rename('renamed')" in live_code
+    xr.testing.assert_identical(
+        _exec_generated_code(file_code)["derived"],
+        data.rename("renamed"),
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(live_code, {"data": data})["derived"],
+        data.rename("renamed"),
+    )
 
 
 def test_replay_graph_display_keeps_name_rename_before_script_code(
@@ -1803,6 +2284,235 @@ def test_replay_graph_allows_for_loop_with_script_input() -> None:
     assert len(namespace["fig"]) == 2
     xr.testing.assert_identical(namespace["fig"][0], xr.DataArray(3.0))
     xr.testing.assert_identical(namespace["fig"][1], xr.DataArray(12.0))
+
+
+def test_replay_graph_allows_comprehension_with_script_input_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_data = xr.DataArray(
+        np.asarray([[2.0, 4.0], [10.0, 14.0]]),
+        dims=("sample_temp", "eV"),
+        coords={
+            "sample_temp": [10.0, 50.0],
+            "eV": [-0.3, -0.2],
+            "mesh_current": ("sample_temp", [2.0, 2.0]),
+        },
+        name="D10cu",
+    )
+    source_path = tmp_path / "source.nc"
+    source_data.to_netcdf(source_path)
+    source_spec = _file_spec(source_path).model_copy(
+        update={
+            "replay_stages": (
+                provenance.ReplayStage(
+                    source_kind="public_data",
+                    operations=(
+                        provenance.DivideByCoordOperation(coord_name="mesh_current"),
+                    ),
+                ),
+            ),
+        }
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Build figure",
+            code=(
+                "fig = []\n"
+                "profile_data = data_3\n"
+                "profiles = list(profile_data.transpose('sample_temp', ...))\n"
+                "line_color_values = [\n"
+                '    float(profile.coords["sample_temp"].values.item())\n'
+                "    for profile in profiles\n"
+                "]\n"
+                "for profile, color in zip(\n"
+                "    profiles,\n"
+                "    line_color_values,\n"
+                "    strict=True,\n"
+                "):\n"
+                "    fig.append(float(profile.sum().values) + color)"
+            ),
+        ),
+        start_label="Build figure",
+        active_name="fig",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_3",
+                label="ImageTool 3: D10cu",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "for profile in profiles" in code
+    assert namespace["fig"] == [13.0, 62.0]
+
+
+def test_replay_graph_display_emits_user_code_blocked_by_replay_allowlist(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
+    source_path = tmp_path / "source.nc"
+    source_data.to_netcdf(source_path)
+    source_spec = _file_spec(source_path)
+    script_input = provenance.ScriptInput(
+        name="data_0",
+        label="ImageTool 0",
+        provenance_spec=source_spec,
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code=("import os\nwith open(os.devnull):\n    pass\nderived = data_0 + 1"),
+        ),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(script_input,),
+    )
+
+    assert not provenance.script_provenance_replayable(spec)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
+        _replay_graph.compile_replay_graph(spec)
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "import os" in code
+    assert "with open(os.devnull):" in code
+    xr.testing.assert_identical(namespace["derived"], source_data + 1)
+
+    unresolved_spec = spec.model_copy(
+        update={
+            "operations": (
+                provenance.ScriptCodeOperation(
+                    label="User code",
+                    code="derived = data_0 + missing",
+                ),
+            ),
+        },
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph.compile_replay_graph(unresolved_spec, display=True)
+
+
+def test_replay_graph_trusted_user_code_executes_blocked_constructs() -> None:
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code=(
+                "import os\n"
+                "with open(os.devnull):\n"
+                "    pass\n"
+                "derived = data + int(os.path.exists(os.devnull))"
+            ),
+        ),
+        start_label="Run user code",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data", label="Input"),),
+    )
+
+    assert not provenance.script_provenance_replayable(spec)
+    assert provenance.script_provenance_requires_trust(spec)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
+        _replay_graph.compile_replay_graph(spec, external_inputs={"data": data})
+
+    result = provenance.replay_script_provenance(
+        spec,
+        {"data": data},
+        trusted_user_code=True,
+    )
+
+    xr.testing.assert_identical(result, data + 1)
+
+
+def test_replay_graph_trusted_user_code_still_validates_result_type() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Bad output", code="derived = 1"),
+        start_label="Run user code",
+        active_name="derived",
+    )
+
+    with pytest.raises(TypeError, match="did not produce"):
+        provenance.replay_script_provenance(
+            spec,
+            {"data": data},
+            trusted_user_code=True,
+        )
+
+
+def test_replay_graph_trusted_user_code_replays_nested_scripts(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = xr.DataArray([1.0, 2.0], dims=("x",))
+    source_path = tmp_path / "source.nc"
+    source.to_netcdf(source_path)
+    source_spec = _file_spec(source_path)
+    nested_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code="import os\nderived = data_0 + int(os.path.exists(os.devnull))",
+        ),
+        start_label="Run nested code",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use nested",
+            code="derived = data_1 * 2",
+        ),
+        start_label="Run outer code",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="data_1",
+                label="Nested",
+                provenance_spec=nested_spec,
+            ),
+        ),
+    )
+
+    assert provenance.script_provenance_replayable(spec)
+    assert provenance.script_provenance_requires_trust(spec)
+    trust_payload = _replay_graph._script_trust_payload(spec)
+    assert trust_payload is not None
+    assert trust_payload["inputs"][0]["name"] == "data_1"
+    assert trust_payload["inputs"][0]["payload"]["operations"][0]["code"].startswith(
+        "import os"
+    )
+    mixed_payload = _replay_graph._script_trust_payload(
+        spec.model_copy(
+            update={
+                "operations": (
+                    provenance.AverageOperation(dims=("x",)),
+                    *spec.operations,
+                )
+            }
+        )
+    )
+    assert mixed_payload is not None
+    assert len(mixed_payload["operations"]) == len(trust_payload["operations"])
+    assert _replay_graph.script_provenance_trust_key(spec) is not None
+    with pytest.raises(_replay_graph.ReplayGraphError, match="recorded operation"):
+        _replay_graph.rebuild_script_provenance(spec)
+
+    result, rebuilt = _replay_graph.rebuild_script_provenance(
+        spec,
+        trusted_user_code=True,
+    )
+
+    assert rebuilt.kind == "script"
+    xr.testing.assert_identical(result, (source + 1) * 2)
 
 
 @pytest.mark.parametrize(

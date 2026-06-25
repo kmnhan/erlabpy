@@ -1329,6 +1329,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
         )
+        self.source_list.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.source_list.currentItemChanged.connect(
             self._source_list_current_item_changed
         )
@@ -1956,7 +1959,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             [display, name, "missing" if data is None else "", ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
-        item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+        item.setFlags(
+            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+        )
         if missing:
             item.setForeground(
                 _SOURCE_LIST_SOURCE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
@@ -1987,6 +1992,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         shape_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         shape_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.NoTextInteraction
+        )
+        shape_label.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
         )
         shape_label.setContentsMargins(4, 0, 4, 0)
         if missing:

@@ -201,6 +201,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _sigReloadLinkers: QtCore.SignalInstance
     _sigReplyData: QtCore.SignalInstance
     _sigWatchedDataEdited: QtCore.SignalInstance
+    _trusted_script_replay_keys: set[str]
     _standalone_app_actions: dict[str, QtGui.QAction]
     _standalone_app_event_filters: dict[str, QtCore.QObject]
     _standalone_app_pending_states: dict[str, dict[str, typing.Any]]

@@ -12,7 +12,7 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _provenance_framework, provenance
 
 
 def _exec_generated_code(
@@ -2531,7 +2531,7 @@ def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None
         for row in parsed.display_rows()
         if row.replay_ref is not None and row.replay_ref.kind == "operation"
     ]
-    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    assert [row.edit_ref is not None for row in rows] == [True, True, True]
     data = _base_data()
     replayed = provenance.replay_script_provenance(
         parsed,
@@ -2790,7 +2790,13 @@ def test_current_structured_operations_round_trip_without_script_fallback() -> N
     operations = _representative_structured_operations()
     assert {operation.op for operation in operations} == set(
         provenance._OPERATION_TYPES
-    ) - {"script_code"}
+    ) - {"script_code", "source_view"}
+    assert (
+        provenance.parse_tool_provenance_operation(
+            {"op": "source_view", "source_kind": "selection"}
+        ).op
+        == "source_view"
+    )
 
     def assert_round_trip_operations(
         spec: provenance.ToolProvenanceSpec,
@@ -2920,7 +2926,7 @@ def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
         for row in composed.display_rows()
         if row.replay_ref is not None and row.replay_ref.kind == "operation"
     ]
-    assert [row.edit_ref is not None for row in rows] == [False, True, True]
+    assert [row.edit_ref is not None for row in rows] == [True, True, True]
     derived = provenance.replay_script_provenance(
         composed,
         {
@@ -3163,6 +3169,72 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     assert start_only.script_context_bindings == ()
 
 
+def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
+    stage = provenance.ReplayStage(
+        source_kind="full_data",
+        operations=(
+            provenance.AverageOperation(dims=("x",)),
+            provenance.IselOperation(kwargs={"missing": 0}),
+        ),
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Offset", code="result = result + 1"),
+        start_label="Run script",
+        seed_code="result = data",
+        active_name="result",
+        replay_stages=(stage,),
+    )
+    stage_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+
+    through_stage = spec._prefix_through_ref(stage_ref)
+    assert through_stage.operations == ()
+    assert through_stage.script_context_bindings == ()
+    assert through_stage.active_name == "result"
+    assert [stage.operations for stage in through_stage.replay_stages] == [
+        (provenance.AverageOperation(dims=("x",)),)
+    ]
+
+    before_stage = spec._prefix_before_ref(
+        provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=1,
+            stage_index=0,
+        )
+    )
+    assert before_stage.operations == ()
+    assert before_stage.script_context_bindings == ()
+    assert before_stage.active_name == "result"
+    assert [stage.operations for stage in before_stage.replay_stages] == [
+        (provenance.AverageOperation(dims=("x",)),)
+    ]
+
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="scan")
+    entries = spec._code_fallback_entries(parent_data=data)
+    labels = [entry.label for entry in entries]
+    assert 'Average(dims=("x",))' in labels
+    assert "isel(missing=0)" in labels
+    assert "Offset" in labels
+    rows = spec.display_rows(parent_data=data)
+    assert [row.entry.label for row in rows[1:3]] == [
+        'Average(dims=("x",))',
+        "isel(missing=0)",
+    ]
+    assert rows[3].entry.label == "Offset"
+
+    assert (
+        provenance.ToolProvenanceSpec(
+            kind="script",
+            start_label="Run script",
+            active_name="result",
+        )._script_seed_output_name()
+        is None
+    )
+
+
 def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
     grouped = provenance.stamp_operation_group(
         (
@@ -3308,7 +3380,6 @@ def test_tool_provenance_script_context_names_are_validation_only() -> None:
 
 
 def test_file_load_source_replay_call_round_trips() -> None:
-
     xarray_source = provenance.FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
@@ -3368,6 +3439,138 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_erlab.replay_call.target == "example"
 
 
+def test_provenance_file_source_capabilities_cover_script_backed_files(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.h5"
+    xr.DataArray(np.arange(3.0), dims=("x",)).to_netcdf(path, engine="h5netcdf")
+    replay_call = provenance.FileReplayCall(
+        kind="callable",
+        target="xarray.load_dataarray",
+        kwargs={"engine": "h5netcdf"},
+        selected_index=0,
+    )
+    load_source = _file_replay_source(path, replay_call=replay_call)
+    seed_code = (
+        "import xarray\n\n"
+        f"derived = xarray.load_dataarray({str(path)!r}, engine='h5netcdf')"
+    )
+    file_spec = provenance.file_load(
+        start_label="Load data",
+        seed_code=seed_code,
+        file_load_source=load_source,
+    ).append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    script_spec = provenance.script(
+        start_label="Load data",
+        seed_code=seed_code,
+        active_name="derived",
+        file_load_source=load_source,
+        replay_stages=file_spec.replay_stages,
+    )
+
+    for spec in (file_spec, script_spec):
+        assert provenance.has_file_load_source(spec)
+        assert provenance.file_load_source_status(spec) == "loadable"
+        assert provenance.can_reload_without_trust(spec)
+        operation_refs = tuple(provenance.iter_operation_refs(spec))
+        ref_locations = [
+            (ref.stage_index, ref.operation_index) for ref, _op in operation_refs
+        ]
+        assert ref_locations == [(0, 0)]
+        assert isinstance(operation_refs[0][1], provenance.AverageOperation)
+
+    missing_spec = script_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(
+                update={"path": str(tmp_path / "missing.h5")}
+            )
+        }
+    )
+    assert provenance.file_load_source_status(missing_spec) == "missing-file"
+    assert not provenance.can_reload_without_trust(missing_spec)
+
+    no_replay_call_spec = script_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(update={"replay_call": None})
+        }
+    )
+    assert provenance.file_load_source_status(no_replay_call_spec) == "no-replay-call"
+    assert not provenance.can_reload_without_trust(no_replay_call_spec)
+
+    missing_loader = "definitely-missing-erlab-loader"
+    missing_loader_spec = script_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(
+                update={
+                    "replay_call": replay_call.model_copy(
+                        update={"kind": "erlab_loader", "target": missing_loader}
+                    )
+                }
+            )
+        }
+    )
+    assert provenance.file_load_source_status(missing_loader_spec) == "missing-loader"
+    assert not provenance.can_reload_without_trust(missing_loader_spec)
+
+    missing_callable_spec = script_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(
+                update={
+                    "replay_call": replay_call.model_copy(
+                        update={
+                            "kind": "callable",
+                            "target": "definitely_missing_erlab_callable.load",
+                        }
+                    )
+                }
+            )
+        }
+    )
+    assert provenance.file_load_source_status(missing_callable_spec) == "missing-loader"
+    assert not provenance.can_reload_without_trust(missing_callable_spec)
+
+    plain_script = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Make data",
+            code="derived = xr.DataArray([1.0])",
+        ),
+        start_label="Run script",
+        active_name="derived",
+    )
+    assert not provenance.has_file_load_source(plain_script)
+    assert provenance.file_load_source_status(plain_script) == "no-file-load-source"
+    assert provenance.can_reload_without_trust(plain_script)
+
+
+def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
+    data = _base_data()
+
+    selection_view = _provenance_framework._SourceViewOperation(source_kind="selection")
+    public_view = _provenance_framework._SourceViewOperation(source_kind="public_data")
+    full_view = _provenance_framework._SourceViewOperation(source_kind="full_data")
+
+    xr.testing.assert_identical(
+        selection_view.apply(data, parent_data=data),
+        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data),
+    )
+    assert (
+        selection_view.derivation_label() == "Start from selected parent ImageTool data"
+    )
+    assert (
+        public_view.derivation_label()
+        == "Start from current parent ImageTool public data"
+    )
+    assert full_view.derivation_label() == "Start from current parent ImageTool data"
+    assert full_view.expression_code("data") == "data.copy(deep=False)"
+    assert (
+        selection_view.expression_code("data")
+        == "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
+    )
+    assert tuple(provenance.iter_operation_refs(None)) == ()
+
+
 def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     replay_stage = provenance.ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
@@ -3414,13 +3617,12 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     )
     with pytest.raises(TypeError, match="Serialized replay stages"):
         provenance.ToolProvenanceSpec(kind="full_data", replay_stages=1)
-    with pytest.raises(ValidationError, match="cannot define replay stages"):
-        provenance.ToolProvenanceSpec(
-            kind="script",
-            start_label="Start",
-            active_name="derived",
-            replay_stages=[replay_stage],
-        )
+    assert provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="Start",
+        active_name="derived",
+        replay_stages=[replay_stage],
+    ).replay_stages == (replay_stage,)
 
     with pytest.raises(ValidationError, match="must define `start_label`"):
         provenance.ToolProvenanceSpec(
@@ -3546,7 +3748,10 @@ def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
         "script_input",
         script_input_index=0,
     )
-    assert script_rows[2].edit_ref is None
+    assert script_rows[2].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert script_rows[2].replay_ref == provenance._ProvenanceStepRef(
         "operation",
         operation_index=0,
@@ -3602,6 +3807,100 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
         "result = derived + 1"
     )
 
+    file_with_stage = file_spec.append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    staged_with_script = provenance.compose_full_provenance(
+        file_with_stage,
+        script_local,
+    )
+    assert staged_with_script is not None
+    assert staged_with_script.kind == "script"
+    assert staged_with_script.file_load_source == file_spec.file_load_source
+    assert len(staged_with_script.replay_stages) == 1
+    assert isinstance(
+        staged_with_script.replay_stages[0].operations[0],
+        provenance.AverageOperation,
+    )
+    assert all(
+        not isinstance(operation, provenance.ScriptCodeOperation)
+        for stage in staged_with_script.replay_stages
+        for operation in stage.operations
+    )
+    staged_rows = staged_with_script.display_rows()
+    assert staged_rows[0].edit_ref == provenance._ProvenanceStepRef("file_load")
+    assert staged_rows[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+
+    script_parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Crop",
+            code="derived = derived.isel(x=0)",
+        ),
+        start_label="Run parent script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+    )
+    staged_local = provenance.script(
+        provenance.ScriptCodeOperation(label="Offset", code="result = derived + 1"),
+        start_label="Run local script",
+        active_name="result",
+        replay_stages=(
+            provenance.ReplayStage.from_source_spec(
+                provenance.selection(provenance.AverageOperation(dims=("x",)))
+            ),
+        ),
+    )
+    script_with_ordered_stage = provenance.compose_full_provenance(
+        script_parent,
+        staged_local,
+    )
+    assert script_with_ordered_stage is not None
+    assert script_with_ordered_stage.kind == "script"
+    assert script_with_ordered_stage.replay_stages == ()
+    assert [operation.op for operation in script_with_ordered_stage.operations] == [
+        "script_code",
+        "source_view",
+        "average",
+        "script_code",
+    ]
+    ordered_rows = script_with_ordered_stage.display_rows()
+    assert all(row.entry.label != staged_local.start_label for row in ordered_rows)
+    assert any(
+        row.edit_ref
+        == provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=2,
+        )
+        for row in ordered_rows
+    )
+
+    alias_local = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        start_label="Start from current ktool input data",
+        seed_code="scan_kconv = derived",
+        active_name="scan_kconv",
+    )
+    alias_composed = provenance.compose_full_provenance(file_spec, alias_local)
+    assert alias_composed is not None
+    assert alias_composed.kind == "script"
+    assert isinstance(alias_composed.operations[0], provenance.ScriptCodeOperation)
+    assert alias_composed.operations[0].visible is False
+    assert isinstance(alias_composed.operations[1], provenance.AverageOperation)
+    assert all(
+        row.entry.label != "Start from current ktool input data"
+        for row in alias_composed.display_rows()
+    )
+    assert any(
+        isinstance(row.edit_ref, provenance._ProvenanceStepRef)
+        and row.edit_ref.operation_index == 1
+        for row in alias_composed.display_rows()
+    )
+
     watched_parent = provenance.script(
         start_label="Start from watched variable 'watched_data'",
         seed_code="derived = watched_data",
@@ -3639,6 +3938,9 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     assert result_composed is not None
     assert result_composed.derivation_code() == (
         "result = data + 1\nderived = result\nresult = derived.mean()"
+    )
+    assert all(
+        row.entry.label != "Use parent result" for row in result_composed.display_rows()
     )
 
     promoted = provenance.mark_promoted_1d_source(_base_data().copy(deep=False))
@@ -3709,14 +4011,19 @@ def test_script_provenance_supports_named_console_inputs() -> None:
     assert rows[1].children[0].replay_ref == provenance._ProvenanceStepRef("start")
     assert rows[1].children[0].script_input_path == (0,)
     assert rows[1].children[1].entry.label == "Offset left input"
-    assert rows[1].children[1].edit_ref is None
+    assert rows[1].children[1].edit_ref == provenance._ProvenanceStepRef(
+        "operation", operation_index=0
+    )
     assert rows[1].children[1].replay_ref == provenance._ProvenanceStepRef(
         "operation", operation_index=0
     )
     assert rows[1].children[1].script_input_path == (0,)
     assert rows[2].children[0].entry.label == "Load right"
     assert rows[2].children[0].script_input_path == (1,)
-    assert rows[3].edit_ref is None
+    assert rows[3].edit_ref == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+    )
     assert rows[3].replay_ref == provenance._ProvenanceStepRef(
         "operation",
         operation_index=0,
@@ -4099,6 +4406,25 @@ derived = data
     )
     with pytest.raises(ValueError, match="not valid Python"):
         provenance._validate_script_replay_code("derived =")
+    provenance._validate_script_replay_code(
+        "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data"
+    )
+    with pytest.raises(TypeError, match="unsupported Try"):
+        provenance._validate_script_replay_code(
+            "try:\n"
+            "    import seaborn\n"
+            "except ImportError as exc:\n"
+            "    pass\n"
+            "derived = data"
+        )
+    with pytest.raises(TypeError, match="unsupported Try"):
+        provenance._validate_script_replay_code(
+            "try:\n"
+            "    import seaborn\n"
+            "except (ImportError, ModuleNotFoundError):\n"
+            "    pass\n"
+            "derived = data"
+        )
     for code_snippet, message in (
         ("derived = __name__", "dunder names"),
         ("derived = data.__class__", "dunder attributes"),

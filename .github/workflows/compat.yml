@@ -73,7 +73,7 @@ jobs:
     name: Compat Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
     needs: test-data-cache
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DISPLAY: ":99.0"
     strategy:

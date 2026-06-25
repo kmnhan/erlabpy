@@ -3666,6 +3666,44 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         )
         assert manager._script_input_can_reload(valid_file_input)
         assert manager._script_input_unavailable_reason(valid_file_input) is None
+
+        script_file_spec = provenance.script(
+            start_label="Load recorded",
+            seed_code=typing.cast("str", file_spec.seed_code),
+            active_name="derived",
+            file_load_source=load_source,
+        ).append_replay_stage(
+            provenance.full_data(provenance.AverageOperation(dims=("x",)))
+        )
+        script_file_input = provenance.ScriptInput(
+            name="script_file",
+            label="Script-backed file",
+            provenance_spec=script_file_spec.model_dump(mode="json"),
+        )
+        assert manager._script_input_has_recorded_file(script_file_input)
+        assert manager._script_input_can_reload(script_file_input)
+        assert manager._script_input_unavailable_reason(script_file_input) is None
+
+        missing_script_file = tmp_path / "missing-script.nc"
+        missing_script_file_input = provenance.ScriptInput(
+            name="missing_script_file",
+            label="Missing script-backed file",
+            provenance_spec=script_file_spec.model_copy(
+                update={
+                    "file_load_source": load_source.model_copy(
+                        update={"path": str(missing_script_file)}
+                    )
+                }
+            ).model_dump(mode="json"),
+        )
+        assert not manager._script_input_has_recorded_file(missing_script_file_input)
+        assert not manager._script_input_can_reload(missing_script_file_input)
+        missing_script_reason = manager._script_input_unavailable_reason(
+            missing_script_file_input
+        )
+        assert missing_script_reason is not None
+        assert str(missing_script_file) in missing_script_reason
+
         missing_loader = "definitely-missing-erlab-loader"
         missing_loader_input = provenance.ScriptInput(
             name="missing_loader",

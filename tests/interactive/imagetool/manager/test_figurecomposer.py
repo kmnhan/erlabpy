@@ -95,6 +95,9 @@ from erlab.interactive._figurecomposer._operations import (
     _photon_energy as figurecomposer_photon_energy,
 )
 from erlab.interactive._figurecomposer._operations import (
+    _plot_array as figurecomposer_plot_array,
+)
+from erlab.interactive._figurecomposer._operations import (
     _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._figurecomposer._operations import (
@@ -110,7 +113,12 @@ from erlab.interactive._figurecomposer._toolbar_dialogs import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import (
+    _provenance_framework,
+    _replay_graph,
+    itool,
+    provenance,
+)
 from erlab.io.exampledata import generate_hvdep_cuts
 from tests.interactive.imagetool.manager.helpers import (
     InMemoryClipboard,
@@ -637,6 +645,39 @@ def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
         coords={"eV": eV, "kx": kx},
         name=name,
     )
+
+
+def _figure_composer_replay_source_state(
+    name: str,
+    label: str | None = None,
+) -> FigureSourceState:
+    source_spec = provenance.script(
+        start_label=f"Build {label or name}",
+        seed_code="derived = xr.DataArray([0.0], dims=('x',))",
+        active_name="derived",
+    )
+    return FigureSourceState(
+        name=name,
+        label=label or name,
+        provenance_spec=source_spec.model_dump(mode="json"),
+    )
+
+
+def _assert_figure_composer_provenance_replayable(
+    tool: FigureComposerTool,
+    *,
+    case_label: str,
+) -> str:
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    try:
+        graph = _replay_graph.compile_replay_graph(spec, display=True)
+        return _replay_graph.emit_replay_code(graph, output_name="fig")
+    except _replay_graph.ReplayGraphError as exc:
+        pytest.fail(
+            f"{case_label} generated Figure Composer provenance is not replayable: "
+            f"{exc}\n\nGenerated code:\n{tool.generated_code()}"
+        )
 
 
 def _expected_line_colormap_colors(
@@ -1197,6 +1238,513 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     }
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert captured_maps == [("second", "first")]
+
+
+def test_figure_composer_plot_array_source_selector_updates_selection(qtbot) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="first_source",
+        map_selections=(
+            FigureDataSelectionState(source="first_source", qsel={"eV": 0.0}),
+        ),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first_source": first, "second_source": second},
+        sources=(
+            FigureSourceState(name="first_source", label="first"),
+            FigureSourceState(name="second_source", label="second"),
+        ),
+        operations=(operation,),
+        primary_source="first_source",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("sources")
+
+    combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                QtWidgets.QComboBox, "figureComposerPlotArraySourceCombo"
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert combo is not None
+    index = combo.findData("second_source")
+    assert index >= 0
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+    updated = tool.tool_status.operations[0]
+    assert updated.sources == ("second_source",)
+    assert updated.map_selections == (
+        FigureDataSelectionState(source="second_source", qsel={"eV": 0.0}),
+    )
+
+
+def test_figure_composer_plot_array_add_action_and_plain_2d_codegen(
+    qtbot, monkeypatch
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    action = next(
+        action
+        for action in tool.add_step_menu.actions()
+        if action.data() == FigureOperationKind.PLOT_ARRAY.value
+    )
+    action.trigger()
+
+    operation = tool.tool_status.operations[-1]
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.sources == ("data",)
+    assert operation.map_selections == ()
+
+    captured: list[xr.DataArray] = []
+
+    def capture_plot_array(arr, **_kwargs):
+        captured.append(arr)
+
+    monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
+    code = tool.generated_code()
+    assert "eplt.plot_array(data" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    assert "fig" in namespace
+    xr.testing.assert_identical(captured[0], data)
+
+
+def test_figure_composer_default_plot_array_uses_one_axis_in_multi_axis_setup(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="map",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="map"),),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.axes.axes == ((0, 0),)
+    assert not figurecomposer_plot_array._has_invalid_target(tool, operation)
+
+    captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+
+    def capture_plot_array(arr, **kwargs):
+        captured.append((arr, kwargs))
+
+    monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
+    namespace = _exec_generated_code(tool.generated_code(), {"data": data})
+
+    assert "fig" in namespace
+    xr.testing.assert_identical(captured[0][0], data)
+    assert captured[0][1]["ax"] is namespace["axs"][0, 0]
+
+
+def test_figure_composer_plot_array_render_and_generated_code(
+    qtbot, monkeypatch
+) -> None:
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+        map_selections=(FigureDataSelectionState(source="data", qsel={"eV": 0.0}),),
+    ).model_copy(
+        update={
+            "transpose": True,
+            "xlim": (-0.5, 0.5),
+            "ylim": (-1.0, 1.0),
+            "colorbar": "right",
+            "cmap": "magma",
+            "norm_gamma": 0.5,
+            "vmin": 0.0,
+            "vmax": 2.0,
+            "extra_kwargs": {"aspect": "equal"},
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+
+    def capture_plot_array(arr, **kwargs):
+        captured.append((arr, kwargs))
+
+    monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(captured) == 1
+    rendered, kwargs = captured[0]
+    assert rendered.dims == ("alpha", "beta")
+    assert kwargs["ax"] is tool.figure.axes[0]
+    assert kwargs["xlim"] == (-0.5, 0.5)
+    assert kwargs["ylim"] == (-1.0, 1.0)
+    assert kwargs["colorbar"] is True
+    assert kwargs["cmap"] == "magma"
+    assert kwargs["gamma"] == 0.5
+    assert kwargs["vmin"] == 0.0
+    assert kwargs["vmax"] == 2.0
+    assert kwargs["aspect"] == "equal"
+
+    code = tool.generated_code()
+    assert "eplt.plot_array(data.qsel(eV=0.0).T" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    assert "fig" in namespace
+
+
+def test_figure_composer_plot_array_codegen_handles_spaced_dimension(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("Track Shift", "kx", "ky"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "kx": [0.0, 1.0],
+            "ky": [0.0, 1.0],
+        },
+        name="map",
+    )
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+        map_selections=(
+            FigureDataSelectionState(source="data", qsel={"Track Shift": 1.0}),
+        ),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert 'data.qsel(**{"Track Shift": 1.0})' in code
+    namespace = _exec_generated_code(code, {"data": data})
+    assert "fig" in namespace
+
+
+def test_figure_composer_plot_array_invalid_target_and_shape(qtbot) -> None:
+    image = _figure_composer_image_source("image").isel(eV=0)
+    multi_axes = FigureOperationState.plot_array(
+        label="plot_array",
+        source="image",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+    )
+    multi_axes_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(multi_axes,),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="image",
+    )
+    qtbot.addWidget(multi_axes_tool)
+    assert figurecomposer_plot_array._has_invalid_target(multi_axes_tool, multi_axes)
+    with pytest.raises(ValueError, match="target axes"):
+        multi_axes_tool.generated_code()
+
+    volume = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("eV", "beta", "alpha"),
+        coords={
+            "eV": [0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+            "alpha": [-0.5, 0.0, 0.5, 1.0],
+        },
+        name="volume",
+    )
+    volume_operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="volume",
+    )
+    volume_tool = FigureComposerTool.from_sources(
+        {"volume": volume},
+        sources=(FigureSourceState(name="volume", label="volume"),),
+        operations=(volume_operation,),
+        primary_source="volume",
+    )
+    qtbot.addWidget(volume_tool)
+    assert "3D" in figurecomposer_plot_array._display_text(
+        volume_tool, volume_operation
+    )
+    figurecomposer_rendering._render_into_figure(
+        volume_tool, volume_tool.figure, sync_visible=False
+    )
+    assert (
+        "requires a 2D"
+        in volume_tool._operation_render_errors[volume_operation.operation_id]
+    )
+
+
+def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
+    image = _figure_composer_image_source("image").isel(eV=0)
+    base_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="image",
+    )
+    qtbot.addWidget(base_tool)
+
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="image",
+        map_selections=(
+            FigureDataSelectionState(source="image", qsel={"beta": 0.0}),
+            FigureDataSelectionState(source="derived", qsel={"beta": 0.0}),
+        ),
+    )
+    assert figurecomposer_plot_array._source_names(operation) == ("image", "derived")
+
+    empty_operation = FigureOperationState(
+        kind=FigureOperationKind.PLOT_ARRAY,
+        label="empty",
+    )
+    empty_tool = typing.cast(
+        "FigureComposerTool", types.SimpleNamespace(_source_data={})
+    )
+    assert figurecomposer_plot_array._primary_source(empty_operation) is None
+    assert (
+        figurecomposer_plot_array._plot_array_source_code(empty_tool, empty_operation)
+        is None
+    )
+
+    missing_selection = FigureOperationState.plot_array(
+        label="missing",
+        source="image",
+        map_selections=(FigureDataSelectionState(source="missing", qsel={"eV": 0.0}),),
+    )
+    assert (
+        figurecomposer_plot_array._selected_plot_array_data(
+            base_tool, missing_selection
+        )
+        is None
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_source_code(base_tool, missing_selection)
+        is None
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_code_lines(base_tool, missing_selection)
+        == []
+    )
+
+    expression_operation = FigureOperationState.plot_array(
+        label="expression",
+        source="image",
+        axes=FigureAxesSelectionState(expression="axs[0, 0]"),
+    )
+    assert figurecomposer_plot_array._axes_count(base_tool, expression_operation) == 1
+
+    root = FigureGridSpecGridState(
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="left",
+                span=FigureGridSpecSpanState(
+                    row_start=0, row_stop=1, col_start=0, col_stop=1
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="right",
+                span=FigureGridSpecSpanState(
+                    row_start=0, row_stop=1, col_start=1, col_stop=2
+                ),
+            ),
+        ),
+    )
+    grid_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(),
+        setup=FigureSubplotsState(
+            layout_mode="gridspec",
+            gridspec=FigureGridSpecLayoutState(root=root),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(grid_tool)
+    grid_operation = FigureOperationState.plot_array(
+        label="grid",
+        source="image",
+        axes=FigureAxesSelectionState(axes_ids=("left", "missing")),
+    )
+    assert figurecomposer_plot_array._axes_count(grid_tool, grid_operation) == 1
+
+    no_update_tool = types.SimpleNamespace(
+        _update_operations=lambda *_args, **_kwargs: pytest.fail(
+            "None source should not update"
+        )
+    )
+    figurecomposer_plot_array._update_current_source(
+        typing.cast("FigureComposerTool", no_update_tool), None
+    )
+
+    rendered: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **kwargs: rendered.append((arr, kwargs)),
+    )
+    figurecomposer_plot_array._render_plot_array(
+        empty_tool,
+        FigureOperationState.plot_array(label="missing", source="missing"),
+        None,
+    )
+    assert rendered == []
+
+    _, axs = plt.subplots(1, 2, squeeze=False)
+    with pytest.raises(ValueError, match="exactly one target axis"):
+        figurecomposer_plot_array._render_plot_array(
+            base_tool,
+            FigureOperationState.plot_array(
+                label="multi_axes",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            ),
+            axs,
+        )
+
+
+def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
+    power_operation = FigureOperationState.plot_array(
+        label="power",
+        source="image",
+    ).model_copy(
+        update={
+            "crop": True,
+            "colorbar": "right",
+            "colorbar_kw": {"pad": 0.01},
+            "cmap": "magma",
+            "gamma": 0.75,
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "extra_kwargs": {"aspect": "equal"},
+        }
+    )
+
+    runtime_kwargs = figurecomposer_plot_array._plot_array_kwargs(power_operation)
+    assert runtime_kwargs == {
+        "crop": True,
+        "colorbar": True,
+        "colorbar_kw": {"pad": 0.01},
+        "cmap": "magma",
+        "gamma": 0.75,
+        "vmin": 0.0,
+        "vmax": 1.0,
+        "aspect": "equal",
+    }
+
+    code_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(power_operation)
+    assert code_kwargs == runtime_kwargs
+    assert figurecomposer_plot_array._norm_gamma_value(power_operation) == 0.75
+
+    norm_operation = power_operation.model_copy(
+        update={
+            "norm_name": "Normalize",
+            "norm_clip": True,
+            "gamma": None,
+            "norm_gamma": None,
+        }
+    )
+    norm_kwargs = figurecomposer_plot_array._plot_array_kwargs(norm_operation)
+    assert isinstance(norm_kwargs["norm"], mcolors.Normalize)
+    code_norm_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(norm_operation)
+    assert isinstance(code_norm_kwargs["norm"], figurecomposer_text._RawCode)
+    assert figurecomposer_plot_array._required_imports(None, norm_operation) == (
+        "import erlab.plotting as eplt",
+        "import matplotlib.colors as mcolors",
+    )
+
+    assert figurecomposer_plot_array._norm_clip_text(True) == "True"
+    assert figurecomposer_plot_array._norm_clip_from_text("True") is True
+    assert figurecomposer_plot_array._norm_clip_from_text("False") is False
+    assert figurecomposer_plot_array._norm_clip_from_text("default") is None
+
+    class _FakeTool:
+        def __init__(self) -> None:
+            self.operation = FigureOperationState.plot_array(
+                label="fake",
+                source="image",
+            ).model_copy(update={"cmap": "viridis_r"})
+            self.updates: list[dict[str, typing.Any]] = []
+            self.rebuild_updates: list[dict[str, typing.Any]] = []
+
+        def _update_current_operation(self, **updates: typing.Any) -> None:
+            self.updates.append(updates)
+            self.operation = self.operation.model_copy(update=updates)
+
+        def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
+            self.rebuild_updates.append(updates)
+            self.operation = self.operation.model_copy(update=updates)
+
+        def _current_operation(self) -> tuple[int, FigureOperationState] | None:
+            return 0, self.operation
+
+    fake_tool = _FakeTool()
+    cast_tool = typing.cast("FigureComposerTool", fake_tool)
+    update_vmin = figurecomposer_plot_array._norm_number_update_callback(
+        cast_tool, "vmin"
+    )
+    update_vmin("  ")
+    update_vmin("1.5")
+    figurecomposer_plot_array._update_current_norm_name(cast_tool, "Normalize")
+    figurecomposer_plot_array._update_current_norm_gamma(cast_tool, 0.5)
+    figurecomposer_plot_array._update_current_norm_kwargs(
+        cast_tool, "gamma=2.0, clip=False, custom='value'"
+    )
+    figurecomposer_plot_array._update_current_cmap(cast_tool, reverse=False)
+    figurecomposer_plot_array._update_current_cmap(cast_tool, base="plasma")
+    assert fake_tool.updates[:2] == [{"vmin": None}, {"vmin": 1.5}]
+    assert {"norm_gamma": 0.5, "gamma": None} in fake_tool.updates
+    assert fake_tool.updates[-2:] == [{"cmap": "viridis"}, {"cmap": "plasma"}]
+    assert fake_tool.rebuild_updates[0] == {
+        "norm_name": "Normalize",
+        "gamma": None,
+        "norm_gamma": None,
+    }
+    assert fake_tool.rebuild_updates[-1] == {
+        "norm_gamma": 2.0,
+        "norm_clip": False,
+        "norm_kwargs": {"custom": "value"},
+    }
+
+    none_tool = types.SimpleNamespace(_current_operation=lambda: None)
+    figurecomposer_plot_array._update_current_cmap(
+        typing.cast("FigureComposerTool", none_tool),
+        base="magma",
+    )
+
+    assert (
+        figurecomposer_plot_array._section_summary(
+            typing.cast("FigureComposerTool", none_tool), "unknown", power_operation
+        )
+        == ""
+    )
 
 
 def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
@@ -2047,11 +2595,9 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     tool.slicer_area.set_value(axis=0, value=30.0, cursor=0)
     operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
 
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.map_selections == ()
-    assert operation.slice_dim == "sample_temp"
-    assert operation.slice_values == (30.0,)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert len(operation.map_selections) == 1
+    assert operation.map_selections[0].source == "data"
     assert "sample_temp_idx" not in operation.model_dump_json()
 
 
@@ -2118,11 +2664,10 @@ def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
     tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
     operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
 
-    assert operation.kind == FigureOperationKind.PLOT_SLICES
-    assert operation.map_selections == ()
-    assert operation.slice_dim == "Track Shift"
-    assert operation.slice_values == (1.0,)
-    assert operation.slice_kwargs == {}
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.map_selections == (
+        FigureDataSelectionState(source="data", qsel={"Track Shift": 1.0}),
+    )
 
 
 def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
@@ -2264,6 +2809,19 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
         tool.source_list.selectionMode()
         == QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
     )
+    assert (
+        tool.source_list.selectionBehavior()
+        == QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+    )
+    first_item = tool.source_list.topLevelItem(0)
+    assert first_item is not None
+    assert first_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
+    assert tool.source_list.selectedItems() == [first_item]
+    shape_label = tool.source_list.itemWidget(first_item, 2)
+    assert isinstance(shape_label, QtWidgets.QLabel)
+    assert shape_label.testAttribute(
+        QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
+    )
 
     tool.source_inspector.details_button.setChecked(True)
     assert tool.source_inspector.details_scroll.isVisibleTo(tool.source_inspector)
@@ -2272,9 +2830,47 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
     tool.source_list.setCurrentItem(second_item)
+    assert tool.source_list.selectedItems() == [second_item]
     assert tool.source_inspector.source_name() == "profile"
     assert tool.source_inspector.property("figureComposerSourceAlias") == "profile"
     assert tool.source_inspector.property("figureComposerSourceDims") == ("delay",)
+
+
+def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        name="map",
+    )
+    second = xr.DataArray(np.arange(4.0), dims=("delay",), name="profile")
+    tool = FigureComposerTool.from_sources(
+        {"map": first, "profile": second},
+        sources=(
+            FigureSourceState(name="map", label="Map source"),
+            FigureSourceState(name="profile", label="Profile source"),
+        ),
+        operations=(FigureOperationState.plot_slices(label="maps", sources=("map",)),),
+        primary_source="map",
+    )
+    qtbot.addWidget(tool)
+    with qtbot.waitExposed(tool):
+        tool.show()
+
+    second_item = tool.source_list.topLevelItem(1)
+    assert second_item is not None
+    index = tool.source_list.indexFromItem(second_item, 2)
+    rect = tool.source_list.visualRect(index)
+    assert rect.isValid()
+
+    qtbot.mouseClick(
+        tool.source_list.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=rect.center(),
+    )
+
+    assert tool.source_list.currentItem() is second_item
+    assert tool.source_list.selectedItems() == [second_item]
+    assert tool.source_inspector.source_name() == "profile"
 
 
 def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> None:
@@ -2615,6 +3211,39 @@ def test_manager_default_figure_seed_uses_public_nonuniform_dims(
     assert operation.kind == FigureOperationKind.PLOT_SLICES
     assert operation.slice_dim == "sample_temp"
     assert "sample_temp_idx" not in operation.model_dump_json()
+
+
+def test_manager_default_figure_seed_keeps_mixed_higher_dimensional_sources(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    profile = xr.DataArray(np.arange(4.0), dims=("eV",), name="profile")
+    image_stack = xr.DataArray(
+        np.arange(24.0).reshape(3, 2, 4),
+        dims=("sample_temp", "alpha", "eV"),
+        coords={
+            "sample_temp": [10.0, 15.0, 30.0],
+            "alpha": [0.0, 1.0],
+            "eV": [-0.1, 0.0, 0.1, 0.2],
+        },
+        name="map",
+    )
+
+    with manager_context() as manager:
+        line_operation, map_operation = manager._make_figure_operations_for_sources(
+            {"profile": profile, "map": image_stack},
+            setup=FigureSubplotsState(nrows=2, ncols=1),
+        )
+
+    assert line_operation.kind == FigureOperationKind.LINE
+    assert line_operation.line_source == "profile"
+    assert line_operation.axes.axes == ((0, 0),)
+    assert map_operation.kind == FigureOperationKind.PLOT_SLICES
+    assert map_operation.sources == ("map",)
+    assert map_operation.axes.axes == ((1, 0),)
+    assert map_operation.slice_dim == "sample_temp"
+    assert map_operation.slice_values == (15.0,)
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
@@ -5914,6 +6543,144 @@ def test_figure_composer_provenance_includes_sources_and_build_step(
     assert code is not None
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["fig"], Figure)
+
+
+def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> None:
+    image = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 0.0, 1.0], "ky": [-1.0, 0.0, 1.0]},
+        name="image",
+    )
+    volume = _figure_composer_image_source("volume")
+    profile_map = _figure_composer_line_slice_source("profile_map")
+    plotting_tool = FigureComposerTool.from_sources(
+        {
+            "image": image,
+            "volume": volume,
+            "profile_map": profile_map,
+        },
+        sources=(
+            _figure_composer_replay_source_state("image"),
+            _figure_composer_replay_source_state("volume"),
+            _figure_composer_replay_source_state("profile_map"),
+        ),
+        setup=FigureSubplotsState(nrows=2, ncols=2),
+        operations=(
+            FigureOperationState.set_palette(),
+            FigureOperationState.plot_array(
+                label="image",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ).model_copy(update={"cmap": "viridis", "colorbar": "right"}),
+            FigureOperationState.plot_slices(
+                label="cuts",
+                sources=("volume",),
+                axes=FigureAxesSelectionState(axes=((0, 1),)),
+                slice_dim="eV",
+                slice_values=(-0.5, 0.5),
+            ).model_copy(
+                update={
+                    "annotate": False,
+                    "cmap": "terrain_r",
+                    "line_label_text": "{number}: {eV:g}",
+                    "line_color_mode": "coordinate",
+                    "line_color_coord": "eV",
+                }
+            ),
+            FigureOperationState.line(
+                label="profiles",
+                source="profile_map",
+                axes=FigureAxesSelectionState(axes=((1, 0),)),
+            ).model_copy(
+                update={
+                    "line_iter_dim": "eV",
+                    "line_color_mode": "coordinate",
+                    "line_color_coord": "eV",
+                    "line_color_cmap": "plasma",
+                    "line_normalize": "mean",
+                }
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="set_title",
+                axes=FigureAxesSelectionState(axes=((1, 0),)),
+                args=("Profiles",),
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.ERLAB,
+                name="clean_labels",
+                axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (1, 0), (1, 1))),
+            ),
+            FigureOperationState.method(
+                family=FigureMethodFamily.FIGURE,
+                name="supxlabel",
+                args=("Shared coordinate",),
+            ),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(plotting_tool)
+
+    hvdep_kconv = _photon_energy_source()
+    overlay_tool = FigureComposerTool.from_sources(
+        {
+            "image": image,
+            "hvdep_kconv": hvdep_kconv,
+        },
+        sources=(
+            _figure_composer_replay_source_state("image"),
+            _figure_composer_replay_source_state("hvdep_kconv"),
+        ),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        operations=(
+            FigureOperationState.plot_array(
+                label="momentum",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ),
+            FigureOperationState.bz_overlay(
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+                mode="out_of_plane",
+            ).model_copy(
+                update={
+                    "bz_bounds": (-2.0, 2.0, -2.0, 2.0),
+                    "bz_midpoints": True,
+                    "line_kw": {"color": "tab:orange"},
+                }
+            ),
+            FigureOperationState.photon_energy_overlay(
+                source="hvdep_kconv",
+                axes=FigureAxesSelectionState(axes=((0, 1),)),
+                binding_energy=-0.3,
+            ).model_copy(
+                update={
+                    "photon_energies": (30.0, 45.0),
+                    "legend_kw": {"title": "Photon energy"},
+                }
+            ),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(overlay_tool)
+
+    tools = {
+        "core plotting": plotting_tool,
+        "overlays": overlay_tool,
+    }
+    covered_kinds = {
+        operation.kind
+        for tool in tools.values()
+        for operation in tool.tool_status.operations
+    }
+    assert covered_kinds == set(FigureOperationKind) - {FigureOperationKind.CUSTOM}
+
+    for case_label, tool in tools.items():
+        code = _assert_figure_composer_provenance_replayable(
+            tool,
+            case_label=case_label,
+        )
+        assert "fig, axs = plt.subplots" in code
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):
@@ -11044,6 +11811,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert len({button.sizeHint().height() for button in step_toolbar_buttons}) == 1
     assert [action.data() for action in tool.add_step_menu.actions()] == [
         "set_palette",
+        "plot_array",
         "plot_slices",
         "line",
         "bz_overlay",
@@ -11055,6 +11823,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     ]
     assert [action.text() for action in tool.add_step_menu.actions()] == [
         "Set Palette",
+        "Image Plot",
         "Slice Plot",
         "Line/Profile",
         "BZ Overlay",
@@ -21160,6 +21929,16 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         [{"label": "alpha:1:0.1"}, {"label": "beta:2:0.1"}],
         [{"label": "alpha:3:0.2"}, {"label": "beta:4:0.2"}],
     ]
+    for code in (by_slice, by_source, grid, fortran_grid):
+        available_names = {
+            *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+            "slice_values",
+        }
+        _replay_graph._validate_script_code_names(
+            f"line_kw = {code}",
+            available_names,
+            {},
+        )
 
     styled = figurecomposer_plot_slices._plot_slices_styled_label_line_kw_code(
         operation.model_copy(
@@ -26049,6 +26828,110 @@ def test_plot_slices_source_styles_keep_default_cmap_panels() -> None:
     } == {(0, 0): "magma"}
 
 
+def test_manager_figure_operation_helpers_cover_multi_image_edges() -> None:
+    manager = typing.cast(
+        "manager_mainwindow.ImageToolManager",
+        manager_mainwindow.ImageToolManager.__new__(
+            manager_mainwindow.ImageToolManager
+        ),
+    )
+    first_image = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("y", "x"))
+    second_image = xr.DataArray(np.arange(4.0, 8.0).reshape(2, 2), dims=("y", "x"))
+
+    operations = (
+        manager_mainwindow.ImageToolManager._make_figure_operations_for_sources(
+            manager,
+            {"first": first_image, "second": second_image},
+            setup=FigureSubplotsState(nrows=2, ncols=1),
+        )
+    )
+
+    assert [operation.kind for operation in operations] == [
+        FigureOperationKind.PLOT_ARRAY,
+        FigureOperationKind.PLOT_ARRAY,
+    ]
+    assert [operation.axes.axes for operation in operations] == [
+        ((0, 0),),
+        ((1, 0),),
+    ]
+
+    split_by_axes_id = (
+        manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
+            typing.cast("tuple[typing.Any, ...]", operations),
+            FigureAxesSelectionState(axes_ids=("left", "right")),
+        )
+    )
+    assert [operation.axes.axes_ids for operation in split_by_axes_id] == [
+        ("left",),
+        ("right",),
+    ]
+
+
+def test_manager_figure_image_target_helpers_cover_plot_slices_edges() -> None:
+    plot_slices = FigureOperationState.plot_slices(
+        label="slice",
+        sources=("old",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    )
+    plot_array = FigureOperationState.plot_array(label="array", source="old")
+
+    class _FakePlot:
+        is_image = True
+
+        def __init__(self, operation: FigureOperationState) -> None:
+            self.operation = operation
+
+        def figure_composer_operation(
+            self, *, source_name: str
+        ) -> FigureOperationState:
+            return self.operation.model_copy(update={"sources": (source_name,)})
+
+    nodes = {
+        "slice_a": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_slices),))
+            )
+        ),
+        "slice_b": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_slices),))
+            )
+        ),
+        "array": types.SimpleNamespace(
+            imagetool=types.SimpleNamespace(
+                slicer_area=types.SimpleNamespace(axes=(_FakePlot(plot_array),))
+            )
+        ),
+    }
+    manager = typing.cast(
+        "manager_mainwindow.ImageToolManager",
+        types.SimpleNamespace(_node_for_target=lambda target: nodes[target]),
+    )
+
+    assert (
+        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
+            manager,
+            ("slice_a", "array"),
+            ("first", "second"),
+        )
+        is None
+    )
+    combined = (
+        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
+            manager,
+            ("slice_a", "slice_b"),
+            ("first", "second"),
+        )
+    )
+
+    assert combined is not None
+    assert len(combined) == 1
+    assert combined[0].kind == FigureOperationKind.PLOT_SLICES
+    assert combined[0].sources == ("first", "second")
+    assert combined[0].order == "F"
+
+
 def test_manager_append_to_gridspec_figure_uses_axes_ids(
     qtbot,
     manager_context: Callable[
@@ -26701,7 +27584,7 @@ def test_manager_append_momentum_source_seeds_bz_overlay(
 
         assert appended is True
         assert [operation.kind for operation in figure_tool.tool_status.operations] == [
-            FigureOperationKind.PLOT_SLICES,
+            FigureOperationKind.PLOT_ARRAY,
             FigureOperationKind.BZ_OVERLAY,
         ]
         assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 0),)
@@ -26784,7 +27667,7 @@ def test_manager_ktool_output_figure_seeds_bz_overlay(
         operations = figure_tool.tool_status.operations
 
         assert [operation.kind for operation in operations] == [
-            FigureOperationKind.PLOT_SLICES,
+            FigureOperationKind.PLOT_ARRAY,
             FigureOperationKind.BZ_OVERLAY,
         ]
         bz_operation = operations[1]
@@ -27451,7 +28334,7 @@ def test_manager_figure_remove_unused_source_persists_workspace(
         }
 
 
-def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
+def test_manager_figure_action_multi_source_append_preserves_image_colormaps(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -27524,22 +28407,18 @@ def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
 
         manager.create_figure_action.trigger()
 
-        operation = figure_tool.tool_status.operations[-1]
-        assert operation.kind == FigureOperationKind.PLOT_SLICES
-        assert operation.sources == ("data_0", "data_1")
-        assert operation.order == "F"
-        assert operation.axes.axes == ((0, 0), (0, 1))
-        assert operation.cmap is None
-        assert operation.panel_styles_enabled
-        assert operation.panel_styles == (
-            FigurePlotSlicesPanelStyleState(
-                map_index=0,
-                slice_index=0,
-                cmap="magma",
-            ),
-            FigurePlotSlicesPanelStyleState(
-                map_index=1,
-                slice_index=0,
-                cmap="viridis_r",
-            ),
-        )
+        appended = figure_tool.tool_status.operations[-2:]
+        assert [operation.kind for operation in appended] == [
+            FigureOperationKind.PLOT_ARRAY,
+            FigureOperationKind.PLOT_ARRAY,
+        ]
+        assert [operation.sources for operation in appended] == [
+            ("data_0",),
+            ("data_1",),
+        ]
+        assert [operation.axes.axes for operation in appended] == [
+            ((0, 0),),
+            ((0, 1),),
+        ]
+        assert [operation.cmap for operation in appended] == ["magma", "viridis_r"]
+        assert all(not operation.panel_styles_enabled for operation in appended)

@@ -2269,18 +2269,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
-        provenance_spec = self.provenance_spec
-        if (
-            provenance_spec is None
-            or provenance_spec.kind != "file"
-            or provenance_spec.file_load_source is None
-            or not pathlib.Path(provenance_spec.file_load_source.path).exists()
-        ):
-            return False
-        replay_call = provenance_spec.file_load_source.replay_call
-        return replay_call is not None and (
-            replay_call.kind != "erlab_loader" or replay_call.target in erlab.io.loaders
-        )
+        return provenance.can_reload_without_trust(self.provenance_spec)
 
     def _direct_reload_unavailable_reason(self) -> str | None:
         """Return why direct file metadata cannot reload, if it is relevant."""
@@ -2316,43 +2305,53 @@ class ImageSlicerArea(QtWidgets.QWidget):
         provenance_spec = self.provenance_spec
         if provenance_spec is None:
             return None
-        if provenance_spec.kind == "file":
+        source_status = provenance.file_load_source_status(provenance_spec)
+        if provenance_spec.kind == "file" or provenance.has_file_load_source(
+            provenance_spec
+        ):
             load_source = provenance_spec.file_load_source
-            if load_source is None:
+            if source_status == "no-file-load-source" or load_source is None:
                 return (
                     "This data has file provenance, but it does not include the "
                     "source file needed for reload. Reopen the data from its file "
                     "to enable reload."
                 )
             file_path = pathlib.Path(load_source.path)
-            if not file_path.exists():
+            if source_status == "missing-file":
                 return (
                     "The source file is not available:\n"
                     f"{file_path}\n\n"
                     "Reconnect the drive or restore the file, then try again."
                 )
             replay_call = load_source.replay_call
-            if replay_call is None:
+            if source_status == "no-replay-call" or replay_call is None:
                 return (
                     "This data has file provenance, but the loader information "
                     "needed to read it is missing. Reopen the data from its file "
                     "to enable reload."
                 )
-            if (
-                replay_call.kind == "erlab_loader"
-                and replay_call.target not in erlab.io.loaders
-            ):
+            if source_status == "missing-loader":
                 return (
                     f"The saved loader {replay_call.target!r} is not available "
                     "in this ImageTool session. Reopen the data from its file "
                     "with an available loader."
                 )
+            if provenance_spec.kind == "file":
+                return None
+        if provenance.can_reload_without_trust(provenance_spec):
             return None
         if provenance_spec.kind == "script":
+            if provenance.script_provenance_requires_trust(provenance_spec):
+                return (
+                    "This data includes recorded script code that needs trust "
+                    "confirmation before replay. Reload it in ImageTool Manager, "
+                    "or recreate it from reloadable inputs to enable standalone "
+                    "reload."
+                )
             return (
                 "This data was created from recorded script steps that cannot be "
-                "reloaded outside ImageTool Manager. Reopen or recreate it from "
-                "reloadable inputs to enable reload."
+                "reloaded automatically from the saved provenance. Reopen or "
+                "recreate it from reloadable inputs to enable reload."
             )
         return None
 
@@ -2408,24 +2407,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _fetch_for_provenance_reload(self) -> xr.DataArray:
         """Replay file-rooted provenance and return the active displayed data."""
         provenance_spec = self.provenance_spec
-        if (
-            provenance_spec is None
-            or provenance_spec.kind != "file"
-            or provenance_spec.file_load_source is None
-        ):
+        if provenance_spec is None:
             raise RuntimeError("Data cannot be reloaded from provenance")
-        file_path = pathlib.Path(provenance_spec.file_load_source.path)
-        if not file_path.exists():
-            raise FileNotFoundError(file_path)
-        return provenance.replay_file_provenance(provenance_spec)
+        load_source = provenance_spec.file_load_source
+        source_status = provenance.file_load_source_status(provenance_spec)
+        if load_source is not None and source_status == "missing-file":
+            raise FileNotFoundError(pathlib.Path(load_source.path))
+        if not provenance.can_reload_without_trust(provenance_spec):
+            raise RuntimeError("Data cannot be reloaded from provenance")
+        if provenance_spec.kind == "file":
+            return provenance.replay_file_provenance(provenance_spec)
+        if provenance_spec.kind == "script":
+            return provenance.replay_script_provenance(provenance_spec, {})
+        raise RuntimeError("Data cannot be reloaded from provenance")
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
         """Return reload data and replacement kwargs for the active reload source."""
         provenance_spec = self.provenance_spec
         if (
             provenance_spec is not None
-            and provenance_spec.kind == "file"
-            and bool(provenance_spec.replay_stages)
+            and (
+                provenance_spec.kind == "script" or bool(provenance_spec.replay_stages)
+            )
             and self._provenance_reloadable()
         ):
             return self._fetch_for_provenance_reload(), {}
@@ -2444,6 +2447,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if managed_reload is not None:
             manager, target = managed_reload
             return manager._reload_source_chain_for_child(target)
+        manager = self._manager_instance if self._in_manager else None
+        if (
+            manager is not None
+            and self.provenance_spec is not None
+            and self.provenance_spec.kind == "script"
+            and self.provenance_spec.script_inputs
+            and manager._script_reload_from_slicer_area(self, execute=False)
+        ):
+            return manager._script_reload_from_slicer_area(self, execute=True)
         if self._direct_reloadable() or self._provenance_reloadable():
             try:
                 data, kwargs = self._fetch_reload_data()
@@ -2454,7 +2466,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
                 return False
             return True
-        manager = self._manager_instance if self._in_manager else None
         if manager is not None:
             return manager._script_reload_from_slicer_area(self, execute=True)
         if not self.reloadable:

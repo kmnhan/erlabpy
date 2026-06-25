@@ -10,6 +10,7 @@ from erlab.interactive._figurecomposer._operations import (
     _line_profile,
     _method,
     _photon_energy,
+    _plot_array,
     _plot_slices,
     _set_palette,
 )
@@ -27,6 +28,7 @@ _OPERATION_SPECS = {
     spec.kind: spec
     for spec in (
         _set_palette.SPEC,
+        _plot_array.SPEC,
         _plot_slices.SPEC,
         _line_profile.SPEC,
         _bz_overlay.SPEC,
