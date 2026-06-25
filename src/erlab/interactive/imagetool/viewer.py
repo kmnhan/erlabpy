@@ -552,6 +552,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._axes_indices(), self._materialized_axes(), strict=False
         ):
             self._apply_pending_plotitem_state(index, ax)
+        if self._secondary_plots_materialized:
+            self._pending_plotitem_states = None
 
     def _sync_materialized_plot(self, index: int, plot: ItoolPlotItem) -> None:
         if not hasattr(self, "_array_slicer") or not self._axes_index_valid(index):
@@ -2138,6 +2140,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.axis_inversions = self._normalized_axis_inversions(self.axis_inversions)
         if had_array_slicer and ndim_changed:
             self._secondary_plots_materialized = False
+            if not secondary_plots_were_materialized:
+                self._pending_plotitem_states = None
+                self._pending_splitter_sizes = None
 
         if ndim_changed:
             if secondary_plots_were_materialized:

@@ -2152,6 +2152,39 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
     win.close()
 
 
+def test_lazy_secondary_pending_plot_state_cleared_on_dimensionality_change(
+    qtbot,
+) -> None:
+    data_4d = xr.DataArray(
+        np.arange(16.0).reshape(2, 2, 2, 2), dims=("x", "y", "z", "t")
+    )
+    source = ImageTool(data_4d, _in_manager=True)
+    qtbot.addWidget(source)
+    source.slicer_area.get_axes(4).add_roi()
+    state = copy.deepcopy(source.slicer_area.state)
+    source.close()
+
+    restored = ImageTool(
+        data_4d,
+        _in_manager=True,
+        _defer_secondary_plots=True,
+        state=state,
+    )
+    qtbot.addWidget(restored)
+    area = restored.slicer_area
+    assert area._pending_plotitem_states is not None
+
+    data_2d = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    area.set_data(data_2d)
+
+    assert area._pending_plotitem_states is None
+    assert area._pending_splitter_sizes is None
+    axes = area.axes
+    assert len(axes) == 3
+    assert all(not ax._roi_list for ax in axes)
+    restored.close()
+
+
 def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
     qtbot,
 ) -> None:
