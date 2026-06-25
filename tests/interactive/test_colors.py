@@ -273,6 +273,23 @@ def test_colorbar_keeps_menu_widget_action_references() -> None:
     assert colorbar._cmap_action.defaultWidget() is colorbar._cmap_widget
 
 
+def test_colorbar_lazy_context_menu_access_paths(qtbot, monkeypatch) -> None:
+    image = BetterImageItem(np.arange(16, dtype=float).reshape(4, 4))
+    image.set_colormap("viridis", gamma=1.0)
+    colorbar = BetterColorBarItem(image=image, _defer_context_menu_setup=True)
+    widget = pg.PlotWidget(plotItem=colorbar)
+    qtbot.addWidget(widget)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(colorbar, "_menu_for_context_setup", lambda: None)
+        assert colorbar._ensure_context_menu() is None
+
+    menu = colorbar.getMenu()
+    assert menu is colorbar.ctrlMenu
+    assert colorbar._ensure_context_menu() is colorbar._context_menu
+    assert colorbar.getContextMenus(None) is None
+
+
 def test_colorbar_edit_widget_applies_changes_to_images(qtbot):
     data = np.linspace(0, 1, 25, dtype=float).reshape(5, 5)
     images = [BetterImageItem(data + offset) for offset in (0.0, 1.0)]

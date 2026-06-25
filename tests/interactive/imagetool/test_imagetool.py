@@ -67,7 +67,11 @@ from erlab.interactive.imagetool.dialogs import (
     SymmetrizeNfoldDialog,
     ThinDialog,
 )
-from erlab.interactive.imagetool.plot_items import ItoolPlotItem, _PolyROIEditDialog
+from erlab.interactive.imagetool.plot_items import (
+    ItoolPlotItem,
+    ItoolViewBox,
+    _PolyROIEditDialog,
+)
 from erlab.interactive.imagetool.slicer import ArraySlicerState
 from erlab.interactive.imagetool.viewer import ImageSlicerArea
 from erlab.interactive.imagetool.viewer_state import (
@@ -2008,16 +2012,26 @@ def test_point_value_context_menu_selects_associated_coord(qtbot) -> None:
     win.close()
 
 
-def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(qtbot) -> None:
+def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    viewbox = ItoolViewBox(enableMenu=False)
+    assert viewbox.getContextMenus(None) == []
+    viewbox._populate_itool_menu()
+
     data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
     plot = win.slicer_area.main_image
     assert plot.vb.menu is None
+    plot.vb.setMenuEnabled(False)
+    assert plot._ensure_context_menu() is None
+    plot.vb.setMenuEnabled(True)
     colorbar = win.slicer_area._colorbar.cb
     assert colorbar.vb.menu is None
 
+    plot.setup_actions()
     plot.getMenu()
     menu = plot.vb.menu
     assert menu is not None
@@ -2032,10 +2046,32 @@ def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(qtbot) -> None:
     )
 
     assert plot.vb.getMenu(None) is menu
+    assert plot.vb.getContextMenus(None)
     assert tuple(menu.actions()) == first_actions
 
     plot.getMenu()
     assert tuple(menu.actions()) == first_actions
+    assert plot.getContextMenus(None)
+
+    plot.ensure_manager_figure_actions()
+    manager_action_names = {action.objectName() for action in menu.actions()}
+    assert "itool_plot_with_matplotlib_action" in manager_action_names
+    assert "itool_append_to_figure_action" in manager_action_names
+    plot.ensure_manager_figure_actions()
+    assert (
+        sum(
+            action.objectName() == "itool_plot_with_matplotlib_action"
+            for action in menu.actions()
+        )
+        == 1
+    )
+
+    aspect_slot = plot._equal_aspect_state_changed_slot
+    assert aspect_slot is not None
+    with monkeypatch.context() as patch:
+        patch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_: False)
+        aspect_slot()
+    assert plot._equal_aspect_state_changed_slot is None
 
     plot.vb.setMenuEnabled(False)
     assert plot.vb.menu is None
@@ -2053,6 +2089,7 @@ def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(qtbot) -> None:
 
     colorbar_menu = colorbar.vb.getMenu(None)
     assert colorbar_menu is not None
+    assert colorbar._ensure_context_menu() is colorbar_menu
     assert (
         sum(
             action.objectName() == "itool_copy_color_limits_action"
@@ -2073,6 +2110,7 @@ def test_itool_plot_item_viewbox_menu_is_lazy_and_idempotent(qtbot) -> None:
         )
         == 1
     )
+    assert colorbar.getContextMenus(None) is None
     win.close()
 
 
@@ -2142,6 +2180,61 @@ def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
     assert len(area.axes) == 8
     assert 7 in area._axes_signal_connected_indices
     win.close()
+
+
+def test_lazy_secondary_plot_helper_edge_paths(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    win = ImageTool(data, _in_manager=True, _defer_secondary_plots=True)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    assert area._pending_plotitem_state(99) is None
+    area._pending_plotitem_states = []
+    assert area._pending_plotitem_state(0) is None
+
+    with pytest.raises(IndexError, match="Invalid ImageTool axes index"):
+        area._add_axes_widget_to_splitter(99, QtWidgets.QWidget())
+    with pytest.raises(IndexError, match="Invalid ImageTool axes index"):
+        area.get_axes_widget(99)
+
+    assert area._materialized_slices() == ()
+    assert area._materialized_profiles() == ()
+    assert area.slices == ()
+    assert area.get_axes_widget(0) is area._plots[0]
+
+    original_data = area.array_slicer._obj
+    area.array_slicer._obj = xr.DataArray(np.arange(2.0), dims=("x",))
+    try:
+        with pytest.raises(ValueError, match="Data must have 2 to 4 dimensions"):
+            area._slice_axes_indices()
+        with pytest.raises(ValueError, match="Data must have 2 to 4 dimensions"):
+            area._profile_axes_indices()
+    finally:
+        area.array_slicer._obj = original_data
+
+    bad_state = copy.deepcopy(area.state)
+    bad_state["plotitem_states"] = []
+    with pytest.raises(ValueError, match="plot state does not match"):
+        area.state = bad_state
+    win.close()
+
+    failing = ImageTool(data, _in_manager=True, _defer_secondary_plots=True)
+    qtbot.addWidget(failing)
+
+    def _raise_build_error(index: int) -> typing.NoReturn:
+        raise RuntimeError(f"cannot build {index}")
+
+    monkeypatch.setattr(
+        failing.slicer_area,
+        "_build_axes_widget",
+        _raise_build_error,
+    )
+    with pytest.raises(RuntimeError, match="cannot build"):
+        failing.slicer_area._ensure_secondary_plots()
+    assert not failing.slicer_area._secondary_plots_materialized
+    failing.close()
 
 
 def test_profile_menu_opens_associated_coord_targets(

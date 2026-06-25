@@ -4123,6 +4123,25 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
         assert target in manager._tool_graph.root_wrappers
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        binding = provenance.ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"x": 0},
+        )
+        bound_ds = saved.to_dataset()
+        bound_ds.attrs["manager_node_uid"] = "bound"
+        bound_ds.attrs.pop("manager_node_live_source_spec", None)
+        bound_ds.attrs["manager_node_live_source_binding"] = json.dumps(
+            binding.model_dump(mode="json")
+        )
+        bound_ds.attrs.pop("itool_name", None)
+
+        bound_target = manager._load_workspace_imagetool_dataset(
+            bound_ds, parent_target=None, node_path="-2"
+        )
+
+        assert manager._node_for_target(bound_target).source_binding == binding
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
 
 def test_manager_load_workspace_tool_dataset_rejects_root_tool(
     qtbot,
