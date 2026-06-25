@@ -37,20 +37,14 @@ figure structure and the recipe steps.
 The {guilabel}`Layout` tab controls the global figure structure, where you can define
 the size and DPI of the figure, and the number of axes and their arrangement.
 
-Use {guilabel}`Subplots` mode for regular grids created with
-{func}`matplotlib.pyplot.subplots`. Set rows, columns, shared x/y axes, layout engine,
-and optional width or height ratios. This is the quickest way to create a row of
-constant-energy maps or a stacked image/profile figure.
+- Use {guilabel}`Subplots` mode for regular grids created with
+  {func}`matplotlib.pyplot.subplots`.
 
-Use {guilabel}`GridSpec` mode when the figure needs axes that span several cells or
-nested regions created with {class}`matplotlib.gridspec.GridSpec`. Drag in the GridSpec
-editor to create rectangular axes or nested grids. Open a nested grid to edit it in
-place, then use the breadcrumb controls to return to the parent grid. Axis labels are
-optional; the composer generates stable names for code when labels are left blank.
-
-Changing the layout does not silently rewrite step targets. If a step points to axes
-that no longer exist, the step remains editable and is marked invalid until you repair
-the target axes.
+- Use {guilabel}`GridSpec` mode for more complex figures that include axes that span
+  several cells or nested regions created with {class}`matplotlib.gridspec.GridSpec`.
+  Drag in the GridSpec editor to create rectangular axes or nested grids. Open a nested
+  grid to edit it in place, then use the breadcrumb controls to return to the parent
+  grid.
 
 (figure-composer-recipe)=
 
@@ -129,11 +123,6 @@ When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the
   a figure and want to reuse the same recipe, axes, styles, and generated variable names
   with updated or comparable data.
 
-The {guilabel}`Sources` view also provides refresh controls. Click the row button next
-to one source to refresh only that source from its linked open ImageTool, or click
-{guilabel}`Refresh Sources` to refresh every source in the figure that is still linked
-to an open ImageTool.
-
 (figure-composer-toolbar)=
 
 ## Toolbar controls
@@ -154,11 +143,6 @@ kept and the source is marked missing until it can be restored or replaced.
 
 Use {guilabel}`Copy Code` in the composer for recipe code that assumes the figure
 sources already exist as Python variables.
-
-To record the intent for the whole figure, select the Figure Composer row in the
-manager's {guilabel}`Figures` tab and use the inspector's {guilabel}`Notes` tab. The
-note is saved with the manager workspace as figure metadata and is separate from the
-generated Python recipe code.
 
 Use the manager side panel's {guilabel}`Copy Full Code` action when you want recursive
 replay code that includes all analysis steps.
