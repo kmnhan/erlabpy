@@ -938,6 +938,7 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
     prompt_controller = manager_lineage._LineageController(
         typing.cast("typing.Any", manager)
     )
+    detailed_texts: list[str] = []
 
     class _FakeMessageBox:
         class Icon(enum.IntEnum):
@@ -952,7 +953,6 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
         def __init__(self, _parent: typing.Any = None) -> None:
             self._run_button = object()
             self._cancel_button = object()
-            self.detailed_text = ""
 
         def setObjectName(self, _name: str) -> None:
             pass
@@ -970,7 +970,7 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
             pass
 
         def setDetailedText(self, text: str) -> None:
-            self.detailed_text = text
+            detailed_texts.append(text)
 
         def addButton(
             self, button: str | enum.IntEnum, _role: enum.IntEnum | None = None
@@ -990,9 +990,106 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
 
     monkeypatch.setattr(manager_lineage.QtWidgets, "QMessageBox", _FakeMessageBox)
     assert prompt_controller._prompt_trusted_script_replay(
-        _trust_required_script_spec(),
+        safe_spec,
         reason="reload this result",
     )
+    assert detailed_texts == ["derived = data\nderived = data + 1"]
+
+
+def test_manager_provenance_lightweight_helper_edges() -> None:
+    parent = types.SimpleNamespace(
+        uid="parent",
+        parent_uid=None,
+        _childtool_indices=(),
+        is_imagetool=True,
+        type_badge_text="",
+        name="",
+    )
+    child = types.SimpleNamespace(
+        uid="child",
+        parent_uid="parent",
+        is_imagetool=True,
+        type_badge_text="",
+        name="",
+    )
+    panel = types.SimpleNamespace(
+        _manager=types.SimpleNamespace(
+            _tool_graph=types.SimpleNamespace(
+                nodes={"parent": parent},
+                root_wrappers={},
+            )
+        )
+    )
+
+    assert (
+        manager_details_panel._DetailsPanelController._script_input_current_node_label(
+            typing.cast("typing.Any", panel),
+            child,
+        )
+        == "ImageTool child"
+    )
+
+    script_input_row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Use data_0 from Input", None),
+        replay_ref=provenance._ProvenanceStepRef(
+            "script_input",
+            script_input_index=0,
+        ),
+        script_input_path=(0,),
+    )
+    assert (
+        manager_details_panel._DetailsPanelController._script_input_for_row(
+            provenance.full_data(),
+            script_input_row,
+        )
+        is None
+    )
+    assert (
+        manager_details_panel._DetailsPanelController._script_input_for_row(
+            provenance.script(
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+            ),
+            script_input_row,
+        )
+        is None
+    )
+
+    forwarded: list[
+        tuple[
+            provenance.ToolProvenanceSpec,
+            str,
+            set[str] | None,
+        ]
+    ] = []
+    spec = provenance.script(
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    def ensure_script_provenance_trusted(
+        spec_arg: provenance.ToolProvenanceSpec,
+        *,
+        reason: str,
+        external_input_names: set[str] | None = None,
+    ) -> None:
+        forwarded.append((spec_arg, reason, external_input_names))
+
+    manager = types.SimpleNamespace(
+        _lineage_controller=types.SimpleNamespace(
+            _ensure_script_provenance_trusted=ensure_script_provenance_trusted
+        )
+    )
+
+    manager_mainwindow.ImageToolManager._ensure_script_provenance_trusted(
+        typing.cast("typing.Any", manager),
+        spec,
+        reason="reload this result",
+        external_input_names={"data_0"},
+    )
+
+    assert forwarded == [(spec, "reload this result", {"data_0"})]
 
 
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(

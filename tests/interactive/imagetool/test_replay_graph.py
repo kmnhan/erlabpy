@@ -356,10 +356,18 @@ class Child(Base, metaclass=data_5):
         provenance.script(
             provenance.ScriptCodeOperation(label="Broken", code="derived ="),
             start_label="Run script",
-            seed_code="derived = data",
+            seed_code="derived = 0",
             active_name="derived",
         ),
         strict_replay_code=False,
+    )
+    assert not _replay_graph._script_provenance_validates(
+        None,
+        strict_replay_code=True,
+    )
+    assert (
+        _replay_graph._single_assignment_output_name("derived: xr.DataArray = data")
+        == "derived"
     )
     assert _replay_graph._single_assignment_output_name("derived =") is None
     assert _replay_graph._single_assignment_output_name("obj.value = data") is None
@@ -2482,6 +2490,18 @@ def test_replay_graph_trusted_user_code_replays_nested_scripts(
     assert trust_payload["inputs"][0]["payload"]["operations"][0]["code"].startswith(
         "import os"
     )
+    mixed_payload = _replay_graph._script_trust_payload(
+        spec.model_copy(
+            update={
+                "operations": (
+                    provenance.AverageOperation(dims=("x",)),
+                    *spec.operations,
+                )
+            }
+        )
+    )
+    assert mixed_payload is not None
+    assert len(mixed_payload["operations"]) == len(trust_payload["operations"])
     assert _replay_graph.script_provenance_trust_key(spec) is not None
     with pytest.raises(_replay_graph.ReplayGraphError, match="recorded operation"):
         _replay_graph.rebuild_script_provenance(spec)

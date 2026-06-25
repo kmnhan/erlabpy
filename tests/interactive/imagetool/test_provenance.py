@@ -3169,6 +3169,72 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     assert start_only.script_context_bindings == ()
 
 
+def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
+    stage = provenance.ReplayStage(
+        source_kind="full_data",
+        operations=(
+            provenance.AverageOperation(dims=("x",)),
+            provenance.IselOperation(kwargs={"missing": 0}),
+        ),
+    )
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Offset", code="result = result + 1"),
+        start_label="Run script",
+        seed_code="result = data",
+        active_name="result",
+        replay_stages=(stage,),
+    )
+    stage_ref = provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+
+    through_stage = spec._prefix_through_ref(stage_ref)
+    assert through_stage.operations == ()
+    assert through_stage.script_context_bindings == ()
+    assert through_stage.active_name == "result"
+    assert [stage.operations for stage in through_stage.replay_stages] == [
+        (provenance.AverageOperation(dims=("x",)),)
+    ]
+
+    before_stage = spec._prefix_before_ref(
+        provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=1,
+            stage_index=0,
+        )
+    )
+    assert before_stage.operations == ()
+    assert before_stage.script_context_bindings == ()
+    assert before_stage.active_name == "result"
+    assert [stage.operations for stage in before_stage.replay_stages] == [
+        (provenance.AverageOperation(dims=("x",)),)
+    ]
+
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="scan")
+    entries = spec._code_fallback_entries(parent_data=data)
+    labels = [entry.label for entry in entries]
+    assert 'Average(dims=("x",))' in labels
+    assert "isel(missing=0)" in labels
+    assert "Offset" in labels
+    rows = spec.display_rows(parent_data=data)
+    assert [row.entry.label for row in rows[1:3]] == [
+        'Average(dims=("x",))',
+        "isel(missing=0)",
+    ]
+    assert rows[3].entry.label == "Offset"
+
+    assert (
+        provenance.ToolProvenanceSpec(
+            kind="script",
+            start_label="Run script",
+            active_name="result",
+        )._script_seed_output_name()
+        is None
+    )
+
+
 def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
     grouped = provenance.stamp_operation_group(
         (
