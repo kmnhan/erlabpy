@@ -2390,7 +2390,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 len(operation.map_selections) == 1 for operation in source_operations
             ):
                 first_operation = source_operations[0]
-                updates = {
+                plot_array_updates = {
                     "transpose": first_operation.transpose,
                     "xlim": first_operation.xlim,
                     "ylim": first_operation.ylim,
@@ -2420,7 +2420,7 @@ class ImageToolManager(_ImageToolManagerBase):
                         for source_operation in source_operations
                         for selection in source_operation.map_selections
                     ),
-                ).model_copy(update=updates)
+                ).model_copy(update=plot_array_updates)
                 if len(source_names) > 1:
                     operation = operation.model_copy(update={"order": "F"})
                 return (
@@ -2444,10 +2444,10 @@ class ImageToolManager(_ImageToolManagerBase):
 
             raise FigureComposerPlotSlicesSelectionError
         operation = source_operations[0]
-        updates: dict[str, typing.Any] = {"sources": source_names}
+        source_updates: dict[str, typing.Any] = {"sources": source_names}
         if len(source_names) > 1:
-            updates["order"] = "F"
-        expanded_operation = operation.model_copy(update=updates)
+            source_updates["order"] = "F"
+        expanded_operation = operation.model_copy(update=source_updates)
         return (
             plot_slices_operation_with_source_styles(
                 expanded_operation,
