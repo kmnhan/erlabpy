@@ -1763,6 +1763,49 @@ def test_manager_provenance_edit_file_load_source_uses_display_spec(
     assert kwargs["batch_peers"] == ()
 
 
+def test_manager_provenance_edit_file_load_source_uses_script_display_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "missing.h5"
+    script_spec = provenance.compose_full_provenance(
+        _manager_replay_file_spec(source_path),
+        provenance.script(
+            provenance.ScriptCodeOperation(
+                label="Calculate result",
+                code="result = derived + 1",
+            ),
+            start_label="Run script",
+            active_name="result",
+        ),
+    )
+    assert script_spec is not None
+    node = _fake_edit_node(script_spec)
+    controller = _fake_edit_controller(node)
+    calls: list[provenance.ToolProvenanceSpec] = []
+
+    def _edit_file_load_spec(
+        _edit_node: object,
+        _scope: typing.Literal["display", "source"],
+        spec: provenance.ToolProvenanceSpec,
+        **_kwargs: typing.Any,
+    ) -> None:
+        calls.append(spec)
+
+    monkeypatch.setattr(controller, "_edit_file_load_spec", _edit_file_load_spec)
+
+    editable, reason = controller.can_edit_file_load_source(
+        typing.cast("typing.Any", node),
+        source_path,
+    )
+    assert editable
+    assert reason
+
+    controller.edit_file_load_source(typing.cast("typing.Any", node), source_path)
+
+    assert calls == [script_spec]
+
+
 def test_manager_provenance_edit_file_load_source_falls_back_to_source_spec(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
@@ -2098,6 +2141,23 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     controller = _fake_edit_controller(_fake_edit_node(no_replay_file))
     assert not controller.can_edit_row(file_row)[0]
+
+    script_file = provenance.compose_full_provenance(
+        _manager_provenance_file_spec(pathlib.Path("scan.h5")),
+        provenance.script(
+            provenance.ScriptCodeOperation(
+                label="Calculate result",
+                code="result = derived + 1",
+            ),
+            start_label="Run script",
+            active_name="result",
+        ),
+    )
+    assert script_file is not None
+    script_file_row = script_file.display_rows()[0]
+    assert script_file_row.edit_ref == provenance._ProvenanceStepRef("file_load")
+    controller = _fake_edit_controller(_fake_edit_node(script_file))
+    assert controller.can_edit_row(script_file_row) == (True, "")
 
     missing_operation_row = provenance._ProvenanceDisplayRow(
         provenance.DerivationEntry("missing", None),
@@ -3310,6 +3370,85 @@ def test_manager_provenance_missing_source_revert_repairs_revert_target(
     assert len(opened) == 1
     assert opened[0].kind == "file"
     assert opened[0].replay_stages == ()
+
+
+def test_manager_provenance_script_file_revert_reports_missing_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    missing_path = tmp_path / "missing.h5"
+    file_spec = _manager_replay_file_spec(
+        missing_path,
+        provenance.IselOperation(kwargs={"x": 0}),
+    )
+    script_spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use loaded data",
+            code="derived = derived + 1.0",
+        ),
+        start_label=file_spec.start_label,
+        seed_code=file_spec.seed_code,
+        active_name=file_spec.active_name,
+        file_load_source=file_spec.file_load_source,
+        replay_stages=file_spec.replay_stages,
+    )
+    node = _fake_edit_node(script_spec)
+    controller = _fake_edit_controller(node)
+    row = script_spec.display_rows()[0]
+    dialogs: list[dict[str, typing.Any]] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
+            self._button_box = QtWidgets.QDialogButtonBox(kwargs["buttons"])
+            dialogs.append(kwargs)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+    def raise_missing_rebuild(*_args: typing.Any, **_kwargs: typing.Any) -> None:
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(missing_path),
+        )
+        rebuild_error = manager_widgets._ScriptRebuildError(
+            "Could not reload data.",
+            details=str(missing),
+        )
+        raise rebuild_error from missing
+
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "MessageDialog",
+        _RecordingMessageDialog,
+    )
+    monkeypatch.setattr(
+        controller._manager,
+        "_rebuild_script_provenance",
+        raise_missing_rebuild,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_show_failed",
+        lambda *_args, **_kwargs: pytest.fail("generic failure dialog was shown"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_edit_file_load_spec",
+        lambda *_args, **_kwargs: pytest.fail("cancel should not edit file load"),
+    )
+
+    controller.revert_row(row)
+
+    assert len(dialogs) == 1
+    assert "recorded source file" in dialogs[0]["text"].lower()
+    assert "validating the provenance revert target" in dialogs[0]["informative_text"]
+    assert str(missing_path) in dialogs[0]["informative_text"]
+    assert (
+        "current ImageTool data was left unchanged"
+        not in (dialogs[0]["informative_text"])
+    )
 
 
 def test_manager_provenance_missing_source_without_file_load_shows_dedicated_dialog(
@@ -4607,6 +4746,29 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     assert split_operation == active
     assert base_spec.replay_stages == ()
 
+    script_file_spec = provenance.script(
+        start_label="Load source",
+        seed_code=typing.cast("str", file_spec.seed_code),
+        active_name="derived",
+        file_load_source=file_spec.file_load_source,
+        replay_stages=file_spec.replay_stages,
+    )
+    assert controller._active_filter_ref(
+        typing.cast("typing.Any", node),
+        script_file_spec,
+    ) == provenance._ProvenanceStepRef(
+        "operation",
+        operation_index=0,
+        stage_index=0,
+    )
+    base_spec, split_operation = controller._split_active_filter(
+        typing.cast("typing.Any", node),
+        script_file_spec,
+    )
+    assert split_operation == active
+    assert base_spec.kind == "script"
+    assert base_spec.replay_stages == ()
+
     node.slicer_area._accepted_filter_provenance_operation = None
     assert controller._split_active_filter(
         typing.cast("typing.Any", node),
@@ -4852,6 +5014,22 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     assert renamed.replay_stages[-1].operations[:-1] == (
         provenance.AverageOperation(dims=("x",)),
     )
+
+    script_spec = provenance.script(
+        start_label="Load source",
+        seed_code=typing.cast("str", spec.seed_code),
+        active_name="derived",
+        file_load_source=spec.file_load_source,
+        replay_stages=spec.replay_stages,
+    )
+    script_renamed = manager_wrapper._spec_with_final_data_name(script_spec, "newer")
+
+    assert script_renamed.kind == "script"
+    assert script_renamed.replay_stages
+    assert script_renamed.operations == ()
+    script_stage_operations = script_renamed.replay_stages[-1].operations
+    assert script_stage_operations[-1] == provenance.RenameOperation(name="newer")
+    assert script_stage_operations[:-1] == (provenance.AverageOperation(dims=("x",)),)
 
 
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(

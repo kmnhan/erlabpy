@@ -3012,6 +3012,70 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     with pytest.raises(RuntimeError, match="provenance"):
         win.slicer_area._fetch_for_provenance_reload()
 
+    safe_seed = (
+        "import xarray\n\n"
+        f"derived = xarray.load_dataarray({str(source_file)!r}, engine='h5netcdf')"
+    )
+    safe_load_source = _file_source(source_file).model_copy(
+        update={
+            "kwargs_text": 'engine="h5netcdf"',
+            "load_code": safe_seed,
+            "replay_call": provenance.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={"engine": "h5netcdf"},
+                selected_index=0,
+            ),
+        }
+    )
+    safe_script_spec = provenance.script(
+        start_label="Load script-backed file",
+        seed_code=safe_seed,
+        active_name="derived",
+        file_load_source=safe_load_source,
+    ).append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    win.set_provenance_spec(safe_script_spec)
+    assert win.slicer_area.reloadable
+    assert win.slicer_area._provenance_reload_unavailable_reason() is None
+
+    updated = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",))
+    updated.to_netcdf(source_file, engine="h5netcdf")
+    xarray.testing.assert_identical(
+        win.slicer_area._fetch_for_provenance_reload(),
+        updated.mean("x"),
+    )
+
+    missing_script_file = tmp_path / "missing-script.h5"
+    win.set_provenance_spec(
+        safe_script_spec.model_copy(
+            update={
+                "file_load_source": safe_load_source.model_copy(
+                    update={"path": str(missing_script_file)}
+                )
+            }
+        )
+    )
+    assert not win.slicer_area.reloadable
+    unavailable_reasons.clear()
+    win.slicer_area.reload()
+    assert str(missing_script_file) in unavailable_reasons[-1]
+    with pytest.raises(FileNotFoundError):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    trusted_script_spec = safe_script_spec.append_operations(
+        provenance.ScriptCodeOperation(
+            label="Trusted code",
+            code="derived = globals()['derived']",
+        )
+    )
+    win.set_provenance_spec(trusted_script_spec)
+    assert not win.slicer_area.reloadable
+    reason = win.slicer_area._provenance_reload_unavailable_reason()
+    assert reason is not None
+    assert "trust" in reason.lower()
+
     win.set_provenance_spec(
         provenance.file_load(
             start_label="Bad selected index",

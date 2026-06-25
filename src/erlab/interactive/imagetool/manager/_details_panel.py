@@ -373,14 +373,20 @@ class _DetailsPanelController:
         *,
         include_history: bool = False,
     ) -> list[provenance._ProvenanceDisplayRow]:
-        spec = node.displayed_provenance_spec
+        spec = getattr(node, "displayed_provenance_spec", None)
+        rows = getattr(node, "derivation_display_rows", None)
+        if rows is None:
+            rows = [
+                provenance._ProvenanceDisplayRow(entry)
+                for entry in getattr(node, "derivation_entries", ())
+            ]
         return [
             self._current_derivation_display_row(
                 row,
                 spec,
                 include_history=include_history,
             )
-            for row in node.derivation_display_rows
+            for row in rows
         ]
 
     @staticmethod
@@ -936,7 +942,7 @@ class _DetailsPanelController:
     ) -> str:
         unavailable_labels: list[str] = []
         replayable_input_labels = self._replayable_script_input_labels(
-            node.displayed_provenance_spec
+            getattr(node, "displayed_provenance_spec", None)
         )
         rows = self._flatten_derivation_rows(
             self._current_derivation_display_rows(node, include_history=True)

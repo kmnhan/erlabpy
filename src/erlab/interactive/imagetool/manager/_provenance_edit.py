@@ -79,15 +79,70 @@ class _ProvenanceReplayFailure(RuntimeError):
 
     @property
     def missing_source_file(self) -> _MissingProvenanceSourceFileError | None:
-        if isinstance(self.cause, _MissingProvenanceSourceFileError):
-            return self.cause
-        return None
+        return _missing_source_file_error_from_exception(self.cause)
 
 
 class _MissingProvenanceSourceFileError(FileNotFoundError):
     def __init__(self, source_path: pathlib.Path) -> None:
         super().__init__(f"Recorded source file is no longer accessible: {source_path}")
         self.source_path = source_path
+
+
+def _missing_source_file_error_from_exception(
+    exc: BaseException,
+) -> _MissingProvenanceSourceFileError | None:
+    seen: set[int] = set()
+
+    def visit(
+        current: BaseException | None,
+    ) -> _MissingProvenanceSourceFileError | None:
+        if current is None or id(current) in seen:
+            return None
+        seen.add(id(current))
+        if isinstance(current, _MissingProvenanceSourceFileError):
+            return current
+        for nested in (
+            getattr(current, "cause", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if not isinstance(nested, BaseException):
+                continue
+            if missing := visit(nested):
+                return missing
+        return None
+
+    return visit(exc)
+
+
+def _file_not_found_path_from_exception(exc: BaseException) -> pathlib.Path | None:
+    seen: set[int] = set()
+
+    def visit(current: BaseException | None) -> pathlib.Path | None:
+        if current is None or id(current) in seen:
+            return None
+        seen.add(id(current))
+        if (
+            isinstance(current, FileNotFoundError)
+            and not isinstance(current, _MissingProvenanceSourceFileError)
+            and current.filename is not None
+        ):
+            try:
+                return pathlib.Path(current.filename).expanduser()
+            except TypeError:
+                return None
+        for nested in (
+            getattr(current, "cause", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if not isinstance(nested, BaseException):
+                continue
+            if path := visit(nested):
+                return path
+        return None
+
+    return visit(exc)
 
 
 def _parse_loader_kwargs(text: str) -> dict[str, typing.Any]:
@@ -404,7 +459,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         return self._provenance_spec_for(
             path=self._peer_path(peer),
             selection=replay_call.selection,
-            active_name=peer.spec.active_name or "derived",
+            active_name=_file_load_edit_active_name(peer.spec),
             replay_stages=peer.spec.replay_stages,
         )
 
@@ -1073,7 +1128,7 @@ class _ProvenanceEditController:
         if spec is None:
             return False, "This row does not have replayable provenance."
         if row.edit_ref.kind == "file_load":
-            if spec.kind != "file" or spec.file_load_source is None:
+            if spec.kind not in {"file", "script"} or spec.file_load_source is None:
                 return False, "This row is not a file load step."
             if spec.file_load_source.replay_call is None:
                 return False, "This file load step cannot be replayed."
@@ -1081,9 +1136,11 @@ class _ProvenanceEditController:
         operation = spec._operation_for_ref(row.edit_ref)
         if operation is None:
             return False, "This operation is not available."
-        script_operation = isinstance(operation, provenance.ScriptCodeOperation)
-        if script_operation:
-            if operation.code is None or not operation.copyable:
+        script_operation = (
+            operation if isinstance(operation, provenance.ScriptCodeOperation) else None
+        )
+        if script_operation is not None:
+            if script_operation.code is None or not script_operation.copyable:
                 return False, "This script step does not contain editable code."
             if spec.kind == "script":
                 return True, ""
@@ -1102,7 +1159,7 @@ class _ProvenanceEditController:
             and node.detached_live_parent_data is None
         ):
             return False, "This live row needs a parent source to replay."
-        if script_operation:
+        if script_operation is not None:
             return True, ""
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
@@ -1274,7 +1331,7 @@ class _ProvenanceEditController:
                     group[1],
                     (),
                 )
-            if candidate.kind == "file":
+            if candidate.kind in {"file", "script"}:
                 candidate = candidate.model_copy(
                     update={
                         "replay_stages": tuple(
@@ -1436,6 +1493,8 @@ class _ProvenanceEditController:
         target: _FileLoadBatchPeer,
         replacement: provenance.ToolProvenanceSpec,
     ) -> provenance.ToolProvenanceSpec:
+        if target.spec.kind == "script" and replacement.kind != "script":
+            replacement = _replace_file_load_fields(target.spec, replacement)
         if not target.script_input_path:
             return replacement
         return self._replace_script_input_path_spec(
@@ -1473,7 +1532,7 @@ class _ProvenanceEditController:
     ) -> None:
         if spec is None:
             return
-        if spec.kind == "file" and spec.file_load_source is not None:
+        if spec.kind in {"file", "script"} and spec.file_load_source is not None:
             load_source = spec.file_load_source
             targets.append(
                 _FileLoadBatchPeer(
@@ -1486,7 +1545,8 @@ class _ProvenanceEditController:
                     display_label=display_label,
                 )
             )
-            return
+            if spec.kind != "script":
+                return
         if spec.kind != "script":
             return
         for index, script_input in enumerate(spec.script_inputs):
@@ -1667,7 +1727,11 @@ class _ProvenanceEditController:
         row: provenance._ProvenanceDisplayRow,
     ) -> None:
         spec = self._display_spec_for_row(node, row)
-        if spec is None or spec.kind != "file" or spec.file_load_source is None:
+        if (
+            spec is None
+            or spec.kind not in {"file", "script"}
+            or spec.file_load_source is None
+        ):
             raise RuntimeError("Selected row is not a file load step")
         self._edit_file_load_spec(
             node,
@@ -1695,7 +1759,7 @@ class _ProvenanceEditController:
         checked_batch_peer_ids: frozenset[str] | None = None,
         root_spec: provenance.ToolProvenanceSpec | None = None,
     ) -> None:
-        if spec.kind != "file" or spec.file_load_source is None:
+        if spec.kind not in {"file", "script"} or spec.file_load_source is None:
             raise RuntimeError("Selected provenance does not have a file load step")
         dialog = _FileLoadEditDialog(
             spec.file_load_source,
@@ -1707,9 +1771,11 @@ class _ProvenanceEditController:
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
         candidate = dialog.provenance_spec(
-            active_name=spec.active_name or "derived",
+            active_name=_file_load_edit_active_name(spec),
             replay_stages=spec.replay_stages,
         )
+        if spec.kind == "script":
+            candidate = _replace_file_load_fields(spec, candidate)
         if row is None:
             edit_candidate = candidate
         elif root_spec is None:
@@ -2002,7 +2068,7 @@ class _ProvenanceEditController:
             ):
                 continue
             peer_spec = peer_node.displayed_provenance_spec
-            if peer_spec is None or peer_spec.kind != "file":
+            if peer_spec is None or peer_spec.kind not in {"file", "script"}:
                 continue
             peer_load_source = peer_spec.file_load_source
             peer_replay_call = (
@@ -2192,23 +2258,9 @@ class _ProvenanceEditController:
         active = node.slicer_area._accepted_filter_provenance_operation
         if active is None:
             return None
-        if spec.kind == "file":
-            for stage_index in range(len(spec.replay_stages) - 1, -1, -1):
-                operations = spec.replay_stages[stage_index].operations
-                for operation_index in range(len(operations) - 1, -1, -1):
-                    if operations[operation_index] == active:
-                        return provenance._ProvenanceStepRef(
-                            "operation",
-                            operation_index=operation_index,
-                            stage_index=stage_index,
-                        )
-        elif spec.kind in {"full_data", "public_data", "selection", "script"}:
-            for operation_index in range(len(spec.operations) - 1, -1, -1):
-                if spec.operations[operation_index] == active:
-                    return provenance._ProvenanceStepRef(
-                        "operation",
-                        operation_index=operation_index,
-                    )
+        for ref, operation in reversed(tuple(provenance.iter_operation_refs(spec))):
+            if operation == active:
+                return ref
         return None
 
     def _split_active_filter(
@@ -2226,7 +2278,7 @@ class _ProvenanceEditController:
         if active_operation is None:
             return spec, None
         base_spec = spec._replace_operation_ref(active_ref, ())
-        if base_spec.kind == "file":
+        if base_spec.kind in {"file", "script"}:
             stages = tuple(
                 stage for stage in base_spec.replay_stages if stage.operations
             )
@@ -2321,14 +2373,6 @@ class _ProvenanceEditController:
         exc: Exception,
         repair_spec: provenance.ToolProvenanceSpec | None = None,
     ) -> bool:
-        if isinstance(exc, _ProvenanceReplayFailure):
-            missing = exc.missing_source_file
-        else:
-            missing = (
-                exc if isinstance(exc, _MissingProvenanceSourceFileError) else None
-            )
-        if missing is None:
-            return False
         root_spec = repair_spec
         if (
             root_spec is not None
@@ -2338,6 +2382,22 @@ class _ProvenanceEditController:
             root_spec = self._root_candidate_for_row(node, row, root_spec)
         if root_spec is None:
             root_spec = self._root_display_spec_for_row(node, row)
+
+        missing = _missing_source_file_error_from_exception(exc)
+        if missing is None:
+            missing_path = _file_not_found_path_from_exception(exc)
+            if missing_path is None:
+                return False
+            missing_target = self._file_load_target_for_path(
+                node,
+                row.scope,
+                root_spec,
+                missing_path,
+            )
+            if missing_target is None:
+                return False
+            missing = _MissingProvenanceSourceFileError(missing_target.original_path)
+
         target = self._file_load_target_for_path(
             node,
             row.scope,
@@ -2547,6 +2607,30 @@ def _same_replay_loader(
         and left.target == right.target
         and provenance.encode_provenance_value(left.kwargs)
         == provenance.encode_provenance_value(right.kwargs)
+    )
+
+
+def _file_load_edit_active_name(spec: provenance.ToolProvenanceSpec) -> str:
+    if spec.kind == "script":
+        seed_output = spec._script_seed_output_name()
+        if seed_output is not None:
+            return seed_output
+    return spec.active_name or "derived"
+
+
+def _replace_file_load_fields(
+    spec: provenance.ToolProvenanceSpec,
+    replacement: provenance.ToolProvenanceSpec,
+) -> provenance.ToolProvenanceSpec:
+    if replacement.kind != "file" or replacement.file_load_source is None:
+        raise RuntimeError("Replacement is not a file load provenance spec")
+    return spec.model_copy(
+        update={
+            "start_label": replacement.start_label,
+            "seed_code": replacement.seed_code,
+            "file_load_source": replacement.file_load_source,
+            "replay_stages": replacement.replay_stages,
+        }
     )
 
 

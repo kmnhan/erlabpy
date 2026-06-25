@@ -532,6 +532,16 @@ def _validate_script_provenance(
         context_bindings_by_index.setdefault(binding.operation_index, []).extend(
             binding.names
         )
+    for stage in spec.replay_stages:
+        if current_name is None:
+            raise ReplayGraphError("Script provenance has no replay code")
+        if any(not operation.live_applicable for operation in stage.operations):
+            raise ReplayGraphError(
+                "Script provenance contains non-replayable operation"
+            )
+        has_replay_step = True
+        available_names.add(current_name)
+        active_available = active_available or current_name == spec.active_name
     for index, operation in enumerate(spec.operations):
         if context_names := context_bindings_by_index.get(index):
             if current_name is None:
@@ -729,12 +739,57 @@ def _add_file_load_node(
     )
 
 
+def _compile_replay_stages(
+    graph: ReplayGraph,
+    current_key: str,
+    replay_stages: Sequence[typing.Any],
+    *,
+    display: bool,
+) -> str:
+    for stage in replay_stages:
+        source_parent_key = current_key
+        current_key = graph.add_node(
+            _canonical_key(
+                "source_view",
+                {"parent": source_parent_key, "source_kind": stage.source_kind},
+            ),
+            "source_view",
+            parents=(source_parent_key,),
+            payload={"source_kind": stage.source_kind},
+        )
+        operations = stage.operations
+        if display:
+            operations = (
+                _provenance_framework.ToolProvenanceSpec._streamlined_operations(
+                    stage.source_kind,
+                    operations,
+                )
+            )
+        for operation in operations:
+            current_key = graph.add_node(
+                _canonical_key(
+                    "operation",
+                    {
+                        "context": source_parent_key,
+                        "operation": operation.model_dump(mode="json"),
+                        "parent": current_key,
+                    },
+                ),
+                "operation",
+                parents=(current_key, source_parent_key),
+                payload={"operation": operation},
+            )
+    return current_key
+
+
 def _script_seed_file_load_parts(
     seed_code: str,
     *,
     active_name: str,
     load_source: typing.Any,
 ) -> tuple[str | None, str, str] | None:
+    if getattr(load_source, "replay_call", None) is None:
+        return None
     seed_output_name = _provenance_framework._script_codes_output_name(
         (seed_code,),
         active_name=active_name,
@@ -834,40 +889,12 @@ def _compile_spec(
             load_code=load_code,
             active_name=parsed.active_name,
         )
-        for stage in parsed.replay_stages:
-            source_parent_key = current_key
-            current_key = graph.add_node(
-                _canonical_key(
-                    "source_view",
-                    {"parent": source_parent_key, "source_kind": stage.source_kind},
-                ),
-                "source_view",
-                parents=(source_parent_key,),
-                payload={"source_kind": stage.source_kind},
-            )
-            operations = stage.operations
-            if display:
-                operations = (
-                    _provenance_framework.ToolProvenanceSpec._streamlined_operations(
-                        stage.source_kind,
-                        operations,
-                    )
-                )
-            for operation in operations:
-                current_key = graph.add_node(
-                    _canonical_key(
-                        "operation",
-                        {
-                            "context": source_parent_key,
-                            "operation": operation.model_dump(mode="json"),
-                            "parent": current_key,
-                        },
-                    ),
-                    "operation",
-                    parents=(current_key, source_parent_key),
-                    payload={"operation": operation},
-                )
-        return current_key
+        return _compile_replay_stages(
+            graph,
+            current_key,
+            parsed.replay_stages,
+            display=display,
+        )
 
     if parsed.kind == "script":
         _validate_script_provenance(
@@ -965,6 +992,24 @@ def _compile_spec(
                 output.append((name, key))
             return tuple(output)
 
+        def ensure_script_current_key() -> None:
+            nonlocal current_name, script_current_key
+            flush_script()
+            if script_current_key is not None:
+                return
+            current_names = tuple(
+                name for name in (current_name, active_name, "derived") if name
+            )
+            matching_inputs = list(
+                dict.fromkeys(
+                    key for name, key in current_bindings if name in current_names
+                )
+            )
+            if len(matching_inputs) != 1:
+                raise ReplayGraphError("Script provenance has no replay code")
+            script_current_key = relay_key(matching_inputs[0])
+            current_name = current_names[0]
+
         def apply_simple_alias(code: str) -> bool:
             nonlocal current_bindings, current_name, script_current_key
             if pending_codes:
@@ -1017,25 +1062,14 @@ def _compile_spec(
 
         def apply_context_binding(names: Sequence[str]) -> None:
             nonlocal current_bindings, current_name, script_current_key
-            flush_script()
-            if script_current_key is None:
-                current_names = tuple(
-                    name for name in (current_name, active_name, "derived") if name
-                )
-                matching_inputs = list(
-                    dict.fromkeys(
-                        key for name, key in current_bindings if name in current_names
-                    )
-                )
-                if len(matching_inputs) != 1:  # pragma: no cover - validation guard.
-                    raise ReplayGraphError("Script provenance has no replay code")
-                script_current_key = relay_key(matching_inputs[0])
+            ensure_script_current_key()
+            current_key = typing.cast("str", script_current_key)
             if display:
                 for name in (current_name, active_name):
                     if name is not None:
-                        graph.add_alias(name, script_current_key)
+                        graph.add_alias(name, current_key)
             for name in names:
-                current_bindings = bind_name(name, script_current_key)
+                current_bindings = bind_name(name, current_key)
 
         if parsed.seed_code:
             seed_file_load_parts = None
@@ -1059,6 +1093,18 @@ def _compile_spec(
                 )
                 current_name = seed_output_name
                 current_bindings = bind_name(seed_output_name, script_current_key)
+        if parsed.replay_stages:
+            ensure_script_current_key()
+            script_current_key = _compile_replay_stages(
+                graph,
+                typing.cast("str", script_current_key),
+                parsed.replay_stages,
+                display=display,
+            )
+            current_bindings = bind_name(
+                typing.cast("str", current_name),
+                script_current_key,
+            )
         operations = tuple(parsed.operations)
         context_bindings_by_index: dict[int, list[str]] = {}
         for binding in parsed.script_context_bindings:
@@ -1105,32 +1151,20 @@ def _compile_spec(
                 )
                 continue
 
-            flush_script()
-            if script_current_key is None:
-                current_names = tuple(
-                    name for name in (current_name, active_name, "derived") if name
-                )
-                matching_inputs = list(
-                    dict.fromkeys(
-                        key for name, key in current_bindings if name in current_names
-                    )
-                )
-                if len(matching_inputs) != 1:
-                    raise ReplayGraphError("Script provenance has no replay code")
-                script_current_key = relay_key(matching_inputs[0])
-                current_name = current_names[0]
+            ensure_script_current_key()
+            current_key = typing.cast("str", script_current_key)
             operation_name = current_name or active_name
             script_current_key = graph.add_node(
                 _canonical_key(
                     "operation",
                     {
-                        "context": script_current_key,
+                        "context": current_key,
                         "operation": operation.model_dump(mode="json"),
-                        "parent": script_current_key,
+                        "parent": current_key,
                     },
                 ),
                 "operation",
-                parents=(script_current_key, script_current_key),
+                parents=(current_key, current_key),
                 payload={"operation": operation},
             )
             current_name = operation_name

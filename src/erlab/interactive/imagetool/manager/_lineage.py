@@ -213,12 +213,47 @@ class _LineageController:
         spec = script_input.parsed_provenance_spec()
         if spec is None:
             return False
-        if spec.kind == "file" and spec.file_load_source is not None:
-            return pathlib.Path(spec.file_load_source.path).exists()
+        source_status = provenance.file_load_source_status(spec)
+        if source_status != "no-file-load-source":
+            return source_status != "missing-file"
         for nested_input in spec.script_inputs:
             if cls._script_input_has_recorded_file(nested_input):
                 return True
         return False
+
+    @staticmethod
+    def _file_load_source_unavailable_reason(
+        spec: provenance.ToolProvenanceSpec,
+        label: str,
+    ) -> str | None:
+        source_status = provenance.file_load_source_status(spec)
+        load_source = spec.file_load_source
+        if source_status == "no-file-load-source" or load_source is None:
+            return (
+                f"{label} has no recorded source file. Reopen the input or recreate "
+                "the result from reloadable inputs, then try again."
+            )
+        file_path = pathlib.Path(load_source.path)
+        if source_status == "missing-file":
+            return (
+                f"The source file for {label} is not available:\n"
+                f"{file_path}\n\n"
+                "Reconnect the drive or restore the file, then try again."
+            )
+        replay_call = load_source.replay_call
+        if source_status == "no-replay-call" or replay_call is None:
+            return (
+                f"{label} has file provenance, but the loader information needed "
+                "to read it is missing. Reopen the input or recreate the result "
+                "from reloadable inputs, then try again."
+            )
+        if source_status == "missing-loader":
+            return (
+                f"The saved loader {replay_call.target!r} for {label} is not "
+                "available in this ImageTool session. Reopen the input from its "
+                "file with an available loader."
+            )
+        return None
 
     @classmethod
     def _dependency_ref_has_recorded_file(
@@ -442,18 +477,11 @@ class _LineageController:
                 return True
         if spec is None:
             return False
+        source_status = provenance.file_load_source_status(spec)
+        if source_status != "no-file-load-source" and source_status != "loadable":
+            return False
         if spec.kind == "file":
-            if spec.file_load_source is None:
-                return False
-            replay_call = spec.file_load_source.replay_call
-            return (
-                replay_call is not None
-                and pathlib.Path(spec.file_load_source.path).exists()
-                and (
-                    replay_call.kind != "erlab_loader"
-                    or replay_call.target in erlab.io.loaders
-                )
-            )
+            return source_status == "loadable"
         if spec.kind != "script":
             return False
         return self._script_provenance_runnable(spec) and all(
@@ -488,39 +516,12 @@ class _LineageController:
                 "input or recreate the result from reloadable inputs, then try "
                 "again."
             )
-        if spec.kind == "file":
-            if spec.file_load_source is None:
-                return (
-                    f"{script_input.label} has no recorded source file. Reopen "
-                    "the input or recreate the result from reloadable inputs, "
-                    "then try again."
-                )
-            file_path = pathlib.Path(spec.file_load_source.path)
-            if not file_path.exists():
-                return (
-                    f"The source file for {script_input.label} is not available:\n"
-                    f"{file_path}\n\n"
-                    "Reconnect the drive or restore the file, then try again."
-                )
-            replay_call = spec.file_load_source.replay_call
-            if replay_call is None:
-                return (
-                    f"{script_input.label} has file provenance, but the loader "
-                    "information needed to read it is missing. Reopen the input "
-                    "or recreate the result from reloadable inputs, then try "
-                    "again."
-                )
-            if (
-                replay_call.kind == "erlab_loader"
-                and replay_call.target not in erlab.io.loaders
-            ):
-                return (
-                    f"The saved loader {replay_call.target!r} for "
-                    f"{script_input.label} is not available in this ImageTool "
-                    "session. Reopen the input from its file with an available "
-                    "loader."
-                )
-            return None
+        if spec.kind == "file" or provenance.has_file_load_source(spec):
+            reason = self._file_load_source_unavailable_reason(spec, script_input.label)
+            if reason is not None:
+                return reason
+            if spec.kind == "file":
+                return None
         if spec.kind != "script":
             return (
                 f"{script_input.label} has recorded provenance that cannot be "
@@ -631,6 +632,12 @@ class _LineageController:
             return None
 
         spec = node.provenance_spec
+        if spec is not None and (
+            spec.kind == "file" or provenance.has_file_load_source(spec)
+        ):
+            reason = self._file_load_source_unavailable_reason(spec, "This result")
+            if reason is not None:
+                return reason
         if spec is not None and spec.kind == "script":
             if not spec.script_inputs:
                 return (

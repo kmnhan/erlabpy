@@ -720,6 +720,97 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
+def test_replay_graph_replays_script_with_preserved_file_stage(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        name="scan",
+    )
+    source.to_netcdf(path)
+    file_spec = _file_spec(path).append_replay_stage(
+        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    )
+    local = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Center profile",
+            code="result = derived - derived.mean()",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+    )
+
+    spec = provenance.compose_full_provenance(file_spec, local)
+    assert spec is not None
+    assert spec.kind == "script"
+    assert len(spec.replay_stages) == 1
+    assert isinstance(spec.replay_stages[0].operations[0], provenance.AverageOperation)
+
+    replayed = provenance.replay_script_provenance(spec, {})
+
+    expected_input = provenance.AverageOperation(dims=("x",)).apply(
+        source,
+        parent_data=source,
+    )
+    xr.testing.assert_identical(replayed, expected_input - expected_input.mean())
+    code = typing.cast("str", spec.display_code())
+    assert code.count("xr.load_dataarray") == 1
+    assert "result =" in code
+    xr.testing.assert_identical(_exec_generated_code(code)["result"], replayed)
+
+
+def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        name="scan",
+    )
+    parent = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Crop source",
+            code="derived = derived.isel(x=slice(0, 2))",
+        ),
+        start_label="Run parent script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    local = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Offset profile",
+            code="result = derived + 1",
+        ),
+        start_label="Run local script",
+        active_name="result",
+        replay_stages=(
+            provenance.ReplayStage.from_source_spec(
+                provenance.full_data(provenance.AverageOperation(dims=("x",)))
+            ),
+        ),
+    )
+
+    spec = provenance.compose_full_provenance(parent, local)
+    assert spec is not None
+    assert spec.kind == "script"
+    assert spec.replay_stages == ()
+
+    replayed = provenance.replay_script_provenance(spec, {"data": source})
+
+    expected = source.isel(x=slice(0, 2)).qsel.mean(("x",)) + 1
+    xr.testing.assert_identical(replayed, expected)
+    code = typing.cast("str", spec.display_code())
+    assert code.startswith("result =")
+    assert code.index(".isel(") < code.index(".qsel.mean(")
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": source})["result"],
+        replayed,
+    )
+
+
 def test_replay_graph_dedupes_matching_script_file_seed(
     tmp_path: pathlib.Path,
 ) -> None:

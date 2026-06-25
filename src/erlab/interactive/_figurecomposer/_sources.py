@@ -135,7 +135,7 @@ def _default_plot_operation(
         return FigureOperationState.plot_array(
             label=_source_label(data),
             source=name,
-            axes=FigureAxesSelectionState(axes=_all_axes(setup)),
+            axes=FigureAxesSelectionState(axes=_all_axes(setup)[:1]),
         )
 
     slice_dim: str | None = None

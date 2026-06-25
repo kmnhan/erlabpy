@@ -1324,6 +1324,41 @@ def test_figure_composer_plot_array_add_action_and_plain_2d_codegen(
     xr.testing.assert_identical(captured[0], data)
 
 
+def test_figure_composer_default_plot_array_uses_one_axis_in_multi_axis_setup(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="map",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="map"),),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.kind == FigureOperationKind.PLOT_ARRAY
+    assert operation.axes.axes == ((0, 0),)
+    assert not figurecomposer_plot_array._has_invalid_target(tool, operation)
+
+    captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+
+    def capture_plot_array(arr, **kwargs):
+        captured.append((arr, kwargs))
+
+    monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
+    namespace = _exec_generated_code(tool.generated_code(), {"data": data})
+
+    assert "fig" in namespace
+    xr.testing.assert_identical(captured[0][0], data)
+    assert captured[0][1]["ax"] is namespace["axs"][0, 0]
+
+
 def test_figure_composer_plot_array_render_and_generated_code(
     qtbot, monkeypatch
 ) -> None:

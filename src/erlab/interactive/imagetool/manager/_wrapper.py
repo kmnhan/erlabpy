@@ -261,7 +261,7 @@ def _spec_with_final_data_name(
     name: str,
 ) -> provenance.ToolProvenanceSpec:
     rename = provenance.RenameOperation(name=name)
-    if spec.kind != "file":
+    if spec.operations:
         return spec.append_final_rename(name)
 
     stages = list(spec.replay_stages)
@@ -274,7 +274,9 @@ def _spec_with_final_data_name(
             )
             return spec.model_copy(update={"replay_stages": tuple(stages)})
 
-    return spec.append_replay_stage(provenance.full_data(rename))
+    if spec.kind == "file" or (stages and spec.kind == "script"):
+        return spec.append_replay_stage(provenance.full_data(rename))
+    return spec.append_final_rename(name)
 
 
 class _ManagedWindowNode(QtCore.QObject):
