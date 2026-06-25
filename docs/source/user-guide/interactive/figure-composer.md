@@ -169,16 +169,19 @@ replay code that includes all analysis steps.
 
 [Matplotlib stylesheets](https://matplotlib.org/stable/users/explain/customizing.html)
 are a powerful way to control the styling of all figure elements. Figure Composer
-applies the Matplotlib stylesheets configured in the interactive settings dialog in
-{menuselection}`File --> Settings`. These stylesheets affect new figure defaults such as
-size, dpi, and export settings, as well as the styling of all figure elements.
+applies the Matplotlib stylesheets configured in the shared {guilabel}`Settings`
+window. These stylesheets affect new figure defaults such as size, dpi, and export
+settings, as well as the styling of all figure elements.
 
 To add custom Matplotlib stylesheets:
 
-1. Open {menuselection}`File --> Settings`.
-2. In {menuselection}`Figure --> Stylesheets`, select {guilabel}`Open Folder`.
+1. Open the shared settings window: on macOS, choose {menuselection}`Preferences…` from
+   the application menu next to {fab}`apple` (macOS) or {menuselection}`File -->
+   Settings` (Windows/Linux).
+2. Select {guilabel}`Figure Composer` in the sidebar. In the {guilabel}`Stylesheets`
+   option, click {guilabel}`Open Folder`.
 3. Copy `*.mplstyle` files into that folder.
-4. Select {guilabel}`Reload` to update the stylesheet list.
+4. Click {guilabel}`Reload` to update the stylesheet list.
 5. Add the stylesheet by name. The name shown in settings is the file name without the
    `.mplstyle` suffix.
 

@@ -1,9 +1,16 @@
 # Configuration
 
 The interactive tools in {mod}`erlab.interactive` provide several options to customize
-their behavior and appearance.
+their behavior and appearance, mainly controlled in the Settings window. It can be
+opened from the menu bar:
 
-Open the shared settings window from {menuselection}`File --> Settings`.
+- macOS:
+
+  {menuselection}`Preferences…` in the application menu next to {fab}`apple`
+
+- Windows/Linux:
+
+  {menuselection}`File --> Settings…`
 
 Changes are saved immediately. The bottom of the window reports the save status, and
 {guilabel}`Revert Changes` restores all user and workspace changes made since the
