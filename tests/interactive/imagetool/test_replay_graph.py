@@ -205,6 +205,11 @@ class Child(Base, metaclass=data_5):
         "profile_total",
     }.issubset(comprehension_names)
     assert "profile" not in comprehension_names
+    comprehension_condition_names = _replay_graph._statement_scope_names(
+        ast.parse("values = [item for item in data if item > threshold]").body[0]
+    )
+    assert {"data", "threshold"}.issubset(comprehension_condition_names.loads)
+    assert "item" not in comprehension_condition_names.loads
     generated_builtin_names = {
         *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
         "values",
@@ -254,6 +259,12 @@ class Child(Base, metaclass=data_5):
         new_branch_dependencies,
     )
     assert new_branch_dependencies["choose"] == {"data", "fallback"}
+    exception_names = {"data", "ValueError"}
+    _replay_graph._validate_script_code_names(
+        "try:\n    data\nexcept ValueError as exc:\n    derived = exc",
+        exception_names,
+        {},
+    )
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
         _replay_graph._validate_script_provenance(
@@ -297,7 +308,66 @@ class Child(Base, metaclass=data_5):
                 script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
             )
         )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
+        _replay_graph._validate_script_provenance(
+            provenance.script(
+                start_label="Run script",
+                active_name="derived",
+                replay_stages=(
+                    provenance.ReplayStage(
+                        source_kind="full_data",
+                        operations=(provenance.AverageOperation(dims=("x",)),),
+                    ),
+                ),
+            )
+        )
+    invalid_stage_spec = provenance.script(
+        start_label="Run script",
+        seed_code="derived = 1",
+        active_name="derived",
+    ).model_copy(
+        update={
+            "replay_stages": (
+                provenance.ReplayStage.model_construct(
+                    source_kind="full_data",
+                    operations=(
+                        provenance.ScriptCodeOperation(
+                            label="Opaque",
+                            code=None,
+                            copyable=False,
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="non-replayable"):
+        _replay_graph._validate_script_provenance(invalid_stage_spec)
     assert not _replay_graph.script_provenance_replayable(None)
+    assert not _replay_graph._script_provenance_validates(
+        provenance.script(
+            start_label="Run script",
+            seed_code="derived =",
+            active_name="derived",
+        ),
+        strict_replay_code=False,
+    )
+    assert not _replay_graph._script_provenance_validates(
+        provenance.script(
+            provenance.ScriptCodeOperation(label="Broken", code="derived ="),
+            start_label="Run script",
+            seed_code="derived = data",
+            active_name="derived",
+        ),
+        strict_replay_code=False,
+    )
+    assert _replay_graph._single_assignment_output_name("derived =") is None
+    assert _replay_graph._single_assignment_output_name("obj.value = data") is None
+    assert (
+        _replay_graph._single_assignment_output_name("first = data\nsecond = data")
+        is None
+    )
+    assert _replay_graph.script_provenance_trust_key(None) is None
 
 
 def test_replay_graph_script_context_binding_error_paths() -> None:
@@ -866,6 +936,62 @@ def test_replay_graph_dedupes_matching_script_file_seed(
     xr.testing.assert_identical(
         namespace["derived"],
         (source - source.mean()).rename("corrected"),
+    )
+
+
+def test_replay_graph_script_seed_file_load_parts_rejects_mismatches(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    load_source = _file_replay_source(
+        path,
+        load_code=f"data = xr.load_dataarray({str(path)!r})",
+    )
+    seed_code = f"derived = xr.load_dataarray({str(path)!r})"
+
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            "print(data)",
+            active_name="derived",
+            load_source=load_source,
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            "derived =",
+            active_name="derived",
+            load_source=load_source,
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(update={"load_code": None}),
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(
+                update={"load_code": "data.value = xr.load_dataarray('scan.nc')"}
+            ),
+        )
+        is None
+    )
+    assert (
+        _replay_graph._script_seed_file_load_parts(
+            seed_code,
+            active_name="derived",
+            load_source=load_source.model_copy(
+                update={"load_code": "setup = 1\ndata = xr.load_dataarray('scan.nc')"}
+            ),
+        )
+        is None
     )
 
 
@@ -2350,6 +2476,13 @@ def test_replay_graph_trusted_user_code_replays_nested_scripts(
 
     assert provenance.script_provenance_replayable(spec)
     assert provenance.script_provenance_requires_trust(spec)
+    trust_payload = _replay_graph._script_trust_payload(spec)
+    assert trust_payload is not None
+    assert trust_payload["inputs"][0]["name"] == "data_1"
+    assert trust_payload["inputs"][0]["payload"]["operations"][0]["code"].startswith(
+        "import os"
+    )
+    assert _replay_graph.script_provenance_trust_key(spec) is not None
     with pytest.raises(_replay_graph.ReplayGraphError, match="recorded operation"):
         _replay_graph.rebuild_script_provenance(spec)
 

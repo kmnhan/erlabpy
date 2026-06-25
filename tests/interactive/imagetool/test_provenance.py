@@ -12,7 +12,7 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _provenance_framework, provenance
 
 
 def _exec_generated_code(
@@ -3478,6 +3478,33 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     assert provenance.can_reload_without_trust(plain_script)
 
 
+def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
+    data = _base_data()
+
+    selection_view = _provenance_framework._SourceViewOperation(source_kind="selection")
+    public_view = _provenance_framework._SourceViewOperation(source_kind="public_data")
+    full_view = _provenance_framework._SourceViewOperation(source_kind="full_data")
+
+    xr.testing.assert_identical(
+        selection_view.apply(data, parent_data=data),
+        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data),
+    )
+    assert (
+        selection_view.derivation_label() == "Start from selected parent ImageTool data"
+    )
+    assert (
+        public_view.derivation_label()
+        == "Start from current parent ImageTool public data"
+    )
+    assert full_view.derivation_label() == "Start from current parent ImageTool data"
+    assert full_view.expression_code("data") == "data.copy(deep=False)"
+    assert (
+        selection_view.expression_code("data")
+        == "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
+    )
+    assert tuple(provenance.iter_operation_refs(None)) == ()
+
+
 def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     replay_stage = provenance.ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
@@ -4313,6 +4340,25 @@ derived = data
     )
     with pytest.raises(ValueError, match="not valid Python"):
         provenance._validate_script_replay_code("derived =")
+    provenance._validate_script_replay_code(
+        "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data"
+    )
+    with pytest.raises(TypeError, match="unsupported Try"):
+        provenance._validate_script_replay_code(
+            "try:\n"
+            "    import seaborn\n"
+            "except ImportError as exc:\n"
+            "    pass\n"
+            "derived = data"
+        )
+    with pytest.raises(TypeError, match="unsupported Try"):
+        provenance._validate_script_replay_code(
+            "try:\n"
+            "    import seaborn\n"
+            "except (ImportError, ModuleNotFoundError):\n"
+            "    pass\n"
+            "derived = data"
+        )
     for code_snippet, message in (
         ("derived = __name__", "dunder names"),
         ("derived = data.__class__", "dunder attributes"),

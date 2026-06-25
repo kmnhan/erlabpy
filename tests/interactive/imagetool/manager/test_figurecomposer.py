@@ -1498,6 +1498,255 @@ def test_figure_composer_plot_array_invalid_target_and_shape(qtbot) -> None:
     )
 
 
+def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
+    image = _figure_composer_image_source("image").isel(eV=0)
+    base_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="image",
+    )
+    qtbot.addWidget(base_tool)
+
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="image",
+        map_selections=(
+            FigureDataSelectionState(source="image", qsel={"beta": 0.0}),
+            FigureDataSelectionState(source="derived", qsel={"beta": 0.0}),
+        ),
+    )
+    assert figurecomposer_plot_array._source_names(operation) == ("image", "derived")
+
+    empty_operation = FigureOperationState(
+        kind=FigureOperationKind.PLOT_ARRAY,
+        label="empty",
+    )
+    empty_tool = typing.cast(
+        "FigureComposerTool", types.SimpleNamespace(_source_data={})
+    )
+    assert figurecomposer_plot_array._primary_source(empty_operation) is None
+    assert (
+        figurecomposer_plot_array._plot_array_source_code(empty_tool, empty_operation)
+        is None
+    )
+
+    missing_selection = FigureOperationState.plot_array(
+        label="missing",
+        source="image",
+        map_selections=(FigureDataSelectionState(source="missing", qsel={"eV": 0.0}),),
+    )
+    assert (
+        figurecomposer_plot_array._selected_plot_array_data(
+            base_tool, missing_selection
+        )
+        is None
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_source_code(base_tool, missing_selection)
+        is None
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_code_lines(base_tool, missing_selection)
+        == []
+    )
+
+    expression_operation = FigureOperationState.plot_array(
+        label="expression",
+        source="image",
+        axes=FigureAxesSelectionState(expression="axs[0, 0]"),
+    )
+    assert figurecomposer_plot_array._axes_count(base_tool, expression_operation) == 1
+
+    root = FigureGridSpecGridState(
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="left",
+                span=FigureGridSpecSpanState(
+                    row_start=0, row_stop=1, col_start=0, col_stop=1
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="right",
+                span=FigureGridSpecSpanState(
+                    row_start=0, row_stop=1, col_start=1, col_stop=2
+                ),
+            ),
+        ),
+    )
+    grid_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(),
+        setup=FigureSubplotsState(
+            layout_mode="gridspec",
+            gridspec=FigureGridSpecLayoutState(root=root),
+        ),
+        primary_source="image",
+    )
+    qtbot.addWidget(grid_tool)
+    grid_operation = FigureOperationState.plot_array(
+        label="grid",
+        source="image",
+        axes=FigureAxesSelectionState(axes_ids=("left", "missing")),
+    )
+    assert figurecomposer_plot_array._axes_count(grid_tool, grid_operation) == 1
+
+    no_update_tool = types.SimpleNamespace(
+        _update_operations=lambda *_args, **_kwargs: pytest.fail(
+            "None source should not update"
+        )
+    )
+    figurecomposer_plot_array._update_current_source(
+        typing.cast("FigureComposerTool", no_update_tool), None
+    )
+
+    rendered: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **kwargs: rendered.append((arr, kwargs)),
+    )
+    figurecomposer_plot_array._render_plot_array(
+        empty_tool,
+        FigureOperationState.plot_array(label="missing", source="missing"),
+        None,
+    )
+    assert rendered == []
+
+    _, axs = plt.subplots(1, 2, squeeze=False)
+    with pytest.raises(ValueError, match="exactly one target axis"):
+        figurecomposer_plot_array._render_plot_array(
+            base_tool,
+            FigureOperationState.plot_array(
+                label="multi_axes",
+                source="image",
+                axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            ),
+            axs,
+        )
+
+
+def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
+    power_operation = FigureOperationState.plot_array(
+        label="power",
+        source="image",
+    ).model_copy(
+        update={
+            "crop": True,
+            "colorbar": "right",
+            "colorbar_kw": {"pad": 0.01},
+            "cmap": "magma",
+            "gamma": 0.75,
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "extra_kwargs": {"aspect": "equal"},
+        }
+    )
+
+    runtime_kwargs = figurecomposer_plot_array._plot_array_kwargs(power_operation)
+    assert runtime_kwargs == {
+        "crop": True,
+        "colorbar": True,
+        "colorbar_kw": {"pad": 0.01},
+        "cmap": "magma",
+        "gamma": 0.75,
+        "vmin": 0.0,
+        "vmax": 1.0,
+        "aspect": "equal",
+    }
+
+    code_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(power_operation)
+    assert code_kwargs == runtime_kwargs
+    assert figurecomposer_plot_array._norm_gamma_value(power_operation) == 0.75
+
+    norm_operation = power_operation.model_copy(
+        update={
+            "norm_name": "Normalize",
+            "norm_clip": True,
+            "gamma": None,
+            "norm_gamma": None,
+        }
+    )
+    norm_kwargs = figurecomposer_plot_array._plot_array_kwargs(norm_operation)
+    assert isinstance(norm_kwargs["norm"], mcolors.Normalize)
+    code_norm_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(norm_operation)
+    assert isinstance(code_norm_kwargs["norm"], figurecomposer_text._RawCode)
+    assert figurecomposer_plot_array._required_imports(None, norm_operation) == (
+        "import erlab.plotting as eplt",
+        "import matplotlib.colors as mcolors",
+    )
+
+    assert figurecomposer_plot_array._norm_clip_text(True) == "True"
+    assert figurecomposer_plot_array._norm_clip_from_text("True") is True
+    assert figurecomposer_plot_array._norm_clip_from_text("False") is False
+    assert figurecomposer_plot_array._norm_clip_from_text("default") is None
+
+    class _FakeTool:
+        def __init__(self) -> None:
+            self.operation = FigureOperationState.plot_array(
+                label="fake",
+                source="image",
+            ).model_copy(update={"cmap": "viridis_r"})
+            self.updates: list[dict[str, typing.Any]] = []
+            self.rebuild_updates: list[dict[str, typing.Any]] = []
+
+        def _update_current_operation(self, **updates: typing.Any) -> None:
+            self.updates.append(updates)
+            self.operation = self.operation.model_copy(update=updates)
+
+        def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
+            self.rebuild_updates.append(updates)
+            self.operation = self.operation.model_copy(update=updates)
+
+        def _current_operation(self) -> tuple[int, FigureOperationState] | None:
+            return 0, self.operation
+
+    fake_tool = _FakeTool()
+    cast_tool = typing.cast("FigureComposerTool", fake_tool)
+    update_vmin = figurecomposer_plot_array._norm_number_update_callback(
+        cast_tool, "vmin"
+    )
+    update_vmin("  ")
+    update_vmin("1.5")
+    figurecomposer_plot_array._update_current_norm_name(cast_tool, "Normalize")
+    figurecomposer_plot_array._update_current_norm_gamma(cast_tool, 0.5)
+    figurecomposer_plot_array._update_current_norm_kwargs(
+        cast_tool, "gamma=2.0, clip=False, custom='value'"
+    )
+    figurecomposer_plot_array._update_current_cmap(cast_tool, reverse=False)
+    figurecomposer_plot_array._update_current_cmap(cast_tool, base="plasma")
+    assert fake_tool.updates[:2] == [{"vmin": None}, {"vmin": 1.5}]
+    assert {"norm_gamma": 0.5, "gamma": None} in fake_tool.updates
+    assert fake_tool.updates[-2:] == [{"cmap": "viridis"}, {"cmap": "plasma"}]
+    assert fake_tool.rebuild_updates[0] == {
+        "norm_name": "Normalize",
+        "gamma": None,
+        "norm_gamma": None,
+    }
+    assert fake_tool.rebuild_updates[-1] == {
+        "norm_gamma": 2.0,
+        "norm_clip": False,
+        "norm_kwargs": {"custom": "value"},
+    }
+
+    none_tool = types.SimpleNamespace(_current_operation=lambda: None)
+    figurecomposer_plot_array._update_current_cmap(
+        typing.cast("FigureComposerTool", none_tool),
+        base="magma",
+    )
+
+    assert (
+        figurecomposer_plot_array._section_summary(
+            typing.cast("FigureComposerTool", none_tool), "unknown", power_operation
+        )
+        == ""
+    )
+
+
 def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
     qtbot, monkeypatch
 ) -> None:
