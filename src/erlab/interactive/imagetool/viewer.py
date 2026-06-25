@@ -547,6 +547,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if plotitem_state is not None:
             plot._serializable_state = plotitem_state
 
+    def _apply_pending_plotitem_states_to_materialized_axes(self) -> None:
+        for index, ax in zip(
+            self._axes_indices(), self._materialized_axes(), strict=False
+        ):
+            self._apply_pending_plotitem_state(index, ax)
+
     def _sync_materialized_plot(self, index: int, plot: ItoolPlotItem) -> None:
         if not hasattr(self, "_array_slicer") or not self._axes_index_valid(index):
             return
@@ -604,6 +610,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     self._build_axes_widget(index)
                 if hasattr(self, "_array_slicer"):
                     self.adjust_layout()
+                    self._apply_pending_plotitem_states_to_materialized_axes()
                     if self._pending_splitter_sizes is not None:
                         self._apply_splitter_sizes(self._pending_splitter_sizes)
                         self._pending_splitter_sizes = None
@@ -774,10 +781,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                         "Saved ImageTool plot state does not match current layout"
                     )
                 self._pending_plotitem_states = list(plotitem_states)
-                for index, ax in zip(
-                    self._axes_indices(), self._materialized_axes(), strict=False
-                ):
-                    self._apply_pending_plotitem_state(index, ax)
+                self._apply_pending_plotitem_states_to_materialized_axes()
             logger.debug("Restored plotitem states")
 
         with self._workspace_load_stage("imagetool state restore: cursors"):

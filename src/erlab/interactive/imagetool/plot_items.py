@@ -480,6 +480,10 @@ class ItoolPlotItem(pg.PlotItem):
         self._new_window_separator: QtGui.QAction | None = None
         self._new_window_action: QtGui.QAction | None = None
         self._menu_filter: _OptionKeyMenuFilter | None = None
+        self._equal_aspect_action: QtGui.QAction | None = None
+        self._equal_aspect_state_changed_slot: (
+            collections.abc.Callable[[], None] | None
+        ) = None
         view_box._itool_menu_populator = self._ensure_context_menu
         view_box._itool_menu_resetters.append(self._reset_context_menu)
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
@@ -572,7 +576,17 @@ class ItoolPlotItem(pg.PlotItem):
     def setup_actions(self) -> None:
         self._ensure_context_menu()
 
+    def _disconnect_equal_aspect_state_changed(self) -> None:
+        slot = self._equal_aspect_state_changed_slot
+        if slot is None:
+            return
+        with contextlib.suppress(TypeError, RuntimeError):
+            self.getViewBox().sigStateChanged.disconnect(slot)
+        self._equal_aspect_state_changed_slot = None
+        self._equal_aspect_action = None
+
     def _reset_context_menu(self) -> None:
+        self._disconnect_equal_aspect_state_changed()
         self._context_menu = None
         self._context_menu_ready = False
         self._associated_coord_menu = None
@@ -659,12 +673,17 @@ class ItoolPlotItem(pg.PlotItem):
             equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
 
             def _update_aspect_lock_state() -> None:
+                if not erlab.interactive.utils.qt_is_valid(equal_aspect_action):
+                    self._disconnect_equal_aspect_state_changed()
+                    return
                 locked: bool = self.getViewBox().state["aspectLocked"] is not False
                 if equal_aspect_action.isChecked() != locked:
                     equal_aspect_action.blockSignals(True)
                     equal_aspect_action.setChecked(locked)
                     equal_aspect_action.blockSignals(False)
 
+            self._equal_aspect_action = equal_aspect_action
+            self._equal_aspect_state_changed_slot = _update_aspect_lock_state
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
             # AdjustCT-like action
