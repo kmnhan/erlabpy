@@ -434,6 +434,8 @@ class FigureOperationState(pydantic.BaseModel):
     method_plot_data_mode: typing.Literal["entered", "from_data"] = "entered"
     method_plot_x: FigureMethodPlotValueState | None = None
     method_plot_y: FigureMethodPlotValueState | None = None
+    method_plot_xerr: FigureMethodPlotValueState | None = None
+    method_plot_yerr: FigureMethodPlotValueState | None = None
     text_values: tuple[str, ...] = ()
     method_transform: typing.Literal[
         "data", "axes", "figure", "dpi", "xaxis", "yaxis", "blend", "custom"

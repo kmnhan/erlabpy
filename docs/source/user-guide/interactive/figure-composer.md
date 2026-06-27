@@ -77,7 +77,8 @@ code:
   $k_\parallel$-$k_z$ plots using {meth}`xarray.DataArray.kspace.hv_to_kz`.
 - {guilabel}`ERLab Method` for a subset of {mod}`erlab.plotting` functions such as
   colorbar and annotation utilities.
-- {guilabel}`Axes Method` for a subset of Matplotlib `ax.*` methods.
+- {guilabel}`Axes Method` for a subset of Matplotlib `ax.*` methods, including
+  `plot` and `errorbar`.
 - {guilabel}`Figure Method` for a subset of Matplotlib `fig.*` methods.
 - {guilabel}`Python` for arbitrary code snippets.
 

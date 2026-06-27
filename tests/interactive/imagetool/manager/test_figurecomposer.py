@@ -21,6 +21,7 @@ import xarray as xr
 from matplotlib import colors as mcolors
 from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.container import ErrorbarContainer
 from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -3002,6 +3003,17 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
         figurecomposer_source_inspector.source_value_tooltip(
             data, ("data", None), axis="y"
         )
+    )
+    xerr_tooltip = figurecomposer_source_inspector.source_value_tooltip(
+        data, ("data", None), axis="xerr"
+    )
+    yerr_tooltip = figurecomposer_source_inspector.source_value_tooltip(
+        data, ("data", None), axis="yerr"
+    )
+    assert "XERR" not in xerr_tooltip
+    assert "YERR" not in yerr_tooltip
+    assert xerr_tooltip.replace("X error", "error") == yerr_tooltip.replace(
+        "Y error", "error"
     )
     assert "Coordinate 'missing' is not available" in (
         figurecomposer_source_inspector.source_value_tooltip(
@@ -16335,6 +16347,218 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     assert axs[0, 1].lines[0].get_transform() == axs[0, 1].transAxes
 
 
+def _assert_errorbar_xerr(
+    container: ErrorbarContainer,
+    x: Sequence[float],
+    y: Sequence[float],
+    xerr: Sequence[float],
+) -> None:
+    barlinecols = container.lines[2]
+    assert barlinecols
+    segments = barlinecols[0].get_segments()
+    assert len(segments) == len(x)
+    expected = [
+        ((x_value - err, y_value), (x_value + err, y_value))
+        for x_value, y_value, err in zip(x, y, xerr, strict=True)
+    ]
+    np.testing.assert_allclose(segments, expected)
+
+
+def _assert_errorbar_yerr(
+    container: ErrorbarContainer,
+    x: Sequence[float],
+    y: Sequence[float],
+    yerr: Sequence[float],
+) -> None:
+    barlinecols = container.lines[2]
+    assert len(barlinecols) >= 2
+    segments = barlinecols[1].get_segments()
+    assert len(segments) == len(x)
+    expected = [
+        ((x_value, y_value - err), (x_value, y_value + err))
+        for x_value, y_value, err in zip(x, y, yerr, strict=True)
+    ]
+    np.testing.assert_allclose(segments, expected)
+
+
+def _assert_errorbar_capsize(container: ErrorbarContainer, capsize: float) -> None:
+    caplines = container.lines[1]
+    assert caplines
+    for capline in caplines:
+        assert capline.get_markersize() == pytest.approx(2.0 * capsize)
+
+
+def test_figure_composer_axes_errorbar_method_render_and_codegen(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 0.5, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="errorbar",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": (
+                            (0.0, 0.5, 1.0),
+                            (1.0, 0.5, 0.0),
+                        ),
+                        "method_kwargs": {
+                            "xerr": (0.05, 0.1, 0.15),
+                            "yerr": 0.2,
+                            "color": "C1",
+                            "linestyle": "--",
+                            "marker": "o",
+                            "capsize": 3.0,
+                            "label": "manual errorbar",
+                        },
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    method_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
+    )
+    x_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodErrorbarXEdit"
+    )
+    y_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodErrorbarYEdit"
+    )
+    xerr_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodErrorbarXErrorEdit"
+    )
+    yerr_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodErrorbarYErrorEdit"
+    )
+    capsize_spin = method_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodErrorbarCapSizeSpin"
+    )
+    kwargs_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit"
+    )
+    assert method_combo is not None
+    assert x_edit is not None
+    assert y_edit is not None
+    assert xerr_edit is not None
+    assert yerr_edit is not None
+    assert capsize_spin is not None
+    assert kwargs_edit is not None
+    assert method_combo.currentData() == "errorbar"
+    assert x_edit.text() == "0.0, 0.5, 1.0"
+    assert y_edit.text() == "1.0, 0.5, 0.0"
+    assert xerr_edit.text() == "0.05, 0.1, 0.15"
+    assert yerr_edit.text() == "0.2"
+    assert capsize_spin.value() == pytest.approx(3.0)
+    assert kwargs_edit.text() == ""
+
+    xerr_edit.setText("0.1, 0.2, 0.3")
+    xerr_edit.setModified(True)
+    xerr_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["xerr"] == (0.1, 0.2, 0.3)
+    capsize_spin.setValue(4.0)
+    assert tool.tool_status.operations[0].method_kwargs["capsize"] == pytest.approx(4.0)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    container = tool.figure.axes[0].containers[0]
+    assert isinstance(container, ErrorbarContainer)
+    line = container.lines[0]
+    np.testing.assert_allclose(
+        np.asarray(line.get_xdata(), dtype=float), (0.0, 0.5, 1.0)
+    )
+    np.testing.assert_allclose(
+        np.asarray(line.get_ydata(), dtype=float), (1.0, 0.5, 0.0)
+    )
+    assert line.get_color() == "C1"
+    assert line.get_linestyle() == "--"
+    assert line.get_marker() == "o"
+    assert container.get_label() == "manual errorbar"
+    _assert_errorbar_xerr(container, (0.0, 0.5, 1.0), (1.0, 0.5, 0.0), (0.1, 0.2, 0.3))
+    _assert_errorbar_capsize(container, 4.0)
+
+    code = tool.generated_code()
+    assert "axs[0, 0].errorbar((0.0, 0.5, 1.0), (1.0, 0.5, 0.0)" in code
+    assert "xerr=(0.1, 0.2, 0.3)" in code
+    assert "yerr=0.2" in code
+    assert "capsize=4.0" in code
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    generated_container = namespace["axs"][0, 0].containers[0]
+    assert isinstance(generated_container, ErrorbarContainer)
+    generated_line = generated_container.lines[0]
+    np.testing.assert_allclose(
+        np.asarray(generated_line.get_xdata(), dtype=float), (0.0, 0.5, 1.0)
+    )
+    np.testing.assert_allclose(
+        np.asarray(generated_line.get_ydata(), dtype=float), (1.0, 0.5, 0.0)
+    )
+    _assert_errorbar_xerr(
+        generated_container,
+        (0.0, 0.5, 1.0),
+        (1.0, 0.5, 0.0),
+        (0.1, 0.2, 0.3),
+    )
+    _assert_errorbar_capsize(generated_container, 4.0)
+
+
+def test_figure_composer_axes_errorbar_method_requires_entered_x_and_y(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("kx",),
+        coords={"kx": [0.0, 0.5, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="errorbar",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": ((1.0, 0.5, 0.0),),
+                        "method_kwargs": {
+                            "xerr": (0.1, 0.2, 0.3),
+                            "yerr": (0.2, 0.2, 0.2),
+                            "marker": "o",
+                        },
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    errors = tuple(tool._operation_render_errors.values())
+    assert len(errors) == 1
+    assert "Enter X and Y values for ax.errorbar" in errors[0]
+    with pytest.raises(ValueError, match=r"Enter X and Y values for ax\.errorbar"):
+        tool.generated_code()
+
+
 def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     data = xr.DataArray(
         np.array([1.0, 2.0, 3.0]),
@@ -16438,6 +16662,55 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
         if y_values_combo.itemData(index) is not None
     )
 
+    figurecomposer_method._update_current_method_name(tool, "errorbar")
+    tool._select_step_section("method")
+    qtbot.wait_until(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QComboBox,
+                "figureComposerAxesMethodErrorbarXErrorSourceCombo",
+            )
+            is not None
+        ),
+        timeout=5000,
+    )
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "errorbar"
+    assert operation.method_plot_data_mode == "from_data"
+    assert operation.method_plot_y == FigureMethodPlotValueState(
+        source="data", kind="data"
+    )
+    method_page = tool.step_editor_stack.currentWidget()
+    xerr_source_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodErrorbarXErrorSourceCombo"
+    )
+    xerr_values_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodErrorbarXErrorValuesCombo"
+    )
+    yerr_source_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodErrorbarYErrorSourceCombo"
+    )
+    yerr_values_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodErrorbarYErrorValuesCombo"
+    )
+    assert xerr_source_combo is not None
+    assert xerr_values_combo is not None
+    assert yerr_source_combo is not None
+    assert yerr_values_combo is not None
+    assert xerr_source_combo.property("figureComposerPlotDataRole") == "xerr_source"
+    assert xerr_values_combo.property("figureComposerPlotDataRole") == "xerr_values"
+    assert yerr_source_combo.property("figureComposerPlotDataRole") == "yerr_source"
+    assert yerr_values_combo.property("figureComposerPlotDataRole") == "yerr_values"
+    assert xerr_source_combo.currentData() is None
+    assert yerr_source_combo.currentData() is None
+
+    figurecomposer_method._update_current_method_name(tool, "plot")
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == "plot"
+    assert operation.method_plot_data_mode == "from_data"
+    assert operation.method_plot_xerr is None
+    assert operation.method_plot_yerr is None
+
 
 def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(qtbot) -> None:
     x_source = xr.DataArray(
@@ -16502,6 +16775,199 @@ def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(qtbot) -
     generated_line = namespace["axs"][0, 0].lines[0]
     np.testing.assert_allclose(generated_line.get_xdata(), x_source.coords["kx"].values)
     np.testing.assert_allclose(generated_line.get_ydata(), y_source.values)
+
+
+def test_figure_composer_axes_errorbar_method_picks_data_render_and_codegen(
+    qtbot,
+) -> None:
+    values_source = xr.DataArray(
+        np.array([0.1, 0.2, 0.3]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="values",
+    )
+    stderr_source = xr.DataArray(
+        np.array([0.01, 0.02, 0.03]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="stderr",
+    )
+    yerr_source = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="yerr",
+    )
+    tool = FigureComposerTool(
+        values_source,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="values_data", label="values data"),
+                FigureSourceState(name="stderr_data", label="stderr data"),
+                FigureSourceState(name="yerr_data", label="y error data"),
+            ),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="errorbar",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_plot_data_mode": "from_data",
+                        "method_plot_x": FigureMethodPlotValueState(
+                            source="values_data", kind="data"
+                        ),
+                        "method_plot_y": FigureMethodPlotValueState(
+                            source="values_data", kind="coord", name="scan"
+                        ),
+                        "method_plot_xerr": FigureMethodPlotValueState(
+                            source="stderr_data", kind="data"
+                        ),
+                        "method_plot_yerr": FigureMethodPlotValueState(
+                            source="yerr_data", kind="data"
+                        ),
+                        "method_kwargs": {
+                            "xerr": 99.0,
+                            "yerr": 99.0,
+                            "color": "C3",
+                            "label": "picked errorbar",
+                            "linestyle": "none",
+                            "marker": "o",
+                        },
+                    }
+                ),
+            ),
+            primary_source="values_data",
+        ),
+        source_data={
+            "values_data": values_source,
+            "stderr_data": stderr_source,
+            "yerr_data": yerr_source,
+        },
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    container = tool.figure.axes[0].containers[0]
+    assert isinstance(container, ErrorbarContainer)
+    line = container.lines[0]
+    np.testing.assert_allclose(line.get_xdata(), values_source.values)
+    np.testing.assert_allclose(line.get_ydata(), values_source.coords["scan"].values)
+    assert line.get_color() == "C3"
+    assert container.get_label() == "picked errorbar"
+    _assert_errorbar_xerr(
+        container,
+        values_source.values,
+        values_source.coords["scan"].values,
+        stderr_source.values,
+    )
+    _assert_errorbar_yerr(
+        container,
+        values_source.values,
+        values_source.coords["scan"].values,
+        yerr_source.values,
+    )
+
+    code = tool.generated_code()
+    assert "values_data.values" in code
+    assert 'values_data.coords["scan"].values' in code
+    assert "xerr=stderr_data.values" in code
+    assert "yerr=yerr_data.values" in code
+    assert "xerr=99.0" not in code
+    assert "yerr=99.0" not in code
+    namespace: dict[str, typing.Any] = {
+        "values_data": values_source,
+        "stderr_data": stderr_source,
+        "yerr_data": yerr_source,
+    }
+    exec(code, namespace)  # noqa: S102
+    generated_container = namespace["axs"][0, 0].containers[0]
+    assert isinstance(generated_container, ErrorbarContainer)
+    generated_line = generated_container.lines[0]
+    np.testing.assert_allclose(generated_line.get_xdata(), values_source.values)
+    np.testing.assert_allclose(
+        generated_line.get_ydata(), values_source.coords["scan"].values
+    )
+    _assert_errorbar_xerr(
+        generated_container,
+        values_source.values,
+        values_source.coords["scan"].values,
+        stderr_source.values,
+    )
+    _assert_errorbar_yerr(
+        generated_container,
+        values_source.values,
+        values_source.coords["scan"].values,
+        yerr_source.values,
+    )
+
+
+def test_figure_composer_axes_errorbar_method_requires_picked_x_and_y(
+    qtbot,
+) -> None:
+    values_source = xr.DataArray(
+        np.array([1.0, 4.0, 9.0]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="values",
+    )
+    stderr_source = xr.DataArray(
+        np.array([0.1, 0.2, 0.3]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="stderr",
+    )
+    yerr_source = xr.DataArray(
+        np.array([0.4, 0.5, 0.6]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0, 30.0]},
+        name="yerr",
+    )
+    tool = FigureComposerTool(
+        values_source,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="values_data", label="values data"),
+                FigureSourceState(name="stderr_data", label="stderr data"),
+                FigureSourceState(name="yerr_data", label="y error data"),
+            ),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="errorbar",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_plot_data_mode": "from_data",
+                        "method_plot_y": FigureMethodPlotValueState(
+                            source="values_data", kind="data"
+                        ),
+                        "method_plot_xerr": FigureMethodPlotValueState(
+                            source="stderr_data", kind="data"
+                        ),
+                        "method_plot_yerr": FigureMethodPlotValueState(
+                            source="yerr_data", kind="data"
+                        ),
+                    }
+                ),
+            ),
+            primary_source="values_data",
+        ),
+        source_data={
+            "values_data": values_source,
+            "stderr_data": stderr_source,
+            "yerr_data": yerr_source,
+        },
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    errors = tuple(tool._operation_render_errors.values())
+    assert len(errors) == 1
+    assert "Choose X values for ax.errorbar" in errors[0]
+    with pytest.raises(ValueError, match=r"Choose X values for ax\.errorbar"):
+        tool.generated_code()
 
 
 @pytest.mark.parametrize(
@@ -16576,6 +17042,62 @@ def test_figure_composer_axes_plot_picked_data_invalid_inputs(
         tool.generated_code()
 
 
+@pytest.mark.parametrize("axis", ["xerr", "yerr"])
+def test_figure_composer_axes_errorbar_picked_error_data_invalid_lengths(
+    qtbot,
+    axis: str,
+) -> None:
+    values_source = xr.DataArray(
+        np.array([0.1, 0.2]),
+        dims=("scan",),
+        coords={"scan": [10.0, 20.0]},
+        name="values",
+    )
+    stderr_source = xr.DataArray(
+        np.array([0.01, 0.02, 0.03]),
+        dims=("scan",),
+        name="stderr",
+    )
+    tool = FigureComposerTool(
+        values_source,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="values_data", label="values data"),
+                FigureSourceState(name="stderr_data", label="stderr data"),
+            ),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="errorbar",
+                ).model_copy(
+                    update={
+                        "method_plot_data_mode": "from_data",
+                        "method_plot_x": FigureMethodPlotValueState(
+                            source="values_data", kind="data"
+                        ),
+                        "method_plot_y": FigureMethodPlotValueState(
+                            source="values_data", kind="coord", name="scan"
+                        ),
+                        f"method_plot_{axis}": FigureMethodPlotValueState(
+                            source="stderr_data", kind="data"
+                        ),
+                    }
+                ),
+            ),
+            primary_source="values_data",
+        ),
+        source_data={"values_data": values_source, "stderr_data": stderr_source},
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    errors = tuple(tool._operation_render_errors.values())
+    assert len(errors) == 1
+    assert "same length" in errors[0]
+    with pytest.raises(ValueError, match="same length"):
+        tool.generated_code()
+
+
 def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
     operation = FigureOperationState.method(
         family=FigureMethodFamily.AXES,
@@ -16600,6 +17122,33 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
     )
     assert renamed.method_plot_y == FigureMethodPlotValueState(
         source="y_copy", kind="data"
+    )
+
+    errorbar_operation = operation.model_copy(
+        update={
+            "method_name": "errorbar",
+            "method_plot_xerr": FigureMethodPlotValueState(
+                source="stderr_data", kind="data"
+            ),
+            "method_plot_yerr": FigureMethodPlotValueState(
+                source="stderr_data", kind="coord", name="kx"
+            ),
+        }
+    )
+    assert figurecomposer_method._source_names(errorbar_operation) == (
+        "x_data",
+        "y_data",
+        "stderr_data",
+    )
+    renamed_errorbar = FigureComposerTool._operation_with_renamed_sources(
+        errorbar_operation,
+        {"x_data": "x_copy", "y_data": "y_copy", "stderr_data": "stderr_copy"},
+    )
+    assert renamed_errorbar.method_plot_xerr == FigureMethodPlotValueState(
+        source="stderr_copy", kind="data"
+    )
+    assert renamed_errorbar.method_plot_yerr == FigureMethodPlotValueState(
+        source="stderr_copy", kind="coord", name="kx"
     )
 
 
@@ -16653,8 +17202,26 @@ def test_figure_composer_axes_plot_data_helper_edges() -> None:
     }
     assert figurecomposer_method._plot_coord_by_name(source, "point") is not None
     assert figurecomposer_method._plot_source_combo_tooltip("x", has_sources=False)
+    xerr_source_tooltip = figurecomposer_method._plot_source_combo_tooltip(
+        "xerr", has_sources=True
+    )
+    yerr_source_tooltip = figurecomposer_method._plot_source_combo_tooltip(
+        "yerr", has_sources=True
+    )
+    assert xerr_source_tooltip.replace("x error", "error") == (
+        yerr_source_tooltip.replace("y error", "error")
+    )
     assert figurecomposer_method._plot_values_combo_tooltip(
         "y", source="source", value_options_match=False
+    )
+    xerr_values_tooltip = figurecomposer_method._plot_values_combo_tooltip(
+        "xerr", source="source", value_options_match=True
+    )
+    yerr_values_tooltip = figurecomposer_method._plot_values_combo_tooltip(
+        "yerr", source="source", value_options_match=True
+    )
+    assert xerr_values_tooltip.replace("x error", "error") == (
+        yerr_values_tooltip.replace("y error", "error")
     )
     with pytest.raises(ValueError, match="Unknown plot value selection"):
         figurecomposer_method._plot_value_combo_data_parts(("bad", None))
@@ -16689,6 +17256,7 @@ def test_figure_composer_axes_plot_data_helper_edges() -> None:
                 family=FigureMethodFamily.AXES,
                 name="plot",
             ).model_copy(update={"method_plot_data_mode": "from_data"}),
+            figurecomposer_method.AXES_METHODS["plot"],
         )
 
     operation = FigureOperationState.method(
@@ -16700,10 +17268,14 @@ def test_figure_composer_axes_plot_data_helper_edges() -> None:
             "method_plot_y": data_state,
         }
     )
-    args = figurecomposer_method._picked_plot_args(tool, operation)
+    args = figurecomposer_method._picked_plot_args(
+        tool, operation, figurecomposer_method.AXES_METHODS["plot"]
+    )
     assert len(args) == 1
     np.testing.assert_allclose(args[0], source.values.reshape(-1))
-    code_args = figurecomposer_method._picked_plot_code_args(tool, operation)
+    code_args = figurecomposer_method._picked_plot_code_args(
+        tool, operation, figurecomposer_method.AXES_METHODS["plot"]
+    )
     assert tuple(str(arg) for arg in code_args) == ("source.squeeze(drop=True).values",)
 
 
@@ -16979,6 +17551,7 @@ def test_figure_composer_axes_plot_combo_helper_edges(qtbot) -> None:
                 family=FigureMethodFamily.AXES,
                 name="plot",
             ).model_copy(update={"method_plot_data_mode": "from_data"}),
+            figurecomposer_method.AXES_METHODS["plot"],
         )
 
     callback = figurecomposer_method._method_optional_bool_kwarg_callback(
@@ -17373,6 +17946,43 @@ def test_figure_composer_method_transfer_edge_contracts(
     assert plot_updates["method_transform_x"] == "figure"
     assert plot_updates["method_transform_y"] == "data"
     assert plot_updates["method_transform_expression"] == "ax.transData"
+
+    errorbar_operation = plot_operation.model_copy(
+        update={
+            "method_name": "errorbar",
+            "method_plot_data_mode": "from_data",
+            "method_plot_x": FigureMethodPlotValueState(source="x", kind="data"),
+            "method_plot_y": FigureMethodPlotValueState(source="y", kind="data"),
+            "method_plot_xerr": FigureMethodPlotValueState(
+                source="stderr", kind="data"
+            ),
+            "method_kwargs": {"xerr": (0.1, 0.2), "custom": "value"},
+        }
+    )
+    errorbar_to_plot_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        errorbar_operation,
+        figurecomposer_method.AXES_METHODS["plot"],
+    )
+    assert errorbar_to_plot_updates["method_plot_data_mode"] == "from_data"
+    assert errorbar_to_plot_updates["method_plot_x"] == FigureMethodPlotValueState(
+        source="x", kind="data"
+    )
+    assert errorbar_to_plot_updates["method_plot_y"] == FigureMethodPlotValueState(
+        source="y", kind="data"
+    )
+    assert errorbar_to_plot_updates["method_plot_xerr"] is None
+    assert "xerr" not in errorbar_to_plot_updates["method_kwargs"]
+
+    errorbar_to_errorbar_updates = figurecomposer_method._method_transfer_updates(
+        tool,
+        errorbar_operation,
+        figurecomposer_method.AXES_METHODS["errorbar"],
+    )
+    assert errorbar_to_errorbar_updates["method_plot_xerr"] == (
+        FigureMethodPlotValueState(source="stderr", kind="data")
+    )
+    assert errorbar_to_errorbar_updates["method_kwargs"]["xerr"] == (0.1, 0.2)
 
     text_arg = figurecomposer_method.MethodControlSpec(
         kind=figurecomposer_method.MethodControlKind.TEXT_ARG,

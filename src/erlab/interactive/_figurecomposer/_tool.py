@@ -4372,24 +4372,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             updates["line_source"] = rename_map.get(
                 operation.line_source, operation.line_source
             )
-        if operation.method_plot_x is not None:
-            updates["method_plot_x"] = operation.method_plot_x.model_copy(
-                update={
-                    "source": rename_map.get(
-                        operation.method_plot_x.source,
-                        operation.method_plot_x.source,
-                    )
-                }
-            )
-        if operation.method_plot_y is not None:
-            updates["method_plot_y"] = operation.method_plot_y.model_copy(
-                update={
-                    "source": rename_map.get(
-                        operation.method_plot_y.source,
-                        operation.method_plot_y.source,
-                    )
-                }
-            )
+        for field in (
+            "method_plot_x",
+            "method_plot_y",
+            "method_plot_xerr",
+            "method_plot_yerr",
+        ):
+            state = getattr(operation, field)
+            if state is not None:
+                updates[field] = state.model_copy(
+                    update={"source": rename_map.get(state.source, state.source)}
+                )
         if operation.hv_overlay_source is not None:
             updates["hv_overlay_source"] = rename_map.get(
                 operation.hv_overlay_source, operation.hv_overlay_source
