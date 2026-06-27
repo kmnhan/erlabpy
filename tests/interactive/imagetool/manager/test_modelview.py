@@ -485,6 +485,45 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         assert "updated child info final" in manager.text_box.toPlainText()
 
 
+def test_childtool_state_changed_marks_dirty_without_details_refresh(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        select_child_tool(manager, uid)
+        manager._update_info()
+
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+        manager._mark_workspace_clean()
+
+        tool.sigStateChanged.emit()
+
+        assert uid in manager._workspace_state.dirty_state
+        assert metadata_updates == []
+        assert ("tool-info-refresh", uid) not in manager._interaction_gate.pending_keys
+
+
 def test_manager_idle_queue_deduplicates_and_waits_for_idle(
     qtbot,
     manager_context: Callable[

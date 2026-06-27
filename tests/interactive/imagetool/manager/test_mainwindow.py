@@ -4758,6 +4758,19 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         output_node = manager._child_node(output_uid)
         assert output_node.source_auto_update is False
 
+        select_child_tool(manager, child_uid)
+        qtbot.wait(child._MANAGER_NOTIFY_DELAY_MS + 50)
+        manager._flush_idle_work(force=True)
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+        manager._mark_workspace_clean()
+
         before = fetch(output_uid).copy(deep=True)
         wait_ms = int(1000 / child._UPDATE_LIMIT_HZ) + 50
         qtbot.wait(wait_ms)
@@ -4771,10 +4784,31 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
             return original_converted_output()
 
         monkeypatch.setattr(child, "_converted_output", _counting_converted_output)
+        notification_count = 0
+        original_notify_data_changed = child._notify_data_changed
+
+        def _counting_notify_data_changed():
+            nonlocal notification_count
+            notification_count += 1
+            original_notify_data_changed()
+
+        monkeypatch.setattr(
+            child, "_notify_data_changed", _counting_notify_data_changed
+        )
 
         delta_spin = child._offset_spins["delta"]
-        delta_spin.setValue(delta_spin.value() + 0.01)
+        with QtCore.QSignalBlocker(delta_spin):
+            delta_spin.setValue(delta_spin.value() + 0.01)
+        child.update()
+        child.update()
+        child.update()
 
+        assert child_uid in manager._workspace_state.dirty_state
+        assert metadata_updates == []
+        assert notification_count == 0
+        qtbot.wait(child._MANAGER_NOTIFY_DELAY_MS + 50)
+        manager._flush_idle_work(force=True)
+        assert notification_count == 1
         qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
         qtbot.wait(wait_ms)
 
