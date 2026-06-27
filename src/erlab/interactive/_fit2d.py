@@ -1369,7 +1369,7 @@ class Fit2DTool(Fit1DTool):
                 "method_plot_x": FigureMethodPlotValueState(
                     source=values_source,
                     kind="coord",
-                    name=self._y_dim_name,
+                    name=str(self._y_dim_name),
                 ),
                 "method_plot_y": FigureMethodPlotValueState(
                     source=values_source, kind="data"
