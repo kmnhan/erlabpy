@@ -480,11 +480,13 @@ class _DialogDetectionThread(QtCore.QThread):
         index: int,
         pre_call: Callable | None,
         timeout: float,
+        ignored_dialog: QtWidgets.QDialog | None = None,
     ) -> None:
         super().__init__(parent)
         self.pre_call = pre_call
         self.index = index
         self.timeout = timeout
+        self.ignored_dialog = ignored_dialog
         self._precall_called = threading.Event()
 
     def precall_called(self):
@@ -502,10 +504,17 @@ class _DialogDetectionThread(QtCore.QThread):
         dialog = None
 
         log.debug("looking for dialog %d...", self.index)
-        while (
-            dialog is None or isinstance(dialog, _WaitDialog)
-        ) and time.perf_counter() - start_time < self.timeout:
-            dialog = QtWidgets.QApplication.activeModalWidget()
+        while dialog is None and time.perf_counter() - start_time < self.timeout:
+            candidate = QtWidgets.QApplication.activeModalWidget()
+            # The next detector starts before accepting the current modal so
+            # synchronous child dialogs are not missed; ignore that modal
+            # while it closes.
+            if (
+                candidate is not None
+                and candidate is not self.ignored_dialog
+                and not isinstance(candidate, _WaitDialog)
+            ):
+                dialog = candidate
             time.sleep(0.01)
 
         if dialog is None or isinstance(dialog, _WaitDialog):
@@ -628,7 +637,15 @@ class _DialogHandler(QtCore.QObject):
                 self._handler = None
 
             self._handler = _DialogDetectionThread(
-                self, index, self._pre_call_list[index], self.timeout
+                self,
+                index,
+                self._pre_call_list[index],
+                self.timeout,
+                (
+                    dialog_or_trigger
+                    if isinstance(dialog_or_trigger, QtWidgets.QDialog)
+                    else None
+                ),
             )
             self._handler.sigTimeout.connect(self._timeout)
             self._handler.sigTrigger.connect(self.trigger_index)
