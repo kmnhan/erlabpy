@@ -116,11 +116,12 @@ def _conversion_estimate_stub(
     final_bytes: int = 8,
     peak_bytes: int = 8,
 ) -> _kspace_conversion.KspaceConversionEstimate:
+    available_bytes = final_bytes if safe else max(0, final_bytes - 1)
     budget = _kspace_conversion.KspaceMemoryBudget(
-        total_bytes=4,
-        available_bytes=2,
+        total_bytes=max(available_bytes, final_bytes),
+        available_bytes=available_bytes,
         reserve_bytes=1,
-        safe_budget_bytes=peak_bytes if safe else max(0, peak_bytes - 1),
+        safe_budget_bytes=max(0, available_bytes - 1),
     )
     return _kspace_conversion.KspaceConversionEstimate(
         input_dims=(),
@@ -344,7 +345,10 @@ def test_kspace_conversion_memory_budget_uses_available_physical_memory(
     assert budget.safe_budget_bytes == 5 * _GIB
 
 
-def test_kspace_conversion_estimate_blocks_unsafe_peak(monkeypatch, anglemap) -> None:
+def test_kspace_conversion_estimate_blocks_unsafe_final_array(
+    monkeypatch,
+    anglemap,
+) -> None:
     data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
     data.kspace.work_function = 4.5
     monkeypatch.setattr(
@@ -380,19 +384,24 @@ def test_kspace_conversion_estimate_validates_bounds_and_resolution(
         bounds={"kx": (-1.0, 1.0), "ky": (-1.0, 1.0)},
         resolution={"kx": 1.0, "ky": 1.0},
     ).is_safe
+    assert _conversion_estimate_stub(
+        safe=True,
+        final_bytes=8,
+        peak_bytes=48,
+    ).is_safe
     estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
         _conversion_estimate_stub(final_bytes=8, peak_bytes=48)
     )
     assert estimate_text.startswith("Output: scalar\n")
     assert "Final array:" in estimate_text
-    assert "Peak memory:" in estimate_text
+    assert "Available memory:" in estimate_text
     unsafe_estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
         _conversion_estimate_stub(safe=False, final_bytes=8, peak_bytes=48),
         preview=True,
     )
     assert "Preview unavailable." in unsafe_estimate_text
     assert "Final array:" in unsafe_estimate_text
-    assert "Peak memory:" in unsafe_estimate_text
+    assert "Available memory:" in unsafe_estimate_text
     with pytest.raises(ValueError, match="finite"):
         _kspace_conversion.estimate_kspace_conversion(
             data,
@@ -887,7 +896,7 @@ def test_ktool_unsafe_output_shows_blocking_error(
     monkeypatch.setattr(
         _kspace_conversion,
         "system_memory_budget",
-        lambda: _memory_budget(total=4 * _GIB, available=2 * _GIB),
+        lambda: _memory_budget(total=4, available=2),
     )
 
     win.resolution_supergroup.setChecked(True)

@@ -75,7 +75,7 @@ class KspaceConversionEstimate:
 
     @property
     def is_safe(self) -> bool:
-        return self.peak_bytes <= self.memory.safe_budget_bytes
+        return self.final_bytes <= self.memory.available_bytes
 
 
 class KspaceConversionMemoryError(MemoryError):
@@ -84,7 +84,7 @@ class KspaceConversionMemoryError(MemoryError):
     def __init__(self, estimate: KspaceConversionEstimate) -> None:
         self.estimate = estimate
         super().__init__(
-            "The requested momentum grid is too large for the current memory budget."
+            "The requested momentum grid is too large for currently available memory."
         )
 
 
@@ -351,7 +351,7 @@ def kspace_conversion_estimate_text(
     estimate_summary = (
         f"Output: {_format_sizes(estimate.output_sizes)}\n"
         f"Final array: {_format_bytes(estimate.final_bytes)}\n"
-        f"Peak memory: {_format_bytes(estimate.peak_bytes)}"
+        f"Available memory: {_format_bytes(estimate.memory.available_bytes)}"
     )
     if estimate.is_safe:
         return estimate_summary
@@ -373,14 +373,15 @@ def kspace_conversion_memory_dialog_title() -> str:
 
 
 def kspace_conversion_memory_dialog_text() -> str:
-    return "The requested momentum grid is too large for the current memory budget."
+    return "The requested momentum grid is too large for currently available memory."
 
 
 def kspace_conversion_memory_dialog_info(
     estimate: KspaceConversionEstimate,
 ) -> str:
     return (
-        f"Estimated memory required: {_format_bytes(estimate.peak_bytes)}. "
+        f"Final array estimate: {_format_bytes(estimate.final_bytes)}. "
+        f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}. "
         "Increase the resolution value or reduce the bounds."
     )
 
@@ -394,10 +395,9 @@ def kspace_conversion_memory_dialog_details(
         f"Bounds: {_format_numeric_mapping(estimate.bounds)}",
         f"Resolution: {_format_numeric_mapping(estimate.resolution)}",
         f"Final array estimate: {_format_bytes(estimate.final_bytes)}",
-        f"Peak estimate: {_format_bytes(estimate.peak_bytes)}",
         f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}",
+        f"Peak estimate: {_format_bytes(estimate.peak_bytes)}",
         f"Reserve: {_format_bytes(estimate.memory.reserve_bytes)}",
-        f"Safe budget: {_format_bytes(estimate.memory.safe_budget_bytes)}",
         "Swap is intentionally not treated as usable memory.",
     ]
     return "<br>".join(html.escape(line) for line in lines)

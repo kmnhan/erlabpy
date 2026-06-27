@@ -557,7 +557,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _is_energy_kinetic(self) -> bool:
         """Check if the energy axis is in binding energy."""
         # If scalar, may be a constant energy contour above EF
-        return self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0)
+        values = np.asarray(self._obj.eV.values, dtype=float)
+        finite = values[np.isfinite(values)]
+        return values.size > 1 and finite.size > 0 and np.min(finite) > 0.0
 
     @property
     def _binding_energy(self) -> xr.DataArray:
@@ -867,7 +869,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         """
         self._check_kinetic_energy(context="estimating in-plane momentum resolution")
-        min_Ek = np.amin(self._kinetic_energy.values)
+        kinetic = np.asarray(self._kinetic_energy.values, dtype=float)
+        finite_positive = kinetic[np.isfinite(kinetic) & (kinetic > 0)]
+        if finite_positive.size == 0:
+            raise ValueError(
+                "Cannot estimate in-plane momentum resolution: kinetic energy "
+                "contains no positive values."
+            )
+        min_Ek = np.amin(finite_positive)
         max_angle = max(np.abs(self._alpha.values))
         return float(
             erlab.constants.rel_kconv
