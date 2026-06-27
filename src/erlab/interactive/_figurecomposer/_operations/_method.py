@@ -4528,7 +4528,10 @@ def _picked_plot_code_args(
 
 
 def _validate_entered_errorbar_args(args: tuple[typing.Any, ...]) -> None:
-    if len(args) < 2:
+    if len(args) < 2 or any(
+        value is None or (isinstance(value, (list, tuple)) and len(value) == 0)
+        for value in args[:2]
+    ):
         raise ValueError("Enter X and Y values for ax.errorbar")
 
 

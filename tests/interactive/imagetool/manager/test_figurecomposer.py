@@ -16517,8 +16517,17 @@ def test_figure_composer_axes_errorbar_method_render_and_codegen(qtbot) -> None:
     _assert_errorbar_capsize(generated_container, 4.0)
 
 
+@pytest.mark.parametrize(
+    "method_args",
+    [
+        ((1.0, 0.5, 0.0),),
+        ((), (1.0, 0.5, 0.0)),
+        ((0.0, 0.5, 1.0), ()),
+    ],
+)
 def test_figure_composer_axes_errorbar_method_requires_entered_x_and_y(
     qtbot,
+    method_args: tuple[tuple[float, ...], ...],
 ) -> None:
     data = xr.DataArray(
         np.arange(3.0),
@@ -16537,7 +16546,7 @@ def test_figure_composer_axes_errorbar_method_requires_entered_x_and_y(
                     axes=FigureAxesSelectionState(axes=((0, 0),)),
                 ).model_copy(
                     update={
-                        "method_args": ((1.0, 0.5, 0.0),),
+                        "method_args": method_args,
                         "method_kwargs": {
                             "xerr": (0.1, 0.2, 0.3),
                             "yerr": (0.2, 0.2, 0.2),
