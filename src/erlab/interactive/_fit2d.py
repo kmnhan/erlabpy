@@ -33,7 +33,9 @@ if typing.TYPE_CHECKING:
     import lmfit
     import varname
 
+    from erlab.interactive._figurecomposer import FigureOperationState
     from erlab.interactive.imagetool import provenance
+    from erlab.interactive.imagetool.manager import ImageToolManager
 
 else:
     import lazy_loader as _lazy
@@ -130,6 +132,12 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
             "Show parameter standard error in ImageTool"
         )
         show_stderr_action.triggered.connect(self._show_parameter_stderr)
+
+        self.vb.menu.addSeparator()
+
+        add_to_figure_action = self.vb.menu.addAction("Add parameter plot to Figure…")
+        add_to_figure_action.setObjectName("fit2dParamPlotAddToFigureAction")
+        add_to_figure_action.triggered.connect(self._add_parameter_plot_to_figure)
 
     def _current_param_dataarray(
         self, *, stderr: bool
@@ -231,6 +239,10 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
                     Fit2DTool.Output.PARAMETER_STDERR, param_name
                 ),
             )
+
+    @QtCore.Slot()
+    def _add_parameter_plot_to_figure(self) -> None:
+        self._tool._add_parameter_plot_to_figure()
 
 
 class Fit2DTool(Fit1DTool):
@@ -1308,6 +1320,156 @@ class Fit2DTool(Fit1DTool):
             tool = self._launch_output_imagetool(data, output_id=output_id)
         if tool is not None:
             self._itool = tool
+
+    def _parameter_figure_output_target(
+        self,
+        param_name: str,
+        output: Output,
+        data: xr.DataArray,
+    ) -> str | None:
+        output_id = self._parameter_output_id(output, param_name)
+        tool = self._open_output_imagetool(
+            data,
+            output_id=output_id,
+            provenance_spec=self.output_imagetool_provenance(output_id, data),
+            prompt_on_reuse=False,
+        )
+        if tool is None:
+            return None
+        target = self._output_imagetool_target(output_id)
+        return target if isinstance(target, str) else None
+
+    def _parameter_figure_operation(
+        self,
+        manager: ImageToolManager,
+        *,
+        param_name: str,
+        values_target: str,
+        stderr_target: str,
+    ) -> FigureOperationState:
+        from erlab.interactive._figurecomposer import (
+            FigureMethodFamily,
+            FigureMethodPlotValueState,
+            FigureOperationState,
+        )
+
+        values_source = manager._script_input_name_for_node(
+            manager._node_for_target(values_target)
+        )
+        stderr_source = manager._script_input_name_for_node(
+            manager._node_for_target(stderr_target)
+        )
+        return FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="errorbar",
+            label=param_name,
+        ).model_copy(
+            update={
+                "method_plot_data_mode": "from_data",
+                "method_plot_x": FigureMethodPlotValueState(
+                    source=values_source,
+                    kind="coord",
+                    name=str(self._y_dim_name),
+                ),
+                "method_plot_y": FigureMethodPlotValueState(
+                    source=values_source, kind="data"
+                ),
+                "method_plot_yerr": FigureMethodPlotValueState(
+                    source=stderr_source, kind="data"
+                ),
+                "method_kwargs": {
+                    "label": param_name,
+                    "linestyle": "none",
+                    "marker": "o",
+                },
+            }
+        )
+
+    def _parameter_figure_prompt_operation(
+        self, param_name: str
+    ) -> FigureOperationState:
+        from erlab.interactive._figurecomposer import (
+            FigureMethodFamily,
+            FigureOperationState,
+        )
+
+        return FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="errorbar",
+            label=param_name,
+        )
+
+    def _add_parameter_plot_to_figure(self) -> None:
+        current = self.param_plot._current_param_dataarray(stderr=False)
+        if current is None:
+            return
+
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        if manager is None or parent_uid is None:
+            self._show_warning(
+                "ImageTool Manager required",
+                "Open ftool in ImageTool Manager to add parameter plots to Figure "
+                "Composer.",
+            )
+            return
+
+        param_name, values = current
+        target_figure = None
+        if manager._figure_uids():
+            target_figure = manager._prompt_append_figure_target(
+                self._parameter_figure_prompt_operation(param_name)
+            )
+            if target_figure is None:
+                return
+
+        stderr = self._param_plot_dataarray(param_name, stderr=True)
+        if values.size == 0 or stderr.size == 0:
+            self._show_warning(
+                "No data available",
+                "No parameter values or standard errors are available for the "
+                "selected parameter in the current y-range.",
+            )
+            return
+
+        values_target = self._parameter_figure_output_target(
+            param_name, self.Output.PARAMETER_VALUES, values
+        )
+        stderr_target = self._parameter_figure_output_target(
+            param_name, self.Output.PARAMETER_STDERR, stderr
+        )
+        if values_target is None or stderr_target is None:
+            self._show_warning(
+                "Could not open parameter data",
+                "Could not open the selected parameter values and standard errors "
+                "in ImageTool Manager.",
+            )
+            return
+
+        operation = self._parameter_figure_operation(
+            manager,
+            param_name=param_name,
+            values_target=values_target,
+            stderr_target=stderr_target,
+        )
+        targets = (values_target, stderr_target)
+        if target_figure is None:
+            manager.create_figure_from_targets(
+                targets,
+                operation=operation,
+                title=f"{param_name} parameter plot",
+            )
+            return
+        figure_uid, axes_selection = target_figure
+        if not manager.append_figure_from_targets(
+            targets,
+            figure_uid=figure_uid,
+            axes_selection=axes_selection,
+            operation=operation,
+        ):
+            self._show_warning(
+                "Could not add to Figure",
+                "Could not add the selected parameter plot to Figure Composer.",
+            )
 
     def _update_param_plot_overlays(self) -> None:
         """Update overlay items and legend for active parameters."""

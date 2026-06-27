@@ -359,8 +359,8 @@ def _plot_data_args() -> MethodControlSpec:
         label="Data",
         object_name="figureComposerAxesMethodPlotData",
         tooltip=(
-            "Literal sequences passed to ax.plot.\n"
-            "Leave x blank to call ax.plot(y, ...)."
+            "Literal sequences passed to the selected plotting method.\n"
+            "Leave x blank to use default x positions."
         ),
     )
 
@@ -1025,6 +1025,109 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "zorder",
                 "figureComposerAxesMethodPlotZOrderSpin",
                 "Drawing order for this line.",
+                default=2.0,
+                step=1.0,
+            ),
+            _transform_control(),
+        ),
+    ),
+    "errorbar": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="errorbar",
+        label="Errorbar",
+        tooltip="Runs ax.errorbar on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=((0.0, 1.0), (0.0, 1.0)),
+        controls=(
+            _plot_data_args(),
+            _color_kwarg(
+                "Color",
+                "color",
+                "figureComposerAxesMethodErrorbarColorEdit",
+                "Matplotlib color for the errorbar line.",
+            ),
+            _kwarg_combo(
+                "Line style",
+                "linestyle",
+                LINE_STYLE_OPTIONS,
+                None,
+                "figureComposerAxesMethodErrorbarLineStyleCombo",
+                "Matplotlib line style for the errorbar line.",
+                none_label=LINE_STYLE_DEFAULT_LABEL,
+            ),
+            _float_kwarg(
+                "Line width",
+                "linewidth",
+                "figureComposerAxesMethodErrorbarLineWidthSpin",
+                "Line width for the errorbar line.",
+                default=float(matplotlib.rcParams["lines.linewidth"]),
+                minimum=0.0,
+                maximum=1_000_000.0,
+                step=0.5,
+            ),
+            _kwarg_combo(
+                "Marker",
+                "marker",
+                LINE_MARKER_OPTIONS,
+                None,
+                "figureComposerAxesMethodErrorbarMarkerCombo",
+                "Matplotlib marker style for the errorbar line.",
+                none_label=LINE_STYLE_DEFAULT_LABEL,
+            ),
+            _float_kwarg(
+                "Marker size",
+                "markersize",
+                "figureComposerAxesMethodErrorbarMarkerSizeSpin",
+                "Marker size for the errorbar line.",
+                default=float(matplotlib.rcParams["lines.markersize"]),
+                minimum=0.0,
+                maximum=1_000_000.0,
+                step=0.5,
+            ),
+            _color_kwarg(
+                "Marker face",
+                "markerfacecolor",
+                "figureComposerAxesMethodErrorbarMarkerFaceColorEdit",
+                "Matplotlib marker face color.",
+            ),
+            _color_kwarg(
+                "Marker edge",
+                "markeredgecolor",
+                "figureComposerAxesMethodErrorbarMarkerEdgeColorEdit",
+                "Matplotlib marker edge color.",
+            ),
+            _float_kwarg(
+                "Cap size",
+                "capsize",
+                "figureComposerAxesMethodErrorbarCapSizeSpin",
+                "Errorbar cap size in points.",
+                default=float(matplotlib.rcParams["errorbar.capsize"]),
+                minimum=0.0,
+                maximum=1_000_000.0,
+                step=0.5,
+            ),
+            _float_kwarg(
+                "Alpha",
+                "alpha",
+                "figureComposerAxesMethodErrorbarAlphaSpin",
+                "Line opacity between 0 and 1.",
+                default=1.0,
+                minimum=0.0,
+                maximum=1.0,
+                step=0.05,
+            ),
+            _text_kwarg(
+                "Label",
+                "label",
+                "figureComposerAxesMethodErrorbarLabelEdit",
+                "Legend label for this errorbar.",
+            ),
+            _float_kwarg(
+                "Z order",
+                "zorder",
+                "figureComposerAxesMethodErrorbarZOrderSpin",
+                "Drawing order for this errorbar.",
                 default=2.0,
                 step=1.0,
             ),
@@ -3451,6 +3554,8 @@ def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
     }
     if any(control.kind == MethodControlKind.TICK_PARAMS for control in spec.controls):
         keys.update(TICK_PARAMS_CONTROLLED_KWARGS)
+    if _is_axes_errorbar_method(spec):
+        keys.update(("xerr", "yerr"))
     if _method_has_transform_control(spec):
         keys.add("transform")
     return frozenset(keys)
@@ -3548,10 +3653,55 @@ _PLOT_DATA_MODE_LABELS = {
     "from_data": "Pick from data",
 }
 _PLOT_DATA_VALUE: tuple[str, str | None] = ("data", None)
+_PLOT_DATA_AXES: typing.TypeAlias = typing.Literal["x", "y", "xerr", "yerr"]
+_PLOT_ERROR_DATA_AXES: typing.TypeAlias = typing.Literal["xerr", "yerr"]
 
 
 def _is_axes_plot_method(spec: MethodSpec) -> bool:
-    return spec.family == FigureMethodFamily.AXES and spec.name == "plot"
+    return spec.family == FigureMethodFamily.AXES and spec.name in {"plot", "errorbar"}
+
+
+def _is_axes_errorbar_method(spec: MethodSpec) -> bool:
+    return spec.family == FigureMethodFamily.AXES and spec.name == "errorbar"
+
+
+def _plot_method_call_name(spec: MethodSpec) -> str:
+    return f"ax.{spec.call_name}"
+
+
+def _plot_method_object_prefix(spec: MethodSpec) -> str:
+    return "Errorbar" if _is_axes_errorbar_method(spec) else "Plot"
+
+
+def _plot_axis_label(axis: _PLOT_DATA_AXES) -> str:
+    return {
+        "x": "X",
+        "y": "Y",
+        "xerr": "X error",
+        "yerr": "Y error",
+    }[axis]
+
+
+def _plot_axis_object_part(axis: _PLOT_DATA_AXES) -> str:
+    return {
+        "x": "X",
+        "y": "Y",
+        "xerr": "XError",
+        "yerr": "YError",
+    }[axis]
+
+
+def _plot_axis_required(spec: MethodSpec, axis: _PLOT_DATA_AXES) -> bool:
+    return axis == "y" or (axis == "x" and _is_axes_errorbar_method(spec))
+
+
+def _plot_axis_field(axis: _PLOT_DATA_AXES) -> str:
+    return {
+        "x": "method_plot_x",
+        "y": "method_plot_y",
+        "xerr": "method_plot_xerr",
+        "yerr": "method_plot_yerr",
+    }[axis]
 
 
 def _plot_data_mode_text(mode: str) -> str:
@@ -3610,13 +3760,13 @@ def _build_plot_data_args_editor(
         layout,
         "Plot data",
         mode_combo,
-        "Choose whether ax.plot receives entered values or values picked from "
-        "available DataArrays.",
+        f"Choose whether {_plot_method_call_name(spec)} receives entered values "
+        "or values picked from available DataArrays.",
     )
     if mode_mixed:
         return
     if operation.method_plot_data_mode == "from_data":
-        _build_picked_plot_data_args_editor(tool, operation, layout)
+        _build_picked_plot_data_args_editor(tool, operation, spec, layout)
         return
     _build_entered_plot_data_args_editor(tool, operation, spec, layout)
 
@@ -3663,24 +3813,27 @@ def _build_entered_plot_data_args_editor(
     spec: MethodSpec,
     layout: QtWidgets.QFormLayout,
 ) -> None:
+    x_required = _plot_axis_required(spec, "x")
     x_text, x_mixed = tool._batch_text(
         operation,
         lambda target: _plot_x_arg_value(target, spec),
-        _format_optional_plot_sequence,
+        _format_plot_sequence if x_required else _format_optional_plot_sequence,
     )
     x_edit = tool._line_edit(x_text, parent=layout.parentWidget())
     tool._apply_mixed_line_edit(x_edit, x_mixed)
-    x_edit.setObjectName("figureComposerAxesMethodPlotXEdit")
+    prefix = _plot_method_object_prefix(spec)
+    call_name = _plot_method_call_name(spec)
+    x_edit.setObjectName(f"figureComposerAxesMethod{prefix}XEdit")
     tool._connect_line_edit_finished(
         x_edit,
         lambda text: _update_current_plot_data_arg(tool, "x", text),
     )
-    tool._add_form_row(
-        layout,
-        "X values",
-        x_edit,
-        "Optional entered x sequence.\nLeave blank to call ax.plot(y, ...).",
+    x_tooltip = (
+        f"Required entered x sequence passed to {call_name}."
+        if x_required
+        else "Optional entered x sequence.\nLeave blank to use default x positions."
     )
+    tool._add_form_row(layout, "X values", x_edit, x_tooltip)
     y_text, y_mixed = tool._batch_text(
         operation,
         lambda target: _plot_y_arg_value(target, spec),
@@ -3688,7 +3841,7 @@ def _build_entered_plot_data_args_editor(
     )
     y_edit = tool._line_edit(y_text, parent=layout.parentWidget())
     tool._apply_mixed_line_edit(y_edit, y_mixed)
-    y_edit.setObjectName("figureComposerAxesMethodPlotYEdit")
+    y_edit.setObjectName(f"figureComposerAxesMethod{prefix}YEdit")
     tool._connect_line_edit_finished(
         y_edit,
         lambda text: _update_current_plot_data_arg(tool, "y", text),
@@ -3697,27 +3850,78 @@ def _build_entered_plot_data_args_editor(
         layout,
         "Y values",
         y_edit,
-        "Required entered y sequence passed to ax.plot.",
+        f"Required entered y sequence passed to {call_name}.",
     )
+    if _is_axes_errorbar_method(spec):
+        _build_entered_plot_error_kwarg_editor(
+            tool,
+            operation,
+            layout,
+            key="xerr",
+            label="X error",
+            object_name=f"figureComposerAxesMethod{prefix}XErrorEdit",
+            tooltip=f"Optional entered x error values passed as {call_name} xerr.",
+        )
+        _build_entered_plot_error_kwarg_editor(
+            tool,
+            operation,
+            layout,
+            key="yerr",
+            label="Y error",
+            object_name=f"figureComposerAxesMethod{prefix}YErrorEdit",
+            tooltip=f"Optional entered y error values passed as {call_name} yerr.",
+        )
+
+
+def _build_entered_plot_error_kwarg_editor(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    layout: QtWidgets.QFormLayout,
+    *,
+    key: typing.Literal["xerr", "yerr"],
+    label: str,
+    object_name: str,
+    tooltip: str,
+) -> None:
+    text, mixed = tool._batch_text(
+        operation,
+        lambda target: target.method_kwargs.get(key),
+        _format_literal_value,
+    )
+    edit = tool._line_edit(text, parent=layout.parentWidget())
+    tool._apply_mixed_line_edit(edit, mixed)
+    edit.setObjectName(object_name)
+    tool._connect_line_edit_finished(
+        edit,
+        lambda value: _update_current_plot_error_kwarg(tool, key, value),
+    )
+    tool._add_form_row(layout, label, edit, tooltip)
 
 
 def _build_picked_plot_data_args_editor(
     tool: FigureComposerTool,
     operation: FigureOperationState,
+    spec: MethodSpec,
     layout: QtWidgets.QFormLayout,
 ) -> None:
-    _build_picked_plot_data_row(tool, operation, layout, axis="x")
-    _build_picked_plot_data_row(tool, operation, layout, axis="y")
+    _build_picked_plot_data_row(tool, operation, spec, layout, axis="x")
+    _build_picked_plot_data_row(tool, operation, spec, layout, axis="y")
+    if _is_axes_errorbar_method(spec):
+        _build_picked_plot_data_row(tool, operation, spec, layout, axis="xerr")
+        _build_picked_plot_data_row(tool, operation, spec, layout, axis="yerr")
 
 
 def _plot_axis_value_state(
-    operation: FigureOperationState, axis: typing.Literal["x", "y"]
+    operation: FigureOperationState, axis: _PLOT_DATA_AXES
 ) -> FigureMethodPlotValueState | None:
-    return operation.method_plot_x if axis == "x" else operation.method_plot_y
+    return typing.cast(
+        "FigureMethodPlotValueState | None",
+        getattr(operation, _plot_axis_field(axis)),
+    )
 
 
 def _plot_axis_source(
-    operation: FigureOperationState, axis: typing.Literal["x", "y"]
+    operation: FigureOperationState, axis: _PLOT_DATA_AXES
 ) -> str | None:
     state = _plot_axis_value_state(operation, axis)
     return None if state is None else state.source
@@ -3804,7 +4008,7 @@ def _plot_source_combo(
     current: str | None,
     changed: Callable[[str | None], None],
     *,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     parent: QtWidgets.QWidget | None,
     allow_none: bool,
     mixed: bool = False,
@@ -3814,9 +4018,9 @@ def _plot_source_combo(
     if mixed:
         combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
     if allow_none:
-        combo.addItem("No X DataArray", None)
+        combo.addItem(f"No {_plot_axis_label(axis)} DataArray", None)
     elif current is None:
-        combo.addItem(f"Choose {axis.upper()} DataArray", None)
+        combo.addItem(f"Choose {_plot_axis_label(axis)} DataArray", None)
     source_names = tool._source_names()
     for source in source_names:
         combo.addItem(tool._source_display_name(source), source)
@@ -3843,9 +4047,15 @@ def _plot_source_combo(
                 combo.setCurrentIndex(index)
                 break
     combo.setEnabled(bool(source_names) or current is not None or allow_none)
-    combo.setAccessibleName(f"{axis.upper()} DataArray")
+    combo.setAccessibleName(f"{_plot_axis_label(axis)} DataArray")
     combo.setProperty("figureComposerPlotDataRole", f"{axis}_source")
-    combo.setToolTip(_plot_source_combo_tooltip(axis, has_sources=bool(source_names)))
+    combo.setToolTip(
+        _plot_source_combo_tooltip(
+            axis,
+            has_sources=bool(source_names),
+            required=not allow_none,
+        )
+    )
     ComboBoxDataControlAdapter(combo).connect_commit(
         tool._connect_editor_signal,
         lambda value: changed(typing.cast("str | None", value)),
@@ -3859,7 +4069,7 @@ def _plot_values_combo(
     current: FigureMethodPlotValueState | None,
     changed: Callable[[typing.Any], None],
     *,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     parent: QtWidgets.QWidget | None,
     allow_none: bool,
     mixed: bool = False,
@@ -3870,9 +4080,9 @@ def _plot_values_combo(
     if mixed:
         combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
     if allow_none:
-        combo.addItem("Default x", None)
+        combo.addItem(f"No {_plot_axis_label(axis)} values", None)
     elif current is None:
-        combo.addItem(f"Choose {axis.upper()} values", None)
+        combo.addItem(f"Choose {_plot_axis_label(axis)} values", None)
     options = _plot_value_options(tool, source)
     for text, value in options:
         combo.addItem(text, value)
@@ -3899,13 +4109,14 @@ def _plot_values_combo(
                 combo.setCurrentIndex(index)
                 break
     combo.setEnabled(enabled and (source is not None or allow_none))
-    combo.setAccessibleName(f"{axis.upper()} values")
+    combo.setAccessibleName(f"{_plot_axis_label(axis)} values")
     combo.setProperty("figureComposerPlotDataRole", f"{axis}_values")
     combo.setToolTip(
         _plot_values_combo_tooltip(
             axis,
             source=source,
             value_options_match=enabled,
+            required=not allow_none,
         )
     )
     ComboBoxDataControlAdapter(combo).connect_commit(
@@ -3916,51 +4127,70 @@ def _plot_values_combo(
 
 
 def _plot_source_combo_tooltip(
-    axis: typing.Literal["x", "y"], *, has_sources: bool
+    axis: _PLOT_DATA_AXES, *, has_sources: bool, required: bool = False
 ) -> str:
     if not has_sources:
         return "No Figure Composer DataArrays are available."
-    if axis == "x":
+    if axis == "x" and not required:
         return (
             "Choose the DataArray for optional x values. "
-            "No X DataArray calls ax.plot(y, ...)."
+            "No X DataArray uses default x positions."
         )
-    return "Choose the DataArray that supplies required y values for ax.plot."
+    if not required:
+        return (
+            f"Choose the DataArray that supplies optional "
+            f"{_plot_axis_label(axis).lower()} values."
+        )
+    return (
+        f"Choose the DataArray that supplies required "
+        f"{_plot_axis_label(axis).lower()} values."
+    )
 
 
 def _plot_values_combo_tooltip(
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     *,
     source: str | None,
     value_options_match: bool,
+    required: bool = False,
 ) -> str:
     if not value_options_match:
         return (
-            f"{axis.upper()} values are disabled because selected ax.plot steps "
-            "have different available choices."
+            f"{_plot_axis_label(axis)} values are disabled because selected plot "
+            "steps have different available choices."
         )
     if source is None:
-        if axis == "x":
+        if axis == "x" and not required:
             return (
                 "Use default x positions, or choose an X DataArray to pick "
                 "data values or a coordinate."
             )
-        return "Choose a Y DataArray before choosing y values."
-    if axis == "x":
+        if not required:
+            return f"Leave {_plot_axis_label(axis)} blank or choose a DataArray."
+        return (
+            f"Choose a {_plot_axis_label(axis)} DataArray before choosing "
+            f"{_plot_axis_label(axis).lower()} values."
+        )
+    if axis == "x" and not required:
         return (
             "Choose optional x values from the selected DataArray: data values "
             "or a 1D coordinate."
         )
+    if not required:
+        return (
+            f"Choose optional {_plot_axis_label(axis).lower()} values from the "
+            "selected DataArray: data values or a 1D coordinate."
+        )
     return (
-        "Choose required y values from the selected DataArray: data values "
-        "or a 1D coordinate."
+        f"Choose required {_plot_axis_label(axis).lower()} values from the "
+        "selected DataArray: data values or a 1D coordinate."
     )
 
 
 def _plot_values_item_tooltip(
     tool: FigureComposerTool,
     source: str | None,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     value: tuple[str, str | None],
 ) -> str:
     return source_value_tooltip(
@@ -3973,7 +4203,7 @@ def _plot_values_item_tooltip(
 def _plot_value_options_for_target(
     tool: FigureComposerTool,
     target: FigureOperationState,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
 ) -> tuple[tuple[str, tuple[str, str | None]], ...]:
     return _plot_value_options(tool, _plot_axis_source(target, axis))
 
@@ -3981,12 +4211,16 @@ def _plot_value_options_for_target(
 def _build_picked_plot_data_row(
     tool: FigureComposerTool,
     operation: FigureOperationState,
+    spec: MethodSpec,
     layout: QtWidgets.QFormLayout,
     *,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
 ) -> None:
     current = _plot_axis_value_state(operation, axis)
     current_source = None if current is None else current.source
+    required = _plot_axis_required(spec, axis)
+    prefix = _plot_method_object_prefix(spec)
+    object_part = _plot_axis_object_part(axis)
     source_mixed = tool._batch_is_mixed(
         operation, lambda target: _plot_axis_source(target, axis)
     )
@@ -4007,10 +4241,12 @@ def _build_picked_plot_data_row(
         lambda source: _update_current_plot_value_source(tool, axis, source),
         axis=axis,
         parent=container,
-        allow_none=axis == "x",
+        allow_none=not required,
         mixed=source_mixed,
     )
-    source_combo.setObjectName(f"figureComposerAxesMethodPlot{axis.upper()}SourceCombo")
+    source_combo.setObjectName(
+        f"figureComposerAxesMethod{prefix}{object_part}SourceCombo"
+    )
     values_combo = _plot_values_combo(
         tool,
         None if source_mixed else current_source,
@@ -4018,27 +4254,32 @@ def _build_picked_plot_data_row(
         lambda value: _update_current_plot_value_selection(tool, axis, value),
         axis=axis,
         parent=container,
-        allow_none=axis == "x",
+        allow_none=not required,
         mixed=value_mixed,
         enabled=not source_mixed and value_options_match,
     )
-    values_combo.setObjectName(f"figureComposerAxesMethodPlot{axis.upper()}ValuesCombo")
+    values_combo.setObjectName(
+        f"figureComposerAxesMethod{prefix}{object_part}ValuesCombo"
+    )
     if not value_options_match:
         values_combo.setToolTip(
             _plot_values_combo_tooltip(
                 axis,
                 source=None if source_mixed else current_source,
                 value_options_match=False,
+                required=required,
             )
         )
     row_layout.addWidget(source_combo, 1)
     row_layout.addWidget(values_combo, 1)
     tooltip = (
-        "Optional x values. Use No X DataArray to call ax.plot(y, ...)."
-        if axis == "x"
-        else "Required y values picked from a DataArray."
+        f"Required {_plot_axis_label(axis).lower()} values picked from a DataArray."
+        if required
+        else (
+            f"Optional {_plot_axis_label(axis).lower()} values picked from a DataArray."
+        )
     )
-    tool._add_form_row(layout, f"{axis.upper()} data", container, tooltip)
+    tool._add_form_row(layout, f"{_plot_axis_label(axis)} data", container, tooltip)
 
 
 def _plot_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
@@ -4048,12 +4289,20 @@ def _plot_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
     return tuple(_literal_sequence_from_text(stripped))
 
 
+def _plot_error_value_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if "," in stripped and stripped[0] not in "[({":
+        return _literal_sequence_from_text(stripped)
+    return _literal_from_text(stripped)
+
+
 def _update_current_plot_data_arg(
     tool: FigureComposerTool,
     axis: typing.Literal["x", "y"],
     text: str,
 ) -> None:
-    value = None if axis == "x" and not text.strip() else _plot_sequence_from_text(text)
+    stripped = text.strip()
+    parsed_value = _plot_sequence_from_text(text) if stripped else ()
 
     def update_args(
         _operation_index: int, operation: FigureOperationState
@@ -4062,13 +4311,37 @@ def _update_current_plot_data_arg(
         x_value = _plot_x_arg_value(operation, spec)
         y_value = _plot_y_arg_value(operation, spec)
         if axis == "x":
-            x_value = value
+            x_value = (
+                None
+                if not stripped and not _plot_axis_required(spec, "x")
+                else parsed_value
+            )
         else:
-            y_value = typing.cast("tuple[typing.Any, ...]", value)
+            y_value = parsed_value
         args = (y_value,) if x_value is None else (x_value, y_value)
         return operation.model_copy(update={"method_args": args})
 
     tool._update_operations(update_args)
+
+
+def _update_current_plot_error_kwarg(
+    tool: FigureComposerTool,
+    key: _PLOT_ERROR_DATA_AXES,
+    text: str,
+) -> None:
+    value = None if not text.strip() else _plot_error_value_from_text(text)
+
+    def update_kwarg(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        kwargs = dict(operation.method_kwargs)
+        if value is None:
+            kwargs.pop(key, None)
+        else:
+            kwargs[key] = value
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwarg)
 
 
 def _update_current_plot_data_mode(tool: FigureComposerTool, mode: str) -> None:
@@ -4092,7 +4365,7 @@ def _update_current_plot_data_mode(tool: FigureComposerTool, mode: str) -> None:
 
 def _update_current_plot_value_source(
     tool: FigureComposerTool,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     source: str | None,
 ) -> None:
     def update_source(
@@ -4101,7 +4374,7 @@ def _update_current_plot_value_source(
         state = None if source is None else _default_plot_value_state(tool, source)
         return operation.model_copy(
             update={
-                "method_plot_x" if axis == "x" else "method_plot_y": state,
+                _plot_axis_field(axis): state,
             }
         )
 
@@ -4110,7 +4383,7 @@ def _update_current_plot_value_source(
 
 def _update_current_plot_value_selection(
     tool: FigureComposerTool,
-    axis: typing.Literal["x", "y"],
+    axis: _PLOT_DATA_AXES,
     value: typing.Any,
 ) -> None:
     def update_value(
@@ -4128,7 +4401,7 @@ def _update_current_plot_value_selection(
             )
         return operation.model_copy(
             update={
-                "method_plot_x" if axis == "x" else "method_plot_y": state,
+                _plot_axis_field(axis): state,
             }
         )
 
@@ -4151,10 +4424,10 @@ def _plot_value_data(
     if state.kind == "data":
         value = data.squeeze(drop=True)
         if value.ndim != 1:
-            raise ValueError("Picked ax.plot data values must be one-dimensional")
+            raise ValueError("Picked plot data values must be one-dimensional")
         return value
     if state.name is None:
-        raise ValueError("Choose a coordinate for ax.plot")
+        raise ValueError("Choose a coordinate for picked plot data")
     coord = _plot_coord_by_name(data, state.name)
     if coord is None:
         raise ValueError(
@@ -4164,7 +4437,7 @@ def _plot_value_data(
     _coord_key, coord_data = coord
     value = coord_data.squeeze(drop=True)
     if value.ndim != 1:
-        raise ValueError("Picked ax.plot coordinates must be one-dimensional")
+        raise ValueError("Picked plot coordinates must be one-dimensional")
     return value
 
 
@@ -4181,13 +4454,13 @@ def _plot_value_code_and_data(
     if state.kind == "data":
         value = data.squeeze(drop=True)
         if value.ndim != 1:
-            raise ValueError("Picked ax.plot data values must be one-dimensional")
+            raise ValueError("Picked plot data values must be one-dimensional")
         code = source_code
         if _needs_squeeze_drop(data):
             code = f"{code}.squeeze(drop=True)"
         return _RawCode(f"{code}.values"), value
     if state.name is None:
-        raise ValueError("Choose a coordinate for ax.plot")
+        raise ValueError("Choose a coordinate for picked plot data")
     coord = _plot_coord_by_name(data, state.name)
     if coord is None:
         raise ValueError(
@@ -4197,7 +4470,7 @@ def _plot_value_code_and_data(
     coord_key, coord_data = coord
     value = coord_data.squeeze(drop=True)
     if value.ndim != 1:
-        raise ValueError("Picked ax.plot coordinates must be one-dimensional")
+        raise ValueError("Picked plot coordinates must be one-dimensional")
     code = (
         f"{source_code}.coords[{erlab.interactive.utils._parse_single_arg(coord_key)}]"
     )
@@ -4207,23 +4480,32 @@ def _plot_value_code_and_data(
 
 
 def _validate_plot_value_lengths(
-    x_value: xr.DataArray | None, y_value: xr.DataArray
+    x_value: xr.DataArray | None,
+    y_value: xr.DataArray,
+    *error_values: tuple[str, xr.DataArray],
 ) -> None:
     if x_value is not None and x_value.size != y_value.size:
-        raise ValueError("Picked ax.plot X and Y values must have the same length")
+        raise ValueError("Picked plot X and Y values must have the same length")
+    for label, value in error_values:
+        if value.size != y_value.size:
+            raise ValueError(
+                f"Picked ax.errorbar {label} and Y values must have the same length"
+            )
 
 
 def _picked_plot_args(
-    tool: FigureComposerTool, operation: FigureOperationState
+    tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
 ) -> tuple[typing.Any, ...]:
     if operation.method_plot_y is None:
-        raise ValueError("Choose Y values for ax.plot")
+        raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
     y_value = _plot_value_data(tool, operation.method_plot_y)
     x_value = (
         None
         if operation.method_plot_x is None
         else _plot_value_data(tool, operation.method_plot_x)
     )
+    if x_value is None and _plot_axis_required(spec, "x"):
+        raise ValueError(f"Choose X values for {_plot_method_call_name(spec)}")
     _validate_plot_value_lengths(x_value, y_value)
     if x_value is None:
         return (y_value.values,)
@@ -4231,16 +4513,64 @@ def _picked_plot_args(
 
 
 def _picked_plot_code_args(
-    tool: FigureComposerTool, operation: FigureOperationState
+    tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
 ) -> tuple[typing.Any, ...]:
     if operation.method_plot_y is None:
-        raise ValueError("Choose Y values for ax.plot")
+        raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
     y_code, y_value = _plot_value_code_and_data(tool, operation.method_plot_y)
     if operation.method_plot_x is None:
+        if _plot_axis_required(spec, "x"):
+            raise ValueError(f"Choose X values for {_plot_method_call_name(spec)}")
         return (y_code,)
     x_code, x_value = _plot_value_code_and_data(tool, operation.method_plot_x)
     _validate_plot_value_lengths(x_value, y_value)
     return x_code, y_code
+
+
+def _validate_entered_errorbar_args(args: tuple[typing.Any, ...]) -> None:
+    if len(args) < 2 or any(
+        value is None or (isinstance(value, (list, tuple)) and len(value) == 0)
+        for value in args[:2]
+    ):
+        raise ValueError("Enter X and Y values for ax.errorbar")
+
+
+def _picked_plot_error_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any]:
+    if operation.method_plot_y is None:
+        return {}
+    y_value = _plot_value_data(tool, operation.method_plot_y)
+    kwargs: dict[str, typing.Any] = {}
+    error_values = []
+    for axis in ("xerr", "yerr"):
+        state = _plot_axis_value_state(operation, axis)
+        if state is None:
+            continue
+        value = _plot_value_data(tool, state)
+        error_values.append((_plot_axis_label(axis), value))
+        kwargs[axis] = value.values
+    _validate_plot_value_lengths(None, y_value, *error_values)
+    return kwargs
+
+
+def _picked_plot_error_code_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any]:
+    if operation.method_plot_y is None:
+        return {}
+    _y_code, y_value = _plot_value_code_and_data(tool, operation.method_plot_y)
+    kwargs: dict[str, typing.Any] = {}
+    error_values = []
+    for axis in ("xerr", "yerr"):
+        state = _plot_axis_value_state(operation, axis)
+        if state is None:
+            continue
+        code, value = _plot_value_code_and_data(tool, state)
+        error_values.append((_plot_axis_label(axis), value))
+        kwargs[axis] = code
+    _validate_plot_value_lengths(None, y_value, *error_values)
+    return kwargs
 
 
 def _method_call_args(
@@ -4249,8 +4579,11 @@ def _method_call_args(
     spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_args(tool, operation)
-    return _method_args(operation, spec, tool)
+        return _picked_plot_args(tool, operation, spec)
+    args = _method_args(operation, spec, tool)
+    if _is_axes_errorbar_method(spec):
+        _validate_entered_errorbar_args(args)
+    return args
 
 
 def _method_code_call_args(
@@ -4259,8 +4592,11 @@ def _method_code_call_args(
     spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_code_args(tool, operation)
-    return _method_args(operation, spec, tool)
+        return _picked_plot_code_args(tool, operation, spec)
+    args = _method_args(operation, spec, tool)
+    if _is_axes_errorbar_method(spec):
+        _validate_entered_errorbar_args(args)
+    return args
 
 
 def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
@@ -5002,6 +5338,8 @@ def _method_transfer_updates(
         "method_plot_data_mode": "entered",
         "method_plot_x": None,
         "method_plot_y": None,
+        "method_plot_xerr": None,
+        "method_plot_yerr": None,
         "text_values": text_values,
         "method_transform": "data",
         "method_transform_x": "data",
@@ -5028,6 +5366,18 @@ def _method_transfer_updates(
                 "method_plot_y": operation.method_plot_y,
             }
         )
+        if _is_axes_errorbar_method(source_spec) and _is_axes_errorbar_method(
+            target_spec
+        ):
+            updates.update(
+                {
+                    "method_plot_xerr": operation.method_plot_xerr,
+                    "method_plot_yerr": operation.method_plot_yerr,
+                }
+            )
+    if not _is_axes_errorbar_method(target_spec):
+        kwargs.pop("xerr", None)
+        kwargs.pop("yerr", None)
     return updates
 
 
@@ -5149,6 +5499,13 @@ def _render_args_kwargs(
     args = list(_method_call_args(tool, operation, spec))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
+    if (
+        _is_axes_errorbar_method(spec)
+        and operation.method_plot_data_mode == "from_data"
+    ):
+        kwargs.pop("xerr", None)
+        kwargs.pop("yerr", None)
+        kwargs.update(_picked_plot_error_kwargs(tool, operation))
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -5182,6 +5539,13 @@ def _code_args_kwargs(
     args = list(_method_code_call_args(tool, operation, spec))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
+    if (
+        _is_axes_errorbar_method(spec)
+        and operation.method_plot_data_mode == "from_data"
+    ):
+        kwargs.pop("xerr", None)
+        kwargs.pop("yerr", None)
+        kwargs.update(_picked_plot_error_code_kwargs(tool, operation))
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -5381,7 +5745,10 @@ def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
     ):
         return ()
     names: list[str] = []
-    for state in (operation.method_plot_x, operation.method_plot_y):
+    states = [operation.method_plot_x, operation.method_plot_y]
+    if _is_axes_errorbar_method(spec):
+        states.extend((operation.method_plot_xerr, operation.method_plot_yerr))
+    for state in states:
         if state is not None and state.source not in names:
             names.append(state.source)
     return tuple(names)

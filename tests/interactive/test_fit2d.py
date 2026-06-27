@@ -14,6 +14,11 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive._fit2d as fit2d_module
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+)
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import provenance
 from tests._qt_helpers import signal_receiver_count
@@ -1567,10 +1572,18 @@ def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> 
         lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
     )
 
-    combo_items = {
-        win.param_plot_combo.itemText(i) for i in range(win.param_plot_combo.count())
-    }
-    assert set(win._model.param_names).issubset(combo_items)
+    expected_param_names = set(win._model.param_names)
+
+    def _param_plot_combo_items() -> set[str]:
+        return {
+            win.param_plot_combo.itemText(i)
+            for i in range(win.param_plot_combo.count())
+        }
+
+    qtbot.waitUntil(
+        lambda: expected_param_names.issubset(_param_plot_combo_items()),
+        timeout=10000,
+    )
 
     saved = {}
 
@@ -1945,6 +1958,8 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
         Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_VALUES, center_name),
         Fit2DTool._parameter_output_id(Fit2DTool.Output.PARAMETER_STDERR, center_name),
     ]
+    action_names = {action.objectName() for action in win.param_plot.vb.menu.actions()}
+    assert "fit2dParamPlotAddToFigureAction" in action_names
 
 
 def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> None:
@@ -2138,11 +2153,272 @@ def test_fit2d_param_plot_context_actions_missing_selection(qtbot, monkeypatch) 
     win.param_plot._show_parameter_values()
     win.param_plot._save_parameter_stderr()
     win.param_plot._show_parameter_stderr()
+    win.param_plot._add_parameter_plot_to_figure()
 
-    assert len(warnings) == 4
+    assert len(warnings) == 5
     assert all(title == "No parameter selected" for title, _ in warnings)
     assert not saved
     assert not shown
+
+
+def _seed_param_plot_for_figure(win: Fit2DTool, param_name: str) -> None:
+    params_0 = win._params.copy()
+    params_1 = win._params.copy()
+    params_2 = win._params.copy()
+    for idx, params in enumerate((params_0, params_1, params_2), start=1):
+        params[param_name].set(value=0.1 * idx)
+        params[param_name].stderr = 0.01 * idx
+    _seed_fit2d_param_results(win, [params_0, params_1, params_2])
+    win.param_plot_combo.setCurrentText(param_name)
+
+
+class _FakeFigureNode:
+    def __init__(self, script_name: str) -> None:
+        self.script_name = script_name
+
+
+_DEFAULT_FIGURE_PROMPT = object()
+
+
+class _FakeFigureManager:
+    def __init__(
+        self,
+        managed: Fit2DTool,
+        *,
+        figure_uids: tuple[str, ...] = (),
+        append_return: bool = True,
+        prompt_return: object = _DEFAULT_FIGURE_PROMPT,
+    ) -> None:
+        self._managed = managed
+        self._figure_uids_value = figure_uids
+        self._append_return = append_return
+        if prompt_return is _DEFAULT_FIGURE_PROMPT:
+            prompt_return = (
+                (
+                    figure_uids[0],
+                    FigureAxesSelectionState(axes=((0, 0),)),
+                )
+                if figure_uids
+                else None
+            )
+        self._prompt_return = prompt_return
+        self.nodes = {
+            "values_target": _FakeFigureNode("parameter_values"),
+            "stderr_target": _FakeFigureNode("parameter_stderr"),
+        }
+        self.prompt_calls: list[object] = []
+        self.create_calls: list[tuple[tuple[str, ...], object, str | None]] = []
+        self.append_calls: list[
+            tuple[tuple[str, ...], str | None, object | None, object]
+        ] = []
+
+    def _node_uid_from_window(self, widget) -> str | None:
+        return "ftool" if widget is self._managed else None
+
+    def _node_for_target(self, target: str) -> _FakeFigureNode:
+        return self.nodes[target]
+
+    def _script_input_name_for_node(self, node: _FakeFigureNode) -> str:
+        return node.script_name
+
+    def _figure_uids(self) -> tuple[str, ...]:
+        return self._figure_uids_value
+
+    def _prompt_append_figure_target(self, operation):
+        self.prompt_calls.append(operation)
+        return self._prompt_return
+
+    def create_figure_from_targets(
+        self,
+        targets,
+        *,
+        operation=None,
+        title: str | None = None,
+    ) -> str:
+        self.create_calls.append((tuple(targets), operation, title))
+        self._figure_uids_value = ("figure_new",)
+        return "figure_new"
+
+    def append_figure_from_targets(
+        self,
+        targets,
+        *,
+        figure_uid: str | None = None,
+        axes_selection=None,
+        operation=None,
+    ) -> bool:
+        self.append_calls.append(
+            (tuple(targets), figure_uid, axes_selection, operation)
+        )
+        return self._append_return
+
+
+def test_fit2d_param_plot_add_to_figure_requires_manager(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param_name = "p0_center"
+    _seed_param_plot_for_figure(win, param_name)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
+
+    win.param_plot._add_parameter_plot_to_figure()
+
+    assert warnings
+    assert warnings[-1][0] == "ImageTool Manager required"
+
+
+@pytest.mark.parametrize(
+    ("figure_uids", "expected_create", "append_return"),
+    [
+        ((), True, True),
+        (("figure_existing",), False, True),
+        (("figure_existing",), False, False),
+    ],
+)
+def test_fit2d_param_plot_add_to_figure_manager_paths(
+    qtbot,
+    monkeypatch,
+    figure_uids: tuple[str, ...],
+    expected_create: bool,
+    append_return: bool,
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param_name = "p0_center"
+    _seed_param_plot_for_figure(win, param_name)
+    manager = _FakeFigureManager(
+        win, figure_uids=figure_uids, append_return=append_return
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+    output_calls: list[tuple[str, Fit2DTool.Output, str]] = []
+
+    def _target_stub(
+        param: str, output: Fit2DTool.Output, da: xr.DataArray
+    ) -> str | None:
+        output_calls.append((param, output, str(da.name)))
+        if output == Fit2DTool.Output.PARAMETER_VALUES:
+            return "values_target"
+        return "stderr_target"
+
+    monkeypatch.setattr(win, "_parameter_figure_output_target", _target_stub)
+
+    win.param_plot._add_parameter_plot_to_figure()
+
+    assert output_calls == [
+        (param_name, Fit2DTool.Output.PARAMETER_VALUES, f"{param_name}_values"),
+        (param_name, Fit2DTool.Output.PARAMETER_STDERR, f"{param_name}_stderr"),
+    ]
+    if expected_create:
+        assert len(manager.create_calls) == 1
+        assert not manager.append_calls
+        targets, operation, title = manager.create_calls[0]
+        assert title == f"{param_name} parameter plot"
+    else:
+        assert len(manager.append_calls) == 1
+        assert not manager.create_calls
+        targets, figure_uid, axes_selection, operation = manager.append_calls[0]
+        assert len(manager.prompt_calls) == 1
+        assert manager.prompt_calls[0].method_name == "errorbar"
+        assert figure_uid == "figure_existing"
+        assert axes_selection == FigureAxesSelectionState(axes=((0, 0),))
+    if append_return:
+        assert not warnings
+    else:
+        assert warnings
+        assert warnings[-1][0] == "Could not add to Figure"
+    assert targets == ("values_target", "stderr_target")
+    assert operation.method_family == FigureMethodFamily.AXES
+    assert operation.method_name == "errorbar"
+    assert operation.method_plot_data_mode == "from_data"
+    assert operation.method_plot_x == FigureMethodPlotValueState(
+        source="parameter_values", kind="coord", name=win._y_dim_name
+    )
+    assert operation.method_plot_y == FigureMethodPlotValueState(
+        source="parameter_values", kind="data"
+    )
+    assert operation.method_plot_xerr is None
+    assert operation.method_plot_yerr == FigureMethodPlotValueState(
+        source="parameter_stderr", kind="data"
+    )
+    assert operation.method_kwargs["label"] == param_name
+
+
+def test_fit2d_param_plot_add_to_figure_cancel_does_not_open_outputs(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param_name = "p0_center"
+    _seed_param_plot_for_figure(win, param_name)
+    manager = _FakeFigureManager(
+        win,
+        figure_uids=("figure_existing",),
+        prompt_return=None,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    output_calls: list[tuple[str, Fit2DTool.Output, str]] = []
+    monkeypatch.setattr(
+        win,
+        "_parameter_figure_output_target",
+        lambda param, output, da: output_calls.append((param, output, str(da.name))),
+    )
+
+    win.param_plot._add_parameter_plot_to_figure()
+
+    assert len(manager.prompt_calls) == 1
+    assert manager.prompt_calls[0].method_name == "errorbar"
+    assert output_calls == []
+    assert not manager.create_calls
+    assert not manager.append_calls
+
+
+def test_fit2d_param_plot_add_to_figure_warns_when_outputs_fail(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    _seed_param_plot_for_figure(win, "p0_center")
+    manager = _FakeFigureManager(win)
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    monkeypatch.setattr(win, "_parameter_figure_output_target", lambda *_args: None)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+
+    win.param_plot._add_parameter_plot_to_figure()
+
+    assert warnings
+    assert warnings[-1][0] == "Could not open parameter data"
+    assert not manager.create_calls
+    assert not manager.append_calls
 
 
 def test_fit2d_param_plot_rejects_cached_guess_params(qtbot, monkeypatch) -> None:

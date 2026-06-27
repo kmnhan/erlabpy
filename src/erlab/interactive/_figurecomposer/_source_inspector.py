@@ -62,8 +62,8 @@ def source_value_tooltip(
     *,
     axis: str,
 ) -> str:
-    """Return a compact tooltip for an ax.plot picked-value row."""
-    axis_name = axis.upper()
+    """Return a compact tooltip for a picked-value row."""
+    axis_name = _source_value_axis_label(axis)
     kind, name = value
     if data is None:
         return f"{axis_name} values are unavailable because the source is missing."
@@ -89,6 +89,15 @@ def source_value_tooltip(
             f"Dtype: {coord.dtype}",
         )
     )
+
+
+def _source_value_axis_label(axis: str) -> str:
+    return {
+        "x": "X",
+        "y": "Y",
+        "xerr": "X error",
+        "yerr": "Y error",
+    }.get(axis, axis.upper())
 
 
 def _coord_by_name(data: xr.DataArray, name: str | None) -> xr.DataArray | None:
