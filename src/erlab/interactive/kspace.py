@@ -1435,7 +1435,12 @@ class KspaceTool(KspaceToolGUI):
         )
 
     def _sync_angle_scales(self) -> None:
-        self.data.kspace.angle_scales = self.angle_scale_dict
+        for axis, scale in self.angle_scale_dict.items():
+            attr_key = f"{axis}_scale"
+            if scale == 1.0:
+                self.data.attrs.pop(attr_key, None)
+            else:
+                self.data.kspace.angle_scales[axis] = scale
 
     @QtCore.Slot(float)
     def _handle_angle_scale_changed(self, _value: float) -> None:
