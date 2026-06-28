@@ -210,14 +210,16 @@ def test_explorer_close_stops_preview_workers(
             self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
         ) -> bool:
             self.stopped_preview_workers = True
-            return super()._stop_preview_workers(timeout_ms)
+            return True
 
     explorer = _TrackingDataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
+    event = QtGui.QCloseEvent()
 
-    explorer.close()
+    explorer.closeEvent(event)
 
     assert explorer.stopped_preview_workers
+    assert event.isAccepted()
 
 
 def test_explorer_close_ignores_busy_preview_workers(
