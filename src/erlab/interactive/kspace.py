@@ -913,7 +913,9 @@ class KspaceTool(KspaceToolGUI):
 
         self._angle_scale_spins = {}
         for axis in ("alpha", "beta"):
-            if axis not in self.data.coords:
+            if axis not in self.data.coords:  # pragma: no cover
+                # Kept defensive for externally supplied tool data; supported ktool
+                # inputs currently require both angle coordinates during conversion.
                 continue
             spin = QtWidgets.QDoubleSpinBox()
             spin.setObjectName(f"ktool{axis.title()}Scale")

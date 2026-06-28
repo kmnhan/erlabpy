@@ -810,9 +810,13 @@ def test_ktool_preview_memory_estimate_cached_for_identical_state(
     assert budget_calls == 2
     assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is False
 
-    win.resolution_supergroup.setChecked(True)
+    win._preview_memory_estimate = None
     win.update()
     assert estimate_calls == 2
+
+    win.resolution_supergroup.setChecked(True)
+    win.update()
+    assert estimate_calls == 3
 
 
 def test_ktool_full_output_unsafe_does_not_block_safe_preview(
@@ -854,6 +858,18 @@ def test_ktool_full_output_unsafe_does_not_block_safe_preview(
     assert messages
     assert win.images[1].data_array is not None
     assert getattr(win, "_itool", None) is None
+
+
+def test_ktool_clear_memory_refusal_preview_without_angle_data(qtbot, anglemap) -> None:
+    win = ktool(anglemap, execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    win._clear_kspace_preview_for_memory_refusal()
+
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is None
+    assert not win.preview_symmetry_group.isEnabled()
+    assert not win.bz_group.isEnabled()
 
 
 def test_ktool_preview_memory_estimate_recomputed_for_slice_change(
@@ -1687,6 +1703,7 @@ def test_ktool_configuration_state_edges(qtbot, anglemap) -> None:
         update={
             "configuration": int(AxesConfiguration.Type2DA),
             "offsets": {**status.offsets, "unused": 1.0},
+            "angle_scales": {**status.angle_scales, "unused": 1.0},
             "bounds": {**status.bounds, "unused": 1.0},
             "resolution": {**status.resolution, "unused": 1.0},
         }

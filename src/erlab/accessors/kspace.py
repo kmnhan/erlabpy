@@ -1030,15 +1030,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._best_kp_resolution(self.slit_axis)
 
     def _best_kp_resolution(self, axis: typing.Literal["kx", "ky"]) -> float:
-        self._check_kinetic_energy(context="estimating in-plane momentum resolution")
-        kinetic = np.asarray(self._kinetic_energy.values, dtype=float)
-        finite_positive = kinetic[np.isfinite(kinetic) & (kinetic > 0)]
-        if finite_positive.size == 0:
-            raise ValueError(
-                "Cannot estimate in-plane momentum resolution: kinetic energy "
-                "contains no positive values."
-            )
-        min_Ek = np.amin(finite_positive)
+        kinetic_energy = self._check_kinetic_energy(
+            context="estimating in-plane momentum resolution"
+        )
+        kinetic = np.asarray(kinetic_energy, dtype=float)
+        min_Ek = np.amin(kinetic[np.isfinite(kinetic)])
         if axis == self.slit_axis:
             angle_coord = self._alpha
             angle_scale = self.alpha_scale

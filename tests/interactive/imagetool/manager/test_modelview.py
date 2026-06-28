@@ -523,6 +523,21 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
         assert metadata_updates == []
         assert ("tool-info-refresh", uid) not in manager._interaction_gate.pending_keys
 
+        child_node = manager._child_node(uid)
+        manager._mark_workspace_clean()
+        original_node = manager._tool_graph.nodes[uid]
+        try:
+            manager._tool_graph.nodes[uid] = object()
+            child_node._handle_tool_state_changed()
+        finally:
+            manager._tool_graph.nodes[uid] = original_node
+        assert uid not in manager._workspace_state.dirty_state
+
+        with monkeypatch.context() as patch:
+            patch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: False)
+            child_node._handle_tool_state_changed()
+        assert uid not in manager._workspace_state.dirty_state
+
 
 def test_manager_idle_queue_deduplicates_and_waits_for_idle(
     qtbot,

@@ -499,8 +499,31 @@ def test_angle_scales_round_trip_and_do_not_extend_offsets(anglemap) -> None:
     assert dict(data.kspace.angle_scales) == {"alpha": 1.0, "beta": 1.0}
 
 
-@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf])
-def test_angle_scales_validate_positive_finite_values(anglemap, value: float) -> None:
+def test_angle_scales_mapping_helpers_and_setter(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+
+    data.kspace.angle_scales.update([("alpha", 1.25)], beta=0.75)
+
+    assert data.kspace.angle_scales == {"alpha": 1.25, "beta": 0.75}
+    assert data.kspace.angle_scales != object()
+    assert repr(data.kspace.angle_scales) == repr({"alpha": 1.25, "beta": 0.75})
+    assert list(data.kspace.angle_scales.items()) == [("alpha", 1.25), ("beta", 0.75)]
+    assert isinstance(data.kspace.angle_scales._repr_html_(), str)
+
+    data.kspace.angle_scales.update(alpha=1.1)
+    assert data.kspace.alpha_scale == pytest.approx(1.1)
+
+    data.kspace.angle_scales = {"alpha": 1.25, "beta": 0.75}
+    assert dict(data.kspace.angle_scales) == {"alpha": 1.25, "beta": 0.75}
+
+    fresh = anglemap.copy(deep=True)
+    fresh.kspace.angle_scales = {"beta": 1.5}
+
+    assert dict(fresh.kspace.angle_scales) == {"alpha": 1.0, "beta": 1.5}
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, np.array([1.0])])
+def test_angle_scales_validate_positive_finite_values(anglemap, value: object) -> None:
     data = anglemap.copy(deep=True)
 
     with pytest.raises(ValueError, match="finite positive scalar"):
@@ -511,6 +534,9 @@ def test_angle_scales_validate_positive_finite_values(anglemap, value: float) ->
 
     with pytest.raises(KeyError, match="Invalid angle scale key"):
         data.kspace.angle_scales["gamma"] = 1.0
+
+    with pytest.raises(KeyError, match="Invalid angle scale key"):
+        _ = data.kspace.angle_scales["gamma"]
 
 
 def test_angle_scales_match_manual_scaled_coordinates(anglemap) -> None:
@@ -1088,6 +1114,18 @@ def test_resolution_raises_nonpositive_kinetic_energy(anglemap) -> None:
         r"space: min\(E_k\)=",
     ):
         _ = data.kspace.convert(silent=True)
+
+
+def test_best_kp_resolution_handles_other_axis_and_rejects_invalid_axis(
+    anglemap,
+) -> None:
+    data = anglemap.copy(deep=True)
+    data.kspace.beta_scale = 0.75
+
+    assert np.isfinite(data.kspace._best_kp_resolution(data.kspace.other_axis))
+
+    with pytest.raises(ValueError, match="not a valid in-plane momentum axis"):
+        data.kspace._best_kp_resolution("bad")  # type: ignore[arg-type]
 
 
 def test_estimate_resolution_from_numpoints_kz_uses_adjacent_spacing(hvdep) -> None:
