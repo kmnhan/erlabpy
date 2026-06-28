@@ -1288,6 +1288,191 @@ def test_figure_composer_plot_array_source_selector_updates_selection(qtbot) -> 
     )
 
 
+def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 2, 2),
+        dims=("hv", "eV", "beta", "alpha"),
+        coords={
+            "hv": [30.0, 40.0],
+            "eV": [-1.0, 0.0, 1.0],
+            "beta": [-0.5, 0.5],
+            "alpha": [0.0, 1.0],
+        },
+        name="map",
+    )
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+        map_selections=(
+            FigureDataSelectionState(
+                source="data",
+                qsel={"eV": 0.0},
+                mean_dims=("hv",),
+            ),
+        ),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+
+    def current_dimension_widget(
+        widget_type: type[QtWidgets.QWidget], dim: str
+    ) -> QtWidgets.QWidget:
+        widget = next(
+            (
+                candidate
+                for candidate in tool.findChildren(widget_type)
+                if candidate.property("figure_composer_plot_array_dim") == dim
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert widget is not None
+        return widget
+
+    def activate_dimension_mode(dim: str, mode: str) -> None:
+        combo = typing.cast(
+            "QtWidgets.QComboBox",
+            current_dimension_widget(QtWidgets.QComboBox, dim),
+        )
+        index = combo.findData(mode)
+        assert index >= 0
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+
+    def current_dimension_value(dim: str) -> QtWidgets.QLineEdit:
+        return typing.cast(
+            "QtWidgets.QLineEdit",
+            current_dimension_widget(QtWidgets.QLineEdit, dim),
+        )
+
+    summary = tool.findChild(
+        QtWidgets.QLabel, "figureComposerPlotArraySelectionSummary"
+    )
+    assert summary is not None
+    assert "Input dims: hv, eV, beta, alpha" in summary.text()
+    assert "Plotted dims: beta, alpha" in summary.text()
+
+    eV_mode = typing.cast(
+        "QtWidgets.QComboBox",
+        current_dimension_widget(QtWidgets.QComboBox, "eV"),
+    )
+    assert eV_mode.currentData() == "qsel"
+    qsel_edit = current_dimension_value("eV")
+    qsel_edit.setText("1.0")
+    qsel_edit.setModified(True)
+    qsel_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(
+            source="data",
+            qsel={"eV": 1.0},
+            mean_dims=("hv",),
+        ),
+    )
+
+    activate_dimension_mode("hv", "keep")
+    activate_dimension_mode("hv", "isel")
+    isel_edit = current_dimension_value("hv")
+    isel_edit.setText("1")
+    isel_edit.setModified(True)
+    isel_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(
+            source="data",
+            isel={"hv": 1},
+            qsel={"eV": 1.0},
+        ),
+    )
+
+
+def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("y", "x"),
+        coords={"y": [0.0, 1.0], "x": [0.0, 1.0]},
+        name="map",
+    )
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+        map_selections=(
+            FigureDataSelectionState(source="data", qsel={"missing": 0.0}),
+        ),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    assert "invalid selection" in figurecomposer_plot_array._display_text(
+        tool, operation
+    )
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+
+    summary = tool.findChild(
+        QtWidgets.QLabel, "figureComposerPlotArraySelectionSummary"
+    )
+    assert summary is not None
+    assert "missing" in summary.text()
+
+
+def test_figure_composer_plot_array_colormap_text_change_updates_recipe(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("colors")
+
+    cmap_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                erlab.interactive.colors.ColorMapComboBox,
+                "figureComposerPlotArrayCmapCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert cmap_combo is not None
+    cmap_combo.load_all()
+    current_cmap = cmap_combo.currentText()
+    target_index = next(
+        index
+        for index in range(cmap_combo.count())
+        if cmap_combo.itemText(index) != current_cmap
+    )
+    cmap = cmap_combo.itemText(target_index)
+    cmap_combo.setCurrentText(cmap)
+
+    assert tool.tool_status.operations[0].cmap == cmap
+
+
 def test_figure_composer_plot_array_add_action_and_plain_2d_codegen(
     qtbot, monkeypatch
 ) -> None:
@@ -1413,6 +1598,37 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "eplt.plot_array(data.qsel(eV=0.0).T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
+
+
+def test_figure_composer_plot_array_colorbar_limit_changes_update_recipe(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    ).model_copy(update={"colorbar": "right"})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    image = tool.figure.axes[0].images[-1]
+    assert image._figure_composer_operation_id == operation.operation_id
+    assert image._figure_composer_panel_key == (0, 0)
+    assert (
+        tool._operation_with_colorbar_clim(operation, (1, 0), (-1.0, 1.0)) == operation
+    )
+
+    tool._figure_window_colorbar_changed({image: (-1.0, 1.0)})
+
+    updated = tool.tool_status.operations[0]
+    assert updated.vmin == -1.0
+    assert updated.vmax == 1.0
 
 
 def test_figure_composer_plot_array_codegen_handles_spaced_dimension(qtbot) -> None:
@@ -7993,7 +8209,7 @@ def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
     previous_clim = mappable.get_clim()
 
     operations = tool.tool_status.operations
-    assert tool._plot_slices_mappable_target(object(), operations) is None
+    assert tool._image_mappable_target(object(), operations) is None
     bad_panel_mappable = type("BadPanelMappable", (), {})()
     setattr(
         bad_panel_mappable,
@@ -8005,7 +8221,7 @@ def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
         figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
         ("bad", 0),
     )
-    assert tool._plot_slices_mappable_target(bad_panel_mappable, operations) is None
+    assert tool._image_mappable_target(bad_panel_mappable, operations) is None
     missing_operation_mappable = type("MissingOperationMappable", (), {})()
     setattr(
         missing_operation_mappable,
@@ -8017,10 +8233,7 @@ def test_figure_composer_colorbar_drag_updates_recipe_limits(qtbot) -> None:
         figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
         (0, 0),
     )
-    assert (
-        tool._plot_slices_mappable_target(missing_operation_mappable, operations)
-        is None
-    )
+    assert tool._image_mappable_target(missing_operation_mappable, operations) is None
     assert (
         tool._operation_with_colorbar_clim(operation, (99, 99), (1.0, 5.0)) == operation
     )
@@ -14384,6 +14597,68 @@ def test_figure_composer_toolbar_axes_dialog_updates_single_image_style_directly
     assert not gamma_edit.isEnabled()
     assert vmin_edit.isEnabled()
     assert vmax_edit.isEnabled()
+
+
+def test_figure_composer_toolbar_axes_dialog_updates_plot_array_style(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="plot_array",
+                    source="data",
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    target_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
+    )
+    panel_list = dialog.findChild(
+        QtWidgets.QListWidget, "figureComposerPlotSlicesPanelStyleList"
+    )
+    cmap_combo = dialog.findChild(
+        erlab.interactive.colors.ColorMapComboBox, "figureComposerPanelCmapCombo"
+    )
+    cmap_reverse_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelCmapReverseCheck"
+    )
+    norm_combo = dialog.findChild(QtWidgets.QComboBox, "figureComposerPanelNormCombo")
+    vmin_edit = dialog.findChild(QtWidgets.QLineEdit, "figureComposerPanelVminEdit")
+    vmax_edit = dialog.findChild(QtWidgets.QLineEdit, "figureComposerPanelVmaxEdit")
+    assert target_combo is not None
+    assert target_combo.count() == 1
+    assert panel_list is None
+    assert cmap_combo is not None
+    assert cmap_reverse_check is not None
+    assert norm_combo is not None
+    assert vmin_edit is not None
+    assert vmax_edit is not None
+
+    cmap_combo.setCurrentText("magma")
+    cmap_reverse_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    _activate_combo_text(norm_combo, "Normalize")
+    vmin_edit.setText("-1")
+    vmin_edit.editingFinished.emit()
+    vmax_edit.setText("1")
+    vmax_edit.editingFinished.emit()
+
+    operation = tool.tool_status.operations[0]
+    assert operation.cmap == "magma_r"
+    assert operation.norm_name == "Normalize"
+    assert operation.vmin == -1.0
+    assert operation.vmax == 1.0
 
 
 def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -> None:
