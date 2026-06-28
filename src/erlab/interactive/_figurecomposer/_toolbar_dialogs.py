@@ -1480,7 +1480,7 @@ class _ImageOperationStyleWidget(QtWidgets.QWidget):
         ):
             layout.addRow(label, widget)
 
-        self.cmap_combo.currentTextChanged.connect(self._cmap_changed)
+        self.cmap_combo.activated.connect(self._cmap_changed)
         self.cmap_reverse_check.stateChanged.connect(self._cmap_reverse_changed)
         self.norm_combo.activated.connect(self._norm_changed)
         for attr, edit in (
@@ -1547,7 +1547,7 @@ class _ImageOperationStyleWidget(QtWidgets.QWidget):
             self.norm_kwargs_edit.setText(_format_dict(self._operation.norm_kwargs))
             self.norm_kwargs_edit.setModified(False)
 
-    def _cmap_changed(self, _text: str | int) -> None:
+    def _cmap_changed(self, _index: int) -> None:
         if self._updating:
             return
         self._set_operation(

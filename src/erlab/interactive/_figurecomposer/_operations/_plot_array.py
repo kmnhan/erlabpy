@@ -902,13 +902,14 @@ def _build_plot_array_colors_page(
     cmap_reverse_check.setObjectName("figureComposerPlotArrayCmapReverseCheck")
     tool._connect_editor_signal(
         cmap_combo,
-        cmap_combo.currentTextChanged,
-        lambda text, combo=cmap_combo: (
+        cmap_combo.activated,
+        lambda _index, combo=cmap_combo: (
             None
-            if tool._mixed_combo_text(text)
-            else _update_current_cmap(tool, base=text)
+            if tool._mixed_combo_text(combo.currentText())
+            else _update_current_cmap(tool, base=combo.currentText())
         ),
     )
+    cmap_combo.blockSignals(False)
     cmap_layout.addWidget(cmap_combo, 1)
     cmap_layout.addWidget(cmap_reverse_check)
     tool._add_form_row(

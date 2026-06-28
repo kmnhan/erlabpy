@@ -1432,7 +1432,7 @@ def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     assert "missing" in summary.text()
 
 
-def test_figure_composer_plot_array_colormap_text_change_updates_recipe(
+def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     qtbot,
 ) -> None:
     data = _figure_composer_image_source("data").isel(eV=0)
@@ -1461,6 +1461,7 @@ def test_figure_composer_plot_array_colormap_text_change_updates_recipe(
     )
     assert cmap_combo is not None
     cmap_combo.load_all()
+    assert tool.tool_status.operations[0].cmap is None
     current_cmap = cmap_combo.currentText()
     target_index = next(
         index
@@ -1469,6 +1470,7 @@ def test_figure_composer_plot_array_colormap_text_change_updates_recipe(
     )
     cmap = cmap_combo.itemText(target_index)
     cmap_combo.setCurrentText(cmap)
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
 
     assert tool.tool_status.operations[0].cmap == cmap
 
@@ -14646,7 +14648,10 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_array_style(
     assert vmin_edit is not None
     assert vmax_edit is not None
 
+    cmap_combo.load_all()
+    assert tool.tool_status.operations[0].cmap is None
     cmap_combo.setCurrentText("magma")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
     cmap_reverse_check.setCheckState(QtCore.Qt.CheckState.Checked)
     _activate_combo_text(norm_combo, "Normalize")
     vmin_edit.setText("-1")
