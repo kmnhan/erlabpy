@@ -1379,6 +1379,25 @@ def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) ->
         ),
     )
 
+    activate_dimension_mode("eV", "isel")
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(
+            source="data",
+            isel={"eV": 1.0},
+            mean_dims=("hv",),
+        ),
+    )
+    activate_dimension_mode("eV", "qsel")
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(
+            source="data",
+            qsel={"eV": 1.0},
+            mean_dims=("hv",),
+        ),
+    )
+
     activate_dimension_mode("hv", "keep")
     activate_dimension_mode("hv", "isel")
     isel_edit = current_dimension_value("hv")
@@ -1432,6 +1451,151 @@ def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     assert "missing" in summary.text()
 
 
+def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("y", "x"),
+        coords={"y": [0.0, 1.0], "x": [0.0, 1.0]},
+        name="map",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(
+            FigureOperationState.plot_array(label="plot_array", source="data"),
+        ),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    figurecomposer_plot_array._update_current_selection_source(tool, "data")
+    assert tool.tool_status.operations[0].map_selections == (
+        FigureDataSelectionState(source="data"),
+    )
+
+    missing_operation = FigureOperationState.plot_array(
+        label="missing", source="missing"
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_source_data(tool, missing_operation)
+        is None
+    )
+    assert "missing" in figurecomposer_plot_array._display_text(tool, missing_operation)
+
+    no_update_tool = types.SimpleNamespace(
+        _update_operations=lambda *_args, **_kwargs: pytest.fail(
+            "None source should not update"
+        )
+    )
+    figurecomposer_plot_array._update_current_selection_source(
+        typing.cast("FigureComposerTool", no_update_tool),
+        None,
+    )
+    figurecomposer_plot_array._update_current_selection_dimension(
+        typing.cast("FigureComposerTool", no_update_tool),
+        "x",
+        "bad",
+    )
+
+    with pytest.raises(figurecomposer_text.FigureComposerInputError):
+        figurecomposer_plot_array._plot_array_selection_value_from_text("")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError):
+        figurecomposer_plot_array._plot_array_selection_value_from_text("slice(")
+
+    selection = FigureDataSelectionState(
+        source="data",
+        isel={"x": 0},
+        qsel={"y": 0.0},
+    )
+    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
+        selection,
+        "x",
+        "mean",
+    ) == FigureDataSelectionState(
+        source="data",
+        qsel={"y": 0.0},
+        mean_dims=("x",),
+    )
+
+    combo = figurecomposer_plot_array._plot_array_selection_mode_combo(
+        tool,
+        current=None,
+        mixed=True,
+        parent=tool,
+    )
+    assert combo.currentData() is _editor_controls.MIXED_VALUE
+
+
+def test_figure_composer_plot_array_selection_page_empty_sources(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("y", "x"),
+        coords={"y": [0.0, 1.0], "x": [0.0, 1.0]},
+        name="map",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(
+            FigureOperationState.plot_array(label="missing", source="missing"),
+        ),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+    assert (
+        tool.findChild(
+            QtWidgets.QLabel,
+            "figureComposerPlotArraySelectionDimensionsMessage",
+        )
+        is not None
+    )
+
+    scalar = xr.DataArray(1.0, name="scalar")
+    scalar_tool = FigureComposerTool.from_sources(
+        {"scalar": scalar},
+        sources=(FigureSourceState(name="scalar", label="scalar"),),
+        operations=(FigureOperationState.plot_array(label="scalar", source="scalar"),),
+        primary_source="scalar",
+    )
+    qtbot.addWidget(scalar_tool)
+    scalar_tool.operation_list.setCurrentRow(0)
+    scalar_tool._select_step_section("selection")
+    assert (
+        scalar_tool.findChild(
+            QtWidgets.QLabel,
+            "figureComposerPlotArraySelectionDimensionsMessage",
+        )
+        is not None
+    )
+
+    mixed_tool = FigureComposerTool.from_sources(
+        {
+            "first": data,
+            "second": data,
+        },
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_array(label="first", source="first"),
+            FigureOperationState.plot_array(label="second", source="second"),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(mixed_tool)
+    _select_operation_rows(mixed_tool, (0, 1))
+    mixed_tool._select_step_section("selection")
+    assert (
+        mixed_tool.findChild(
+            QtWidgets.QLabel,
+            "figureComposerPlotArraySelectionDimensionsMessage",
+        )
+        is not None
+    )
+
+
 def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     qtbot,
 ) -> None:
@@ -1473,6 +1637,83 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     cmap_combo.activated.emit(cmap_combo.currentIndex())
 
     assert tool.tool_status.operations[0].cmap == cmap
+
+
+def test_figure_composer_plot_array_colormap_editor_initialization_edges(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    explicit = FigureOperationState.plot_array(
+        label="explicit",
+        source="data",
+    ).model_copy(update={"cmap": "magma"})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(explicit,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("colors")
+    cmap_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                erlab.interactive.colors.ColorMapComboBox,
+                "figureComposerPlotArrayCmapCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert cmap_combo is not None
+    assert cmap_combo.currentText() == "magma"
+
+    missing_cmap_tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(explicit.model_copy(update={"cmap": "missing_colormap_name"}),),
+        primary_source="data",
+    )
+    qtbot.addWidget(missing_cmap_tool)
+    missing_cmap_tool.operation_list.setCurrentRow(0)
+    missing_cmap_tool._select_step_section("colors")
+    assert (
+        missing_cmap_tool.findChild(
+            erlab.interactive.colors.ColorMapComboBox,
+            "figureComposerPlotArrayCmapCombo",
+        )
+        is not None
+    )
+
+    mixed_tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(
+            explicit,
+            explicit.model_copy(update={"cmap": "viridis"}),
+        ),
+        primary_source="data",
+    )
+    qtbot.addWidget(mixed_tool)
+    _select_operation_rows(mixed_tool, (0, 1))
+    mixed_tool._select_step_section("colors")
+    mixed_cmap_combo = next(
+        (
+            candidate
+            for candidate in mixed_tool.findChildren(
+                erlab.interactive.colors.ColorMapComboBox,
+                "figureComposerPlotArrayCmapCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == mixed_tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert mixed_cmap_combo is not None
+    assert mixed_cmap_combo.currentData() is _editor_controls.MIXED_VALUE
 
 
 def test_figure_composer_plot_array_add_action_and_plain_2d_codegen(
