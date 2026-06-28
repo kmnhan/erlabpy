@@ -399,6 +399,7 @@ class KspaceTool(KspaceToolGUI):
     data: xr.DataArray
     _source_configuration: int
     _offset_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _angle_scale_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _bound_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _resolution_spins: dict[str, QtWidgets.QDoubleSpinBox]
@@ -416,6 +417,7 @@ class KspaceTool(KspaceToolGUI):
         center: float
         width: int
         offsets: dict[str, float]
+        angle_scales: dict[str, float] = pydantic.Field(default_factory=dict)
         bounds_enabled: bool
         bounds: dict[str, float]
         resolution_enabled: bool
@@ -558,6 +560,10 @@ class KspaceTool(KspaceToolGUI):
                 k: round(spin.value(), spin.decimals())
                 for k, spin in self._offset_spins.items()
             },
+            angle_scales={
+                k: round(spin.value(), spin.decimals())
+                for k, spin in self._angle_scale_spins.items()
+            },
             bounds_enabled=self.bounds_supergroup.isChecked(),
             bounds={k: spin.value() for k, spin in self._bound_spins.items()},
             resolution_enabled=self.resolution_supergroup.isChecked(),
@@ -608,6 +614,14 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].blockSignals(True)
             self._offset_spins[k].setValue(v)
             self._offset_spins[k].blockSignals(False)
+
+        for k, v in status.angle_scales.items():
+            if k not in self._angle_scale_spins:
+                continue
+            self._angle_scale_spins[k].blockSignals(True)
+            self._angle_scale_spins[k].setValue(v)
+            self._angle_scale_spins[k].blockSignals(False)
+        self._sync_angle_scales()
         self._sync_normal_emission_spins()
 
         self.bounds_supergroup.blockSignals(True)
@@ -798,15 +812,6 @@ class KspaceTool(KspaceToolGUI):
         self.preview_symmetry_group.toggled.connect(self.queue_update)
         self.preview_symmetry_fold_spin.valueChanged.connect(self.queue_update)
 
-        # Temporary customization for beta scaling
-        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
-        # self._beta_scale_spin.setValue(1.0)
-        # self._beta_scale_spin.setDecimals(2)
-        # self._beta_scale_spin.setSingleStep(0.01)
-        # self._beta_scale_spin.setRange(0.01, 10)
-        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
-        # self._beta_scale_spin.valueChanged.connect(self.update)
-
         self._rebuild_kspace_controls(
             initial_normal_emission=initial_normal_emission,
             initial_delta=initial_delta,
@@ -905,6 +910,20 @@ class KspaceTool(KspaceToolGUI):
         self.offsets_group.layout().addRow(
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
         )
+
+        self._angle_scale_spins = {}
+        for axis in ("alpha", "beta"):
+            if axis not in self.data.coords:
+                continue
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setObjectName(f"ktool{axis.title()}Scale")
+            spin.setRange(0.01, 10.0)
+            spin.setSingleStep(0.01)
+            spin.setDecimals(3)
+            spin.setValue(self.data.kspace.angle_scales[axis])
+            spin.valueChanged.connect(self._handle_angle_scale_changed)
+            self._angle_scale_spins[axis] = spin
+            self.offsets_group.layout().addRow(f"{axis} scale", spin)
 
         self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
@@ -1173,6 +1192,10 @@ class KspaceTool(KspaceToolGUI):
             tuple(str(dim) for dim in self.data.dims),
             tuple(int(self.data.sizes[dim]) for dim in self.data.dims),
             self._preview_slice_token(),
+            tuple(
+                (axis, round(spin.value(), spin.decimals()))
+                for axis, spin in self._angle_scale_spins.items()
+            ),
             tuple(str(dim) for dim in data.dims),
             tuple(int(data.sizes[dim]) for dim in data.dims),
             int(self.current_configuration),
@@ -1346,6 +1369,8 @@ class KspaceTool(KspaceToolGUI):
             inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
             normal_emission=(alpha_normal, beta_normal),
             delta=self.offset_dict["delta"],
+            alpha_scale=self.data.kspace.alpha_scale,
+            beta_scale=self.data.kspace.beta_scale,
             bounds=self.bounds,
             resolution=self.resolution,
             force_scalars=False,
@@ -1396,11 +1421,28 @@ class KspaceTool(KspaceToolGUI):
             for k in self.data.kspace._valid_offset_keys
         }
 
+    @property
+    def angle_scale_dict(self) -> dict[str, float]:
+        return {
+            k: float(np.round(spin.value(), spin.decimals()))
+            for k, spin in self._angle_scale_spins.items()
+        }
+
     def _current_normal_emission_angles(self) -> tuple[float, float]:
         return _kspace_conversion.normal_emission_angles(
             self.data,
             self.offset_dict,
         )
+
+    def _sync_angle_scales(self) -> None:
+        self.data.kspace.angle_scales = self.angle_scale_dict
+
+    @QtCore.Slot(float)
+    def _handle_angle_scale_changed(self, _value: float) -> None:
+        self._sync_angle_scales()
+        self._sync_normal_emission_spins()
+        self._invalidate_preview_memory_estimate()
+        self.queue_update()
 
     @QtCore.Slot()
     def _sync_normal_emission_spins(self) -> None:
@@ -1512,10 +1554,6 @@ class KspaceTool(KspaceToolGUI):
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
         self._validate_kinetic_energy(data_ang, context="updating ktool preview")
-        # if "beta" in data_ang.dims:
-        #     data_ang = data_ang.assign_coords(
-        #         beta=data_ang.beta * self._beta_scale_spin.value()
-        #     )
         return data_ang
 
     def _preview_kspace_data(self, data_ang: xr.DataArray) -> xr.DataArray:

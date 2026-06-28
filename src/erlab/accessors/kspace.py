@@ -1,6 +1,6 @@
 """Defines an accessor for momentum conversion related utilities."""
 
-__all__ = ["IncompleteDataError", "MomentumAccessor", "OffsetView"]
+__all__ = ["AngleScaleView", "IncompleteDataError", "MomentumAccessor", "OffsetView"]
 
 import functools
 import time
@@ -13,6 +13,8 @@ import xarray as xr
 import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.constants import AxesConfiguration
+
+_ANGLE_SCALE_KEYS = ("alpha", "beta")
 
 
 class IncompleteDataError(ValueError):
@@ -29,6 +31,13 @@ class IncompleteDataError(ValueError):
     def _make_message(kind: typing.Literal["attr", "coord"], name: str) -> str:
         kind_str = "Attribute" if kind == "attr" else "Coordinate"
         return f"{kind_str} '{name}' is required for momentum conversion."
+
+
+def _validate_angle_scale(value: float, name: str) -> float:
+    scale = np.asarray(value, dtype=float)
+    if scale.ndim != 0 or not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"`{name}` must be a finite positive scalar.")
+    return float(scale)
 
 
 def _kxy_components(
@@ -324,6 +333,76 @@ class OffsetView:
         return self
 
 
+class AngleScaleView:
+    r"""A view of angle-scale compensation factors for momentum conversion.
+
+    The scale factors compensate extrinsic warping in the stored angle coordinates.
+    Missing scale attributes default to ``1.0``.
+    """
+
+    def __init__(self, xarray_obj: xr.DataArray) -> None:
+        self._obj = xarray_obj
+
+    def __iter__(self) -> Iterator[tuple[str, float]]:
+        for key in _ANGLE_SCALE_KEYS:
+            yield key, self.__getitem__(key)
+
+    def __getitem__(self, key: str) -> float:
+        if key not in _ANGLE_SCALE_KEYS:
+            raise KeyError(
+                f"Invalid angle scale key `{key}`. Valid keys are: {_ANGLE_SCALE_KEYS}."
+            )
+        attr_key = f"{key}_scale"
+        if attr_key not in self._obj.attrs:
+            return 1.0
+        return _validate_angle_scale(self._obj.attrs[attr_key], attr_key)
+
+    def __setitem__(self, key: str, value: float) -> None:
+        if key not in _ANGLE_SCALE_KEYS:
+            raise KeyError(
+                f"Invalid angle scale key '{key}'. Valid keys are: {_ANGLE_SCALE_KEYS}."
+            )
+        self._obj.attrs[f"{key}_scale"] = _validate_angle_scale(value, f"{key}_scale")
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return dict(self) == dict(other)
+        return False
+
+    def __repr__(self) -> str:
+        return dict(self).__repr__()
+
+    def _repr_html_(self) -> str:
+        return erlab.utils.formatting.format_html_table(
+            [(k, str(v)) for k, v in self.items()], header_cols=1
+        )
+
+    def update(
+        self,
+        other: Mapping[str, float] | Iterable[tuple[str, float]] | None = None,
+        **kwargs,
+    ) -> typing.Self:
+        """Update angle-scale compensation factors."""
+        if other is not None:
+            for k, v in other.items() if isinstance(other, Mapping) else other:
+                self[str(k)] = v
+        for k, v in kwargs.items():
+            self[k] = v
+        return self
+
+    def items(self) -> ItemsView[str, float]:
+        """Return a view of angle-scale factors as key-value pairs."""
+        return dict(self).items()
+
+    def reset(self) -> typing.Self:
+        """Reset all angle-scale compensation factors."""
+        for key in _ANGLE_SCALE_KEYS:
+            attr_key = f"{key}_scale"
+            if attr_key in self._obj.attrs:
+                del self._obj.attrs[attr_key]
+        return self
+
+
 @xr.register_dataarray_accessor("kspace")
 class MomentumAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.kspace` accessor for momentum conversion related utilities.
@@ -463,6 +542,42 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._obj.attrs["angle_resolution"] = float(value)
 
     @property
+    def angle_scales(self) -> AngleScaleView:
+        """Angle-scale compensation factors used in momentum conversion.
+
+        .. versionadded:: 3.24.0
+        """
+        if not hasattr(self, "_anglescaleview"):
+            self._anglescaleview = AngleScaleView(self._obj)
+        return self._anglescaleview
+
+    @angle_scales.setter
+    def angle_scales(self, scales: Mapping[str, float]) -> None:
+        if not hasattr(self, "_anglescaleview"):
+            self._anglescaleview = AngleScaleView(self._obj)
+
+        self._anglescaleview.reset()
+        self._anglescaleview.update(scales)
+
+    @property
+    def alpha_scale(self) -> float:
+        """Alpha-axis scale compensation factor."""
+        return self.angle_scales["alpha"]
+
+    @alpha_scale.setter
+    def alpha_scale(self, value: float) -> None:
+        self.angle_scales["alpha"] = value
+
+    @property
+    def beta_scale(self) -> float:
+        """Beta-axis scale compensation factor."""
+        return self.angle_scales["beta"]
+
+    @beta_scale.setter
+    def beta_scale(self, value: float) -> None:
+        self.angle_scales["beta"] = value
+
+    @property
     def slit_axis(self) -> typing.Literal["kx", "ky"]:
         """Momentum axis parallel to the analyzer slit.
 
@@ -535,17 +650,37 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     @_only_angles
-    def _alpha(self) -> xr.DataArray:
+    def _raw_alpha(self) -> xr.DataArray:
         if "alpha" not in self._obj.coords:
             raise IncompleteDataError("coord", "alpha")
         return self._obj.alpha
 
     @property
     @_only_angles
-    def _beta(self) -> xr.DataArray:
+    def _raw_beta(self) -> xr.DataArray:
         if "beta" not in self._obj.coords:
             raise IncompleteDataError("coord", "beta")
         return self._obj.beta
+
+    def _scaled_angle_coord(
+        self,
+        axis: typing.Literal["alpha", "beta"],
+        coord: xr.DataArray,
+    ) -> xr.DataArray:
+        scale = self.angle_scales[axis]
+        if np.isclose(scale, 1.0):
+            return coord
+        return coord * scale
+
+    @property
+    @_only_angles
+    def _alpha(self) -> xr.DataArray:
+        return self._scaled_angle_coord("alpha", self._raw_alpha)
+
+    @property
+    @_only_angles
+    def _beta(self) -> xr.DataArray:
+        return self._scaled_angle_coord("beta", self._raw_beta)
 
     @property
     def _hv(self) -> xr.DataArray:
@@ -763,13 +898,19 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @_only_angles
     def set_normal(
-        self, alpha: float, beta: float, *, delta: float | None = None
+        self,
+        alpha: float,
+        beta: float,
+        *,
+        delta: float | None = None,
+        alpha_scale: float | None = None,
+        beta_scale: float | None = None,
     ) -> None:
         r"""Set offsets from normal emission angles.
 
         This method sets the angle offsets so that the provided normal emission angles
-        :math:`(\alpha, \beta)` in the data map to :math:`(k_x, k_y) = (0, 0)` in
-        momentum space.
+        :math:`(\alpha, \beta)` in the raw data map to :math:`(k_x, k_y) = (0, 0)` in
+        momentum space after angle-scale compensation is applied.
 
         Parameters
         ----------
@@ -780,6 +921,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         delta
             Optional azimuthal offset :math:`\delta` in degrees. If omitted, the
             existing ``delta`` offset is preserved.
+        alpha_scale, beta_scale
+            Optional angle-scale compensation factors. If provided, the factors are
+            stored before solving the offsets. Omitted factors use the currently stored
+            scale values.
 
         Examples
         --------
@@ -787,13 +932,22 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         >>> dict(data.kspace.offsets)
         {'delta': 0.0, 'xi': -1.2, 'beta': -0.4}
 
+        .. versionchanged:: 3.24.0
+            Added ``alpha_scale`` and ``beta_scale`` compensation factors. The
+            provided normal-emission angles are interpreted in raw data coordinates.
+
         See Also
         --------
         :attr:`offsets <xarray.DataArray.kspace.offsets>`
             Attribute used to manipulate angle offsets directly.
         """
-        alpha_normal = self._require_finite_scalar(alpha, "alpha")
-        beta_normal = self._require_finite_scalar(beta, "beta")
+        if alpha_scale is not None:
+            self.alpha_scale = alpha_scale
+        if beta_scale is not None:
+            self.beta_scale = beta_scale
+
+        alpha_normal = self._require_finite_scalar(alpha, "alpha") * self.alpha_scale
+        beta_normal = self._require_finite_scalar(beta, "beta") * self.beta_scale
 
         if delta is not None:
             self.offsets["delta"] = self._require_finite_scalar(delta, "delta")
@@ -828,7 +982,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         This method reads the normal emission angles implied by another DataArray's
         current offsets and applies the same normal emission angles to the current data.
 
-        The azimuthal offset :math:`\delta` is copied as well.
+        The azimuthal offset :math:`\delta` and angle-scale compensation factors
+        are copied as well.
 
         Parameters
         ----------
@@ -846,15 +1001,19 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise TypeError("`other` must be an xarray.DataArray.")
 
         self.set_normal(
-            *other.kspace._normal_emission_angles(), delta=other.kspace.offsets["delta"]
+            *other.kspace._normal_emission_angles(),
+            delta=other.kspace.offsets["delta"],
+            alpha_scale=other.kspace.alpha_scale,
+            beta_scale=other.kspace.beta_scale,
         )
 
     @_only_angles
     def _normal_emission_angles(self) -> tuple[float, float]:
         """Calculate the normal emission angles based on the current offsets."""
-        return erlab.analysis.kspace._normal_emission_from_angle_params(
+        alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
             self.configuration, self.angle_params
         )
+        return alpha / self.alpha_scale, beta / self.beta_scale
 
     @property
     @_only_angles
@@ -868,6 +1027,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
         """
+        return self._best_kp_resolution(self.slit_axis)
+
+    def _best_kp_resolution(self, axis: typing.Literal["kx", "ky"]) -> float:
         self._check_kinetic_energy(context="estimating in-plane momentum resolution")
         kinetic = np.asarray(self._kinetic_energy.values, dtype=float)
         finite_positive = kinetic[np.isfinite(kinetic) & (kinetic > 0)]
@@ -877,12 +1039,21 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 "contains no positive values."
             )
         min_Ek = np.amin(finite_positive)
-        max_angle = max(np.abs(self._alpha.values))
+        if axis == self.slit_axis:
+            angle_coord = self._alpha
+            angle_scale = self.alpha_scale
+        elif axis == self.other_axis:
+            angle_coord = self._beta
+            angle_scale = self.beta_scale
+        else:
+            raise ValueError(f"`{axis}` is not a valid in-plane momentum axis.")
+
+        max_angle = max(np.abs(angle_coord.values))
         return float(
             erlab.constants.rel_kconv
             * np.sqrt(min_Ek)
             * np.cos(np.deg2rad(max_angle))
-            * np.deg2rad(self.angle_resolution)
+            * np.deg2rad(self.angle_resolution * angle_scale)
         )
 
     @property
@@ -1021,7 +1192,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if axis == "kz":
             return self.best_kz_resolution
 
-        return self.best_kp_resolution
+        return self._best_kp_resolution(axis)
 
     def _forward_func(self, alpha, beta):
         return erlab.analysis.kspace.get_kconv_forward(self.configuration)(
@@ -1171,6 +1342,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if name == "eV":
             return self._binding_energy
+        if name == "alpha":
+            return self._alpha
+        if name == "beta":
+            return self._beta
         return self._obj[name]
 
     @_only_angles

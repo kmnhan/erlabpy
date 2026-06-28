@@ -428,7 +428,10 @@ def normal_emission_angles(
     alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
         data.kspace.configuration, angle_params
     )
-    return float(np.round(alpha, 5)), float(np.round(beta, 5))
+    return (
+        float(np.round(alpha / data.kspace.alpha_scale, 5)),
+        float(np.round(beta / data.kspace.beta_scale, 5)),
+    )
 
 
 def apply_kspace_parameters(
@@ -442,11 +445,19 @@ def apply_kspace_parameters(
     offsets: Mapping[str, float] | None = None,
     normal_emission: tuple[float, float] | None = None,
     delta: float | None = None,
+    alpha_scale: float | None = None,
+    beta_scale: float | None = None,
 ) -> xr.DataArray:
     if offsets is not None:
         data.kspace.offsets = offsets
     elif normal_emission is not None:
-        data.kspace.set_normal(normal_emission[0], normal_emission[1], delta=delta)
+        data.kspace.set_normal(
+            normal_emission[0],
+            normal_emission[1],
+            delta=delta,
+            alpha_scale=alpha_scale,
+            beta_scale=beta_scale,
+        )
 
     if data.kspace._has_hv and inner_potential is not None:
         with ignore_missing_kspace_parameter_warnings():
@@ -481,6 +492,8 @@ def kspace_conversion_operations(
     bounds: dict[str, tuple[float, float]] | None,
     resolution: dict[str, float] | None,
     force_scalars: bool,
+    alpha_scale: float | None = None,
+    beta_scale: float | None = None,
 ) -> tuple[provenance.ToolProvenanceOperation, ...]:
     operations: list[provenance.ToolProvenanceOperation] = []
     focuses: list[str] = []
@@ -517,11 +530,18 @@ def kspace_conversion_operations(
         )
         focuses.append(_FOCUS_WORK_FUNCTION)
 
+    if alpha_scale is None:
+        alpha_scale = configured_data.kspace.alpha_scale
+    if beta_scale is None:
+        beta_scale = configured_data.kspace.beta_scale
+
     operations.append(
         provenance.KspaceSetNormalOperation(
             alpha=float(normal_emission[0]),
             beta=float(normal_emission[1]),
             delta=None if delta is None else float(delta),
+            alpha_scale=None if np.isclose(alpha_scale, 1.0) else float(alpha_scale),
+            beta_scale=None if np.isclose(beta_scale, 1.0) else float(beta_scale),
         )
     )
     focuses.append(_FOCUS_NORMAL)

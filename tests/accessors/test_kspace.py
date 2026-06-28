@@ -479,6 +479,63 @@ def test_offsets(data_type, request) -> None:
         data.kspace.offsets["invalid"] = 10.0
 
 
+def test_angle_scales_round_trip_and_do_not_extend_offsets(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+
+    assert dict(data.kspace.angle_scales) == {"alpha": 1.0, "beta": 1.0}
+
+    data.kspace.alpha_scale = 1.25
+    data.kspace.beta_scale = 0.75
+
+    assert data.attrs["alpha_scale"] == pytest.approx(1.25)
+    assert data.attrs["beta_scale"] == pytest.approx(0.75)
+    assert dict(data.kspace.angle_scales) == {"alpha": 1.25, "beta": 0.75}
+    assert "alpha_scale" not in dict(data.kspace.offsets)
+    assert "beta_scale" not in dict(data.kspace.offsets)
+
+    data.kspace.angle_scales.reset()
+    assert "alpha_scale" not in data.attrs
+    assert "beta_scale" not in data.attrs
+    assert dict(data.kspace.angle_scales) == {"alpha": 1.0, "beta": 1.0}
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf])
+def test_angle_scales_validate_positive_finite_values(anglemap, value: float) -> None:
+    data = anglemap.copy(deep=True)
+
+    with pytest.raises(ValueError, match="finite positive scalar"):
+        data.kspace.alpha_scale = value
+
+    with pytest.raises(ValueError, match="finite positive scalar"):
+        data.kspace.angle_scales["beta"] = value
+
+    with pytest.raises(KeyError, match="Invalid angle scale key"):
+        data.kspace.angle_scales["gamma"] = 1.0
+
+
+def test_angle_scales_match_manual_scaled_coordinates(anglemap) -> None:
+    data = anglemap.isel(alpha=slice(0, 4), beta=slice(0, 4), eV=slice(0, 4)).copy(
+        deep=True
+    )
+    manual = data.assign_coords(alpha=data.alpha * 1.2, beta=data.beta * 0.8)
+
+    data.kspace.alpha_scale = 1.2
+    data.kspace.beta_scale = 0.8
+
+    scaled_bounds = data.kspace.estimate_bounds()
+    expected_bounds = manual.kspace.estimate_bounds()
+    for axis, bounds in expected_bounds.items():
+        assert scaled_bounds[axis] == pytest.approx(bounds)
+
+    bounds = {"kx": (-0.1, 0.1), "ky": (-0.1, 0.1)}
+    resolution = {"kx": 0.1, "ky": 0.1}
+    scaled = data.kspace.convert(bounds=bounds, resolution=resolution, silent=True)
+    expected = manual.kspace.convert(bounds=bounds, resolution=resolution, silent=True)
+    xarray.testing.assert_allclose(scaled, expected)
+    xarray.testing.assert_allclose(data.alpha, anglemap.isel(alpha=slice(0, 4)).alpha)
+    xarray.testing.assert_allclose(data.beta, anglemap.isel(beta=slice(0, 4)).beta)
+
+
 @pytest.mark.parametrize(
     ("configuration", "coords", "true_offsets", "initial_guess"),
     _NORMAL_EMISSION_CASES,
@@ -561,6 +618,53 @@ def test_set_normal(
 
     kx, ky = erlab.analysis.kspace.get_kconv_forward(configuration)(
         alpha_normal, beta_normal, 1.0, **data.kspace.angle_params
+    )
+
+    assert float(kx) == pytest.approx(0.0, abs=1e-10)
+    assert float(ky) == pytest.approx(0.0, abs=1e-10)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "coords", "true_offsets", "initial_guess"),
+    _NORMAL_EMISSION_CASES,
+)
+def test_set_normal_accepts_angle_scales_in_raw_data_coordinates(
+    anglemap,
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    true_offsets: dict[str, float],
+    initial_guess: list[float],
+) -> None:
+    data = _make_normal_emission_data(anglemap, configuration, coords)
+    alpha_physical, beta_physical = _solve_normal_emission_angles(
+        configuration, coords, true_offsets, initial_guess
+    )
+    alpha_scale = 1.25
+    beta_scale = 0.75
+    alpha_raw = alpha_physical / alpha_scale
+    beta_raw = beta_physical / beta_scale
+
+    data.kspace.set_normal(
+        alpha_raw,
+        beta_raw,
+        delta=true_offsets["delta"],
+        alpha_scale=alpha_scale,
+        beta_scale=beta_scale,
+    )
+
+    assert data.kspace.alpha_scale == pytest.approx(alpha_scale)
+    assert data.kspace.beta_scale == pytest.approx(beta_scale)
+    for key, expected in true_offsets.items():
+        assert data.kspace.offsets[key] == pytest.approx(expected)
+
+    assert data.kspace._normal_emission_angles() == pytest.approx(
+        (alpha_raw, beta_raw), abs=1e-10
+    )
+    kx, ky = erlab.analysis.kspace.get_kconv_forward(configuration)(
+        alpha_raw * alpha_scale,
+        beta_raw * beta_scale,
+        1.0,
+        **data.kspace.angle_params,
     )
 
     assert float(kx) == pytest.approx(0.0, abs=1e-10)
@@ -650,12 +754,23 @@ def test_set_normal_like(
 
     source = _make_normal_emission_data(anglemap, source_configuration, source_coords)
     source.kspace.offsets = source_offsets
+    source.kspace.alpha_scale = 1.25
+    source.kspace.beta_scale = 0.75
     alpha_normal, beta_normal = _solve_normal_emission_angles(
         source_configuration, source_coords, source_offsets, [3.5, -4.5]
     )
 
     target = _make_normal_emission_data(anglemap, target_configuration, target_coords)
     target.kspace.set_normal_like(source)
+
+    assert target.kspace.alpha_scale == pytest.approx(source.kspace.alpha_scale)
+    assert target.kspace.beta_scale == pytest.approx(source.kspace.beta_scale)
+    assert target.kspace._normal_emission_angles() == pytest.approx(
+        (
+            alpha_normal / source.kspace.alpha_scale,
+            beta_normal / source.kspace.beta_scale,
+        )
+    )
 
     expected_offsets = erlab.analysis.kspace._offsets_from_normal_emission(
         target_configuration,

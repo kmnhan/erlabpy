@@ -298,6 +298,36 @@ def test_kspace_conversion_operations_default_source_configuration(anglemap) -> 
     assert operations[1].group.focus == "bounds_resolution"
 
 
+def test_kspace_conversion_operations_include_nondefault_angle_scales(
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    data.kspace.alpha_scale = 1.2
+    data.kspace.beta_scale = 0.8
+
+    operations = _kspace_conversion.kspace_conversion_operations(
+        data,
+        target_configuration=AxesConfiguration.Type1,
+        source_configuration=None,
+        work_function=4.5,
+        inner_potential=None,
+        normal_emission=(1.0, 2.0),
+        delta=None,
+        bounds=None,
+        resolution=None,
+        force_scalars=False,
+    )
+
+    set_normal = operations[0]
+    assert isinstance(set_normal, provenance.KspaceSetNormalOperation)
+    assert set_normal.alpha_scale == pytest.approx(1.2)
+    assert set_normal.beta_scale == pytest.approx(0.8)
+    code = set_normal.statement_code("data", output_name="data")
+    assert "alpha_scale=1.2" in code
+    assert "beta_scale=0.8" in code
+
+
 @pytest.mark.parametrize("kind", ["cut", "map", "hv"])
 def test_kspace_conversion_estimate_matches_safe_output(
     monkeypatch,
@@ -1233,6 +1263,8 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     first._offset_spins["wf"].setValue(3.25)
     second._offset_spins["wf"].setValue(4.75)
     second._offset_spins["delta"].setValue(12.5)
+    second._angle_scale_spins["alpha"].setValue(1.2)
+    second._angle_scale_spins["beta"].setValue(0.8)
     second._sync_normal_emission_spins()
     second.bounds_supergroup.setChecked(True)
     for value, spin in zip(
@@ -1259,6 +1291,8 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     assert dialog.normal_emission == pytest.approx(
         second._current_normal_emission_angles()
     )
+    assert dialog._control_data.kspace.alpha_scale == pytest.approx(1.2)
+    assert dialog._control_data.kspace.beta_scale == pytest.approx(0.8)
     assert dialog.res_npts_check.isChecked() is True
     assert list(dialog._resolution_spins) == list(second._resolution_spins)
     assert dialog.bounds_supergroup.isChecked() is True
@@ -1268,6 +1302,45 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     assert [
         spin.value() for spin in dialog._resolution_spins.values()
     ] == pytest.approx([spin.value() for spin in second._resolution_spins.values()])
+    set_normal = next(
+        operation
+        for operation in dialog.source_operations()
+        if isinstance(operation, provenance.KspaceSetNormalOperation)
+    )
+    assert set_normal.alpha_scale == pytest.approx(1.2)
+    assert set_normal.beta_scale == pytest.approx(0.8)
+
+
+def test_kspace_conversion_dialog_uses_seeded_scales_for_auto_bounds(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    child = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, child)
+    child._angle_scale_spins["alpha"].setValue(1.7)
+    child._angle_scale_spins["beta"].setValue(0.6)
+    win.slicer_area.add_tool_window(child)
+
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+
+    expected_data = dialog._parameterized_data(dialog._control_data.copy(deep=False))
+    expected_bounds = expected_data.kspace.estimate_bounds()
+
+    assert [
+        dialog._bound_spins[f"{axis}{index}"].value()
+        for axis in dialog._control_data.kspace.momentum_axes
+        for index in range(2)
+    ] == pytest.approx(
+        [
+            expected_bounds[axis][index]
+            for axis in dialog._control_data.kspace.momentum_axes
+            for index in range(2)
+        ],
+        abs=5e-5,
+    )
 
 
 def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
@@ -1305,15 +1378,64 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
     operations = provenance.stamp_operation_group(
         (
             provenance.KspaceInnerPotentialOperation(inner_potential=13.0),
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            provenance.KspaceSetNormalOperation(
+                alpha=1.0,
+                beta=2.0,
+                delta=3.0,
+                alpha_scale=1.1,
+                beta_scale=0.9,
+            ),
             provenance.KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
     dialog.restore_transform_operations(operations)
     assert dialog._offset_spins["V0"].value() == pytest.approx(13.0)
+    assert dialog._control_data.kspace.alpha_scale == pytest.approx(1.1)
+    assert dialog._control_data.kspace.beta_scale == pytest.approx(0.9)
     with pytest.raises(ValueError, match="complete kspace conversion"):
         dialog.restore_transform_operation(operations[0])
+
+
+def test_kspace_conversion_dialog_restore_scales_recalculates_auto_bounds(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+
+    operations = provenance.stamp_operation_group(
+        (
+            provenance.KspaceSetNormalOperation(
+                alpha=1.0,
+                beta=2.0,
+                delta=3.0,
+                alpha_scale=1.6,
+                beta_scale=0.7,
+            ),
+            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+
+    dialog.restore_transform_operations(operations)
+
+    expected_data = dialog._parameterized_data(dialog._control_data.copy(deep=False))
+    expected_bounds = expected_data.kspace.estimate_bounds()
+
+    assert [
+        dialog._bound_spins[f"{axis}{index}"].value()
+        for axis in dialog._control_data.kspace.momentum_axes
+        for index in range(2)
+    ] == pytest.approx(
+        [
+            expected_bounds[axis][index]
+            for axis in dialog._control_data.kspace.momentum_axes
+            for index in range(2)
+        ],
+        abs=5e-5,
+    )
 
 
 def test_kspace_conversion_dialog_restores_unordered_setup_group(
@@ -1653,6 +1775,51 @@ def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
     assert code is not None
     assert f"{input_name}_kconv" in code
     assert ".kspace.set_normal(" in code
+    assert "alpha_scale" not in code
+    assert "beta_scale" not in code
+
+
+def test_ktool_angle_scales_are_set_normal_provenance_kwargs(qtbot, anglemap) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, data_name="scan", execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    win._angle_scale_spins["alpha"].setValue(1.25)
+    win._angle_scale_spins["beta"].setValue(0.75)
+
+    converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
+    assert converted is not None
+    spec = win.output_imagetool_provenance(KspaceTool.Output.CONVERTED, converted)
+    assert spec is not None
+
+    set_normal = next(
+        operation
+        for operation in spec.operations
+        if isinstance(operation, provenance.KspaceSetNormalOperation)
+    )
+    assert set_normal.alpha_scale == pytest.approx(1.25)
+    assert set_normal.beta_scale == pytest.approx(0.75)
+
+    code = spec.display_code()
+    assert code is not None
+    assert ".kspace.set_normal(" in code
+    assert "alpha_scale=1.25" in code
+    assert "beta_scale=0.75" in code
+    assert "angle_scales" not in code
+    namespace = {"scan": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], converted)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+        restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        _add_hidden_tool(qtbot, restored)
+        assert isinstance(restored, KspaceTool)
+        assert restored.data.kspace.alpha_scale == pytest.approx(1.25)
+        assert restored.data.kspace.beta_scale == pytest.approx(0.75)
+        assert restored.tool_status.angle_scales["alpha"] == pytest.approx(1.25)
+        assert restored.tool_status.angle_scales["beta"] == pytest.approx(0.75)
 
 
 def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
@@ -1886,6 +2053,68 @@ def test_ktool_shallow_copy_paths_do_not_mutate_tool_data_attrs(
     win.get_data()
 
     assert win.data.attrs == original_attrs
+
+
+def test_ktool_angle_scale_controls_apply_to_preview_and_output(
+    qtbot, monkeypatch, anglemap
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 4), beta=slice(0, 4), eV=slice(0, 3)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    with (
+        imagetool_dialogs.QtCore.QSignalBlocker(win._angle_scale_spins["alpha"]),
+        imagetool_dialogs.QtCore.QSignalBlocker(win._angle_scale_spins["beta"]),
+    ):
+        win._angle_scale_spins["alpha"].setValue(1.25)
+        win._angle_scale_spins["beta"].setValue(0.75)
+    win._sync_angle_scales()
+    win.bounds_supergroup.setChecked(True)
+    win.resolution_supergroup.setChecked(True)
+    for axis in win.data.kspace.momentum_axes:
+        win._bound_spins[f"{axis}0"].setValue(-0.1)
+        win._bound_spins[f"{axis}1"].setValue(0.1)
+        win._resolution_spins[axis].setValue(0.1)
+
+    preview = win._preview_angle_data()
+    np.testing.assert_allclose(preview.alpha.values, data.alpha.values)
+    np.testing.assert_allclose(preview.beta.values, data.beta.values)
+    assert preview.kspace.alpha_scale == pytest.approx(1.25)
+    assert preview.kspace.beta_scale == pytest.approx(0.75)
+
+    manual_preview = preview.assign_coords(
+        alpha=preview.alpha * 1.25,
+        beta=preview.beta * 0.75,
+    )
+    manual_preview.attrs.pop("alpha_scale", None)
+    manual_preview.attrs.pop("beta_scale", None)
+    preview_k = win._preview_kspace_data(preview)
+    expected_preview = manual_preview.kspace.convert(
+        bounds=win.bounds,
+        resolution=win.resolution,
+        silent=True,
+    )
+    xr.testing.assert_allclose(preview_k, expected_preview)
+
+    convert_inputs: list[xr.DataArray] = []
+    original_convert = MomentumAccessor.convert
+
+    def _record_convert(accessor, *args, **kwargs):
+        convert_inputs.append(accessor._obj)
+        return original_convert(accessor, *args, **kwargs)
+
+    monkeypatch.setattr(MomentumAccessor, "convert", _record_convert)
+
+    win._converted_output()
+
+    assert convert_inputs
+    output_input = convert_inputs[-1]
+    np.testing.assert_allclose(output_input.alpha.values, data.alpha.values)
+    np.testing.assert_allclose(output_input.beta.values, data.beta.values)
+    assert output_input.kspace.alpha_scale == pytest.approx(1.25)
+    assert output_input.kspace.beta_scale == pytest.approx(0.75)
 
 
 def test_ktool_nonphysical_kinetic_energy_raises_with_tool_context(
@@ -2150,6 +2379,8 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     win.preview_symmetry_fold_spin.setValue(4)
     win._offset_spins["delta"].setValue(5.0)
     win._offset_spins["wf"].setValue(4.6)
+    win._angle_scale_spins["alpha"].setValue(1.1)
+    win._angle_scale_spins["beta"].setValue(0.9)
     if "beta" in win._offset_spins:
         win._offset_spins["beta"].setValue(-1.5)
     win.add_circle_btn.click()
@@ -2161,7 +2392,12 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     win.update_data(new_data)
 
     assert win.tool_status == status
-    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win.data.kspace.alpha_scale == pytest.approx(1.1)
+    assert win.data.kspace.beta_scale == pytest.approx(0.9)
+    expected_tool_data = new_data.copy(deep=True)
+    expected_tool_data.kspace.alpha_scale = 1.1
+    expected_tool_data.kspace.beta_scale = 0.9
+    xr.testing.assert_identical(win.tool_data, expected_tool_data)
     assert win.images[0].data_array is not None
     assert win.images[1].data_array is not None
 

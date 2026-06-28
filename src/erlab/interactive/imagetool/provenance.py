@@ -1913,19 +1913,25 @@ class KspaceSetNormalOperation(_MutatingKspaceOperation):
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("kspace", "set_normal"),
-            fields=("alpha", "beta"),
-            defaults={"delta": None},
+            fields=("alpha", "beta", "alpha_scale", "beta_scale"),
+            defaults={"delta": None, "alpha_scale": None, "beta_scale": None},
         ),
     )
     alpha: float
     beta: float
     delta: float | None = None
+    alpha_scale: float | None = None
+    beta_scale: float | None = None
 
     @property
     def kwargs(self) -> dict[str, float]:
         kwargs = {"alpha": self.alpha, "beta": self.beta}
         if self.delta is not None:
             kwargs["delta"] = self.delta
+        if self.alpha_scale is not None and not np.isclose(self.alpha_scale, 1.0):
+            kwargs["alpha_scale"] = self.alpha_scale
+        if self.beta_scale is not None and not np.isclose(self.beta_scale, 1.0):
+            kwargs["beta_scale"] = self.beta_scale
         return kwargs
 
     def derivation_label(self) -> str:
