@@ -119,6 +119,7 @@ if typing.TYPE_CHECKING:
 _LAYOUT_ENGINE_OPTIONS = ("default", "none", "tight", "constrained", "compressed")
 _STYLE_TARGET_PLOT_SLICES = "plot_slices"
 _STYLE_TARGET_LINE = "line"
+_STYLE_TARGET_IMAGE = "image"
 _STYLE_TARGET_COMBO_MINIMUM_CONTENTS = 28
 
 
@@ -624,7 +625,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         if target is None or operation is None:
             _add_style_placeholder(images_layout, images_page)
             return
-        if _is_single_image_plot_slices_target(tool, operation, target):
+        if operation.kind == FigureOperationKind.PLOT_ARRAY or (
+            _is_single_image_plot_slices_target(tool, operation, target)
+        ):
             editor = _ImageOperationStyleWidget(operation, images_page)
 
             def apply_image_operation(
@@ -1754,6 +1757,19 @@ def _image_style_targets(
         return []
     targets: list[_StyleTarget] = []
     for index, operation in enumerate(tool._recipe.operations):
+        if operation.enabled and operation.kind == FigureOperationKind.PLOT_ARRAY:
+            operation_axes = _axes_for_selection(tool, operation.axes)
+            if len(operation_axes) == 1 and id(operation_axes[0]) in selected_axis_ids:
+                targets.append(
+                    _StyleTarget(
+                        operation.operation_id,
+                        index,
+                        _STYLE_TARGET_IMAGE,
+                        _single_image_style_target_label(index, operation),
+                        tooltip=tool._operation_display_text(operation),
+                    )
+                )
+            continue
         if (
             not operation.enabled
             or operation.kind != FigureOperationKind.PLOT_SLICES
@@ -1777,6 +1793,15 @@ def _image_style_targets(
                 )
             )
     return targets
+
+
+def _single_image_style_target_label(
+    operation_index: int, operation: FigureOperationState
+) -> str:
+    label = operation.label.strip() or "Image plot"
+    if label == "plot_array":
+        label = "Image plot"
+    return f"Step {operation_index + 1}: {label}"
 
 
 def _axis_identity_set(

@@ -756,7 +756,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         changed_operation_ids: set[str] = set()
         changed = False
         for mappable, clim in changes.items():
-            target = self._plot_slices_mappable_target(mappable, operations)
+            target = self._image_mappable_target(mappable, operations)
             if target is None:
                 continue
             index, operation, panel_key = target
@@ -795,7 +795,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
 
-    def _plot_slices_mappable_target(
+    def _image_mappable_target(
         self,
         mappable: object,
         operations: Sequence[FigureOperationState],
@@ -811,9 +811,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             return None
         for index, operation in enumerate(operations):
-            if (
-                operation.operation_id == operation_id
-                and operation.kind == FigureOperationKind.PLOT_SLICES
+            if operation.operation_id == operation_id and operation.kind in (
+                FigureOperationKind.PLOT_ARRAY,
+                FigureOperationKind.PLOT_SLICES,
             ):
                 return index, operation, typing.cast("tuple[int, int]", panel_key)
         return None
@@ -824,6 +824,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         panel_key: tuple[int, int],
         clim: tuple[float, float],
     ) -> FigureOperationState:
+        if operation.kind == FigureOperationKind.PLOT_ARRAY:
+            if panel_key != (0, 0):
+                return operation
+            vmin, vmax = clim
+            return operation.model_copy(update={"vmin": vmin, "vmax": vmax})
         panel_keys = _plot_slices_panel_keys(self, operation)
         valid_keys = {(key.map_index, key.slice_index) for key in panel_keys}
         if panel_key not in valid_keys:
