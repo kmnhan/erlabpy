@@ -395,6 +395,7 @@ class KspaceTool(KspaceToolGUI):
     }
     _sigTriggerUpdate = QtCore.Signal()
     _UPDATE_LIMIT_HZ = 10.0
+    _OUTPUT_MEMORY_ESTIMATE_DELAY_MS = 250
     _MANAGER_NOTIFY_DELAY_MS = 250
     data: xr.DataArray
     _source_configuration: int
@@ -407,6 +408,9 @@ class KspaceTool(KspaceToolGUI):
     _bz_cache_value: typing.Any
     _preview_memory_estimate_key_value: tuple[typing.Any, ...] | None
     _preview_memory_estimate: _kspace_conversion.KspaceConversionEstimate | None
+    _output_memory_estimate_key_value: tuple[typing.Any, ...] | None
+    _output_memory_estimate: _kspace_conversion.KspaceConversionEstimate | None
+    _pending_output_memory_preview_unavailable: bool
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -756,6 +760,9 @@ class KspaceTool(KspaceToolGUI):
         self._bz_cache_value = None
         self._preview_memory_estimate_key_value = None
         self._preview_memory_estimate = None
+        self._output_memory_estimate_key_value = None
+        self._output_memory_estimate = None
+        self._pending_output_memory_preview_unavailable = False
 
         if data_name is None:
             try:
@@ -786,6 +793,14 @@ class KspaceTool(KspaceToolGUI):
         self._manager_notify_timer.setInterval(self._MANAGER_NOTIFY_DELAY_MS)
         self._manager_notify_timer.timeout.connect(
             self._flush_debounced_manager_notification
+        )
+        self._output_memory_estimate_timer = QtCore.QTimer(self)
+        self._output_memory_estimate_timer.setSingleShot(True)
+        self._output_memory_estimate_timer.setInterval(
+            self._OUTPUT_MEMORY_ESTIMATE_DELAY_MS
+        )
+        self._output_memory_estimate_timer.timeout.connect(
+            self._flush_output_memory_estimate
         )
         self._energy_controls_connected: bool = False
 
@@ -925,7 +940,8 @@ class KspaceTool(KspaceToolGUI):
             spin.setValue(self.data.kspace.angle_scales[axis])
             spin.valueChanged.connect(self._handle_angle_scale_changed)
             self._angle_scale_spins[axis] = spin
-            self.offsets_group.layout().addRow(f"{axis} scale", spin)
+            axis_label = self._NORMAL_EMISSION_LABELS.get(axis, axis)
+            self.offsets_group.layout().addRow(f"{axis_label} scale", spin)
 
         self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
@@ -1160,6 +1176,8 @@ class KspaceTool(KspaceToolGUI):
     def _invalidate_preview_memory_estimate(self) -> None:
         self._preview_memory_estimate_key_value = None
         self._preview_memory_estimate = None
+        self._output_memory_estimate_key_value = None
+        self._output_memory_estimate = None
 
     @staticmethod
     def _mapping_token(
@@ -1210,6 +1228,31 @@ class KspaceTool(KspaceToolGUI):
             self._mapping_token(resolution, momentum_axes),
         )
 
+    def _output_memory_estimate_key(
+        self,
+        bounds: dict[str, tuple[float, float]] | None,
+        resolution: dict[str, float] | None,
+    ) -> tuple[typing.Any, ...]:
+        momentum_axes = tuple(self.data.kspace.momentum_axes)
+        return (
+            id(self.data),
+            id(self.data.data),
+            tuple(str(dim) for dim in self.data.dims),
+            tuple(int(self.data.sizes[dim]) for dim in self.data.dims),
+            tuple(
+                (axis, round(spin.value(), spin.decimals()))
+                for axis, spin in self._angle_scale_spins.items()
+            ),
+            int(self.current_configuration),
+            tuple((key, self.offset_dict[key]) for key in sorted(self.offset_dict)),
+            self._work_function,
+            self._inner_potential if self.data.kspace._has_hv else None,
+            self.bounds_supergroup.isChecked(),
+            self._mapping_token(bounds, momentum_axes),
+            self.resolution_supergroup.isChecked(),
+            self._mapping_token(resolution, momentum_axes),
+        )
+
     def _preview_conversion_estimate(
         self,
         data: xr.DataArray,
@@ -1225,7 +1268,6 @@ class KspaceTool(KspaceToolGUI):
                     memory=_kspace_conversion.system_memory_budget(),
                 )
                 self._preview_memory_estimate = estimate
-                self._set_memory_estimate(estimate, preview=True)
                 return estimate
 
         estimate = _kspace_conversion.estimate_kspace_conversion(
@@ -1233,9 +1275,38 @@ class KspaceTool(KspaceToolGUI):
             bounds=bounds,
             resolution=resolution,
         )
-        self._set_memory_estimate(estimate, preview=True)
         self._preview_memory_estimate_key_value = key
         self._preview_memory_estimate = estimate
+        return estimate
+
+    def _output_conversion_estimate(
+        self,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        bounds = self.bounds
+        resolution = self.resolution
+        key = self._output_memory_estimate_key(bounds, resolution)
+        if key == self._output_memory_estimate_key_value:
+            estimate = self._output_memory_estimate
+            if estimate is not None:
+                estimate = dataclasses.replace(
+                    estimate,
+                    memory=_kspace_conversion.system_memory_budget(),
+                )
+                self._output_memory_estimate = estimate
+                return estimate
+
+        data = self._assign_params(self.data.copy(deep=False))
+        self._validate_kinetic_energy(
+            data,
+            context="estimating converted ktool output",
+        )
+        estimate = _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds=bounds,
+            resolution=resolution,
+        )
+        self._output_memory_estimate_key_value = key
+        self._output_memory_estimate = estimate
         return estimate
 
     def _set_memory_estimate(
@@ -1255,12 +1326,51 @@ class KspaceTool(KspaceToolGUI):
         self._memory_estimate_label.updateGeometry()
         self._memory_estimate_label.setProperty(
             "kspaceMemoryUnsafe",
-            not estimate.is_safe,
+            preview or not estimate.is_safe,
         )
         style = self._memory_estimate_label.style()
         if style is not None:
             style.unpolish(self._memory_estimate_label)
             style.polish(self._memory_estimate_label)
+
+    def _set_memory_estimate_error(self, message: str) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(message)
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty("kspaceMemoryUnsafe", True)
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    def _update_output_memory_estimate(
+        self,
+        *,
+        preview_unavailable: bool = False,
+    ) -> None:
+        try:
+            estimate = self._output_conversion_estimate()
+        except Exception as exc:
+            self._set_memory_estimate_error(str(exc))
+            return
+        self._set_memory_estimate(estimate, preview=preview_unavailable)
+
+    def _queue_output_memory_estimate(
+        self,
+        *,
+        preview_unavailable: bool = False,
+    ) -> None:
+        self._pending_output_memory_preview_unavailable = preview_unavailable
+        self._output_memory_estimate_timer.start()
+
+    @QtCore.Slot()
+    def _flush_output_memory_estimate(self) -> None:
+        preview_unavailable = self._pending_output_memory_preview_unavailable
+        self._pending_output_memory_preview_unavailable = False
+        self._update_output_memory_estimate(
+            preview_unavailable=preview_unavailable,
+        )
 
     def _conversion_estimate(
         self,
@@ -1596,6 +1706,7 @@ class KspaceTool(KspaceToolGUI):
         except _kspace_conversion.KspaceConversionMemoryError:
             ang = self._preview_angle_data()
             self._clear_kspace_preview_for_memory_refusal(ang)
+            self._queue_output_memory_estimate(preview_unavailable=True)
             self._write_state()
             return
         k_preview = k.T
@@ -1608,6 +1719,7 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
         self._notify_ktool_state_changed()
+        self._queue_output_memory_estimate()
         if bz_available and self.bz_group.isChecked():
             self.update_bz()
         self._write_state()

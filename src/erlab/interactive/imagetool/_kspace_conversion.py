@@ -259,17 +259,27 @@ def estimate_kspace_conversion(
     effective_bounds: dict[str, tuple[float, float]] = {}
     effective_resolution: dict[str, float] = {}
     axis_sizes: dict[str, int] = {}
-    estimated_bounds = data.kspace.estimate_bounds()
-    for axis, estimated_lims in estimated_bounds.items():
-        if axis not in data.kspace.momentum_axes:
+    momentum_axes = tuple(data.kspace.momentum_axes)
+    estimated_bounds: dict[str, tuple[float, float]] = {}
+    if any(axis not in bounds for axis in momentum_axes):
+        estimated_bounds = data.kspace.estimate_bounds()
+
+    for axis in momentum_axes:
+        if axis in bounds:
+            lims = _validated_bounds(axis, bounds[axis])
+        elif axis in estimated_bounds:
+            lims = _validated_bounds(axis, estimated_bounds[axis])
+        else:
             continue
 
-        lims = _validated_bounds(axis, bounds.get(axis, estimated_lims))
-        res = data.kspace.estimate_resolution(axis, lims, from_numpoints=False)
-        if axis == "kz":
-            res_n = data.kspace.estimate_resolution(axis, lims, from_numpoints=True)
-            res = min(res, res_n)
-        res = _validated_resolution(axis, resolution.get(axis, res))
+        if axis in resolution:
+            res = _validated_resolution(axis, resolution[axis])
+        else:
+            res = data.kspace.estimate_resolution(axis, lims, from_numpoints=False)
+            if axis == "kz":
+                res_n = data.kspace.estimate_resolution(axis, lims, from_numpoints=True)
+                res = min(res, res_n)
+            res = _validated_resolution(axis, res)
 
         effective_bounds[axis] = lims
         effective_resolution[axis] = res
@@ -350,8 +360,7 @@ def kspace_conversion_estimate_text(
     """Return concise inline feedback for a conversion estimate."""
     estimate_summary = (
         f"Output: {_format_sizes(estimate.output_sizes)}\n"
-        f"Final array: {_format_bytes(estimate.final_bytes)}\n"
-        f"Available memory: {_format_bytes(estimate.memory.available_bytes)}"
+        f"Final array: {_format_bytes(estimate.final_bytes)}"
     )
     if estimate.is_safe:
         return estimate_summary
@@ -362,18 +371,18 @@ def kspace_conversion_estimate_text(
             "Increase resolution or reduce bounds."
         )
     return (
-        "Conversion unavailable.\n"
+        "Open in ImageTool unavailable.\n"
         f"{estimate_summary}\n"
         "Increase resolution or reduce bounds."
     )
 
 
 def kspace_conversion_memory_dialog_title() -> str:
-    return "Conversion Cannot Be Completed Safely"
+    return "Momentum Conversion Is Too Large"
 
 
 def kspace_conversion_memory_dialog_text() -> str:
-    return "The requested momentum grid is too large for currently available memory."
+    return "The full converted volume would not fit in available memory."
 
 
 def kspace_conversion_memory_dialog_info(
@@ -381,8 +390,8 @@ def kspace_conversion_memory_dialog_info(
 ) -> str:
     return (
         f"Final array estimate: {_format_bytes(estimate.final_bytes)}. "
-        f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}. "
-        "Increase the resolution value or reduce the bounds."
+        "Increase the resolution value, reduce the bounds, or convert a smaller "
+        "source volume."
     )
 
 
@@ -390,15 +399,9 @@ def kspace_conversion_memory_dialog_details(
     estimate: KspaceConversionEstimate,
 ) -> str:
     lines = [
-        f"Axis sizes: {_format_sizes(estimate.axis_sizes)}",
-        f"Output sizes: {_format_sizes(estimate.output_sizes)}",
+        f"Output grid: {_format_sizes(estimate.output_sizes)}",
         f"Bounds: {_format_numeric_mapping(estimate.bounds)}",
         f"Resolution: {_format_numeric_mapping(estimate.resolution)}",
-        f"Final array estimate: {_format_bytes(estimate.final_bytes)}",
-        f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}",
-        f"Peak estimate: {_format_bytes(estimate.peak_bytes)}",
-        f"Reserve: {_format_bytes(estimate.memory.reserve_bytes)}",
-        "Swap is intentionally not treated as usable memory.",
     ]
     return "<br>".join(html.escape(line) for line in lines)
 

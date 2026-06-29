@@ -80,6 +80,10 @@ parameters. The image is updated in real time as you change the parameters. For
 angle-energy cuts, the preview keeps the full energy axis and displays the converted
 `k`/`eV` cut.
 
+Use the `alpha scale` and `beta scale` controls only to compensate known extrinsic
+warping in the angle coordinates. The scales multiply the `alpha` and `beta` coordinates
+before momentum conversion. In most cases, these should be left at 1.0.
+
 Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the
 clipboard, including any selected configuration change and momentum-conversion
 settings.

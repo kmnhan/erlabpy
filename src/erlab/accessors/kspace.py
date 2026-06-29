@@ -337,7 +337,8 @@ class AngleScaleView:
     r"""A view of angle-scale compensation factors for momentum conversion.
 
     The scale factors compensate extrinsic warping in the stored angle coordinates.
-    Missing scale attributes default to ``1.0``.
+    Missing scale attributes default to ``1.0``. Momentum conversion uses ``raw angle *
+    scale`` for each axis.
     """
 
     def __init__(self, xarray_obj: xr.DataArray) -> None:
@@ -545,6 +546,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def angle_scales(self) -> AngleScaleView:
         """Angle-scale compensation factors used in momentum conversion.
 
+        The mapping has ``"alpha"`` and ``"beta"`` keys. Values are stored in the
+        DataArray attributes ``alpha_scale`` and ``beta_scale`` and must be finite
+        positive scalars. Use these factors sparingly to compensate known extrinsic
+        angle-coordinate warping.
+
         .. versionadded:: 3.24.0
         """
         if not hasattr(self, "_anglescaleview"):
@@ -561,7 +567,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def alpha_scale(self) -> float:
-        """Alpha-axis scale compensation factor."""
+        """Alpha-axis scale compensation factor.
+
+        .. versionadded:: 3.24.0
+        """
         return self.angle_scales["alpha"]
 
     @alpha_scale.setter
@@ -570,7 +579,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def beta_scale(self) -> float:
-        """Beta-axis scale compensation factor."""
+        """Beta-axis scale compensation factor.
+
+        .. versionadded:: 3.24.0
+        """
         return self.angle_scales["beta"]
 
     @beta_scale.setter

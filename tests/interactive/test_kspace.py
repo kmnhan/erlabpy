@@ -424,14 +424,19 @@ def test_kspace_conversion_estimate_validates_bounds_and_resolution(
     )
     assert estimate_text.startswith("Output: scalar\n")
     assert "Final array:" in estimate_text
-    assert "Available memory:" in estimate_text
+    assert "Available memory:" not in estimate_text
     unsafe_estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
+        _conversion_estimate_stub(safe=False, final_bytes=8, peak_bytes=48),
+    )
+    assert "Open in ImageTool unavailable." in unsafe_estimate_text
+    assert "Final array:" in unsafe_estimate_text
+    assert "Available memory:" not in unsafe_estimate_text
+    preview_estimate_text = _kspace_conversion.kspace_conversion_estimate_text(
         _conversion_estimate_stub(safe=False, final_bytes=8, peak_bytes=48),
         preview=True,
     )
-    assert "Preview unavailable." in unsafe_estimate_text
-    assert "Final array:" in unsafe_estimate_text
-    assert "Available memory:" in unsafe_estimate_text
+    assert "Preview unavailable." in preview_estimate_text
+    assert "Available memory:" not in preview_estimate_text
     with pytest.raises(ValueError, match="finite"):
         _kspace_conversion.estimate_kspace_conversion(
             data,
@@ -447,6 +452,43 @@ def test_kspace_conversion_estimate_validates_bounds_and_resolution(
             data,
             resolution={"kx": 0.0},
         )
+
+
+def test_kspace_conversion_estimate_uses_explicit_grid_directly(
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+
+    def _unexpected_estimate_bounds(self):
+        del self
+        raise AssertionError("explicit bounds should not estimate transformed bounds")
+
+    def _unexpected_estimate_resolution(self, *args, **kwargs):
+        del self, args, kwargs
+        raise AssertionError("explicit resolution should not estimate resolution")
+
+    monkeypatch.setattr(
+        MomentumAccessor, "estimate_bounds", _unexpected_estimate_bounds
+    )
+    monkeypatch.setattr(
+        MomentumAccessor,
+        "estimate_resolution",
+        _unexpected_estimate_resolution,
+    )
+
+    estimate = _kspace_conversion.estimate_kspace_conversion(
+        data,
+        bounds={"kx": (-1.0, 1.0), "ky": (-2.0, 2.0)},
+        resolution={"kx": 1.0, "ky": 2.0},
+        memory=_memory_budget(),
+    )
+
+    assert estimate.axis_sizes == {"kx": 3, "ky": 3}
+    assert estimate.output_sizes == {"eV": 3, "kx": 3, "ky": 3}
+    assert estimate.total_points == 27
+    assert estimate.final_bytes == 27 * 8
 
 
 def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
@@ -675,8 +717,12 @@ def test_ktool_unsafe_preview_clears_kspace_image(
     assert win.images[0].data_array is not None
     assert not win.preview_symmetry_group.isEnabled()
     assert not win.bz_group.isEnabled()
-    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
     assert estimate_calls == 1
+    qtbot.wait_until(
+        lambda: win._memory_estimate_label.property("kspaceMemoryUnsafe") is True,
+        timeout=2000,
+    )
+    assert estimate_calls == 2
     assert convert_calls == 0
 
 
@@ -728,10 +774,14 @@ def test_ktool_preview_memory_estimate_uses_preview_data_synchronously(
 
     win.update()
 
-    assert estimated_dims
-    assert estimated_dims[-1] == tuple(preview_data.dims)
-    assert estimated_dims[-1] != tuple(output_data.dims)
-    assert "eV" not in estimated_dims[-1]
+    assert estimated_dims == [tuple(preview_data.dims)]
+    assert estimated_dims[0] != tuple(output_data.dims)
+    assert "eV" not in estimated_dims[0]
+    qtbot.wait_until(
+        lambda: tuple(output_data.dims) in estimated_dims,
+        timeout=2000,
+    )
+    assert estimated_dims[:2] == [tuple(preview_data.dims), tuple(output_data.dims)]
     assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is False
 
 
@@ -776,6 +826,8 @@ def test_ktool_preview_memory_estimate_cached_for_identical_state(
     win = ktool(anglemap, execute=False)
     _add_hidden_tool(qtbot, win)
     win._invalidate_preview_memory_estimate()
+    win._output_memory_estimate_timer.stop()
+    monkeypatch.setattr(win, "_queue_output_memory_estimate", lambda **kwargs: None)
 
     estimate_calls = 0
     budget_calls = 0
@@ -808,11 +860,11 @@ def test_ktool_preview_memory_estimate_cached_for_identical_state(
 
     assert estimate_calls == 1
     assert budget_calls == 2
-    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is False
 
     win._preview_memory_estimate = None
     win.update()
     assert estimate_calls == 2
+    assert budget_calls == 2
 
     win.resolution_supergroup.setChecked(True)
     win.update()
@@ -851,13 +903,59 @@ def test_ktool_full_output_unsafe_does_not_block_safe_preview(
     win.update()
 
     assert win.images[1].data_array is not None
-    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is False
+    qtbot.wait_until(
+        lambda: win._memory_estimate_label.property("kspaceMemoryUnsafe") is True,
+        timeout=2000,
+    )
 
     win.show_converted()
 
     assert messages
     assert win.images[1].data_array is not None
     assert getattr(win, "_itool", None) is None
+
+
+def test_ktool_memory_label_uses_full_output_estimate(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    preview_data = win._preview_angle_data()
+    output_data = win._assign_params(win.data.copy(deep=False))
+    large_budget = _memory_budget()
+    preview_estimate = _kspace_conversion.estimate_kspace_conversion(
+        preview_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    output_estimate = _kspace_conversion.estimate_kspace_conversion(
+        output_data,
+        bounds=win.bounds,
+        resolution=win.resolution,
+        memory=large_budget,
+    )
+    assert output_estimate.final_bytes > preview_estimate.final_bytes
+
+    monkeypatch.setattr(
+        _kspace_conversion,
+        "system_memory_budget",
+        lambda: large_budget,
+    )
+
+    win.update()
+
+    assert win.images[1].data_array is not None
+    assert win._output_memory_estimate is None
+    qtbot.wait_until(lambda: win._output_memory_estimate is not None, timeout=2000)
+    assert win._output_memory_estimate is not None
+    assert win._output_memory_estimate.final_bytes == output_estimate.final_bytes
+    assert win._output_memory_estimate.final_bytes != preview_estimate.final_bytes
 
 
 def test_ktool_clear_memory_refusal_preview_without_angle_data(qtbot, anglemap) -> None:
@@ -880,6 +978,8 @@ def test_ktool_preview_memory_estimate_recomputed_for_slice_change(
     win = ktool(anglemap, execute=False)
     _add_hidden_tool(qtbot, win)
     win._invalidate_preview_memory_estimate()
+    win._output_memory_estimate_timer.stop()
+    monkeypatch.setattr(win, "_queue_output_memory_estimate", lambda **kwargs: None)
     estimated_dims: list[tuple[str, ...]] = []
 
     def _estimate(data, **kwargs):
@@ -895,13 +995,13 @@ def test_ktool_preview_memory_estimate_recomputed_for_slice_change(
 
     win.update()
     win.update()
-    assert len(estimated_dims) == 1
+    assert estimated_dims == [("alpha", "beta")]
 
     win.width_spin.setValue(win.width_spin.value() + 1)
     win.update()
 
     assert len(estimated_dims) == 2
-    assert estimated_dims[-1] == estimated_dims[0]
+    assert estimated_dims[-1] == ("alpha", "beta")
 
 
 def test_kspace_memory_estimate_labels_wrap(qtbot, anglemap) -> None:
@@ -1238,6 +1338,10 @@ def test_kspace_conversion_dialog_unsafe_accept_shows_error(
         messages[-1][1]["buttons"]
         == imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
     )
+    assert "Available physical memory" not in messages[-1][1]["informative_text"]
+    assert "Peak estimate" not in messages[-1][1]["detailed_text"]
+    assert "Reserve" not in messages[-1][1]["detailed_text"]
+    assert "Swap" not in messages[-1][1]["detailed_text"]
     assert dialog._memory_estimate_label.property("kspaceMemoryUnsafe") is True
 
 
