@@ -278,7 +278,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             raise ValueError("Only 1D fits are supported")
 
         sliders = [
-            panel.widgets.DiscreteSlider(name=d, options=list(np.array(self._obj[d])))
+            panel.widgets.DiscreteSlider(label=d, options=list(np.array(self._obj[d])))
             for d in coord_dims
         ]
 
@@ -434,7 +434,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             )
 
         param_sel = panel.widgets.Select(
-            name="Parameter", options=list(self._obj.param.values)
+            label="Parameter", options=list(self._obj.param.values)
         )
         sliced = hvplot.bind(_select_param, param_sel).interactive()
 

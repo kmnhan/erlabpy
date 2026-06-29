@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Restore test data cache
         id: restore-test-data
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
           key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
@@ -56,7 +56,7 @@ jobs:
 
       - name: Save test data cache
         if: steps.restore-test-data.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
           key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
@@ -102,7 +102,7 @@ jobs:
         run: uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
 
       - name: Restore test data cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
           key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
