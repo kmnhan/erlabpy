@@ -10,6 +10,7 @@ __all__ = [
     "ColorMapGammaWidget",
     "color_to_QColor",
     "is_dark_mode",
+    "matplotlib_colormap_name",
     "pg_colormap_from_name",
     "pg_colormap_names",
     "pg_colormap_powernorm",
@@ -38,6 +39,36 @@ _ALL_COLORMAPS_LOADED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "all_colormaps_loaded", default=False
 )
 _POWER_NORM_LUT_CACHE_SIZE = 64
+
+
+def _matplotlib_has_colormap(name: str) -> bool:
+    import matplotlib as mpl
+
+    return name in mpl.colormaps
+
+
+def _colorcet_matplotlib_candidate(name: str) -> str:
+    return name if name.startswith("cet_") else f"cet_{name}"
+
+
+def matplotlib_colormap_name(name: str) -> str:
+    """Return the Matplotlib colormap name matching a pyqtgraph display name."""
+    if not name or _matplotlib_has_colormap(name):
+        return name
+
+    candidate = _colorcet_matplotlib_candidate(name)
+    if _matplotlib_has_colormap(candidate):
+        return candidate
+
+    if not _ALL_COLORMAPS_LOADED.get():
+        with contextlib.suppress(Exception):
+            load_all_colormaps()
+        if _matplotlib_has_colormap(name):
+            return name
+        if _matplotlib_has_colormap(candidate):
+            return candidate
+
+    return name
 
 
 def load_all_colormaps() -> None:
@@ -84,7 +115,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self._populated = True
         with QtCore.QSignalBlocker(self):
             for name in pg_colormap_names("matplotlib", exclude_local=True):
-                self.addItem(name)
+                self._add_colormap_item(name)
             if self.default_cmap is not None:
                 self.setCurrentText(self.default_cmap)
                 self.load_thumbnail(self.currentIndex())
@@ -125,14 +156,33 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self.loaded_all = True
             self.clear()
             for name in pg_colormap_names("all", exclude_local=True):
-                self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
+                self._add_colormap_item(
+                    name,
+                    QtGui.QIcon(pg_colormap_to_QPixmap(name)),
+                )
         self.thumbnails_loaded = False
         self.resetCmap()
 
-    def _set_current_text_if_available(self, text: str | None) -> bool:
+    def _add_colormap_item(self, name: str, icon: QtGui.QIcon | None = None) -> None:
+        matplotlib_name = matplotlib_colormap_name(name)
+        if icon is None:
+            self.addItem(name, matplotlib_name)
+        else:
+            self.addItem(icon, name, matplotlib_name)
+
+    def _find_colormap_index(self, text: str | None) -> int:
         if text is None:
-            return False
+            return -1
         index = self.findText(text)
+        if index >= 0:
+            return index
+        index = self.findData(text)
+        if index >= 0:
+            return index
+        return self.findData(matplotlib_colormap_name(text))
+
+    def _set_current_text_if_available(self, text: str | None) -> bool:
+        index = self._find_colormap_index(text)
         if index < 0:
             return False
         self.setCurrentIndex(index)
@@ -207,6 +257,13 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             return
         if self.count():
             self.setCurrentIndex(0)
+
+    def current_matplotlib_name(self) -> str:
+        """Return the selected colormap name as registered by Matplotlib."""
+        data = self.currentData()
+        if isinstance(data, str):
+            return data
+        return matplotlib_colormap_name(self.currentText())
 
     def setCurrentText(self, text: str | None) -> None:
         """Set the current text of the combobox."""

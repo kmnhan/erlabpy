@@ -472,6 +472,24 @@ def test_colormap_combobox_ignores_unavailable_text(qtbot):
     assert combo.currentText() == valid
 
 
+def test_colormap_combobox_exposes_matplotlib_name_for_colorcet(qtbot):
+    pytest.importorskip("colorcet")
+
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.load_all()
+
+    combo.setCurrentText("CET_C1")
+
+    assert combo.currentText() == "CET_C1"
+    assert combo.current_matplotlib_name() == "cet_CET_C1"
+
+    combo.setCurrentText("cet_CET_C1")
+
+    assert combo.currentText() == "CET_C1"
+    assert combo.current_matplotlib_name() == "cet_CET_C1"
+
+
 def test_colormap_combobox_missing_default_load_all_falls_back(qtbot):
     missing = "__erlab_missing_colormap__"
 

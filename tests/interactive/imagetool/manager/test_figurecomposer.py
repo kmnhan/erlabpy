@@ -1639,6 +1639,130 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     assert tool.tool_status.operations[0].cmap == cmap
 
 
+def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
+    qtbot,
+) -> None:
+    pytest.importorskip("colorcet")
+
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("colors")
+
+    cmap_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                erlab.interactive.colors.ColorMapComboBox,
+                "figureComposerPlotArrayCmapCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert cmap_combo is not None
+    cmap_combo.load_all()
+    cmap_combo.setCurrentText("CET_C1")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
+
+    operation = tool.tool_status.operations[0]
+    assert operation.cmap == "cet_CET_C1"
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(operation)["cmap"] == "cet_CET_C1"
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_code_kwargs(operation)["cmap"]
+        == "cet_CET_C1"
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert tool.figure.axes[0].images[-1].get_cmap().name == "cet_CET_C1"
+
+
+def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-image-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data").isel(eV=0)
+        operation = FigureOperationState.plot_array(label="plot_array", source="data")
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_list.setCurrentRow(0)
+        tool._select_step_section("colors")
+
+        cmap_combo = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    erlab.interactive.colors.ColorMapComboBox,
+                    "figureComposerPlotArrayCmapCombo",
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        cmap_reverse_check = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    QtWidgets.QCheckBox, "figureComposerPlotArrayCmapReverseCheck"
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert cmap_combo is not None
+        assert cmap_reverse_check is not None
+        assert cmap_combo.currentText() == "plasma"
+        assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
+        assert tool.tool_status.operations[0].cmap is None
+
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        assert tool.figure.axes[0].images[-1].get_cmap().name == "plasma"
+        assert "cmap" not in figurecomposer_plot_array._plot_array_kwargs(
+            tool.tool_status.operations[0]
+        )
+
+        cmap_reverse_check.setChecked(True)
+
+        assert tool.tool_status.operations[0].cmap == "plasma_r"
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
+
+
 def test_figure_composer_plot_array_colormap_editor_initialization_edges(
     qtbot,
 ) -> None:
@@ -4047,6 +4171,62 @@ def test_figure_composer_norm_helpers_cover_structured_and_custom_norms(
     assert custom_calls[-1] == ((), {"alpha": 3})
     assert figurecomposer_norms._norm_code(custom_no_gamma) == (
         "eplt.CustomNorm(alpha=3)"
+    )
+
+
+def test_figure_composer_cmap_helpers_normalize_colorcet_names() -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+
+    assert figurecomposer_norms._cmap_base_and_reverse("CET_C1_r") == (
+        "cet_CET_C1",
+        True,
+    )
+    assert figurecomposer_norms._cmap_with_reverse("fire", True) == "cet_fire_r"
+
+
+def test_figure_composer_plot_slices_kwargs_normalize_colorcet_colormaps(
+    qtbot,
+) -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"cmap": "CET_C1"})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    assert figurecomposer_plot_slices._plot_slices_kwargs(tool, operation)["cmap"] == (
+        "cet_CET_C1"
+    )
+
+    panel_operation = operation.model_copy(
+        update={
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="fire",
+                ),
+            ),
+        }
+    )
+
+    assert (
+        figurecomposer_plot_slices._plot_slices_kwargs(tool, panel_operation)["cmap"]
+        == "cet_fire"
     )
 
 
@@ -21858,6 +22038,22 @@ def test_figure_composer_line_colormap_equal_values_use_midpoint() -> None:
     )
     expected = plt.get_cmap("viridis")([0.45, 0.45])
     np.testing.assert_allclose(colors, expected)
+
+
+def test_figure_composer_line_colormap_normalizes_colorcet_name() -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+    operation = FigureOperationState.line(label="profiles", source="data").model_copy(
+        update={
+            "line_color_cmap": "fire",
+            "line_color_cmap_reverse": True,
+        }
+    )
+
+    assert figurecomposer_line_colormap.effective_line_color_cmap(operation) == (
+        "cet_fire_r"
+    )
 
 
 def test_figure_composer_line_colormap_rejects_invalid_trim() -> None:

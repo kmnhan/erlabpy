@@ -73,6 +73,7 @@ from erlab.interactive._figurecomposer._norms import (
     _cmap_base_and_reverse,
     _cmap_with_reverse,
     _effective_norm_name,
+    _matplotlib_cmap_name,
     _norm_code,
     _norm_combo_choices,
     _norm_combo_text,
@@ -502,8 +503,10 @@ def _effective_panel_cmap(
     operation: FigureOperationState, style: FigurePlotSlicesPanelStyleState
 ) -> str:
     if style.cmap is not None:
-        return style.cmap
-    return operation.cmap or _current_options().colors.cmap.name
+        return _matplotlib_cmap_name(style.cmap)
+    if operation.cmap is not None:
+        return _matplotlib_cmap_name(operation.cmap)
+    return _matplotlib_cmap_name(_current_options().colors.cmap.name)
 
 
 def _operation_with_panel_norm_style(
@@ -566,11 +569,19 @@ def _panel_cmap_argument(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | list[list[str]] | None:
     if not operation.panel_styles_enabled or not operation.panel_styles:
-        return operation.cmap
+        return (
+            _matplotlib_cmap_name(operation.cmap)
+            if operation.cmap is not None
+            else None
+        )
     keys = _plot_slices_panel_keys(tool, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     if not any(_panel_style_has_cmap_override(style) for style in styles.values()):
-        return operation.cmap
+        return (
+            _matplotlib_cmap_name(operation.cmap)
+            if operation.cmap is not None
+            else None
+        )
 
     def value_getter(key: _PlotSlicesPanelKey) -> str:
         style = styles.get(
@@ -1637,7 +1648,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
             or self.cmap_combo.currentData() is _MISSING
         ):
             return
-        base = self.cmap_combo.currentText()
+        base = self.cmap_combo.current_matplotlib_name()
         reverse = self.cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Checked
         self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
 
@@ -1649,7 +1660,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
             or check_state == QtCore.Qt.CheckState.PartiallyChecked
         ):
             return
-        base = self.cmap_combo.currentText()
+        base = self.cmap_combo.current_matplotlib_name()
         if self.cmap_combo.currentData() is _MISSING:
             base = self._operation.cmap or _current_options().colors.cmap.name
         reverse = check_state == QtCore.Qt.CheckState.Checked
@@ -2456,7 +2467,7 @@ def _add_plot_slices_coordinate_color_controls(
         cmap_combo,
         cmap_combo.activated,
         lambda _index: _update_current_plot_slices_line_color_cmap(
-            tool, cmap_combo.currentText(), reverse_check.isChecked()
+            tool, cmap_combo.current_matplotlib_name(), reverse_check.isChecked()
         ),
     )
     tool._connect_editor_signal(
@@ -2464,7 +2475,7 @@ def _add_plot_slices_coordinate_color_controls(
         reverse_check.stateChanged,
         lambda state: _update_current_plot_slices_line_color_cmap(
             tool,
-            cmap_combo.currentText(),
+            cmap_combo.current_matplotlib_name(),
             QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked,
         ),
     )
@@ -3310,7 +3321,7 @@ def _build_plot_slices_editor(
             lambda _index, combo=cmap_combo: (
                 None
                 if tool._mixed_combo_text(combo.currentText())
-                else _update_current_cmap(tool, base=combo.currentText())
+                else _update_current_cmap(tool, base=combo.current_matplotlib_name())
             ),
         )
         cmap_combo.blockSignals(False)

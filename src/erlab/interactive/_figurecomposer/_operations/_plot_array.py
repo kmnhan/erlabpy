@@ -13,6 +13,7 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
     _selection_code,
 )
+from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
@@ -24,6 +25,7 @@ from erlab.interactive._figurecomposer._norms import (
     _cmap_base_and_reverse,
     _cmap_with_reverse,
     _effective_norm_name,
+    _matplotlib_cmap_name,
     _norm_code,
     _norm_combo_choices,
     _norm_combo_text,
@@ -38,7 +40,10 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
     StepSection,
 )
-from erlab.interactive._figurecomposer._rendering import _axes_from_selection
+from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _tool_figure_options_context,
+)
 from erlab.interactive._figurecomposer._sources import (
     _public_source_data,
     _selected_data,
@@ -604,7 +609,7 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
     if operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
-        kwargs["cmap"] = operation.cmap
+        kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -658,7 +663,7 @@ def _plot_array_code_kwargs(operation: FigureOperationState) -> dict[str, typing
     if operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
-        kwargs["cmap"] = operation.cmap
+        kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -766,6 +771,19 @@ def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
     tool._update_current_operation_rebuild(**updates)
 
 
+def _plot_array_default_cmap(tool: FigureComposerTool) -> str:
+    with _tool_figure_options_context(tool):
+        return str(_styled_rcparams_value("image.cmap"))
+
+
+def _plot_array_cmap_base_and_reverse(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, bool]:
+    if operation.cmap is None:
+        return _cmap_base_and_reverse(_plot_array_default_cmap(tool))
+    return _cmap_base_and_reverse(operation.cmap)
+
+
 def _update_current_cmap(
     tool: FigureComposerTool,
     *,
@@ -776,7 +794,7 @@ def _update_current_cmap(
     if current is None:
         return
     _index, operation = current
-    old_base, old_reverse = _cmap_base_and_reverse(operation.cmap)
+    old_base, old_reverse = _plot_array_cmap_base_and_reverse(tool, operation)
     if base is None:
         base = old_base
     if reverse is None:
@@ -874,12 +892,12 @@ def _build_plot_array_colors_page(
     cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
     cmap_layout.setContentsMargins(0, 0, 0, 0)
     cmap_layout.setSpacing(4)
-    cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
+    cmap_base, cmap_reversed = _plot_array_cmap_base_and_reverse(tool, operation)
     cmap_mixed = tool._batch_is_mixed(
-        operation, lambda target: _cmap_base_and_reverse(target.cmap)[0]
+        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[0]
     )
     reverse_mixed = tool._batch_is_mixed(
-        operation, lambda target: _cmap_base_and_reverse(target.cmap)[1]
+        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[1]
     )
     cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_widget)
     tool._mark_editor_control(cmap_combo)
@@ -906,7 +924,7 @@ def _build_plot_array_colors_page(
         lambda _index, combo=cmap_combo: (
             None
             if tool._mixed_combo_text(combo.currentText())
-            else _update_current_cmap(tool, base=combo.currentText())
+            else _update_current_cmap(tool, base=combo.current_matplotlib_name())
         ),
     )
     cmap_combo.blockSignals(False)
