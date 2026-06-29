@@ -548,121 +548,6 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         super().accept()
 
 
-def _operation_field_names(
-    operation: provenance.ToolProvenanceOperation,
-) -> tuple[str, ...]:
-    return tuple(
-        name for name in type(operation).model_fields if name not in {"op", "group"}
-    )
-
-
-def _operation_value_text(value: typing.Any) -> str:
-    return repr(value)
-
-
-def _parse_operation_value(text: str) -> typing.Any:
-    text = text.strip()
-    if not text:
-        raise ValueError("Operation values must be Python literals.")
-    return ast.literal_eval(text)
-
-
-def _operation_from_field_text(
-    operation: provenance.ToolProvenanceOperation,
-    field_text: dict[str, str],
-) -> provenance.ToolProvenanceOperation:
-    payload = operation.model_dump(mode="python")
-    for field_name, text in field_text.items():
-        payload[field_name] = _parse_operation_value(text)
-    return type(operation).model_validate(payload)
-
-
-class _RecordedOperationEditDialog(QtWidgets.QDialog):
-    def __init__(
-        self,
-        operations: Sequence[provenance.ToolProvenanceOperation],
-        parent: QtWidgets.QWidget,
-        *,
-        focus: str | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("managerProvenanceRecordedOperationEditDialog")
-        self.setWindowTitle("Edit Provenance Operation")
-        self.setModal(True)
-        self._operations = tuple(operations)
-        self._field_edits: dict[tuple[int, str], QtWidgets.QLineEdit] = {}
-
-        layout = QtWidgets.QVBoxLayout(self)
-        for index, operation in enumerate(self._operations):
-            group = QtWidgets.QGroupBox(_operation_title(operation), self)
-            group.setObjectName(f"managerProvenanceOperationGroup{index}")
-            form = QtWidgets.QFormLayout(group)
-            form.setFieldGrowthPolicy(
-                QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-            )
-            field_names = _operation_field_names(operation)
-            if not field_names:
-                form.addRow(QtWidgets.QLabel("This operation has no editable values."))
-            for field_name in field_names:
-                edit = QtWidgets.QLineEdit(
-                    _operation_value_text(getattr(operation, field_name)),
-                    group,
-                )
-                edit.setObjectName(
-                    f"managerProvenanceOperationField_{index}_{field_name}"
-                )
-                edit.setToolTip("Enter a Python literal value.")
-                self._field_edits[(index, field_name)] = edit
-                form.addRow(field_name, edit)
-            layout.addWidget(group)
-
-        self.button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
-            self,
-        )
-        self.button_box.setObjectName("managerProvenanceOperationEditButtonBox")
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
-        if focus is not None:
-            self._focus_field(focus)
-
-    def _focus_field(self, focus: str) -> None:
-        for (_index, field_name), edit in self._field_edits.items():
-            if field_name == focus:
-                edit.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
-                edit.selectAll()
-                return
-
-    def edited_operations(self) -> list[provenance.ToolProvenanceOperation]:
-        edited: list[provenance.ToolProvenanceOperation] = []
-        for index, operation in enumerate(self._operations):
-            edited.append(
-                _operation_from_field_text(
-                    operation,
-                    {
-                        field_name: self._field_edits[(index, field_name)].text()
-                        for field_name in _operation_field_names(operation)
-                    },
-                )
-            )
-        return edited
-
-    @QtCore.Slot()
-    def accept(self) -> None:
-        try:
-            self.edited_operations()
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Invalid Operation Value",
-                str(exc),
-            )
-            return
-        super().accept()
-
-
 class _ScriptCodeEditDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -720,35 +605,6 @@ class _ScriptCodeEditDialog(QtWidgets.QDialog):
         super().accept()
 
 
-def _operation_title(operation: provenance.ToolProvenanceOperation) -> str:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            return operation.derivation_label()
-        except Exception:
-            return type(operation).__name__
-
-
-def _recorded_operation_edit_unavailable_reason(
-    operations: Sequence[provenance.ToolProvenanceOperation],
-) -> str | None:
-    for operation in operations:
-        try:
-            _operation_from_field_text(
-                operation,
-                {
-                    field_name: _operation_value_text(getattr(operation, field_name))
-                    for field_name in _operation_field_names(operation)
-                },
-            )
-        except Exception as exc:
-            return (
-                f"{_operation_title(operation)} cannot be edited safely from "
-                f"recorded metadata: {exc}"
-            )
-    return None
-
-
 def _iter_dialog_classes(
     cls: type[dialogs._DataManipulationDialog],
 ) -> Iterator[type[dialogs._DataManipulationDialog]]:
@@ -757,37 +613,191 @@ def _iter_dialog_classes(
         yield from _iter_dialog_classes(subclass)
 
 
+def _iter_imagetool_dialog_classes(
+    cls: type[dialogs._DataManipulationDialog],
+) -> Iterator[type[dialogs._DataManipulationDialog]]:
+    for dialog_cls in _iter_dialog_classes(cls):
+        if dialog_cls.__module__ == dialogs.__name__:
+            yield dialog_cls
+
+
+def _dialog_declares_operation_type(
+    dialog_cls: type[dialogs._DataManipulationDialog],
+    operation_type: type[provenance.ToolProvenanceOperation],
+) -> bool:
+    return any(
+        issubclass(operation_type, declared_type)
+        for declared_type in dialog_cls.operation_types
+    )
+
+
+def _operation_matches_dialog(
+    operation: provenance.ToolProvenanceOperation,
+    dialog_cls: type[dialogs._DataManipulationDialog],
+) -> bool:
+    return any(
+        isinstance(operation, operation_type)
+        for operation_type in dialog_cls.operation_types
+    )
+
+
+def _dialog_supports_transform_restore(
+    dialog_cls: type[dialogs.DataTransformDialog],
+) -> bool:
+    return (
+        dialog_cls.restore_transform_operation
+        is not dialogs.DataTransformDialog.restore_transform_operation
+        or dialog_cls.restore_transform_operations
+        is not dialogs.DataTransformDialog.restore_transform_operations
+    )
+
+
+def _dialog_supports_filter_restore(
+    dialog_cls: type[dialogs.DataFilterDialog],
+) -> bool:
+    return (
+        dialog_cls.restore_filter_operation
+        is not dialogs.DataFilterDialog.restore_filter_operation
+    )
+
+
+def _dialog_is_group_editor(dialog_cls: type[dialogs.DataTransformDialog]) -> bool:
+    return bool(dialog_cls.grouped_operation_only or dialog_cls.operation_group_kind)
+
+
+def _dialog_overrides_operation_group_for_edit(
+    dialog_cls: type[dialogs.DataTransformDialog],
+) -> bool:
+    return (
+        typing.cast("typing.Any", dialog_cls.operation_group_for_edit).__func__
+        is not typing.cast(
+            "typing.Any", dialogs.DataTransformDialog.operation_group_for_edit
+        ).__func__
+    )
+
+
+def _standalone_editor_dialog_classes_for_operation_type(
+    operation_type: type[provenance.ToolProvenanceOperation],
+) -> tuple[type[dialogs._DataManipulationDialog], ...]:
+    matches: list[type[dialogs._DataManipulationDialog]] = []
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
+        if not _dialog_declares_operation_type(dialog_cls, operation_type):
+            continue
+        if not _dialog_supports_transform_restore(dialog_cls):
+            continue
+        if _dialog_is_group_editor(dialog_cls):
+            continue
+        matches.append(dialog_cls)
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataFilterDialog):
+        dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
+        if not _dialog_declares_operation_type(dialog_cls, operation_type):
+            continue
+        if not _dialog_supports_filter_restore(dialog_cls):
+            continue
+        matches.append(dialog_cls)
+    return tuple(matches)
+
+
+def _grouped_editor_dialog_classes_for_operation_type(
+    operation_type: type[provenance.ToolProvenanceOperation],
+) -> tuple[type[dialogs.DataTransformDialog], ...]:
+    matches: list[type[dialogs.DataTransformDialog]] = []
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
+        if not _dialog_declares_operation_type(dialog_cls, operation_type):
+            continue
+        if not _dialog_supports_transform_restore(dialog_cls):
+            continue
+        if _dialog_is_group_editor(
+            dialog_cls
+        ) and _dialog_overrides_operation_group_for_edit(dialog_cls):
+            matches.append(dialog_cls)
+    return tuple(matches)
+
+
+def _standalone_editor_dialog_class_for_operation_type(
+    operation_type: type[provenance.ToolProvenanceOperation],
+) -> type[dialogs._DataManipulationDialog] | None:
+    matches = _standalone_editor_dialog_classes_for_operation_type(operation_type)
+    if len(matches) > 1:
+        names = ", ".join(dialog_cls.__name__ for dialog_cls in matches)
+        raise RuntimeError(
+            f"Multiple standalone provenance editors handle "
+            f"{operation_type.__name__}: {names}"
+        )
+    return matches[0] if matches else None
+
+
+def _operation_editor_contract_errors() -> list[str]:
+    operation_types: set[type[provenance.ToolProvenanceOperation]] = set()
+    for base_cls in (dialogs.DataTransformDialog, dialogs.DataFilterDialog):
+        for dialog_cls in _iter_imagetool_dialog_classes(base_cls):
+            operation_types.update(dialog_cls.operation_types)
+
+    errors: list[str] = []
+    for operation_type in sorted(operation_types, key=lambda cls: cls.__name__):
+        standalone = _standalone_editor_dialog_classes_for_operation_type(
+            operation_type
+        )
+        grouped = _grouped_editor_dialog_classes_for_operation_type(operation_type)
+        broken_grouped: list[type[dialogs.DataTransformDialog]] = []
+        for dialog_base_cls in _iter_imagetool_dialog_classes(
+            dialogs.DataTransformDialog
+        ):
+            dialog_cls = typing.cast(
+                "type[dialogs.DataTransformDialog]", dialog_base_cls
+            )
+            if not _dialog_declares_operation_type(dialog_cls, operation_type):
+                continue
+            if not _dialog_supports_transform_restore(dialog_cls):
+                continue
+            if _dialog_is_group_editor(
+                dialog_cls
+            ) and not _dialog_overrides_operation_group_for_edit(dialog_cls):
+                broken_grouped.append(dialog_cls)
+        if len(standalone) > 1:
+            names = ", ".join(dialog_cls.__name__ for dialog_cls in standalone)
+            errors.append(
+                f"{operation_type.__name__} has multiple standalone editors: {names}"
+            )
+        if len(grouped) > 1:
+            names = ", ".join(dialog_cls.__name__ for dialog_cls in grouped)
+            errors.append(
+                f"{operation_type.__name__} has multiple grouped editors: {names}"
+            )
+        if standalone and grouped:
+            standalone_names = ", ".join(
+                dialog_cls.__name__ for dialog_cls in standalone
+            )
+            grouped_names = ", ".join(dialog_cls.__name__ for dialog_cls in grouped)
+            errors.append(
+                f"{operation_type.__name__} has both standalone and grouped editors: "
+                f"{standalone_names}; {grouped_names}"
+            )
+        errors.extend(
+            f"{dialog_cls.__name__} declares {operation_type.__name__} as a "
+            "grouped editor but does not override operation_group_for_edit"
+            for dialog_cls in broken_grouped
+        )
+        if not standalone and not grouped and not broken_grouped:
+            errors.append(f"{operation_type.__name__} has no provenance editor")
+    return errors
+
+
+def _validate_operation_editor_contract() -> None:
+    errors = _operation_editor_contract_errors()
+    if errors:
+        raise RuntimeError(
+            "Invalid ImageTool provenance editor contract:\n- " + "\n- ".join(errors)
+        )
+
+
 def _dialog_class_for_operation(
     operation: provenance.ToolProvenanceOperation,
 ) -> type[dialogs._DataManipulationDialog] | None:
-    for dialog_cls in (
-        *_iter_dialog_classes(dialogs.DataTransformDialog),
-        *_iter_dialog_classes(dialogs.DataFilterDialog),
-    ):
-        if not any(
-            isinstance(operation, operation_type)
-            for operation_type in dialog_cls.operation_types
-        ):
-            continue
-        if (
-            issubclass(dialog_cls, dialogs.DataTransformDialog)
-            and dialog_cls.restore_transform_operation
-            is dialogs.DataTransformDialog.restore_transform_operation
-        ):
-            continue
-        if (
-            issubclass(dialog_cls, dialogs.DataTransformDialog)
-            and dialog_cls.grouped_operation_only
-        ):
-            continue
-        if (
-            issubclass(dialog_cls, dialogs.DataFilterDialog)
-            and dialog_cls.restore_filter_operation
-            is dialogs.DataFilterDialog.restore_filter_operation
-        ):
-            continue
-        return dialog_cls
-    return None
+    _validate_operation_editor_contract()
+    return _standalone_editor_dialog_class_for_operation_type(type(operation))
 
 
 def _operations_for_ref(
@@ -808,6 +818,7 @@ def _dialog_match_for_operation_ref(
     spec: provenance.ToolProvenanceSpec,
     ref: provenance._ProvenanceStepRef,
 ) -> _OperationDialogMatch | None:
+    _validate_operation_editor_contract()
     operation = spec._operation_for_ref(ref)
     if operation is None or ref.operation_index is None:
         return None
@@ -815,19 +826,11 @@ def _dialog_match_for_operation_ref(
     if not operations:
         return None
 
-    for dialog_base_cls in _iter_dialog_classes(dialogs.DataTransformDialog):
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
         dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
-        if not any(
-            isinstance(operation, operation_type)
-            for operation_type in dialog_cls.operation_types
-        ):
+        if not _operation_matches_dialog(operation, dialog_cls):
             continue
-        if (
-            dialog_cls.restore_transform_operation
-            is dialogs.DataTransformDialog.restore_transform_operation
-            and dialog_cls.restore_transform_operations
-            is dialogs.DataTransformDialog.restore_transform_operations
-        ):
+        if not _dialog_supports_transform_restore(dialog_cls):
             continue
         group_kind = dialog_cls.operation_group_kind
         if group_kind is not None:
@@ -854,17 +857,11 @@ def _dialog_match_for_operation_ref(
             ref.operation_index + 1,
         )
 
-    for dialog_base_cls in _iter_dialog_classes(dialogs.DataFilterDialog):
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataFilterDialog):
         dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
-        if not any(
-            isinstance(operation, operation_type)
-            for operation_type in dialog_cls.operation_types
-        ):
+        if not _operation_matches_dialog(operation, dialog_cls):
             continue
-        if (
-            dialog_cls.restore_filter_operation
-            is dialogs.DataFilterDialog.restore_filter_operation
-        ):
+        if not _dialog_supports_filter_restore(dialog_cls):
             continue
         return _OperationDialogMatch(
             dialog_cls,
@@ -1167,13 +1164,6 @@ class _ProvenanceEditController:
             return False, reason or "No editing dialog is available for this step."
         if not row.script_input_path and active_filter_ref == row.edit_ref:
             return True, ""
-        reason = _recorded_operation_edit_unavailable_reason(
-            _operations_for_ref(spec, row.edit_ref)[
-                dialog_match.start : dialog_match.stop
-            ]
-        )
-        if reason is not None:
-            return False, reason
         return True, ""
 
     def can_revert_row(
@@ -1858,12 +1848,12 @@ class _ProvenanceEditController:
             self._edit_active_filter(node, operation, dialog_match.dialog_cls)
             return
 
-        operations = _operations_for_ref(spec, ref)[
-            dialog_match.start : dialog_match.stop
-        ]
-        replacements = self._edited_recorded_operations(
-            operations,
-            focus=dialog_match.focus,
+        replacements = self._edited_native_operations(
+            node,
+            row,
+            spec,
+            ref,
+            dialog_match,
         )
         if replacements is None:
             return
@@ -1902,21 +1892,68 @@ class _ProvenanceEditController:
             where="validating the edited Python code",
         )
 
-    def _edited_recorded_operations(
+    def _edited_native_operations(
         self,
-        operations: Sequence[provenance.ToolProvenanceOperation],
-        *,
-        focus: str | None = None,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: provenance._ProvenanceDisplayRow,
+        spec: provenance.ToolProvenanceSpec,
+        ref: provenance._ProvenanceStepRef,
+        dialog_match: _OperationDialogMatch,
     ) -> list[provenance.ToolProvenanceOperation] | None:
-        operations = tuple(operations)
+        operations = tuple(
+            _operations_for_ref(spec, ref)[dialog_match.start : dialog_match.stop]
+        )
         if not operations:
             raise ValueError("No provenance operations were provided for editing")
-        if reason := _recorded_operation_edit_unavailable_reason(operations):
-            raise RuntimeError(reason)
-        dialog = _RecordedOperationEditDialog(operations, self._manager, focus=focus)
-        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
-            return None
-        return dialog.edited_operations()
+        start_ref = provenance._ProvenanceStepRef(
+            "operation",
+            operation_index=dialog_match.start,
+            stage_index=ref.stage_index,
+        )
+        try:
+            prefix_data, _prefix = self._replay_candidate_result(
+                node,
+                row.scope,
+                spec._prefix_before_ref(start_ref),
+            )
+        except _TrustedScriptReplayCancelled:
+            raise
+        except Exception as exc:
+            raise _ProvenanceReplayFailure(
+                "opening the provenance editor: replaying the input to this step",
+                exc,
+            ) from exc
+
+        temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
+        try:
+            dialog = dialog_match.dialog_cls(
+                temp_tool.slicer_area,
+                provenance_edit_mode=True,
+            )
+            self._restore_native_edit_dialog(dialog, operations, dialog_match.focus)
+            if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return None
+            return dialog.provenance_edit_operations()
+        finally:
+            temp_tool.close()
+            temp_tool.deleteLater()
+
+    @staticmethod
+    def _restore_native_edit_dialog(
+        dialog: dialogs._DataManipulationDialog,
+        operations: Sequence[provenance.ToolProvenanceOperation],
+        focus: str | None,
+    ) -> None:
+        if isinstance(dialog, dialogs.DataTransformDialog):
+            dialog.restore_transform_operations(operations)
+            dialog.focus_operation_group_control(focus)
+            return
+        if isinstance(dialog, dialogs.DataFilterDialog):
+            if len(operations) != 1:
+                raise ValueError("Filter edit dialogs can only restore one operation")
+            dialog.restore_filter_operation(operations[0])
+            return
+        raise TypeError("Provenance edits require a transform or filter dialog")
 
     def _edit_active_filter(
         self,

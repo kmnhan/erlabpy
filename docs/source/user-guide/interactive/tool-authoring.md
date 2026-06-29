@@ -632,6 +632,13 @@ which ImageTool data and selection opened it:
   should not remain group-editable. When full groups are pasted, refresh their group
   identities before appending them to the destination provenance so adjacent copies
   remain separate editable groups.
+- To make a transform or filter dialog reusable for manager step edits, keep the widget
+  state restoration separate from the normal apply path. Transform dialogs should
+  implement `restore_transform_operation(...)` or `restore_transform_operations(...)`
+  and return current edits from `source_operations(...)`; filter dialogs should
+  implement `restore_filter_operation(...)` and `filter_operation(...)`. The manager
+  opens the dialog on data replayed up to the edited step and reads the corresponding
+  operation methods after the user accepts.
 - When implementing a custom ``ToolProvenanceOperation.derivation_entry()``, return a
   ``DerivationEntry`` for steps that should appear in the manager derivation list or
   copied code. Return ``None`` only for operations that must still run during an update

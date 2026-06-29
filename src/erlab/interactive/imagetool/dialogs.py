@@ -303,12 +303,14 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         slicer_area: ImageSlicerArea,
         *,
         batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
     ) -> None:
         super().__init__(slicer_area)
         if self.title is not None:
             self.setWindowTitle(self.title)
 
         self.slicer_area = slicer_area
+        self._provenance_edit_mode = provenance_edit_mode
         self._batch_manager = (
             None if batch_manager is None else weakref.ref(batch_manager)
         )
@@ -335,7 +337,10 @@ class _DataManipulationDialog(QtWidgets.QDialog):
 
         self.setup_widgets()
 
-        self.buttonBox.accepted.connect(self.accept)
+        if self.is_provenance_edit_mode:
+            self.buttonBox.accepted.connect(self._accept_provenance_edit)
+        else:
+            self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
         self.layout_.addRow(self.buttonBox)
 
@@ -367,6 +372,32 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     @property
     def is_batch_mode(self) -> bool:
         return self.batch_manager is not None
+
+    @property
+    def is_provenance_edit_mode(self) -> bool:
+        return self._provenance_edit_mode
+
+    def provenance_edit_operations(
+        self,
+    ) -> list[provenance.ToolProvenanceOperation]:
+        raise NotImplementedError
+
+    @QtCore.Slot()
+    def _accept_provenance_edit(self) -> None:
+        try:
+            if not self.provenance_edit_operations():
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "No Operation",
+                    "Select at least one operation before applying.",
+                )
+                return
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while editing provenance."
+            )
+            return
+        super().accept()
 
     @QtCore.Slot()
     def _copy(self) -> None:
@@ -503,8 +534,15 @@ class DataTransformDialog(_DataManipulationDialog):
         slicer_area: ImageSlicerArea,
         *,
         batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
     ) -> None:
-        super().__init__(slicer_area, batch_manager=batch_manager)
+        super().__init__(
+            slicer_area,
+            batch_manager=batch_manager,
+            provenance_edit_mode=provenance_edit_mode,
+        )
+        if self.is_provenance_edit_mode:
+            return
         self.launch_mode_combo = QtWidgets.QComboBox()
         for value, label, tooltip in self._available_launch_modes():
             self.launch_mode_combo.addItem(label, userData=value)
@@ -563,6 +601,11 @@ class DataTransformDialog(_DataManipulationDialog):
     ) -> list[provenance.ToolProvenanceOperation]:
         operation = self.source_transform_operation()
         return [] if operation is None else [operation]
+
+    def provenance_edit_operations(
+        self,
+    ) -> list[provenance.ToolProvenanceOperation]:
+        return self.source_operations()
 
     def source_transform_operation(
         self,
@@ -829,6 +872,10 @@ class DataTransformDialog(_DataManipulationDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
+        if self.is_provenance_edit_mode:
+            self._accept_provenance_edit()
+            return
+
         manager = self.batch_manager
         if manager is not None:
             try:
@@ -973,15 +1020,24 @@ class DataFilterDialog(_DataManipulationDialog):
         slicer_area: ImageSlicerArea,
         *,
         batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
     ) -> None:
-        super().__init__(slicer_area, batch_manager=batch_manager)
+        super().__init__(
+            slicer_area,
+            batch_manager=batch_manager,
+            provenance_edit_mode=provenance_edit_mode,
+        )
         self._previewed: bool = False
         self._starting_applied_func = self.slicer_area._applied_func
         self._starting_filter_operation = (
             self.slicer_area._accepted_filter_provenance_operation
         )
 
-        if self.enable_preview and not self.is_batch_mode:
+        if (
+            self.enable_preview
+            and not self.is_batch_mode
+            and not self.is_provenance_edit_mode
+        ):
             self.preview_button = QtWidgets.QPushButton("Preview")
             self.preview_button.clicked.connect(self._preview)
             self.buttonBox.addButton(
@@ -1057,6 +1113,10 @@ class DataFilterDialog(_DataManipulationDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
+        if self.is_provenance_edit_mode:
+            self._accept_provenance_edit()
+            return
+
         manager = self.batch_manager
         if manager is not None:
             try:
@@ -1099,6 +1159,11 @@ class DataFilterDialog(_DataManipulationDialog):
     ) -> list[provenance.ToolProvenanceOperation]:
         operation = self.filter_operation()
         return [] if operation is None else [operation]
+
+    def provenance_edit_operations(
+        self,
+    ) -> list[provenance.ToolProvenanceOperation]:
+        return self.filter_operations()
 
     def make_code(self) -> str:
         try:

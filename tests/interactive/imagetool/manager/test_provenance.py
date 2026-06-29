@@ -4,7 +4,7 @@ import pathlib
 import types
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import lmfit
 import numpy as np
@@ -122,17 +122,57 @@ def _add_file_replay_tool(
     return tool
 
 
-def _recorded_operation_field_edit(
+def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
+    index = combo.findData(data, QtCore.Qt.ItemDataRole.UserRole)
+    assert index >= 0
+    combo.setCurrentIndex(index)
+
+
+def _selection_dialog_row(dialog: QtWidgets.QDialog, dim: str) -> typing.Any:
+    assert isinstance(dialog, SelectionDialog)
+    row = next(row for row in dialog.rows if row.dim == dim)
+    row.use_check.setChecked(True)
+    return row
+
+
+def _set_selection_point(
     dialog: QtWidgets.QDialog,
-    operation_index: int,
-    field_name: str,
-) -> QtWidgets.QLineEdit:
-    edit = dialog.findChild(
-        QtWidgets.QLineEdit,
-        f"managerProvenanceOperationField_{operation_index}_{field_name}",
-    )
-    assert edit is not None
-    return edit
+    *,
+    dim: str,
+    method: str,
+    value: float,
+) -> None:
+    row = _selection_dialog_row(dialog, dim)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "point")
+    row.value_start_spin.setValue(value)
+
+
+def _set_selection_range(
+    dialog: QtWidgets.QDialog,
+    *,
+    dim: str,
+    method: str,
+    start: float,
+    stop: float,
+) -> None:
+    row = _selection_dialog_row(dialog, dim)
+    _set_combo_data(row.method_combo, method)
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(start)
+    row.value_stop_spin.setValue(stop)
+
+
+def _set_aggregate(
+    dialog: QtWidgets.QDialog,
+    *,
+    dims: tuple[str, ...],
+    func: str,
+) -> None:
+    assert isinstance(dialog, manager_provenance_edit.dialogs.AggregateDialog)
+    for dim, check in dialog.dim_checks.items():
+        check.setChecked(dim in dims)
+    _set_combo_data(dialog.reducer_combo, func)
 
 
 def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
@@ -708,6 +748,95 @@ def test_manager_provenance_structured_operations_have_edit_dialogs(
     operation: provenance.ToolProvenanceOperation,
 ) -> None:
     assert manager_provenance_edit._dialog_class_for_operation(operation) is not None
+
+
+def test_manager_provenance_operation_editor_contract_is_valid() -> None:
+    manager_provenance_edit._validate_operation_editor_contract()
+
+
+def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> None:
+    class _MissingGroupMatcherDialog(
+        manager_provenance_edit.dialogs.DataTransformDialog
+    ):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+        grouped_operation_only = True
+
+        def restore_transform_operations(
+            self,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+        ) -> None:
+            del operations
+
+    try:
+        errors = manager_provenance_edit._operation_editor_contract_errors()
+    finally:
+        _MissingGroupMatcherDialog.operation_types = ()
+
+    assert (
+        "_MissingGroupMatcherDialog declares ScriptCodeOperation as a grouped editor "
+        "but does not override operation_group_for_edit"
+    ) in errors
+
+
+def test_manager_provenance_editor_contract_rejects_mixed_editors() -> None:
+    class _StandaloneScriptDialog(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+
+        def restore_transform_operation(
+            self,
+            operation: provenance.ToolProvenanceOperation,
+        ) -> None:
+            del operation
+
+    class _GroupedScriptDialog(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+        grouped_operation_only = True
+
+        @classmethod
+        def operation_group_for_edit(
+            cls,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+            operation_index: int,
+        ) -> tuple[int, int] | None:
+            del cls, operations, operation_index
+            return (0, 1)
+
+        def restore_transform_operations(
+            self,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+        ) -> None:
+            del operations
+
+    try:
+        errors = manager_provenance_edit._operation_editor_contract_errors()
+    finally:
+        _StandaloneScriptDialog.operation_types = ()
+        _GroupedScriptDialog.operation_types = ()
+
+    assert (
+        "ScriptCodeOperation has both standalone and grouped editors: "
+        "_StandaloneScriptDialog; _GroupedScriptDialog"
+    ) in errors
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        provenance.SelOperation(kwargs={"x": slice(0.0, 1.0)}),
+        provenance.IselOperation(kwargs={"x": slice(0, 1)}),
+        provenance.QSelOperation(kwargs={"x": 1.0}),
+    ],
+)
+def test_manager_provenance_selection_operations_use_selection_dialog(
+    operation: provenance.ToolProvenanceOperation,
+) -> None:
+    assert (
+        manager_provenance_edit._dialog_class_for_operation(operation)
+        is SelectionDialog
+    )
 
 
 def test_manager_provenance_loader_kwargs_parser_and_file_dialog_branches(
@@ -2567,7 +2696,7 @@ def test_manager_provenance_edit_nested_script_input_operation(
     )
     monkeypatch.setattr(
         controller,
-        "_edited_recorded_operations",
+        "_edited_native_operations",
         lambda *_args, **_kwargs: [replacement],
     )
     monkeypatch.setattr(
@@ -3515,8 +3644,8 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
     )
     monkeypatch.setattr(
         controller,
-        "_edited_recorded_operations",
-        lambda _operations, **_kwargs: [provenance.IselOperation(kwargs={"x": 0})],
+        "_edited_native_operations",
+        lambda *_args, **_kwargs: [provenance.IselOperation(kwargs={"x": 0})],
     )
     missing = manager_provenance_edit._MissingProvenanceSourceFileError(missing_path)
     failure = manager_provenance_edit._ProvenanceReplayFailure(
@@ -4528,55 +4657,68 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         )
 
 
-def test_manager_provenance_edit_controller_recorded_dialog_branches(
-    monkeypatch: pytest.MonkeyPatch,
+def test_manager_provenance_native_transform_edit_mode_uses_dialog_operations(
+    qtbot,
 ) -> None:
-    controller = _fake_edit_controller()
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-
-    class _RejectingDialog:
-        def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
-            del args, kwargs
-
-        def exec(self) -> int:
-            return int(QtWidgets.QDialog.DialogCode.Rejected)
-
-        def edited_operations(self) -> list[provenance.ToolProvenanceOperation]:
-            raise AssertionError("cancel must not read edited operations")
-
-    monkeypatch.setattr(
-        manager_provenance_edit,
-        "_RecordedOperationEditDialog",
-        _RejectingDialog,
+    data = xr.DataArray(
+        np.arange(3 * 4 * 2, dtype=float).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": np.arange(4), "z": [0.0, 1.0]},
     )
-    assert controller._edited_recorded_operations((operation,), focus="dims") is None
-
-    replacement = provenance.NormalizeOperation(dims=("y",), mode="min")
-
-    class _AcceptingDialog:
-        def __init__(
-            self, operations: typing.Any, _parent: typing.Any, **kwargs: typing.Any
-        ) -> None:
-            assert tuple(operations) == (operation,)
-            assert kwargs == {"focus": "dims"}
-
-        def exec(self) -> int:
-            return int(QtWidgets.QDialog.DialogCode.Accepted)
-
-        def edited_operations(self) -> list[provenance.ToolProvenanceOperation]:
-            return [replacement]
-
-    monkeypatch.setattr(
-        manager_provenance_edit,
-        "_RecordedOperationEditDialog",
-        _AcceptingDialog,
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = manager_provenance_edit.dialogs.AggregateDialog(
+        tool.slicer_area,
+        provenance_edit_mode=True,
     )
-    assert controller._edited_recorded_operations((operation,), focus="dims") == [
-        replacement
+
+    assert not hasattr(dialog, "launch_mode_combo")
+    manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
+        dialog,
+        (provenance.QSelAggregationOperation(dims=("y",), func="mean"),),
+        "dims",
+    )
+    _set_aggregate(dialog, dims=("x",), func="sum")
+
+    assert dialog.provenance_edit_operations() == [
+        provenance.QSelAggregationOperation(dims=("x",), func="sum")
     ]
 
-    with pytest.raises(ValueError, match="No provenance operations"):
-        controller._edited_recorded_operations(())
+
+def test_manager_provenance_native_selection_edit_restores_slice_operations(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4, dtype=float).reshape((3, 4)),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": np.arange(4.0)},
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = SelectionDialog(tool.slicer_area, provenance_edit_mode=True)
+
+    assert not hasattr(dialog, "launch_mode_combo")
+    manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
+        dialog,
+        (provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)}),),
+        None,
+    )
+
+    assert dialog.provenance_edit_operations() == [
+        provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)})
+    ]
+
+
+def test_manager_provenance_edit_controller_native_dialog_error_branches() -> None:
+    controller = _fake_edit_controller()
+    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    spec = provenance.full_data(
+        provenance.QSelAggregationOperation(dims=("x",), func="mean")
+    )
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("Aggregate", None),
+    )
+    ref = provenance._ProvenanceStepRef("operation", operation_index=0)
 
     with pytest.raises(RuntimeError, match="Active display filter"):
         controller._edit_active_filter(
@@ -4584,159 +4726,43 @@ def test_manager_provenance_edit_controller_recorded_dialog_branches(
             operation,
             manager_provenance_edit.dialogs.AggregateDialog,
         )
+    with pytest.raises(ValueError, match="No provenance operations"):
+        controller._edited_native_operations(
+            typing.cast("typing.Any", _fake_edit_node(spec)),
+            row,
+            spec,
+            ref,
+            manager_provenance_edit._OperationDialogMatch(
+                manager_provenance_edit.dialogs.AggregateDialog,
+                0,
+                0,
+            ),
+        )
 
 
-def test_manager_provenance_recorded_operation_dialog_handles_empty_operations(
-    qtbot,
+@pytest.mark.parametrize(
+    "operation",
+    [
+        provenance.QSelOperation(kwargs={"x": slice(0.0, 2.0)}),
+        provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)}),
+        provenance.IselOperation(kwargs={"y": slice(1, 3)}),
+    ],
+)
+def test_manager_provenance_slice_selection_rows_remain_editable(
+    operation: provenance.ToolProvenanceOperation,
 ) -> None:
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    operation = provenance.SqueezeOperation()
-    dialog = manager_provenance_edit._RecordedOperationEditDialog(
-        (operation,),
-        parent,
-        focus="missing",
+    spec = provenance.selection(operation)
+    controller = _fake_edit_controller(
+        _fake_edit_node(
+            provenance.full_data(),
+            source_spec=spec,
+            source_display_spec=spec,
+            parent_uid="parent",
+        )
     )
-    qtbot.addWidget(dialog)
+    row = spec.display_rows(scope="source")[1]
 
-    assert dialog.edited_operations() == [operation]
-    assert dialog.findChild(QtWidgets.QLabel) is not None
-
-
-def test_manager_provenance_operation_title_falls_back_on_label_failure() -> None:
-    class _BrokenTitleOperation(provenance.ToolProvenanceOperation):
-        def derivation_label(self) -> str:
-            raise RuntimeError("label failed")
-
-    assert (
-        manager_provenance_edit._operation_title(_BrokenTitleOperation())
-        == "_BrokenTitleOperation"
-    )
-
-
-def test_manager_provenance_recorded_operation_dialog_round_trips_values(
-    qtbot,
-) -> None:
-    operations = provenance.stamp_operation_group(
-        (
-            provenance.AverageOperation(dims=("x",)),
-            provenance.IselOperation(kwargs={"x": 0}),
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=None),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
-        ),
-        kind="test_group",
-        focuses=("dims", "kwargs", "delta", "resolution"),
-        group_id="stable-group",
-    )
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    dialog = manager_provenance_edit._RecordedOperationEditDialog(
-        operations,
-        parent,
-        focus="kwargs",
-    )
-    qtbot.addWidget(dialog)
-
-    dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
-    kwargs_edit = _recorded_operation_field_edit(dialog, 1, "kwargs")
-    delta_edit = _recorded_operation_field_edit(dialog, 2, "delta")
-    resolution_edit = _recorded_operation_field_edit(dialog, 3, "resolution")
-
-    dims_edit.setText("('y',)")
-    kwargs_edit.setText("{'y': 1}")
-    delta_edit.setText("3.0")
-    resolution_edit.setText("{'kx': 0.05}")
-
-    edited = dialog.edited_operations()
-
-    assert isinstance(edited[0], provenance.AverageOperation)
-    assert edited[0].dims == ("y",)
-    assert isinstance(edited[1], provenance.IselOperation)
-    assert edited[1].kwargs == {"y": 1}
-    assert isinstance(edited[2], provenance.KspaceSetNormalOperation)
-    assert edited[2].delta == 3.0
-    assert isinstance(edited[3], provenance.KspaceConvertOperation)
-    assert edited[3].resolution == {"kx": 0.05}
-    assert [operation.group for operation in edited] == [
-        operation.group for operation in operations
-    ]
-
-
-def test_manager_provenance_recorded_operation_dialog_invalid_literal_stays_open(
-    qtbot,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    dialog = manager_provenance_edit._RecordedOperationEditDialog(
-        (operation,),
-        parent,
-    )
-    qtbot.addWidget(dialog)
-    dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
-    dims_edit.setText("not a literal")
-    warnings_shown: list[tuple[str, str]] = []
-
-    def _record_warning(
-        _parent: typing.Any,
-        title: str,
-        text: str,
-    ) -> QtWidgets.QMessageBox.StandardButton:
-        warnings_shown.append((title, text))
-        return QtWidgets.QMessageBox.StandardButton.Ok
-
-    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
-
-    dialog.accept()
-
-    assert warnings_shown
-    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
-    with pytest.raises(ValueError, match="Python literals"):
-        manager_provenance_edit._parse_operation_value("")
-
-
-def test_manager_provenance_recorded_operation_unavailable_reason_for_nonliteral(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    monkeypatch.setattr(
-        manager_provenance_edit,
-        "_operation_value_text",
-        lambda _value: "<not a Python literal>",
-    )
-
-    reason = manager_provenance_edit._recorded_operation_edit_unavailable_reason(
-        (operation,)
-    )
-
-    assert reason is not None
-    assert "recorded metadata" in reason
-
-
-def test_manager_provenance_recorded_operation_unavailable_blocks_edit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    spec = _manager_replay_file_spec(pathlib.Path("scan.h5"), operation)
-    controller = _fake_edit_controller(_fake_edit_node(spec))
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Normalize", None),
-        edit_ref=provenance._ProvenanceStepRef(
-            "operation",
-            operation_index=0,
-            stage_index=0,
-        ),
-    )
-    monkeypatch.setattr(
-        manager_provenance_edit,
-        "_recorded_operation_edit_unavailable_reason",
-        lambda _operations: "unsafe operation metadata",
-    )
-
-    assert controller.can_edit_row(row) == (False, "unsafe operation metadata")
-    with pytest.raises(RuntimeError, match="unsafe operation metadata"):
-        controller._edited_recorded_operations((operation,))
+    assert controller.can_edit_row(row) == (True, "")
 
 
 def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
@@ -6574,8 +6600,7 @@ def test_manager_batch_selection_replace_qsel_remains_editable(
         )
 
         def _edit_qsel(dialog: QtWidgets.QDialog) -> None:
-            kwargs_edit = _recorded_operation_field_edit(dialog, 0, "kwargs")
-            kwargs_edit.setText("{'x': 2.0}")
+            _set_selection_point(dialog, dim="x", method="qsel", value=2.0)
 
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_qsel)
 
@@ -6583,6 +6608,34 @@ def test_manager_batch_selection_replace_qsel_remains_editable(
         xarray.testing.assert_identical(
             first.slicer_area._data.rename(None),
             data.qsel(x=2.0).qsel(y=slice(1.0, 3.0)).rename(None),
+        )
+
+        manager._update_info()
+        select_metadata_rows(manager, [2])
+        selected_row = manager._selected_derivation_row()
+        assert selected_row is not None
+        assert manager._provenance_edit_controller.can_edit_row(selected_row) == (
+            True,
+            "",
+        )
+
+        def _edit_qsel_range(dialog: QtWidgets.QDialog) -> None:
+            _set_selection_range(
+                dialog,
+                dim="y",
+                method="qsel",
+                start=0.0,
+                stop=2.0,
+            )
+
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            pre_call=_edit_qsel_range,
+        )
+
+        xarray.testing.assert_identical(
+            first.slicer_area._data.rename(None),
+            data.qsel(x=2.0).qsel(y=slice(0.0, 2.0)).rename(None),
         )
 
 
@@ -8466,10 +8519,7 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
         xr.testing.assert_identical(tool.slicer_area._data, before_data)
 
         def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
-            dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
-            func_edit = _recorded_operation_field_edit(dialog, 0, "func")
-            dims_edit.setText("('x',)")
-            func_edit.setText("'sum'")
+            _set_aggregate(dialog, dims=("x",), func="sum")
 
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
@@ -8545,10 +8595,7 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         select_metadata_rows(manager, [3])
 
         def _edit_aggregate(dialog: QtWidgets.QDialog) -> None:
-            dims_edit = _recorded_operation_field_edit(dialog, 0, "dims")
-            func_edit = _recorded_operation_field_edit(dialog, 0, "func")
-            dims_edit.setText("('x',)")
-            func_edit.setText("'sum'")
+            _set_aggregate(dialog, dims=("x",), func="sum")
 
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
@@ -8672,8 +8719,8 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
         )
         monkeypatch.setattr(
             manager._provenance_edit_controller,
-            "_edited_recorded_operations",
-            lambda _operations, **_kwargs: [
+            "_edited_native_operations",
+            lambda *_args, **_kwargs: [
                 provenance.QSelAggregationOperation(dims=("y",), func="mean")
             ],
         )
