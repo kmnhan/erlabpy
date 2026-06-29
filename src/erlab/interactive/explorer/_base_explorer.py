@@ -1250,7 +1250,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_footer_layout.addWidget(self._loader_combo)
         right_footer_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
-                self._loader_options_act, QtGui.QIcon.fromTheme("preferences-other")
+                self._loader_options_act, QtGui.QIcon.fromTheme("document-properties")
             )
         )
         right_footer_layout.addStretch()
