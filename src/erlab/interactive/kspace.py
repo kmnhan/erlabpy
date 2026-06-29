@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
+import dataclasses
 import enum
 import hashlib
 import importlib.resources
@@ -394,14 +395,22 @@ class KspaceTool(KspaceToolGUI):
     }
     _sigTriggerUpdate = QtCore.Signal()
     _UPDATE_LIMIT_HZ = 10.0
+    _OUTPUT_MEMORY_ESTIMATE_DELAY_MS = 250
+    _MANAGER_NOTIFY_DELAY_MS = 250
     data: xr.DataArray
     _source_configuration: int
     _offset_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _angle_scale_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _bound_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _resolution_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _bz_cache_key: typing.Any
     _bz_cache_value: typing.Any
+    _preview_memory_estimate_key_value: tuple[typing.Any, ...] | None
+    _preview_memory_estimate: _kspace_conversion.KspaceConversionEstimate | None
+    _output_memory_estimate_key_value: tuple[typing.Any, ...] | None
+    _output_memory_estimate: _kspace_conversion.KspaceConversionEstimate | None
+    _pending_output_memory_preview_unavailable: bool
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -412,6 +421,7 @@ class KspaceTool(KspaceToolGUI):
         center: float
         width: int
         offsets: dict[str, float]
+        angle_scales: dict[str, float] = pydantic.Field(default_factory=dict)
         bounds_enabled: bool
         bounds: dict[str, float]
         resolution_enabled: bool
@@ -536,6 +546,7 @@ class KspaceTool(KspaceToolGUI):
         self.data = self.data.kspace.as_configuration(configuration)
         self._bz_cache_key = None
         self._bz_cache_value = None
+        self._invalidate_preview_memory_estimate()
         with self._history_suppressed():
             self._rebuild_kspace_controls()
             self._sync_aspect_lock()
@@ -552,6 +563,10 @@ class KspaceTool(KspaceToolGUI):
             offsets={
                 k: round(spin.value(), spin.decimals())
                 for k, spin in self._offset_spins.items()
+            },
+            angle_scales={
+                k: round(spin.value(), spin.decimals())
+                for k, spin in self._angle_scale_spins.items()
             },
             bounds_enabled=self.bounds_supergroup.isChecked(),
             bounds={k: spin.value() for k, spin in self._bound_spins.items()},
@@ -603,6 +618,14 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].blockSignals(True)
             self._offset_spins[k].setValue(v)
             self._offset_spins[k].blockSignals(False)
+
+        for k, v in status.angle_scales.items():
+            if k not in self._angle_scale_spins:
+                continue
+            self._angle_scale_spins[k].blockSignals(True)
+            self._angle_scale_spins[k].setValue(v)
+            self._angle_scale_spins[k].blockSignals(False)
+        self._sync_angle_scales()
         self._sync_normal_emission_spins()
 
         self.bounds_supergroup.blockSignals(True)
@@ -735,6 +758,11 @@ class KspaceTool(KspaceToolGUI):
         self._itool: QtWidgets.QWidget | None = None
         self._bz_cache_key = None
         self._bz_cache_value = None
+        self._preview_memory_estimate_key_value = None
+        self._preview_memory_estimate = None
+        self._output_memory_estimate_key_value = None
+        self._output_memory_estimate = None
+        self._pending_output_memory_preview_unavailable = False
 
         if data_name is None:
             try:
@@ -760,6 +788,20 @@ class KspaceTool(KspaceToolGUI):
             rateLimit=self._UPDATE_LIMIT_HZ,
             slot=self._flush_debounced_update,
         )
+        self._manager_notify_timer = QtCore.QTimer(self)
+        self._manager_notify_timer.setSingleShot(True)
+        self._manager_notify_timer.setInterval(self._MANAGER_NOTIFY_DELAY_MS)
+        self._manager_notify_timer.timeout.connect(
+            self._flush_debounced_manager_notification
+        )
+        self._output_memory_estimate_timer = QtCore.QTimer(self)
+        self._output_memory_estimate_timer.setSingleShot(True)
+        self._output_memory_estimate_timer.setInterval(
+            self._OUTPUT_MEMORY_ESTIMATE_DELAY_MS
+        )
+        self._output_memory_estimate_timer.timeout.connect(
+            self._flush_output_memory_estimate
+        )
         self._energy_controls_connected: bool = False
 
         if (
@@ -784,15 +826,6 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.toggled.connect(self.queue_update)
         self.preview_symmetry_group.toggled.connect(self.queue_update)
         self.preview_symmetry_fold_spin.valueChanged.connect(self.queue_update)
-
-        # Temporary customization for beta scaling
-        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
-        # self._beta_scale_spin.setValue(1.0)
-        # self._beta_scale_spin.setDecimals(2)
-        # self._beta_scale_spin.setSingleStep(0.01)
-        # self._beta_scale_spin.setRange(0.01, 10)
-        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
-        # self._beta_scale_spin.valueChanged.connect(self.update)
 
         self._rebuild_kspace_controls(
             initial_normal_emission=initial_normal_emission,
@@ -893,6 +926,23 @@ class KspaceTool(KspaceToolGUI):
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
         )
 
+        self._angle_scale_spins = {}
+        for axis in ("alpha", "beta"):
+            if axis not in self.data.coords:  # pragma: no cover
+                # Kept defensive for externally supplied tool data; supported ktool
+                # inputs currently require both angle coordinates during conversion.
+                continue
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setObjectName(f"ktool{axis.title()}Scale")
+            spin.setRange(0.01, 10.0)
+            spin.setSingleStep(0.01)
+            spin.setDecimals(3)
+            spin.setValue(self.data.kspace.angle_scales[axis])
+            spin.valueChanged.connect(self._handle_angle_scale_changed)
+            self._angle_scale_spins[axis] = spin
+            axis_label = self._NORMAL_EMISSION_LABELS.get(axis, axis)
+            self.offsets_group.layout().addRow(f"{axis_label} scale", spin)
+
         self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
             spin = QtWidgets.QDoubleSpinBox()
@@ -974,6 +1024,7 @@ class KspaceTool(KspaceToolGUI):
         self._source_configuration = source_configuration
         self._bz_cache_key = None
         self._bz_cache_value = None
+        self._invalidate_preview_memory_estimate()
         self._set_configuration_combo(self.data.kspace.configuration)
         with self._history_suppressed():
             self._rebuild_kspace_controls()
@@ -1095,6 +1146,17 @@ class KspaceTool(KspaceToolGUI):
     def _flush_debounced_update(self, _args: object) -> None:
         self.update()
 
+    def _queue_debounced_manager_notification(self) -> None:
+        self._manager_notify_timer.start()
+
+    @QtCore.Slot()
+    def _flush_debounced_manager_notification(self) -> None:
+        self._notify_data_changed()
+
+    def _notify_ktool_state_changed(self) -> None:
+        self.sigStateChanged.emit()
+        self._queue_debounced_manager_notification()
+
     @property
     def _work_function(self) -> float:
         return float(
@@ -1110,6 +1172,142 @@ class KspaceTool(KspaceToolGUI):
                 self._offset_spins["V0"].value(), self._offset_spins["V0"].decimals()
             )
         )
+
+    def _invalidate_preview_memory_estimate(self) -> None:
+        self._preview_memory_estimate_key_value = None
+        self._preview_memory_estimate = None
+        self._output_memory_estimate_key_value = None
+        self._output_memory_estimate = None
+
+    @staticmethod
+    def _mapping_token(
+        mapping: dict[str, float] | dict[str, tuple[float, float]] | None,
+        axes: tuple[str, ...],
+    ) -> tuple[typing.Any, ...] | None:
+        if mapping is None:
+            return None
+        return tuple((axis, mapping[axis]) for axis in axes if axis in mapping)
+
+    def _preview_slice_token(self) -> tuple[typing.Any, ...] | None:
+        if not self.data.kspace._has_eV:
+            return None
+        if self._shows_full_energy_cut():
+            return ("full",)
+        return (
+            "slice",
+            float(np.round(self.center_spin.value(), self.center_spin.decimals())),
+            int(self.width_spin.value()),
+        )
+
+    def _preview_memory_estimate_key(
+        self,
+        data: xr.DataArray,
+        bounds: dict[str, tuple[float, float]] | None,
+        resolution: dict[str, float] | None,
+    ) -> tuple[typing.Any, ...]:
+        momentum_axes = tuple(self.data.kspace.momentum_axes)
+        return (
+            id(self.data),
+            id(self.data.data),
+            tuple(str(dim) for dim in self.data.dims),
+            tuple(int(self.data.sizes[dim]) for dim in self.data.dims),
+            self._preview_slice_token(),
+            tuple(
+                (axis, round(spin.value(), spin.decimals()))
+                for axis, spin in self._angle_scale_spins.items()
+            ),
+            tuple(str(dim) for dim in data.dims),
+            tuple(int(data.sizes[dim]) for dim in data.dims),
+            int(self.current_configuration),
+            tuple((key, self.offset_dict[key]) for key in sorted(self.offset_dict)),
+            self._work_function,
+            self._inner_potential if self.data.kspace._has_hv else None,
+            self.bounds_supergroup.isChecked(),
+            self._mapping_token(bounds, momentum_axes),
+            self.resolution_supergroup.isChecked(),
+            self._mapping_token(resolution, momentum_axes),
+        )
+
+    def _output_memory_estimate_key(
+        self,
+        bounds: dict[str, tuple[float, float]] | None,
+        resolution: dict[str, float] | None,
+    ) -> tuple[typing.Any, ...]:
+        momentum_axes = tuple(self.data.kspace.momentum_axes)
+        return (
+            id(self.data),
+            id(self.data.data),
+            tuple(str(dim) for dim in self.data.dims),
+            tuple(int(self.data.sizes[dim]) for dim in self.data.dims),
+            tuple(
+                (axis, round(spin.value(), spin.decimals()))
+                for axis, spin in self._angle_scale_spins.items()
+            ),
+            int(self.current_configuration),
+            tuple((key, self.offset_dict[key]) for key in sorted(self.offset_dict)),
+            self._work_function,
+            self._inner_potential if self.data.kspace._has_hv else None,
+            self.bounds_supergroup.isChecked(),
+            self._mapping_token(bounds, momentum_axes),
+            self.resolution_supergroup.isChecked(),
+            self._mapping_token(resolution, momentum_axes),
+        )
+
+    def _preview_conversion_estimate(
+        self,
+        data: xr.DataArray,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        bounds = self.bounds
+        resolution = self.resolution
+        key = self._preview_memory_estimate_key(data, bounds, resolution)
+        if key == self._preview_memory_estimate_key_value:
+            estimate = self._preview_memory_estimate
+            if estimate is not None:
+                estimate = dataclasses.replace(
+                    estimate,
+                    memory=_kspace_conversion.system_memory_budget(),
+                )
+                self._preview_memory_estimate = estimate
+                return estimate
+
+        estimate = _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds=bounds,
+            resolution=resolution,
+        )
+        self._preview_memory_estimate_key_value = key
+        self._preview_memory_estimate = estimate
+        return estimate
+
+    def _output_conversion_estimate(
+        self,
+    ) -> _kspace_conversion.KspaceConversionEstimate:
+        bounds = self.bounds
+        resolution = self.resolution
+        key = self._output_memory_estimate_key(bounds, resolution)
+        if key == self._output_memory_estimate_key_value:
+            estimate = self._output_memory_estimate
+            if estimate is not None:
+                estimate = dataclasses.replace(
+                    estimate,
+                    memory=_kspace_conversion.system_memory_budget(),
+                )
+                self._output_memory_estimate = estimate
+                return estimate
+
+        data = self._assign_params(self.data.copy(deep=False))
+        self._validate_kinetic_energy(
+            data,
+            context="estimating converted ktool output",
+        )
+        estimate = _kspace_conversion.estimate_kspace_conversion(
+            data,
+            bounds=bounds,
+            resolution=resolution,
+        )
+        self._output_memory_estimate_key_value = key
+        self._output_memory_estimate = estimate
+        return estimate
 
     def _set_memory_estimate(
         self,
@@ -1128,12 +1326,51 @@ class KspaceTool(KspaceToolGUI):
         self._memory_estimate_label.updateGeometry()
         self._memory_estimate_label.setProperty(
             "kspaceMemoryUnsafe",
-            not estimate.is_safe,
+            preview or not estimate.is_safe,
         )
         style = self._memory_estimate_label.style()
         if style is not None:
             style.unpolish(self._memory_estimate_label)
             style.polish(self._memory_estimate_label)
+
+    def _set_memory_estimate_error(self, message: str) -> None:
+        if not hasattr(self, "_memory_estimate_label"):
+            return
+        self._memory_estimate_label.setText(message)
+        self._memory_estimate_label.updateGeometry()
+        self._memory_estimate_label.setProperty("kspaceMemoryUnsafe", True)
+        style = self._memory_estimate_label.style()
+        if style is not None:
+            style.unpolish(self._memory_estimate_label)
+            style.polish(self._memory_estimate_label)
+
+    def _update_output_memory_estimate(
+        self,
+        *,
+        preview_unavailable: bool = False,
+    ) -> None:
+        try:
+            estimate = self._output_conversion_estimate()
+        except Exception as exc:
+            self._set_memory_estimate_error(str(exc))
+            return
+        self._set_memory_estimate(estimate, preview=preview_unavailable)
+
+    def _queue_output_memory_estimate(
+        self,
+        *,
+        preview_unavailable: bool = False,
+    ) -> None:
+        self._pending_output_memory_preview_unavailable = preview_unavailable
+        self._output_memory_estimate_timer.start()
+
+    @QtCore.Slot()
+    def _flush_output_memory_estimate(self) -> None:
+        preview_unavailable = self._pending_output_memory_preview_unavailable
+        self._pending_output_memory_preview_unavailable = False
+        self._update_output_memory_estimate(
+            preview_unavailable=preview_unavailable,
+        )
 
     def _conversion_estimate(
         self,
@@ -1244,6 +1481,8 @@ class KspaceTool(KspaceToolGUI):
             inner_potential=self._inner_potential if self.data.kspace._has_hv else None,
             normal_emission=(alpha_normal, beta_normal),
             delta=self.offset_dict["delta"],
+            alpha_scale=self.data.kspace.alpha_scale,
+            beta_scale=self.data.kspace.beta_scale,
             bounds=self.bounds,
             resolution=self.resolution,
             force_scalars=False,
@@ -1294,11 +1533,33 @@ class KspaceTool(KspaceToolGUI):
             for k in self.data.kspace._valid_offset_keys
         }
 
+    @property
+    def angle_scale_dict(self) -> dict[str, float]:
+        return {
+            k: float(np.round(spin.value(), spin.decimals()))
+            for k, spin in self._angle_scale_spins.items()
+        }
+
     def _current_normal_emission_angles(self) -> tuple[float, float]:
         return _kspace_conversion.normal_emission_angles(
             self.data,
             self.offset_dict,
         )
+
+    def _sync_angle_scales(self) -> None:
+        for axis, scale in self.angle_scale_dict.items():
+            attr_key = f"{axis}_scale"
+            if scale == 1.0:
+                self.data.attrs.pop(attr_key, None)
+            else:
+                self.data.kspace.angle_scales[axis] = scale
+
+    @QtCore.Slot(float)
+    def _handle_angle_scale_changed(self, _value: float) -> None:
+        self._sync_angle_scales()
+        self._sync_normal_emission_spins()
+        self._invalidate_preview_memory_estimate()
+        self.queue_update()
 
     @QtCore.Slot()
     def _sync_normal_emission_spins(self) -> None:
@@ -1410,14 +1671,12 @@ class KspaceTool(KspaceToolGUI):
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
         self._validate_kinetic_energy(data_ang, context="updating ktool preview")
-        # if "beta" in data_ang.dims:
-        #     data_ang = data_ang.assign_coords(
-        #         beta=data_ang.beta * self._beta_scale_spin.value()
-        #     )
         return data_ang
 
     def _preview_kspace_data(self, data_ang: xr.DataArray) -> xr.DataArray:
-        self._validate_conversion_memory(self._prepared_output_data(), preview=True)
+        estimate = self._preview_conversion_estimate(data_ang)
+        if not estimate.is_safe:
+            raise _kspace_conversion.KspaceConversionMemoryError(estimate)
         return data_ang.kspace.convert(
             bounds=self.bounds, resolution=self.resolution, silent=True
         )
@@ -1427,18 +1686,27 @@ class KspaceTool(KspaceToolGUI):
         data_k = self._preview_kspace_data(data_ang)
         return data_ang, data_k
 
+    def _clear_kspace_preview_for_memory_refusal(
+        self,
+        angle_data: xr.DataArray | None = None,
+    ) -> None:
+        if angle_data is None:
+            angle_data = self._preview_angle_data()
+        self.images[0].setDataArray(angle_data.T)
+        self.images[1].clear()
+        self.images[1].data_array = None
+        self._set_preview_symmetry_available(False)
+        self._set_bz_available(False)
+        self._notify_ktool_state_changed()
+
     @QtCore.Slot()
     def update(self) -> None:
         try:
             ang, k = self.get_data()
         except _kspace_conversion.KspaceConversionMemoryError:
             ang = self._preview_angle_data()
-            self.images[0].setDataArray(ang.T)
-            self.images[1].clear()
-            self.images[1].data_array = None
-            self._set_preview_symmetry_available(False)
-            self._set_bz_available(False)
-            self._notify_data_changed()
+            self._clear_kspace_preview_for_memory_refusal(ang)
+            self._queue_output_memory_estimate(preview_unavailable=True)
             self._write_state()
             return
         k_preview = k.T
@@ -1450,7 +1718,8 @@ class KspaceTool(KspaceToolGUI):
         self._set_bz_available(bz_available)
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
-        self._notify_data_changed()
+        self._notify_ktool_state_changed()
+        self._queue_output_memory_estimate()
         if bz_available and self.bz_group.isChecked():
             self.update_bz()
         self._write_state()

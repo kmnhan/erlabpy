@@ -1398,6 +1398,7 @@ class KspaceConversionDialog(DataTransformDialog):
             return False
         configuration = int(ktool.current_configuration)
         self._set_control_configuration(configuration)
+        self._control_data.kspace.angle_scales = ktool.data.kspace.angle_scales
         self._rebuild_kspace_controls(
             initial_normal_emission=ktool._current_normal_emission_angles(),
             initial_delta=ktool.offset_dict["delta"],
@@ -1496,6 +1497,8 @@ class KspaceConversionDialog(DataTransformDialog):
             force_inner_potential=True,
             normal_emission=self.normal_emission,
             delta=self._normal_delta,
+            alpha_scale=self._control_data.kspace.alpha_scale,
+            beta_scale=self._control_data.kspace.beta_scale,
         )
 
     def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
@@ -1620,6 +1623,8 @@ class KspaceConversionDialog(DataTransformDialog):
             inner_potential=self._inner_potential,
             normal_emission=self.normal_emission,
             delta=self._normal_delta,
+            alpha_scale=self._control_data.kspace.alpha_scale,
+            beta_scale=self._control_data.kspace.beta_scale,
             bounds=self.bounds,
             resolution=self.resolution,
             force_scalars=True,
@@ -1675,6 +1680,7 @@ class KspaceConversionDialog(DataTransformDialog):
         delta: float | None = None
         bounds: dict[str, tuple[float, float]] | None = None
         resolution: dict[str, float] | None = None
+        restored_angle_scales = False
         for operation in operations:
             if isinstance(operation, provenance.KspaceConfigurationOperation):
                 self._set_control_configuration(operation.configuration)
@@ -1689,6 +1695,12 @@ class KspaceConversionDialog(DataTransformDialog):
             elif isinstance(operation, provenance.KspaceSetNormalOperation):
                 normal = (operation.alpha, operation.beta)
                 delta = operation.delta
+                if operation.alpha_scale is not None:
+                    self._control_data.kspace.alpha_scale = operation.alpha_scale
+                    restored_angle_scales = True
+                if operation.beta_scale is not None:
+                    self._control_data.kspace.beta_scale = operation.beta_scale
+                    restored_angle_scales = True
             elif isinstance(operation, provenance.KspaceConvertOperation):
                 bounds = operation.bounds
                 resolution = operation.resolution
@@ -1696,6 +1708,9 @@ class KspaceConversionDialog(DataTransformDialog):
         if normal is not None:
             self._normal_delta = delta
             self._set_normal_emission_spins(normal)
+        if restored_angle_scales:
+            self.calculate_bounds()
+            self.calculate_resolution()
         self.bounds_supergroup.setChecked(bounds is not None)
         if bounds is not None:
             for axis, values in bounds.items():

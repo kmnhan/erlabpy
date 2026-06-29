@@ -75,7 +75,7 @@ class KspaceConversionEstimate:
 
     @property
     def is_safe(self) -> bool:
-        return self.peak_bytes <= self.memory.safe_budget_bytes
+        return self.final_bytes <= self.memory.available_bytes
 
 
 class KspaceConversionMemoryError(MemoryError):
@@ -84,7 +84,7 @@ class KspaceConversionMemoryError(MemoryError):
     def __init__(self, estimate: KspaceConversionEstimate) -> None:
         self.estimate = estimate
         super().__init__(
-            "The requested momentum grid is too large for the current memory budget."
+            "The requested momentum grid is too large for currently available memory."
         )
 
 
@@ -259,17 +259,27 @@ def estimate_kspace_conversion(
     effective_bounds: dict[str, tuple[float, float]] = {}
     effective_resolution: dict[str, float] = {}
     axis_sizes: dict[str, int] = {}
-    estimated_bounds = data.kspace.estimate_bounds()
-    for axis, estimated_lims in estimated_bounds.items():
-        if axis not in data.kspace.momentum_axes:
+    momentum_axes = tuple(data.kspace.momentum_axes)
+    estimated_bounds: dict[str, tuple[float, float]] = {}
+    if any(axis not in bounds for axis in momentum_axes):
+        estimated_bounds = data.kspace.estimate_bounds()
+
+    for axis in momentum_axes:
+        if axis in bounds:
+            lims = _validated_bounds(axis, bounds[axis])
+        elif axis in estimated_bounds:
+            lims = _validated_bounds(axis, estimated_bounds[axis])
+        else:
             continue
 
-        lims = _validated_bounds(axis, bounds.get(axis, estimated_lims))
-        res = data.kspace.estimate_resolution(axis, lims, from_numpoints=False)
-        if axis == "kz":
-            res_n = data.kspace.estimate_resolution(axis, lims, from_numpoints=True)
-            res = min(res, res_n)
-        res = _validated_resolution(axis, resolution.get(axis, res))
+        if axis in resolution:
+            res = _validated_resolution(axis, resolution[axis])
+        else:
+            res = data.kspace.estimate_resolution(axis, lims, from_numpoints=False)
+            if axis == "kz":
+                res_n = data.kspace.estimate_resolution(axis, lims, from_numpoints=True)
+                res = min(res, res_n)
+            res = _validated_resolution(axis, res)
 
         effective_bounds[axis] = lims
         effective_resolution[axis] = res
@@ -350,8 +360,7 @@ def kspace_conversion_estimate_text(
     """Return concise inline feedback for a conversion estimate."""
     estimate_summary = (
         f"Output: {_format_sizes(estimate.output_sizes)}\n"
-        f"Final array: {_format_bytes(estimate.final_bytes)}\n"
-        f"Peak memory: {_format_bytes(estimate.peak_bytes)}"
+        f"Final array: {_format_bytes(estimate.final_bytes)}"
     )
     if estimate.is_safe:
         return estimate_summary
@@ -362,26 +371,27 @@ def kspace_conversion_estimate_text(
             "Increase resolution or reduce bounds."
         )
     return (
-        "Conversion unavailable.\n"
+        "Open in ImageTool unavailable.\n"
         f"{estimate_summary}\n"
         "Increase resolution or reduce bounds."
     )
 
 
 def kspace_conversion_memory_dialog_title() -> str:
-    return "Conversion Cannot Be Completed Safely"
+    return "Momentum Conversion Is Too Large"
 
 
 def kspace_conversion_memory_dialog_text() -> str:
-    return "The requested momentum grid is too large for the current memory budget."
+    return "The full converted volume would not fit in available memory."
 
 
 def kspace_conversion_memory_dialog_info(
     estimate: KspaceConversionEstimate,
 ) -> str:
     return (
-        f"Estimated memory required: {_format_bytes(estimate.peak_bytes)}. "
-        "Increase the resolution value or reduce the bounds."
+        f"Final array estimate: {_format_bytes(estimate.final_bytes)}. "
+        "Increase the resolution value, reduce the bounds, or convert a smaller "
+        "source volume."
     )
 
 
@@ -389,16 +399,9 @@ def kspace_conversion_memory_dialog_details(
     estimate: KspaceConversionEstimate,
 ) -> str:
     lines = [
-        f"Axis sizes: {_format_sizes(estimate.axis_sizes)}",
-        f"Output sizes: {_format_sizes(estimate.output_sizes)}",
+        f"Output grid: {_format_sizes(estimate.output_sizes)}",
         f"Bounds: {_format_numeric_mapping(estimate.bounds)}",
         f"Resolution: {_format_numeric_mapping(estimate.resolution)}",
-        f"Final array estimate: {_format_bytes(estimate.final_bytes)}",
-        f"Peak estimate: {_format_bytes(estimate.peak_bytes)}",
-        f"Available physical memory: {_format_bytes(estimate.memory.available_bytes)}",
-        f"Reserve: {_format_bytes(estimate.memory.reserve_bytes)}",
-        f"Safe budget: {_format_bytes(estimate.memory.safe_budget_bytes)}",
-        "Swap is intentionally not treated as usable memory.",
     ]
     return "<br>".join(html.escape(line) for line in lines)
 
@@ -428,7 +431,10 @@ def normal_emission_angles(
     alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
         data.kspace.configuration, angle_params
     )
-    return float(np.round(alpha, 5)), float(np.round(beta, 5))
+    return (
+        float(np.round(alpha / data.kspace.alpha_scale, 5)),
+        float(np.round(beta / data.kspace.beta_scale, 5)),
+    )
 
 
 def apply_kspace_parameters(
@@ -442,11 +448,19 @@ def apply_kspace_parameters(
     offsets: Mapping[str, float] | None = None,
     normal_emission: tuple[float, float] | None = None,
     delta: float | None = None,
+    alpha_scale: float | None = None,
+    beta_scale: float | None = None,
 ) -> xr.DataArray:
     if offsets is not None:
         data.kspace.offsets = offsets
     elif normal_emission is not None:
-        data.kspace.set_normal(normal_emission[0], normal_emission[1], delta=delta)
+        data.kspace.set_normal(
+            normal_emission[0],
+            normal_emission[1],
+            delta=delta,
+            alpha_scale=alpha_scale,
+            beta_scale=beta_scale,
+        )
 
     if data.kspace._has_hv and inner_potential is not None:
         with ignore_missing_kspace_parameter_warnings():
@@ -481,6 +495,8 @@ def kspace_conversion_operations(
     bounds: dict[str, tuple[float, float]] | None,
     resolution: dict[str, float] | None,
     force_scalars: bool,
+    alpha_scale: float | None = None,
+    beta_scale: float | None = None,
 ) -> tuple[provenance.ToolProvenanceOperation, ...]:
     operations: list[provenance.ToolProvenanceOperation] = []
     focuses: list[str] = []
@@ -517,11 +533,18 @@ def kspace_conversion_operations(
         )
         focuses.append(_FOCUS_WORK_FUNCTION)
 
+    if alpha_scale is None:
+        alpha_scale = configured_data.kspace.alpha_scale
+    if beta_scale is None:
+        beta_scale = configured_data.kspace.beta_scale
+
     operations.append(
         provenance.KspaceSetNormalOperation(
             alpha=float(normal_emission[0]),
             beta=float(normal_emission[1]),
             delta=None if delta is None else float(delta),
+            alpha_scale=None if np.isclose(alpha_scale, 1.0) else float(alpha_scale),
+            beta_scale=None if np.isclose(beta_scale, 1.0) else float(beta_scale),
         )
     )
     focuses.append(_FOCUS_NORMAL)

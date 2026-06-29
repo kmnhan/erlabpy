@@ -3205,6 +3205,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
 
+    - Emit ``sigStateChanged`` whenever tool settings changed and the manager should
+      mark the workspace state dirty, but preview/info/output refreshes can wait.
+
     - Emit ``sigDataChanged`` whenever the displayed tool data or any manager-visible
       ImageTool outputs have changed. Managed descendants use this to become stale or
       auto-refresh from the current tool state.
@@ -3222,6 +3225,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     StateModel: type[M]
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
+    sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, *args, **kwargs) -> None:

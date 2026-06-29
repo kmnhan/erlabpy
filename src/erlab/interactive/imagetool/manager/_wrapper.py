@@ -388,6 +388,8 @@ class _ManagedWindowNode(QtCore.QObject):
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigInfoChanged.disconnect(self._handle_tool_info_changed)
             with contextlib.suppress(TypeError, RuntimeError):
+                old.sigStateChanged.disconnect(self._handle_tool_state_changed)
+            with contextlib.suppress(TypeError, RuntimeError):
                 old.sigDataChanged.disconnect(self._handle_tool_data_changed)
             old.removeEventFilter(self)
             old._set_managed_source_update_dialog(None)
@@ -436,6 +438,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self.manager._register_interaction_window(tool)
         tool.installEventFilter(self)
         tool.sigInfoChanged.connect(self._handle_tool_info_changed)
+        tool.sigStateChanged.connect(self._handle_tool_state_changed)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.destroyed.connect(self._handle_tool_window_destroyed)
         tool._set_managed_source_update_dialog(self.show_source_update_dialog)
@@ -1419,6 +1422,16 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         manager._update_figure_gallery_icon(self.uid)
         manager._update_info(uid=self.uid)
+
+    @QtCore.Slot()
+    def _handle_tool_state_changed(self) -> None:
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._note_interaction_activity()
+        manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
