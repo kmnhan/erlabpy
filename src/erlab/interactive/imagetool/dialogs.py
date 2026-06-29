@@ -337,10 +337,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
 
         self.setup_widgets()
 
-        if self.is_provenance_edit_mode:
-            self.buttonBox.accepted.connect(self._accept_provenance_edit)
-        else:
-            self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
         self.layout_.addRow(self.buttonBox)
 
@@ -396,6 +393,13 @@ class _DataManipulationDialog(QtWidgets.QDialog):
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while editing provenance."
             )
+            return
+        super().accept()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self.is_provenance_edit_mode:
+            self._accept_provenance_edit()
             return
         super().accept()
 
@@ -873,7 +877,7 @@ class DataTransformDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         if self.is_provenance_edit_mode:
-            self._accept_provenance_edit()
+            super().accept()
             return
 
         manager = self.batch_manager
@@ -1114,7 +1118,7 @@ class DataFilterDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         if self.is_provenance_edit_mode:
-            self._accept_provenance_edit()
+            super().accept()
             return
 
         manager = self.batch_manager

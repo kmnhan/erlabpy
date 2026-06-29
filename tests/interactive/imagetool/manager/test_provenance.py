@@ -4685,6 +4685,45 @@ def test_manager_provenance_native_transform_edit_mode_uses_dialog_operations(
     ]
 
 
+def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4, dtype=float).reshape((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = manager_provenance_edit.dialogs.AggregateDialog(
+        tool.slicer_area,
+        provenance_edit_mode=True,
+    )
+    _set_aggregate(dialog, dims=("x", "y"), func="mean")
+
+    warnings_shown: list[tuple[object, ...]] = []
+
+    def _record_warning(*args: object) -> QtWidgets.QMessageBox.StandardButton:
+        warnings_shown.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    def _unexpected_provenance_accept() -> None:
+        raise AssertionError("dialog validation must run before edit acceptance")
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+    monkeypatch.setattr(
+        dialog,
+        "_accept_provenance_edit",
+        _unexpected_provenance_accept,
+    )
+
+    dialog.buttonBox.accepted.emit()
+
+    assert warnings_shown
+    assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
 def test_manager_provenance_native_selection_edit_restores_slice_operations(
     qtbot,
 ) -> None:
