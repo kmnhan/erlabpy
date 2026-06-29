@@ -76,6 +76,8 @@ def _dict_to_qsettings(d: dict, qsettings: QtCore.QSettings, prefix: str = "") -
         key = f"{prefix}/{k}" if prefix else k
         if isinstance(v, dict):
             _dict_to_qsettings(v, qsettings, key)
+        elif v is None:
+            qsettings.remove(key)
         else:
             qsettings.setValue(key, v)
 
@@ -263,7 +265,10 @@ class OptionManager:
         """Set settings by name and value."""
         with self._lock:
             qsettings = self.qsettings
-            qsettings.setValue(name, value)
+            if value is None:
+                qsettings.remove(name)
+            else:
+                qsettings.setValue(name, value)
             qsettings.sync()
 
     def __getitem__(self, name: str) -> typing.Any:

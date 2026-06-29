@@ -185,6 +185,87 @@ class ColorListParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter)
         return state
 
 
+class FigureDpiOverrideWidget(QtWidgets.QWidget):
+    """Widget for an optional Figure Composer DPI override."""
+
+    sigDpiChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        dpi: float | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.override_check = QtWidgets.QCheckBox("Override stylesheet", self)
+        self.override_check.setObjectName("figureDpiOverrideCheck")
+        self.dpi_spin = QtWidgets.QDoubleSpinBox(self)
+        self.dpi_spin.setObjectName("figureDpiSpin")
+        self.dpi_spin.setRange(1.0, 10000.0)
+        self.dpi_spin.setDecimals(1)
+        self.dpi_spin.setSingleStep(10.0)
+        self.dpi_spin.setValue(100.0)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self.override_check)
+        layout.addWidget(self.dpi_spin)
+        layout.addStretch(1)
+
+        self.override_check.stateChanged.connect(self._override_changed)
+        self.dpi_spin.valueChanged.connect(self._spin_value_changed)
+        self.set_dpi(dpi)
+
+    def get_dpi(self) -> float | None:
+        if not self.override_check.isChecked():
+            return None
+        return float(self.dpi_spin.value())
+
+    def set_dpi(self, dpi: float | None) -> None:
+        value = None if dpi is None else float(dpi)
+        check_was_blocked = self.override_check.blockSignals(True)
+        spin_was_blocked = self.dpi_spin.blockSignals(True)
+        try:
+            if value is not None:
+                self.dpi_spin.setValue(value)
+            self.override_check.setChecked(value is not None)
+            self.dpi_spin.setEnabled(value is not None)
+        finally:
+            self.dpi_spin.blockSignals(spin_was_blocked)
+            self.override_check.blockSignals(check_was_blocked)
+
+    @QtCore.Slot(int)
+    def _override_changed(self, _state: int) -> None:
+        self.dpi_spin.setEnabled(self.override_check.isChecked())
+        self.sigDpiChanged.emit(self.get_dpi())
+
+    @QtCore.Slot(float)
+    def _spin_value_changed(self, _value: float) -> None:
+        self.sigDpiChanged.emit(self.get_dpi())
+
+
+class FigureDpiOverrideParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> FigureDpiOverrideWidget:
+        w = FigureDpiOverrideWidget()
+        w.sigChanged = w.sigDpiChanged  # type: ignore[attr-defined]
+        w.value = w.get_dpi  # type: ignore[attr-defined]
+        w.setValue = w.set_dpi  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return w
+
+
+class FigureDpiOverrideParameter(
+    pyqtgraph.parametertree.parameterTypes.SimpleParameter
+):
+    itemClass = FigureDpiOverrideParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "figure_dpi_override")
+        super().__init__(**opts)
+
+
 class StylesheetListWidget(QtWidgets.QWidget):
     """Widget for editing an ordered list of Matplotlib stylesheets."""
 

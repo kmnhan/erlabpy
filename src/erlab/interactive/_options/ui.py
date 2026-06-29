@@ -15,7 +15,11 @@ from erlab.interactive._options.core import (
     option_value,
     workspace_overridable_option_paths,
 )
-from erlab.interactive._options.parameters import ColorListWidget, StylesheetListWidget
+from erlab.interactive._options.parameters import (
+    ColorListWidget,
+    FigureDpiOverrideWidget,
+    StylesheetListWidget,
+)
 from erlab.interactive._options.schema import AppOptions
 
 _Scope = typing.Literal["user", "workspace"]
@@ -402,6 +406,8 @@ class OptionDialog(QtWidgets.QDialog):
             return ColorListWidget(parent=self)
         if ui_type == "matplotlib_stylesheets":
             return StylesheetListWidget(parent=self)
+        if ui_type == "figure_dpi_override":
+            return FigureDpiOverrideWidget(parent=self)
         if ui_type == "list" or "ui_limits" in extra:
             combo = QtWidgets.QComboBox(self)
             for choice in extra.get("ui_limits", ()):
@@ -471,6 +477,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.valueChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
+        elif isinstance(control, FigureDpiOverrideWidget):
+            control.sigDpiChanged.connect(
+                lambda _value, row=row: self._control_changed(row)
+            )
         elif isinstance(control, QtWidgets.QComboBox):
             control.currentIndexChanged.connect(
                 lambda _index, row=row: self._control_changed(row)
@@ -534,6 +544,8 @@ class OptionDialog(QtWidgets.QDialog):
     def _keeps_raw_workspace_value(control: QtWidgets.QWidget) -> bool:
         if isinstance(control, StylesheetListWidget):
             return True
+        if isinstance(control, FigureDpiOverrideWidget):
+            return False
         return isinstance(control, QtWidgets.QComboBox) and not isinstance(
             control, erlab.interactive.colors.ColorMapComboBox
         )
@@ -568,6 +580,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_colors()
         if isinstance(control, StylesheetListWidget):
             return control.get_stylesheets()
+        if isinstance(control, FigureDpiOverrideWidget):
+            return control.get_dpi()
         if isinstance(control, QtWidgets.QLineEdit):
             text = control.text()
             default_value = option_value(AppOptions(), path)
@@ -606,6 +620,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, StylesheetListWidget):
             control.set_stylesheets(_stylesheet_names(value))
+            return
+        if isinstance(control, FigureDpiOverrideWidget):
+            control.set_dpi(value)
             return
         if isinstance(control, QtWidgets.QLineEdit):
             if isinstance(value, list):

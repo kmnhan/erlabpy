@@ -90,6 +90,9 @@ def _default_figsize() -> tuple[float, float]:
 
 
 def _default_figure_dpi() -> float:
+    dpi = _current_options().figure.dpi
+    if dpi is not None:
+        return float(dpi)
     return float(_styled_rcparams_value("figure.dpi"))
 
 

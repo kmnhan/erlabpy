@@ -156,6 +156,8 @@ are a powerful way to control the styling of all figure elements. Figure Compose
 applies the Matplotlib stylesheets configured in the shared {guilabel}`Settings`
 window. These stylesheets affect new figure defaults such as size, dpi, and export
 settings, as well as the styling of all figure elements.
+If {guilabel}`DPI` in Settings has {guilabel}`Override stylesheet` enabled, that value
+is used for new figures instead of the stylesheet default.
 
 To add custom Matplotlib stylesheets:
 

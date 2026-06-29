@@ -49,15 +49,19 @@ def test_make_parameter_defaults_and_missing_child_continue() -> None:
     assert opts.colors == AppOptions().colors
 
 
-def test_make_parameter_round_trips_figure_stylesheets() -> None:
+def test_make_parameter_round_trips_figure_options() -> None:
     options = AppOptions.model_validate(
-        {"figure": {"stylesheets": ["classic", "missing-style"]}}
+        {"figure": {"stylesheets": ["classic", "missing-style"], "dpi": 150.0}}
     )
     param = make_parameter(options)
 
     stylesheet_param = param.child("figure").child("stylesheets")
     assert stylesheet_param.opts["type"] == "matplotlib_stylesheets"
     assert stylesheet_param.value() == ["classic", "missing-style"]
+    dpi_param = param.child("figure").child("dpi")
+    assert dpi_param.opts["type"] == "figure_dpi_override"
+    assert dpi_param.value() == 150.0
 
     opts = parameter_to_options(param)
     assert opts.figure.stylesheets == ["classic", "missing-style"]
+    assert opts.figure.dpi == 150.0

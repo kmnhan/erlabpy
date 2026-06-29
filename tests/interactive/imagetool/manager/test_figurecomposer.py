@@ -9027,6 +9027,46 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert export.bbox_inches == expected_bbox
 
 
+def test_figure_composer_default_dpi_option_overrides_stylesheet(
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(stylesheets=["classic"], dpi=180.0)}
+    )
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic",),
+    )
+
+    assert figurecomposer_defaults._default_figure_dpi() == 180.0
+    assert FigureSubplotsState().dpi == 180.0
+
+
+def test_figure_composer_dpi_option_affects_only_new_recipes(
+    qtbot,
+    restore_interactive_options,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(dpi=120.0)}
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    assert tool.tool_status.setup.dpi == 120.0
+
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(dpi=220.0)}
+    )
+    new_tool = FigureComposerTool(data)
+    qtbot.addWidget(new_tool)
+
+    assert tool.tool_status.setup.dpi == 120.0
+    assert new_tool.tool_status.setup.dpi == 220.0
+
+
 def test_figure_composer_defaults_skip_unavailable_stylesheets(
     monkeypatch,
     restore_interactive_options,
