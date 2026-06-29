@@ -60,6 +60,7 @@ from erlab.interactive._figurecomposer._text import (
     _dict_from_text,
     _format_dict,
     _format_plot_limit,
+    _literal_from_text,
     _plot_limit_from_text,
     _RawCode,
 )
@@ -469,6 +470,11 @@ def _build_plot_array_selection_page(
     page, layout = tool._new_step_form_page("figureComposerPlotArraySelectionPage")
     selection = _primary_selection(operation)
 
+    tool._add_form_section(
+        layout,
+        "Data",
+        object_name="figureComposerPlotArraySelectionDataSection",
+    )
     summary = QtWidgets.QLabel(_selection_summary(tool, operation), page)
     summary.setObjectName("figureComposerPlotArraySelectionSummary")
     summary.setWordWrap(True)
@@ -495,6 +501,11 @@ def _build_plot_array_selection_page(
         "Data array selected before plot_array draws this image.",
     )
 
+    tool._add_form_section(
+        layout,
+        "Dimensions",
+        object_name="figureComposerPlotArraySelectionDimensionsSection",
+    )
     source_data = None if source_mixed else _plot_array_source_data(tool, operation)
     if source_mixed or source_data is None:
         dimensions_message = QtWidgets.QLabel(
@@ -604,6 +615,8 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
         kwargs["ylim"] = operation.ylim
     if operation.crop:
         kwargs["crop"] = True
+    if operation.aspect is not None:
+        kwargs["aspect"] = operation.aspect
     if operation.colorbar != "none":
         kwargs["colorbar"] = True
     if operation.colorbar_kw:
@@ -658,6 +671,8 @@ def _plot_array_code_kwargs(operation: FigureOperationState) -> dict[str, typing
         kwargs["ylim"] = operation.ylim
     if operation.crop:
         kwargs["crop"] = True
+    if operation.aspect is not None:
+        kwargs["aspect"] = operation.aspect
     if operation.colorbar != "none":
         kwargs["colorbar"] = True
     if operation.colorbar_kw:
@@ -718,6 +733,33 @@ def _plot_limit_update_callback(
     return lambda text: tool._update_current_operation(
         **{attr: _plot_limit_from_text(text)}
     )
+
+
+def _format_aspect_value(value: typing.Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int | float):
+        return f"{float(value):g}"
+    return str(value)
+
+
+def _aspect_value_from_text(text: str) -> str | float | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped in {"auto", "equal"}:
+        return stripped
+    try:
+        value = _literal_from_text(stripped)
+    except FigureComposerInputError:
+        return stripped
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, int | float):
+        return stripped
+    return float(value)
 
 
 def _norm_gamma_value(operation: FigureOperationState) -> float:
@@ -807,6 +849,11 @@ def _build_plot_array_view_page(
 ) -> QtWidgets.QWidget:
     page, layout = tool._new_step_form_page("figureComposerPlotArrayViewPage")
 
+    tool._add_form_section(
+        layout,
+        "Image",
+        object_name="figureComposerPlotArrayViewImageSection",
+    )
     data = _safe_selected_plot_array_data(tool, operation)
     summary = QtWidgets.QLabel(
         "No source data is available."
@@ -839,6 +886,32 @@ def _build_plot_array_view_page(
         "Swap the x/y orientation before calling plot_array.",
     )
 
+    aspect_text, aspect_mixed = tool._batch_text(
+        operation,
+        lambda target: target.aspect,
+        _format_aspect_value,
+    )
+    aspect_edit = tool._line_edit(aspect_text, parent=page)
+    aspect_edit.setObjectName("figureComposerPlotArrayAspectEdit")
+    tool._apply_mixed_line_edit(aspect_edit, aspect_mixed)
+    tool._connect_line_edit_finished(
+        aspect_edit,
+        lambda text: tool._update_current_operation(
+            aspect=_aspect_value_from_text(text)
+        ),
+    )
+    tool._add_form_row(
+        layout,
+        "Aspect",
+        aspect_edit,
+        "Aspect argument passed through to imshow.",
+    )
+
+    tool._add_form_section(
+        layout,
+        "Axes",
+        object_name="figureComposerPlotArrayViewAxesSection",
+    )
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
     for label, attr in (("x", "xlim"), ("y", "ylim")):
         text, mixed = tool._batch_text(
@@ -888,6 +961,11 @@ def _build_plot_array_colors_page(
 ) -> QtWidgets.QWidget:
     page, layout = tool._new_step_form_page("figureComposerPlotArrayColorsPage")
 
+    tool._add_form_section(
+        layout,
+        "Image color",
+        object_name="figureComposerPlotArrayColorsImageColorSection",
+    )
     cmap_widget = QtWidgets.QWidget(page)
     cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
     cmap_layout.setContentsMargins(0, 0, 0, 0)
@@ -1062,6 +1140,11 @@ def _build_plot_array_colors_page(
         "Extra dict literal or keyword arguments for the norm constructor.",
     )
 
+    tool._add_form_section(
+        layout,
+        "Colorbar",
+        object_name="figureComposerPlotArrayColorsColorbarSection",
+    )
     colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
     colorbar_combo = tool._combo(
         ["none", "right"],
@@ -1181,6 +1264,7 @@ def _section_summary(
                     ("x", operation.xlim),
                     ("y", operation.ylim),
                     ("T", operation.transpose),
+                    ("aspect", operation.aspect),
                 )
                 if value
             ]

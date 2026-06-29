@@ -1930,7 +1930,7 @@ def test_figure_composer_plot_array_render_and_generated_code(
             "norm_gamma": 0.5,
             "vmin": 0.0,
             "vmax": 2.0,
-            "extra_kwargs": {"aspect": "equal"},
+            "aspect": "equal",
         }
     )
     tool = FigureComposerTool.from_sources(
@@ -1965,6 +1965,65 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "eplt.plot_array(data.qsel(eV=0.0).T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
+
+
+def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("view")
+
+    aspect_edit = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                QtWidgets.QLineEdit,
+                "figureComposerPlotArrayAspectEdit",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert aspect_edit is not None
+    assert aspect_edit.text() == ""
+
+    aspect_edit.setText("equal")
+    aspect_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].aspect == "equal"
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(tool.tool_status.operations[0])[
+            "aspect"
+        ]
+        == "equal"
+    )
+
+    aspect_edit.setText("2.5")
+    aspect_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].aspect == 2.5
+    assert (
+        figurecomposer_plot_array._plot_array_code_kwargs(
+            tool.tool_status.operations[0]
+        )["aspect"]
+        == 2.5
+    )
+
+    aspect_edit.setText("")
+    aspect_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].aspect is None
+    assert "aspect" not in figurecomposer_plot_array._plot_array_kwargs(
+        tool.tool_status.operations[0]
+    )
 
 
 def test_figure_composer_plot_array_colorbar_limit_changes_update_recipe(
@@ -2227,7 +2286,7 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
             "gamma": 0.75,
             "vmin": 0.0,
             "vmax": 1.0,
-            "extra_kwargs": {"aspect": "equal"},
+            "aspect": "equal",
         }
     )
 
@@ -2245,7 +2304,25 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
 
     code_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(power_operation)
     assert code_kwargs == runtime_kwargs
+    override_operation = power_operation.model_copy(
+        update={"extra_kwargs": {"aspect": "auto"}}
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(override_operation)["aspect"]
+        == "auto"
+    )
     assert figurecomposer_plot_array._norm_gamma_value(power_operation) == 0.75
+
+    assert figurecomposer_plot_array._format_aspect_value(None) == ""
+    assert figurecomposer_plot_array._format_aspect_value("equal") == "equal"
+    assert figurecomposer_plot_array._format_aspect_value(2) == "2"
+    assert figurecomposer_plot_array._aspect_value_from_text("") is None
+    assert figurecomposer_plot_array._aspect_value_from_text("auto") == "auto"
+    assert figurecomposer_plot_array._aspect_value_from_text("equal") == "equal"
+    assert figurecomposer_plot_array._aspect_value_from_text("2") == 2.0
+    assert figurecomposer_plot_array._aspect_value_from_text("custom") == "custom"
+    assert figurecomposer_plot_array._aspect_value_from_text("'manual'") == "manual"
+    assert figurecomposer_plot_array._aspect_value_from_text("[1, 2]") == "[1, 2]"
 
     norm_operation = power_operation.model_copy(
         update={
@@ -3979,6 +4056,10 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
                 name="plot",
                 axes=FigureAxesSelectionState(axes=((0, 0),)),
             ),
+            FigureOperationState.plot_array(
+                label="image plot",
+                source="image",
+            ).model_copy(update={"colorbar": "right"}),
         ),
         primary_source="image",
     )
@@ -4108,6 +4189,40 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(method_page, "figureComposerMethodCallSection")
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
     _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
+
+    tool.operation_list.setCurrentRow(4)
+    tool._update_operation_editor()
+    tool._select_step_section("selection")
+    plot_array_selection_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_selection_page is not None
+    _assert_step_editor_section(
+        plot_array_selection_page,
+        "figureComposerPlotArraySelectionDataSection",
+    )
+    _assert_step_editor_section(
+        plot_array_selection_page,
+        "figureComposerPlotArraySelectionDimensionsSection",
+    )
+    tool._select_step_section("view")
+    plot_array_view_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_view_page is not None
+    _assert_step_editor_section(
+        plot_array_view_page, "figureComposerPlotArrayViewImageSection"
+    )
+    _assert_step_editor_section(
+        plot_array_view_page, "figureComposerPlotArrayViewAxesSection"
+    )
+    tool._select_step_section("colors")
+    plot_array_colors_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_colors_page is not None
+    _assert_step_editor_section(
+        plot_array_colors_page,
+        "figureComposerPlotArrayColorsImageColorSection",
+    )
+    _assert_step_editor_section(
+        plot_array_colors_page,
+        "figureComposerPlotArrayColorsColorbarSection",
+    )
 
 
 def test_figure_composer_norm_helpers_cover_structured_and_custom_norms(
