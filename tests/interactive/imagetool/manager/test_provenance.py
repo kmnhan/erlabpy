@@ -822,6 +822,118 @@ def test_manager_provenance_editor_contract_rejects_mixed_editors() -> None:
     ) in errors
 
 
+def test_manager_provenance_editor_contract_rejects_ambiguous_editors() -> None:
+    class _StandaloneScriptDialogA(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+
+        def restore_transform_operation(
+            self,
+            operation: provenance.ToolProvenanceOperation,
+        ) -> None:
+            del operation
+
+    class _StandaloneScriptDialogB(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+
+        def restore_transform_operation(
+            self,
+            operation: provenance.ToolProvenanceOperation,
+        ) -> None:
+            del operation
+
+    try:
+        errors = manager_provenance_edit._operation_editor_contract_errors()
+        with pytest.raises(RuntimeError, match="Multiple standalone"):
+            manager_provenance_edit._standalone_editor_dialog_class_for_operation_type(
+                provenance.ScriptCodeOperation
+            )
+    finally:
+        _StandaloneScriptDialogA.operation_types = ()
+        _StandaloneScriptDialogB.operation_types = ()
+
+    assert (
+        "ScriptCodeOperation has multiple standalone editors: "
+        "_StandaloneScriptDialogA, _StandaloneScriptDialogB"
+    ) in errors
+
+
+def test_manager_provenance_editor_contract_rejects_multiple_grouped_editors() -> None:
+    class _GroupedScriptDialogA(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+        grouped_operation_only = True
+
+        @classmethod
+        def operation_group_for_edit(
+            cls,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+            operation_index: int,
+        ) -> tuple[int, int] | None:
+            del cls, operations, operation_index
+            return (0, 1)
+
+        def restore_transform_operations(
+            self,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+        ) -> None:
+            del operations
+
+    class _GroupedScriptDialogB(manager_provenance_edit.dialogs.DataTransformDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+        grouped_operation_only = True
+
+        @classmethod
+        def operation_group_for_edit(
+            cls,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+            operation_index: int,
+        ) -> tuple[int, int] | None:
+            del cls, operations, operation_index
+            return (0, 1)
+
+        def restore_transform_operations(
+            self,
+            operations: Sequence[provenance.ToolProvenanceOperation],
+        ) -> None:
+            del operations
+
+    try:
+        errors = manager_provenance_edit._operation_editor_contract_errors()
+    finally:
+        _GroupedScriptDialogA.operation_types = ()
+        _GroupedScriptDialogB.operation_types = ()
+
+    assert (
+        "ScriptCodeOperation has multiple grouped editors: "
+        "_GroupedScriptDialogA, _GroupedScriptDialogB"
+    ) in errors
+
+
+def test_manager_provenance_editor_contract_rejects_missing_editor() -> None:
+    class _ScriptDialogWithoutRestore(
+        manager_provenance_edit.dialogs.DataTransformDialog
+    ):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+
+    class _ScriptFilterWithoutRestore(manager_provenance_edit.dialogs.DataFilterDialog):
+        __module__ = manager_provenance_edit.dialogs.__name__
+        operation_types = (provenance.ScriptCodeOperation,)
+
+    try:
+        errors = manager_provenance_edit._operation_editor_contract_errors()
+        with pytest.raises(RuntimeError, match="Invalid ImageTool"):
+            manager_provenance_edit._validate_operation_editor_contract()
+    finally:
+        _ScriptDialogWithoutRestore.operation_types = ()
+        _ScriptFilterWithoutRestore.operation_types = ()
+
+    assert "ScriptCodeOperation has no provenance editor" in errors
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -4724,6 +4836,83 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
 
 
+@pytest.mark.parametrize("mode", ["empty", "error", "valid"])
+def test_manager_provenance_base_edit_mode_accept_paths(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+
+    class _EditModeDialog(manager_provenance_edit.dialogs._DataManipulationDialog):
+        def provenance_edit_operations(
+            self,
+        ) -> list[provenance.ToolProvenanceOperation]:
+            if mode == "empty":
+                return []
+            if mode == "error":
+                raise RuntimeError("operation failure")
+            return [provenance.IselOperation(kwargs={"x": 0})]
+
+    dialog = _EditModeDialog(tool.slicer_area, provenance_edit_mode=True)
+    warnings_shown: list[tuple[object, ...]] = []
+    critical_shown: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args: (
+            warnings_shown.append(args) or QtWidgets.QMessageBox.StandardButton.Ok
+        ),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: critical_shown.append(args),
+    )
+
+    dialog.accept()
+
+    if mode == "valid":
+        assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+        assert warnings_shown == []
+        assert critical_shown == []
+    else:
+        assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+        assert bool(warnings_shown) is (mode == "empty")
+        assert bool(critical_shown) is (mode == "error")
+
+
+def test_manager_provenance_base_edit_operations_must_be_implemented(qtbot) -> None:
+    data = xr.DataArray([1.0, 2.0], dims=("x",))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = manager_provenance_edit.dialogs._DataManipulationDialog(tool.slicer_area)
+
+    with pytest.raises(NotImplementedError):
+        dialog.provenance_edit_operations()
+
+
+def test_manager_provenance_filter_edit_mode_accept_skips_preview_apply(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = manager_provenance_edit.dialogs.NormalizeDialog(
+        tool.slicer_area,
+        provenance_edit_mode=True,
+    )
+    dialog.dim_checks["x"].setChecked(True)
+
+    assert not hasattr(dialog, "preview_button")
+
+    dialog.accept()
+
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert tool.slicer_area._accepted_filter_provenance_operation is None
+
+
 def test_manager_provenance_native_selection_edit_restores_slice_operations(
     qtbot,
 ) -> None:
@@ -4776,6 +4965,129 @@ def test_manager_provenance_edit_controller_native_dialog_error_branches() -> No
                 0,
                 0,
             ),
+        )
+
+
+def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _fake_edit_controller()
+    data = xr.DataArray(np.arange(4.0), dims=("x",))
+    operation = provenance.IselOperation(kwargs={"x": 0})
+    spec = provenance.full_data(operation)
+    row = provenance._ProvenanceDisplayRow(
+        provenance.DerivationEntry("isel", None),
+        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    )
+    ref = typing.cast("provenance._ProvenanceStepRef", row.edit_ref)
+    dialog_match = manager_provenance_edit._OperationDialogMatch(
+        SelectionDialog,
+        0,
+        1,
+    )
+    replayed_specs: list[provenance.ToolProvenanceSpec] = []
+
+    def _replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed_specs.append(candidate)
+        return data, candidate
+
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        _replay_candidate_result,
+    )
+    monkeypatch.setattr(
+        QtWidgets.QDialog,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+
+    assert (
+        controller._edited_native_operations(
+            typing.cast("typing.Any", _fake_edit_node(spec)),
+            row,
+            spec,
+            ref,
+            dialog_match,
+        )
+        is None
+    )
+    assert replayed_specs == [provenance.full_data()]
+
+    def _raise_replay_cancelled(
+        *_args: object,
+        **_kwargs: object,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        raise manager_provenance_edit._TrustedScriptReplayCancelled
+
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        _raise_replay_cancelled,
+    )
+    with pytest.raises(manager_provenance_edit._TrustedScriptReplayCancelled):
+        controller._edited_native_operations(
+            typing.cast("typing.Any", _fake_edit_node(spec)),
+            row,
+            spec,
+            ref,
+            dialog_match,
+        )
+
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("replay failed")),
+    )
+    with pytest.raises(manager_provenance_edit._ProvenanceReplayFailure) as exc:
+        controller._edited_native_operations(
+            typing.cast("typing.Any", _fake_edit_node(spec)),
+            row,
+            spec,
+            ref,
+            dialog_match,
+        )
+    assert "opening the provenance editor" in str(exc.value)
+
+
+def test_manager_provenance_restore_native_edit_dialog_rejects_bad_dialogs(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    filter_dialog = manager_provenance_edit.dialogs.NormalizeDialog(tool.slicer_area)
+    base_dialog = manager_provenance_edit.dialogs._DataManipulationDialog(
+        tool.slicer_area
+    )
+    filter_operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+
+    manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
+        filter_dialog,
+        (filter_operation,),
+        None,
+    )
+
+    assert filter_dialog.provenance_edit_operations() == [filter_operation]
+
+    with pytest.raises(ValueError, match="one operation"):
+        manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
+            filter_dialog,
+            (
+                provenance.NormalizeOperation(dims=("x",), mode="area"),
+                provenance.NormalizeOperation(dims=("x",), mode="min"),
+            ),
+            None,
+        )
+    with pytest.raises(TypeError, match="transform or filter"):
+        manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
+            base_dialog,
+            (provenance.IselOperation(kwargs={"x": 0}),),
+            None,
         )
 
 
