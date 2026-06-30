@@ -164,7 +164,7 @@ import math
 import pathlib
 import typing
 import uuid
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -281,6 +281,146 @@ class _ProvenanceDisplayRow:
     scope: typing.Literal["display", "source"] = "display"
     children: tuple[_ProvenanceDisplayRow, ...] = ()
     script_input_path: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ProvenanceDisplayContext:
+    """Cheap metadata known while streamlining provenance display rows."""
+
+    dims: tuple[Hashable, ...] | None = None
+    sizes: dict[Hashable, int] | None = None
+
+    @classmethod
+    def from_source(
+        cls,
+        source_kind: _SourceKind,
+        parent_data: xr.DataArray | None,
+    ) -> _ProvenanceDisplayContext:
+        if parent_data is None:
+            return cls()
+        if source_kind != "full_data" and cls.dims_may_restore_nonuniform(
+            parent_data.dims
+        ):
+            return cls()
+        return cls(tuple(parent_data.dims), dict(parent_data.sizes))
+
+    @staticmethod
+    def dims_may_restore_nonuniform(dims: Sequence[Hashable]) -> bool:
+        return any(isinstance(dim, str) and dim.endswith("_idx") for dim in dims)
+
+    @staticmethod
+    def _isel_indexer_size(indexer: typing.Any, size: int) -> tuple[bool, int | None]:
+        if isinstance(indexer, slice):
+            return True, len(range(*indexer.indices(size)))
+        if isinstance(indexer, (bool, np.bool_)):
+            return False, None
+        if isinstance(indexer, (int, np.integer)):
+            return True, None
+        if isinstance(indexer, xr.DataArray):
+            return False, None
+        if isinstance(indexer, np.ndarray):
+            if indexer.ndim == 0:
+                return True, None
+            if indexer.ndim != 1 or indexer.dtype == np.dtype(bool):
+                return False, None
+            return True, int(indexer.shape[0])
+        if isinstance(indexer, range):
+            return True, len(indexer)
+        if isinstance(indexer, Sequence) and not isinstance(indexer, (bytes, str)):
+            if len(indexer) and all(
+                isinstance(item, (bool, np.bool_)) for item in indexer
+            ):
+                return False, None
+            return True, len(indexer)
+        return False, None
+
+    def _with_dims(self, dims: Iterable[Hashable]) -> _ProvenanceDisplayContext:
+        dims = tuple(dims)
+        return type(self)(
+            dims,
+            None
+            if self.sizes is None
+            else {dim: self.sizes[dim] for dim in dims if dim in self.sizes},
+        )
+
+    def advance(self, operation: ToolProvenanceOperation) -> _ProvenanceDisplayContext:
+        operation_name = getattr(operation, "op", None)
+        if operation_name in {"sort_coord_order", "rename"}:
+            return self
+        if operation_name == "source_view":
+            if self.dims is not None and (
+                getattr(operation, "source_kind", None) == "full_data"
+                or not self.dims_may_restore_nonuniform(self.dims)
+            ):
+                return self
+            return type(self)()
+        if operation_name in {"qsel", "sel"}:
+            return (
+                self if not getattr(operation, "decoded_kwargs", {}) else type(self)()
+            )
+        if operation_name == "isel":
+            kwargs = getattr(operation, "decoded_kwargs", {})
+            if not kwargs:
+                return self
+            if self.dims is None or self.sizes is None:
+                return type(self)()
+            dims = list(self.dims)
+            sizes = dict(self.sizes)
+            for dim, indexer in kwargs.items():
+                if dim not in dims or dim not in sizes:
+                    return type(self)()
+                known, indexer_size = self._isel_indexer_size(indexer, sizes[dim])
+                if not known:
+                    return type(self)()
+                if indexer_size is None:
+                    dims.remove(dim)
+                    sizes.pop(dim, None)
+                else:
+                    sizes[dim] = indexer_size
+            return type(self)(
+                tuple(dims),
+                {dim: sizes[dim] for dim in dims if dim in sizes},
+            )
+        if operation_name == "transpose":
+            if self.dims is None:
+                return type(self)()
+            operation_dims = getattr(operation, "dims", None)
+            target_dims = (
+                tuple(operation_dims)
+                if operation_dims is not None
+                else tuple(reversed(self.dims))
+            )
+            if set(target_dims) != set(self.dims) or len(target_dims) != len(self.dims):
+                return type(self)()
+            return self._with_dims(target_dims)
+        if operation_name == "squeeze":
+            if self.dims is None or self.sizes is None:
+                return type(self)()
+            operation_dims = getattr(operation, "dims", None)
+            if operation_dims is None:
+                return self._with_dims(
+                    [dim for dim in self.dims if self.sizes.get(dim) != 1]
+                )
+            target_dims = tuple(operation_dims)
+            if any(
+                dim not in self.dims or dim not in self.sizes for dim in target_dims
+            ):
+                return type(self)()
+            singleton_dims = [dim for dim in target_dims if self.sizes.get(dim) == 1]
+            if not singleton_dims:
+                return self
+            if len(singleton_dims) != len(target_dims):
+                return type(self)()
+            return self._with_dims(
+                dim for dim in self.dims if dim not in singleton_dims
+            )
+        if operation_name == "restore_nonuniform_dims":
+            if self.dims is not None and not self.dims_may_restore_nonuniform(
+                self.dims
+            ):
+                return self
+            return type(self)()
+        return type(self)()
 
 
 @dataclass(frozen=True)
@@ -2898,12 +3038,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         parent_data: xr.DataArray | None = None,
         include_hidden_script_code: bool = False,
     ) -> tuple[tuple[int, ToolProvenanceOperation], ...]:
-        current_data: xr.DataArray | None = None
-        if parent_data is not None:
-            current_data = ToolProvenanceSpec._starting_data_for_kind(
-                source_kind,
-                parent_data,
-            )
+        context = _ProvenanceDisplayContext.from_source(source_kind, parent_data)
 
         streamlined: list[tuple[int, ToolProvenanceOperation]] = []
         for index, operation in enumerate(operations):
@@ -2942,49 +3077,38 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     )
                 )
             # Rule 3: drop transpose calls that do not change dimension order.
-            elif _operation_is(operation, "transpose") and current_data is not None:
+            elif _operation_is(operation, "transpose") and context.dims is not None:
                 operation_dims = getattr(operation, "dims", None)
                 target_dims = (
                     tuple(operation_dims)
                     if operation_dims is not None
-                    else tuple(reversed(current_data.dims))
+                    else tuple(reversed(context.dims))
                 )
-                hide_operation = target_dims == tuple(current_data.dims)
+                hide_operation = target_dims == context.dims
             # Rule 4: drop squeeze calls that would not remove singleton dimensions.
-            elif _operation_is(operation, "squeeze") and current_data is not None:
+            elif _operation_is(operation, "squeeze") and context.sizes is not None:
                 operation_dims = getattr(operation, "dims", None)
                 if operation_dims is None:
-                    hide_operation = not any(size == 1 for size in current_data.shape)
+                    hide_operation = not any(
+                        size == 1 for size in context.sizes.values()
+                    )
                 else:
                     hide_operation = not any(
-                        current_data.sizes.get(dim) == 1 for dim in operation_dims
+                        context.sizes.get(dim) == 1 for dim in operation_dims
                     )
             # Rule 5: drop nonuniform restoration when it would not change dimensions.
             elif (
                 _operation_is(operation, "restore_nonuniform_dims")
-                and current_data is not None
+                and context.dims is not None
             ):
-                hide_operation = (
-                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                        current_data
-                    ).dims
-                    == current_data.dims
-                )
+                hide_operation = not context.dims_may_restore_nonuniform(context.dims)
             if not hide_operation:
                 streamlined.append((index, operation))
 
-            # Rule 6: keep anything ambiguous. If replaying an operation fails while
-            # building the heuristic context, stop making data-dependent decisions for
-            # later steps and preserve them verbatim.
-            if current_data is None or parent_data is None:
-                current_data = None
-            else:
-                try:
-                    current_data = operation.apply(
-                        current_data, parent_data=parent_data
-                    )
-                except Exception:
-                    current_data = None
+            # Rule 6: keep anything ambiguous. Metadata-only display never executes
+            # operations; if a step has unknown effects, later no-op checks become
+            # conservative and preserve rows/code.
+            context = context.advance(operation)
 
         return tuple(streamlined)
 
@@ -3110,21 +3234,17 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             for script_input in self.script_inputs
         )
 
-        current_data = parent_data
+        stage_parent_data = parent_data
         for stage in self.replay_stages:
             entries.extend(
                 operation.derivation_entry()
                 for _, operation in self._streamlined_operation_refs(
                     stage.source_kind,
                     stage.operations,
-                    parent_data=current_data,
+                    parent_data=stage_parent_data,
                 )
             )
-            if current_data is not None:
-                try:
-                    current_data = _apply_replay_stage(stage, current_data)
-                except Exception:
-                    current_data = None
+            stage_parent_data = None
 
         entries.extend(
             operation.derivation_entry()
@@ -3234,12 +3354,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         ),
                     )
                 )
-            current_data = parent_data
+            stage_parent_data = parent_data
             for stage_index, stage in enumerate(self.replay_stages):
                 for operation_index, operation in self._streamlined_operation_refs(
                     stage.source_kind,
                     stage.operations,
-                    parent_data=current_data,
+                    parent_data=stage_parent_data,
                 ):
                     step_ref = _ProvenanceStepRef(
                         "operation",
@@ -3253,11 +3373,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                             replay_ref=step_ref,
                         )
                     )
-                if current_data is not None:
-                    try:
-                        current_data = _apply_replay_stage(stage, current_data)
-                    except Exception:
-                        current_data = None
+                stage_parent_data = None
             rows.extend(
                 _ProvenanceDisplayRow(
                     operation.derivation_entry(),
@@ -3285,12 +3401,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             )
             return scoped_rows(rows)
         if self.kind == "file":
-            current_data = parent_data
+            stage_parent_data = parent_data
             for stage_index, stage in enumerate(self.replay_stages):
                 for operation_index, operation in self._streamlined_operation_refs(
                     stage.source_kind,
                     stage.operations,
-                    parent_data=current_data,
+                    parent_data=stage_parent_data,
                 ):
                     step_ref = _ProvenanceStepRef(
                         "operation",
@@ -3304,11 +3420,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                             replay_ref=step_ref,
                         )
                     )
-                if current_data is not None:
-                    try:
-                        current_data = _apply_replay_stage(stage, current_data)
-                    except Exception:
-                        current_data = None
+                stage_parent_data = None
             return scoped_rows(rows)
 
         rows.extend(

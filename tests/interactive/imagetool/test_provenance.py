@@ -1829,6 +1829,117 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
         data.isel(z=slice(0, 1)).squeeze(dim=("z",), drop=True),
     )
 
+    chained_squeeze_data = xr.DataArray(
+        np.ones((1, 1)),
+        dims=("x", "z"),
+        name="scan",
+    )
+    chained_squeeze_spec = provenance.full_data(
+        provenance.SqueezeOperation(dims=("z",)),
+        provenance.SqueezeOperation(),
+    )
+    chained_squeeze_entries = chained_squeeze_spec.display_entries(
+        parent_data=chained_squeeze_data
+    )
+    assert [entry.label for entry in chained_squeeze_entries] == [
+        "Start from current parent ImageTool data",
+        'squeeze(dim=("z",))',
+        "squeeze()",
+    ]
+    chained_squeeze_code = typing.cast(
+        "str",
+        chained_squeeze_spec.display_code(parent_data=chained_squeeze_data),
+    )
+    chained_namespace = _exec_generated_code(
+        chained_squeeze_code,
+        {"data": chained_squeeze_data.copy(deep=True)},
+    )
+    chained_squeezed = chained_namespace["derived"]
+    assert isinstance(chained_squeezed, xr.DataArray)
+    xr.testing.assert_identical(
+        chained_squeezed,
+        chained_squeeze_data.squeeze(dim=("z",)).squeeze(),
+    )
+
+
+def test_tool_provenance_display_streamlining_is_metadata_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _base_data()
+    calls: list[str] = []
+
+    def record_apply(
+        self: provenance.ToolProvenanceOperation,
+        data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self.op)
+        return data
+
+    monkeypatch.setattr(
+        provenance.SymmetrizeNfoldOperation,
+        "apply",
+        record_apply,
+    )
+    monkeypatch.setattr(
+        provenance.KspaceConvertOperation,
+        "apply",
+        record_apply,
+    )
+    spec = provenance.full_data(
+        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
+        provenance.KspaceConvertOperation(),
+    )
+
+    rows = spec.display_rows(parent_data=data)
+    entries = spec.display_entries(parent_data=data)
+    code = spec.display_code(parent_data=data)
+
+    assert calls == []
+    assert any(row.entry.label.startswith("Rotational Symmetrize") for row in rows)
+    assert any(entry.label.startswith("Convert to momentum") for entry in entries)
+    assert code is not None
+    assert "symmetrize_nfold" in code
+    assert ".kspace.convert(" in code
+
+    staged_spec = provenance.script(
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+        replay_stages=(provenance.ReplayStage.from_source_spec(spec),),
+    )
+    assert staged_spec.display_rows(parent_data=data)
+    assert staged_spec.display_code(parent_data=data) is not None
+    assert calls == []
+
+    spec.apply(data)
+    assert calls == ["symmetrize_nfold", "kspace_convert"]
+
+
+def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None:
+    spec = provenance.full_data(
+        provenance.TransposeOperation(dims=("x", "y", "z")),
+        provenance.SqueezeOperation(),
+        provenance.RestoreNonuniformDimsOperation(),
+    )
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Start from current parent ImageTool data",
+        "transpose(('x', 'y', 'z'))",
+        "squeeze()",
+        "Restore nonuniform dimensions",
+    ]
+    unknown_code = typing.cast("str", spec.display_code())
+    assert ".transpose(" in unknown_code
+    assert ".squeeze()" in unknown_code
+    assert "restore_nonuniform_dims" in unknown_code
+
+    data = _base_data()
+    assert [entry.label for entry in spec.display_entries(parent_data=data)] == [
+        "Start from current parent ImageTool data",
+    ]
+    assert spec.display_code(parent_data=data) is None
+
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 

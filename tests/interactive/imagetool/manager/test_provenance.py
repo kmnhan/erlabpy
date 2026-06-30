@@ -1107,6 +1107,55 @@ def _trust_required_script_spec() -> provenance.ToolProvenanceSpec:
     )
 
 
+def test_manager_source_bound_derivation_rows_are_metadata_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def record_apply(
+        self: provenance.ToolProvenanceOperation,
+        data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self.op)
+        return data
+
+    monkeypatch.setattr(
+        provenance.SymmetrizeNfoldOperation,
+        "apply",
+        record_apply,
+    )
+    monkeypatch.setattr(
+        provenance.KspaceConvertOperation,
+        "apply",
+        record_apply,
+    )
+    source_spec = provenance.full_data(
+        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
+        provenance.KspaceConvertOperation(),
+    )
+    parent = _fake_edit_node(provenance.full_data(), uid="parent")
+    parent.current_source_data = lambda: pytest.fail(
+        "metadata rendering must not compute parent source data"
+    )
+    child = _fake_edit_node(
+        None,
+        uid="child",
+        parent_uid="parent",
+        source_spec=source_spec,
+        source_display_spec=source_spec,
+    )
+    child.manager = types.SimpleNamespace(_parent_node=lambda _node: parent)
+
+    rows = manager_wrapper._ManagedWindowNode.derivation_display_rows.fget(child)
+
+    assert calls == []
+    assert rows is not None
+    assert any(row.entry.label.startswith("Rotational Symmetrize") for row in rows)
+    assert any(row.entry.label.startswith("Convert to momentum") for row in rows)
+
+
 def test_manager_trusted_script_replay_prompt_is_session_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6301,6 +6350,21 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         )
 
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
+        parent_node = manager._tool_graph.root_wrappers[0]
+        original_current_source_data = type(parent_node).current_source_data
+
+        def fail_parent_current_source_data(self):
+            if self is parent_node:
+                raise AssertionError(
+                    "metadata rendering must not compute parent source data"
+                )
+            return original_current_source_data(self)
+
+        monkeypatch.setattr(
+            type(parent_node),
+            "current_source_data",
+            fail_parent_current_source_data,
+        )
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
@@ -6311,6 +6375,11 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         assert not any("Sort coordinates" in line for line in derivation)
         assert any(line.startswith("transpose(") for line in derivation)
 
+        monkeypatch.setattr(
+            type(parent_node),
+            "current_source_data",
+            original_current_source_data,
+        )
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         namespace = _exec_generated_code(
             copied,

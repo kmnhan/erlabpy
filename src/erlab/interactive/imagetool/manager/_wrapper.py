@@ -963,7 +963,6 @@ class _ManagedWindowNode(QtCore.QObject):
             if source_spec is not None:
                 rows.extend(
                     source_spec.display_rows(
-                        parent_data=parent.current_source_data(),
                         scope="source",
                     )
                 )
