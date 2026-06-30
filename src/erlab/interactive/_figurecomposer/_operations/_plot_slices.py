@@ -16,7 +16,10 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
     _selection_code,
 )
-from erlab.interactive._figurecomposer._defaults import _current_options
+from erlab.interactive._figurecomposer._defaults import (
+    _current_options,
+    _styled_rcparams_value,
+)
 from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._labels import (
     label_context,
@@ -92,6 +95,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _live_layout_axes,
+    _tool_figure_options_context,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -500,13 +504,31 @@ def _panel_style_has_overrides(style: FigurePlotSlicesPanelStyleState) -> bool:
 
 
 def _effective_panel_cmap(
-    operation: FigureOperationState, style: FigurePlotSlicesPanelStyleState
+    operation: FigureOperationState,
+    style: FigurePlotSlicesPanelStyleState,
+    *,
+    default_cmap: str | None = None,
 ) -> str:
     if style.cmap is not None:
         return _matplotlib_cmap_name(style.cmap)
     if operation.cmap is not None:
         return _matplotlib_cmap_name(operation.cmap)
-    return _matplotlib_cmap_name(_current_options().colors.cmap.name)
+    if default_cmap is None:
+        default_cmap = _current_options().colors.cmap.name
+    return _matplotlib_cmap_name(default_cmap)
+
+
+def _plot_slices_default_cmap(tool: FigureComposerTool) -> str:
+    with _tool_figure_options_context(tool):
+        return str(_styled_rcparams_value("image.cmap"))
+
+
+def _plot_slices_cmap_base_and_reverse(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, bool]:
+    if operation.cmap is None:
+        return _cmap_base_and_reverse(_plot_slices_default_cmap(tool))
+    return _cmap_base_and_reverse(operation.cmap)
 
 
 def _operation_with_panel_norm_style(
@@ -583,6 +605,8 @@ def _panel_cmap_argument(
             else None
         )
 
+    default_cmap = _plot_slices_default_cmap(tool)
+
     def value_getter(key: _PlotSlicesPanelKey) -> str:
         style = styles.get(
             (key.map_index, key.slice_index),
@@ -591,7 +615,7 @@ def _panel_cmap_argument(
                 slice_index=key.slice_index,
             ),
         )
-        return _effective_panel_cmap(operation, style)
+        return _effective_panel_cmap(operation, style, default_cmap=default_cmap)
 
     values = [value_getter(key) for key in keys]
     first = values[0] if values else operation.cmap
@@ -1303,12 +1327,14 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         connect_signal: Callable[
             [QtWidgets.QWidget, typing.Any, Callable[..., None]], None
         ],
+        default_cmap: str,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._operation = operation
         self._panel_keys = panel_keys
         self._styles = _panel_style_map(operation)
+        self._default_cmap = default_cmap
         self._updating = False
 
         self.panel_list = QtWidgets.QListWidget(self)
@@ -1452,7 +1478,13 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         style = _panel_style_from_map(self._styles, key)
         parts = [key.label]
         if _panel_style_has_cmap_override(style):
-            parts.append(_effective_panel_cmap(self._operation, style))
+            parts.append(
+                _effective_panel_cmap(
+                    self._operation,
+                    style,
+                    default_cmap=self._default_cmap,
+                )
+            )
         if _panel_style_has_norm_override(style):
             norm_operation = _operation_with_panel_norm_style(self._operation, style)
             parts.append(_effective_norm_name(norm_operation.norm_name))
@@ -1530,7 +1562,11 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         values = tuple(
             _cmap_base_and_reverse(style.cmap)[0]
             if style.cmap is not None
-            else _effective_panel_cmap(self._operation, style)
+            else _effective_panel_cmap(
+                self._operation,
+                style,
+                default_cmap=self._default_cmap,
+            )
             for style in styles
         )
         reversed_values = tuple(
@@ -1633,7 +1669,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
             return
         if check_state == QtCore.Qt.CheckState.Checked:
-            cmap = self._operation.cmap or _current_options().colors.cmap.name
+            cmap = self._operation.cmap or self._default_cmap
             self._update_selected_styles({"cmap": cmap})
         else:
             self._update_selected_styles({"cmap": None})
@@ -1662,7 +1698,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
             return
         base = self.cmap_combo.current_matplotlib_name()
         if self.cmap_combo.currentData() is _MISSING:
-            base = self._operation.cmap or _current_options().colors.cmap.name
+            base = self._operation.cmap or self._default_cmap
         reverse = check_state == QtCore.Qt.CheckState.Checked
         self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
 
@@ -3283,7 +3319,7 @@ def _build_plot_slices_editor(
             "Image color",
             object_name="figureComposerPlotSlicesColorsImageColorSection",
         )
-        cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
+        cmap_base, cmap_reversed = _plot_slices_cmap_base_and_reverse(tool, operation)
         cmap_widget = QtWidgets.QWidget(colors_page)
         cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
         cmap_layout.setContentsMargins(0, 0, 0, 0)
@@ -3578,6 +3614,7 @@ def _build_plot_slices_editor(
                 operation,
                 _plot_slices_panel_keys(tool, operation),
                 tool._connect_editor_signal,
+                _plot_slices_default_cmap(tool),
                 colors_page,
             )
             panel_editor.setObjectName("figureComposerPlotSlicesPanelStyleEditor")
@@ -3924,7 +3961,9 @@ def _update_current_cmap(
     def update_operation(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
-        operation_base, operation_reverse = _cmap_base_and_reverse(operation.cmap)
+        operation_base, operation_reverse = _plot_slices_cmap_base_and_reverse(
+            tool, operation
+        )
         next_base = operation_base if base is None else base
         next_reverse = operation_reverse if reverse is None else reverse
         return operation.model_copy(

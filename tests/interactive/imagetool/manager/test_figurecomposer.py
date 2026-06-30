@@ -1845,6 +1845,85 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
         mpl_style.reload_library()
 
 
+def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-slices-image-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data").isel(eV=0)
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=("data",),
+        )
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_list.setCurrentRow(0)
+        tool._select_step_section("colors")
+
+        cmap_combo = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    erlab.interactive.colors.ColorMapComboBox,
+                    "figureComposerCmapCombo",
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        cmap_reverse_check = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    QtWidgets.QCheckBox, "figureComposerCmapReverseCheck"
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert cmap_combo is not None
+        assert cmap_reverse_check is not None
+        assert cmap_combo.currentText() == "plasma"
+        assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
+        assert tool.tool_status.operations[0].cmap is None
+
+        kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+            tool, tool.tool_status.operations[0]
+        )
+        assert "cmap" not in kwargs
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        assert tool.figure.axes[0].images[-1].get_cmap().name == "plasma"
+
+        cmap_reverse_check.setChecked(True)
+
+        assert tool.tool_status.operations[0].cmap == "plasma_r"
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
+
+
 def test_figure_composer_plot_array_colormap_editor_initialization_edges(
     qtbot,
 ) -> None:
@@ -6255,6 +6334,7 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
     )
     qtbot.addWidget(editor)
     emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
@@ -6305,6 +6385,7 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
     )
     qtbot.addWidget(editor)
     emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
@@ -14043,6 +14124,66 @@ def test_figure_composer_toolbar_line_style_widget_updates_all_controls(qtbot) -
     assert updated.line_kw["dash_capstyle"] == "round"
     assert "mfc" not in updated.line_kw
     assert "custom" not in updated.line_kw
+
+
+def test_figure_composer_toolbar_plot_slices_panel_cmap_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-toolbar-panel-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data")
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=("data",),
+            axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            slice_dim="eV",
+            slice_values=(-0.5, 0.5),
+        )
+        tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(ncols=2),
+                sources=(FigureSourceState(name="data", label="data"),),
+                operations=(operation,),
+                primary_source="data",
+            ),
+        )
+        qtbot.addWidget(tool)
+        tool.show_figure_window(activate=False)
+
+        figurecomposer_toolbar_dialogs.show_axes_customize_dialog(tool)
+        dialog = typing.cast("QtWidgets.QDialog", tool._axes_customize_dialog)
+        qtbot.addWidget(dialog)
+        editor = dialog.findChild(figurecomposer_plot_slices._PanelStyleEditorWidget)
+        assert editor is not None
+        assert editor.cmap_combo.currentText() == "plasma"
+        assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+        editor.cmap_override_check.click()
+
+        assert tool.tool_status.operations[0].panel_styles == (
+            FigurePlotSlicesPanelStyleState(
+                map_index=0,
+                slice_index=0,
+                cmap="plasma",
+            ),
+        )
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
 
 
 def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:

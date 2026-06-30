@@ -60,6 +60,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _norm_clip_text,
     _PanelLineStyleEditorWidget,
     _PanelStyleEditorWidget,
+    _plot_slices_default_cmap,
     _plot_slices_panel_keys,
     _plot_slices_panel_kind,
     _plot_slices_shape,
@@ -647,6 +648,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             operation,
             target.panel_keys,
             _connect_panel_editor_signal,
+            _plot_slices_default_cmap(tool),
             images_page,
         )
 
