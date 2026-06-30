@@ -310,6 +310,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         if self.title is not None:
             self.setWindowTitle(self.title)
 
+        self._slicer_area: Callable[[], ImageSlicerArea | None]
         self.slicer_area = slicer_area
         self._provenance_edit_mode = provenance_edit_mode
         self._batch_manager = (

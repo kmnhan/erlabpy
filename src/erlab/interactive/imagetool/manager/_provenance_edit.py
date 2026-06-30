@@ -1948,16 +1948,12 @@ class _ProvenanceEditController:
                     exc,
                 ) from exc
 
-        dialog_parent = (
-            self._manager if isinstance(self._manager, QtWidgets.QWidget) else None
-        )
+        manager: object = self._manager
+        dialog_parent = manager if isinstance(manager, QtWidgets.QWidget) else None
         temp_tool = None
         try:
             if issubclass(dialog_match.dialog_cls, dialogs.SelectionDialog):
-                selection_dialog_cls = typing.cast(
-                    "type[dialogs.SelectionDialog]",
-                    dialog_match.dialog_cls,
-                )
+                selection_dialog_cls = dialog_match.dialog_cls
                 dialog = selection_dialog_cls(
                     provenance_edit_mode=True,
                     dialog_parent=dialog_parent,
