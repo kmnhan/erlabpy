@@ -3423,7 +3423,11 @@ class _WorkspaceIOController:
             with erlab.interactive.utils.wait_dialog(
                 origin or self._manager, "Compacting workspace..."
             ):
-                self._manager._save_workspace_document(workspace_path, force_full=True)
+                self._manager._save_workspace_document(
+                    workspace_path,
+                    force_full=True,
+                    reuse_unchanged_groups=False,
+                )
                 self._manager._rebind_workspace_backed_imagetools(
                     workspace_path,
                     backing_snapshot=backing_snapshot,

@@ -7023,6 +7023,179 @@ def test_manager_compact_workspace_edge_paths(
         assert focus_restores == [None]
 
 
+def test_manager_compact_workspace_rewrites_without_copy_groups(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "manual-repack.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        tree = manager._to_datatree()
+        try:
+            copy_source, copy_groups = manager._workspace_full_save_copy_groups(tree)
+        finally:
+            tree.close()
+        assert copy_source == str(fname)
+        assert copy_groups
+
+        original_write = manager_workspace._write_full_workspace_tree_file
+        full_write_calls: list[
+            tuple[
+                str | os.PathLike[str] | None,
+                tuple[tuple[str, str, dict[str, typing.Any] | None], ...],
+            ]
+        ] = []
+
+        def _record_full_write(
+            write_fname: str | os.PathLike[str],
+            write_tree: xr.DataTree,
+            root_attrs: Mapping[str, typing.Any],
+            **kwargs: typing.Any,
+        ) -> None:
+            full_write_calls.append(
+                (kwargs.get("copy_source"), tuple(kwargs.get("copy_groups", ())))
+            )
+            original_write(write_fname, write_tree, root_attrs, **kwargs)
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        monkeypatch.setattr(
+            manager_workspace,
+            "_write_full_workspace_tree_file",
+            _record_full_write,
+        )
+
+        assert manager.compact_workspace()
+
+        assert full_write_calls[-1] == (None, ())
+
+
+def test_manager_compact_workspace_reduces_internal_holes(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_compression = erlab.interactive.options["io/workspace/compression"]
+    erlab.interactive.options["io/workspace/compression"] = "none"
+    try:
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            rng = np.random.default_rng(1234)
+            data = xr.DataArray(
+                rng.integers(0, 256, size=(2048, 2048), dtype=np.uint8),
+                dims=("x", "y"),
+            )
+            updated = xr.DataArray(
+                rng.integers(0, 256, size=(2048, 2048), dtype=np.uint8),
+                dims=("x", "y"),
+            )
+
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            uid = manager._tool_graph.root_wrappers[0].uid
+
+            fname = tmp_path / "hole-repack.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            manager._adopt_workspace_path(fname)
+            manager._mark_workspace_clean()
+            size_full = fname.stat().st_size
+
+            manager.get_imagetool(0).slicer_area.replace_source_data(
+                updated,
+                auto_compute=False,
+            )
+            manager._mark_node_data_dirty(uid)
+            assert manager.save()
+            size_incremental = fname.stat().st_size
+
+            monkeypatch.setattr(
+                erlab.interactive.utils,
+                "wait_dialog",
+                lambda *args, **kwargs: contextlib.nullcontext(),
+            )
+            assert manager.compact_workspace()
+            size_compact = fname.stat().st_size
+
+            assert size_incremental > size_full + data.nbytes // 2
+            assert size_compact < size_incremental - data.nbytes // 2
+            _assert_no_workspace_internal_groups(fname)
+    finally:
+        erlab.interactive.options["io/workspace/compression"] = old_compression
+
+
+def test_manager_compact_workspace_reapplies_compression_mode(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    old_compression = erlab.interactive.options["io/workspace/compression"]
+    try:
+        erlab.interactive.options["io/workspace/compression"] = "none"
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(
+                np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
+                dims=("x", "y"),
+            )
+
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+            fname = tmp_path / "compression-repack.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            manager._adopt_workspace_path(fname)
+            manager._mark_workspace_clean()
+            with h5py.File(fname, "r") as h5_file:
+                assert (
+                    _hdf5_blosc2_level_codec(
+                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                    )
+                    is None
+                )
+
+            erlab.interactive.options["io/workspace/compression"] = "zstd1"
+            monkeypatch.setattr(
+                erlab.interactive.utils,
+                "wait_dialog",
+                lambda *args, **kwargs: contextlib.nullcontext(),
+            )
+            assert manager.compact_workspace()
+
+            with h5py.File(fname, "r") as h5_file:
+                assert _hdf5_blosc2_level_codec(
+                    h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                ) == (1, 5)
+    finally:
+        erlab.interactive.options["io/workspace/compression"] = old_compression
+
+
 def test_manager_shutdown_compaction_logs_failure(
     caplog,
     monkeypatch,
