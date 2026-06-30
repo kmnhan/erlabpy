@@ -1095,7 +1095,7 @@ class _ActionsController:
                 return
             self._manager.open_multiple_files(
                 file_paths,
-                try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+                try_workspace=extensions == {".itws"},
             )
 
     def _show_loaded_info(

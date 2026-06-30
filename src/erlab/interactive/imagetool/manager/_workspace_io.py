@@ -66,6 +66,22 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
+_WORKSPACE_SAVE_SUFFIX_ERROR = "ImageTool workspace documents must be saved as .itws"
+_WORKSPACE_LOAD_SUFFIX_ERROR = "ImageTool workspace files must use the .itws extension"
+_WORKSPACE_SAVE_SUFFIX_WARNING = "ImageTool Manager saves workspaces as .itws files."
+
+
+def _require_itws_workspace_path(fname: str | os.PathLike[str], message: str) -> None:
+    if not _manager_workspace._workspace_path_is_itws(fname):
+        raise ValueError(message)
+
+
+def _show_itws_workspace_warning(parent: QtWidgets.QWidget) -> None:
+    QtWidgets.QMessageBox.warning(
+        parent,
+        "Workspace Not Saved",
+        _WORKSPACE_SAVE_SUFFIX_WARNING,
+    )
 
 
 class _WorkspaceLoadProfiler:
@@ -437,8 +453,8 @@ class _WorkspaceIOController:
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         """Open a recently used workspace file."""
         path = pathlib.Path(fname).expanduser().resolve()
+        path_key = os.path.normcase(str(path))
         if not path.exists():
-            path_key = os.path.normcase(str(path))
             self._manager._set_recent_workspace_paths(
                 existing
                 for existing in self._manager._recent_workspace_paths()
@@ -449,6 +465,19 @@ class _WorkspaceIOController:
                 self._manager,
                 "Workspace Not Found",
                 f"The recent workspace file no longer exists:\n{path}",
+            )
+            return False
+        if not _manager_workspace._workspace_path_is_itws(path):
+            self._manager._set_recent_workspace_paths(
+                existing
+                for existing in self._manager._recent_workspace_paths()
+                if os.path.normcase(str(existing)) != path_key
+            )
+            self._manager._refresh_open_recent_menu_action()
+            QtWidgets.QMessageBox.warning(
+                self._manager,
+                "Unsupported Workspace File",
+                "ImageTool Manager opens workspace files with the .itws extension.",
             )
             return False
         if not self._manager._confirm_save_dirty_workspace(
@@ -563,6 +592,12 @@ class _WorkspaceIOController:
             return
         self._manager._workspace_state.lock.unlock()
         self._manager._workspace_state.lock = None
+
+    def _current_workspace_document_path(self) -> pathlib.Path | None:
+        path = self._manager._workspace_state.path
+        if path is None or not _manager_workspace._workspace_path_is_itws(path):
+            return None
+        return path
 
     def _workspace_document_access(
         self, fname: str | os.PathLike[str]
@@ -2516,6 +2551,7 @@ class _WorkspaceIOController:
         document_access: _WorkspaceDocumentAccess | None = None,
     ) -> None:
         if document_access is None:
+            _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
             with self._manager._workspace_document_access_context(fname) as access:
                 self._manager._save_workspace_document(
                     access.path,
@@ -2525,6 +2561,7 @@ class _WorkspaceIOController:
             return
 
         fname = document_access.path
+        _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
         self._manager._workspace_state.saving_depth += 1
         try:
             _manager_workspace._recover_workspace_transactions(fname)
@@ -2598,9 +2635,9 @@ class _WorkspaceIOController:
         msg_box = QtWidgets.QMessageBox(self._manager)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Information)
         msg_box.setWindowTitle("Save Legacy Workspace")
-        msg_box.setText("This workspace uses an older file format.")
+        msg_box.setText("This workspace uses a legacy file format.")
         msg_box.setInformativeText(
-            "Save it again so ImageTool Manager can read it properly."
+            "Save it as an .itws file so ImageTool Manager can update it safely."
         )
         msg_box.setDetailedText(str(pathlib.Path(fname)))
         msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
@@ -2623,6 +2660,9 @@ class _WorkspaceIOController:
         if converted_fname is None:
             return None
         converted_path = pathlib.Path(converted_fname).resolve()
+        if not _manager_workspace._workspace_path_is_itws(converted_path):
+            _show_itws_workspace_warning(self._manager)
+            return None
         if existing_access is not None and converted_path == existing_access.path:
             with erlab.interactive.utils.wait_dialog(
                 self._manager, "Saving workspace..."
@@ -3173,7 +3213,8 @@ class _WorkspaceIOController:
             Whether to use the native file dialog, by default `True`. This option is
             used when testing the application to ensure reproducibility.
         """
-        if self._manager._workspace_state.path is None:
+        workspace_path = self._current_workspace_document_path()
+        if workspace_path is None:
             return self._manager.save_as(native=native)
         if self._manager._workspace_state.save_in_progress:
             self._manager._status_bar.showMessage(
@@ -3181,16 +3222,14 @@ class _WorkspaceIOController:
             )
             return False
         origin = self._manager._active_managed_window()
-        old_workspace_path = self._manager._workspace_state.path
+        old_workspace_path = workspace_path
         backing_snapshot = self._manager._workspace_data_backing_snapshot()
         self._manager._status_bar.showMessage("Saving workspace...")
         try:
-            snapshot = self._manager._workspace_save_snapshot(
-                self._manager._workspace_state.path
-            )
+            snapshot = self._manager._workspace_save_snapshot(workspace_path)
             try:
                 ok, elapsed, error_text = self._manager._run_workspace_save_worker(
-                    self._manager._workspace_state.path, snapshot, origin
+                    workspace_path, snapshot, origin
                 )
             except Exception:
                 snapshot.close()
@@ -3216,7 +3255,7 @@ class _WorkspaceIOController:
                 _manager_workspace._current_workspace_schema_version()
             )
             self._manager._rebind_workspace_backed_imagetools(
-                self._manager._workspace_state.path,
+                workspace_path,
                 backing_snapshot=backing_snapshot,
                 old_workspace_path=old_workspace_path,
             )
@@ -3238,7 +3277,7 @@ class _WorkspaceIOController:
             )
         self._manager._status_bar.showMessage(message, 5000)
         self._manager._restore_focus_after_workspace_save(origin)
-        self._manager._record_recent_workspace(self._manager._workspace_state.path)
+        self._manager._record_recent_workspace(workspace_path)
         return True
 
     def save_as(self, *, native: bool = True) -> bool:
@@ -3248,6 +3287,9 @@ class _WorkspaceIOController:
             native=native, caption="Save Workspace As"
         )
         if fname is None:
+            return False
+        if not _manager_workspace._workspace_path_is_itws(fname):
+            _show_itws_workspace_warning(self._manager)
             return False
         old_workspace_path = self._manager._workspace_state.path
         backing_snapshot = self._manager._workspace_data_backing_snapshot()
@@ -3342,7 +3384,8 @@ class _WorkspaceIOController:
 
     def compact_workspace(self) -> bool:
         """Rewrite the current workspace file to remove unused space."""
-        if self._manager._workspace_state.path is None:
+        workspace_path = self._current_workspace_document_path()
+        if workspace_path is None:
             return self._manager.save_as()
         if self._manager._workspace_state.save_in_progress:
             self._manager._status_bar.showMessage(
@@ -3351,17 +3394,15 @@ class _WorkspaceIOController:
             return False
 
         origin = self._manager._active_managed_window()
-        old_workspace_path = self._manager._workspace_state.path
+        old_workspace_path = workspace_path
         backing_snapshot = self._manager._workspace_data_backing_snapshot()
         try:
             with erlab.interactive.utils.wait_dialog(
                 origin or self._manager, "Compacting workspace..."
             ):
-                self._manager._save_workspace_document(
-                    self._manager._workspace_state.path, force_full=True
-                )
+                self._manager._save_workspace_document(workspace_path, force_full=True)
                 self._manager._rebind_workspace_backed_imagetools(
-                    self._manager._workspace_state.path,
+                    workspace_path,
                     backing_snapshot=backing_snapshot,
                     old_workspace_path=old_workspace_path,
                 )
@@ -3385,6 +3426,7 @@ class _WorkspaceIOController:
         private callers. Document-style Save and Save As use
         :meth:`_save_workspace_document` instead.
         """
+        _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
         tree: xr.DataTree = self._manager._to_datatree()
         try:
             dialog = _ChooseFromDataTreeDialog(self._manager, tree, mode="save")
@@ -3445,6 +3487,7 @@ class _WorkspaceIOController:
         select: bool,
         native: bool = True,
     ) -> bool:
+        _require_itws_workspace_path(fname, _WORKSPACE_LOAD_SUFFIX_ERROR)
         previous_missing_colormaps = self._missing_workspace_colormaps
         previous_skipped_nodes = self._skipped_workspace_nodes
         self._missing_workspace_colormaps = []
@@ -3547,9 +3590,7 @@ class _WorkspaceIOController:
         dialog = QtWidgets.QFileDialog(self._manager)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilters(
-            ["ImageTool Workspace Files (*.itws)", "xarray HDF5 Files (*.h5)"]
-        )
+        dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
         if self._manager._recent_directory is not None:
             dialog.setDirectory(self._manager._recent_directory)
         if not native:  # pragma: no branch
@@ -3598,9 +3639,7 @@ class _WorkspaceIOController:
         dialog = QtWidgets.QFileDialog(self._manager)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilters(
-            ["ImageTool Workspace Files (*.itws)", "xarray HDF5 Files (*.h5)"]
-        )
+        dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
         if self._manager._recent_directory is not None:
             dialog.setDirectory(self._manager._recent_directory)
         if not native:  # pragma: no branch

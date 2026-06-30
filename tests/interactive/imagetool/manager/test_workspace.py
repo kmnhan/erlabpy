@@ -2871,6 +2871,7 @@ def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
 
     assert file_manager.workspace_path == "fallback.itws"
     assert captured["args"][0] == "fallback.itws"
+    assert captured["kwargs"]["mode"] == "r+"
 
 
 def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
@@ -5999,6 +6000,34 @@ def test_manager_workspace_save_as_reports_document_write_error(
     ]
 
 
+def test_manager_workspace_save_as_rejects_h5_target(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "workspace.h5"
+    warnings: list[tuple[typing.Any, ...]] = []
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "warning", lambda *args: warnings.append(args)
+        )
+
+        assert not manager.save_as(native=False)
+
+    assert len(warnings) == 1
+    assert warnings[0][1:] == (
+        "Workspace Not Saved",
+        "ImageTool Manager saves workspaces as .itws files.",
+    )
+    assert not fname.exists()
+
+
 def test_manager_workspace_load_locks_before_recovery(
     monkeypatch,
     tmp_path,
@@ -6229,6 +6258,31 @@ def test_manager_open_recent_workspace_flow(
 
         assert not manager.open_recent_workspace(missing)
         assert len(missing_warnings) == 1
+        assert manager._recent_workspace_paths() == [older.resolve()]
+
+        h5_workspace = tmp_path / "old-workspace.h5"
+        h5_workspace.touch()
+        confirm_calls: list[str] = []
+        unsupported_warnings: list[tuple[typing.Any, ...]] = []
+        manager._set_recent_workspace_paths([h5_workspace.resolve(), older.resolve()])
+        monkeypatch.setattr(
+            manager,
+            "_confirm_save_dirty_workspace",
+            lambda message: confirm_calls.append(message) or True,
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda *args: unsupported_warnings.append(args),
+        )
+
+        assert not manager.open_recent_workspace(h5_workspace)
+        assert len(unsupported_warnings) == 1
+        assert unsupported_warnings[0][1:] == (
+            "Unsupported Workspace File",
+            "ImageTool Manager opens workspace files with the .itws extension.",
+        )
+        assert confirm_calls == []
         assert manager._recent_workspace_paths() == [older.resolve()]
 
 
@@ -6621,23 +6675,31 @@ def test_manager_startup_forward_empty_and_uninspectable_state(
     assert "Could not inspect live managers" in caplog.text
 
 
-def test_manager_startup_forward_h5_workspace_files_stay_local(
+def test_manager_startup_h5_workspace_files_are_not_workspace_documents(
     monkeypatch, tmp_path
 ) -> None:
     import h5py
 
-    workspace = tmp_path / "workspace.h5"
-    with h5py.File(workspace, "w") as h5_file:
+    h5_workspace = tmp_path / "workspace.h5"
+    with h5py.File(h5_workspace, "w") as h5_file:
         h5_file.attrs["imagetool_workspace_schema_version"] = 5
+    inspected: list[bool] = []
     monkeypatch.setattr(
         manager_module,
         "manager_selection_info",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("should not inspect managers")
+        lambda **_kwargs: (
+            inspected.append(True)
+            or {
+                "resolved_index": None,
+                "needs_selection": False,
+                "managers": [],
+            }
         ),
     )
 
-    assert not manager_module._try_forward_startup_files([workspace])
+    assert not manager_module._startup_path_is_workspace(h5_workspace)
+    assert not manager_module._try_forward_startup_files([h5_workspace])
+    assert inspected == [True]
 
 
 @pytest.mark.parametrize(
@@ -6997,7 +7059,7 @@ def test_manager_confirm_save_dirty_workspace_save_branch(
         assert manager._confirm_save_dirty_workspace("Save before continuing.")
 
 
-def test_manager_legacy_workspace_save_helpers(
+def test_manager_legacy_itws_schema_save_helpers(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -7010,10 +7072,13 @@ def test_manager_legacy_workspace_save_helpers(
             "exec",
             lambda _msg_box: QtWidgets.QMessageBox.StandardButton.Ok,
         )
-        manager._show_legacy_workspace_upgrade_message(tmp_path / "legacy.itws")
+        manager._show_legacy_workspace_upgrade_message(tmp_path / "legacy-schema.itws")
 
         monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
-        assert manager._save_legacy_workspace_as_v4(tmp_path / "legacy.itws") is None
+        assert (
+            manager._save_legacy_workspace_as_v4(tmp_path / "legacy-schema.itws")
+            is None
+        )
 
         dirty_reasons: list[str] = []
         monkeypatch.setattr(
@@ -7025,7 +7090,7 @@ def test_manager_legacy_workspace_save_helpers(
             manager, "_mark_workspace_structure_dirty", dirty_reasons.append
         )
         manager._associate_loaded_workspace_file(
-            tmp_path / "legacy.itws",
+            tmp_path / "legacy-schema.itws",
             manager_workspace._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
         )
 
@@ -7146,6 +7211,30 @@ def test_open_multiple_files_loads_workspace_and_reads_metadata(
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager.workspace_path == str(fname.resolve())
+
+
+def test_manager_drop_h5_file_does_not_try_workspace(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "data.h5"
+    calls: list[tuple[list[pathlib.Path], bool]] = []
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager,
+            "open_multiple_files",
+            lambda paths, *, try_workspace=False: calls.append(
+                (list(paths), try_workspace)
+            ),
+        )
+
+        manager._handle_dropped_files([fname])
+
+    assert calls == [([fname], False)]
 
 
 def test_workspace_high_risk_path_detection() -> None:
@@ -11027,87 +11116,29 @@ def test_manager_workspace_roundtrip_recursive_nested_imagetools(
         )
 
 
-def test_manager_workspace_load_legacy(
+def test_manager_workspace_rejects_h5_workspace_file(
     qtbot,
-    accept_dialog,
     datadir,
-    monkeypatch,
     tmp_path,
-    test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
     legacy_workspace = tmp_path / "manager_workspace_legacy.h5"
     legacy_workspace.write_bytes((datadir / "manager_workspace_legacy.h5").read_bytes())
+    original_legacy_bytes = legacy_workspace.read_bytes()
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        manager.show()
 
-        def _go_to_file(dialog: QtWidgets.QFileDialog):
-            dialog.setDirectory(str(tmp_path))
-            dialog.selectFile(str(legacy_workspace))
-            focused = dialog.focusWidget()
-            if isinstance(focused, QtWidgets.QLineEdit):
-                focused.setText("manager_workspace_legacy.h5")
-
-        legacy_notices: list[pathlib.Path] = []
-        save_dialog_calls: list[tuple[bool, str, pathlib.Path | None]] = []
-
-        def _record_legacy_notice(fname: str | os.PathLike[str]) -> None:
-            legacy_notices.append(pathlib.Path(fname))
-
-        def _record_save_dialog(
-            *,
-            native: bool = True,
-            caption: str = "Save Workspace",
-            selected_file: str | os.PathLike[str] | None = None,
-        ) -> str:
-            selected_path = (
-                None if selected_file is None else pathlib.Path(selected_file)
+        with pytest.raises(ValueError, match=r"\.itws"):
+            manager._load_workspace_file(
+                legacy_workspace,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
             )
-            save_dialog_calls.append((native, caption, selected_path))
-            return str(legacy_workspace)
 
-        monkeypatch.setattr(
-            manager, "_show_legacy_workspace_upgrade_message", _record_legacy_notice
-        )
-        monkeypatch.setattr(manager, "_workspace_save_dialog", _record_save_dialog)
-
-        # Load workspace
-        accept_dialog(lambda: manager.load(native=False), pre_call=_go_to_file)
-
-        assert legacy_notices == [legacy_workspace]
-        assert save_dialog_calls == [
-            (False, "Save Converted Workspace", legacy_workspace)
-        ]
-
-        # Check if the data is loaded
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        # Check data
-        xr.testing.assert_identical(
-            manager.get_imagetool(0).slicer_area._data,
-            test_data,
-        )
-
-        assert not manager.is_workspace_modified
-        assert manager.save()
-        import h5py
-
-        with h5py.File(legacy_workspace, "r") as h5_file:
-            assert h5_file.attrs["imagetool_workspace_schema_version"] == 4
-
-        select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
-        accept_dialog(manager.remove_action.trigger)
-        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-
-        assert manager._load_workspace_file(
-            legacy_workspace,
-            replace=True,
-            associate=True,
-            mark_dirty=False,
-            select=False,
-        )
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager.ntools == 0
+        assert legacy_workspace.read_bytes() == original_legacy_bytes

@@ -2167,7 +2167,7 @@ def test_workspace_properties_dialog_file_detail_branches(
         "ImageTool Workspace (.itws)"
     )
     assert manager_widgets._workspace_file_type_text(tmp_path / "workspace.h5") == (
-        "xarray HDF5 Workspace (.h5)"
+        "HDF5 file (.h5)"
     )
     assert manager_widgets._workspace_file_type_text(tmp_path / "notes.txt") == (
         "TXT file"

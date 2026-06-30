@@ -240,21 +240,7 @@ def _parse_startup_args(args: Iterable[str]) -> _StartupArgs:
 
 
 def _startup_path_is_workspace(path: pathlib.Path) -> bool:
-    suffix = path.suffix.lower()
-    if suffix == ".itws":
-        return True
-    if suffix != ".h5":
-        return False
-    try:
-        import h5py
-
-        with h5py.File(path, "r") as h5_file:
-            return (
-                "imagetool_workspace_schema_version" in h5_file.attrs
-                or h5_file.attrs.get("is_itool_workspace", 0) == 1
-            )
-    except Exception:
-        return False
+    return path.suffix.lower() == ".itws"
 
 
 def _startup_pending_files(

@@ -745,7 +745,7 @@ def _workspace_file_type_text(path: pathlib.Path | None) -> str:
         case ".itws":
             return "ImageTool Workspace (.itws)"
         case ".h5":
-            return "xarray HDF5 Workspace (.h5)"
+            return "HDF5 file (.h5)"
         case suffix if suffix:
             return f"{suffix.removeprefix('.').upper()} file"
         case _:
