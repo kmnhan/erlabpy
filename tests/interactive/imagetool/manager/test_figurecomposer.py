@@ -1415,6 +1415,82 @@ def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) ->
     )
 
 
+def test_figure_composer_plot_array_qsel_to_keep_clears_selection(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("eV", "beta", "alpha"),
+        coords={
+            "eV": [-1.0, 0.0, 1.0],
+            "beta": [-0.5, 0.5],
+            "alpha": [0.0, 1.0],
+        },
+        name="map",
+    )
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+
+    def current_dimension_widget(
+        widget_type: type[QtWidgets.QWidget], dim: str
+    ) -> QtWidgets.QWidget:
+        widget = next(
+            (
+                candidate
+                for candidate in tool.findChildren(widget_type)
+                if candidate.property("figure_composer_plot_array_dim") == dim
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert widget is not None
+        return widget
+
+    def activate_dimension_mode(dim: str, mode: str) -> None:
+        combo = typing.cast(
+            "QtWidgets.QComboBox",
+            current_dimension_widget(QtWidgets.QComboBox, dim),
+        )
+        index = combo.findData(mode)
+        assert index >= 0
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+
+    activate_dimension_mode("eV", "qsel")
+    qsel_edit = typing.cast(
+        "QtWidgets.QLineEdit",
+        current_dimension_widget(QtWidgets.QLineEdit, "eV"),
+    )
+    assert qsel_edit.isEnabled()
+    qsel_edit.setText("0.0")
+    qsel_edit.setModified(True)
+    qsel_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
+    )
+
+    activate_dimension_mode("eV", "keep")
+
+    updated = tool.tool_status.operations[0]
+    assert updated.sources == ("data",)
+    assert updated.map_selections == ()
+    value_edit = typing.cast(
+        "QtWidgets.QLineEdit",
+        current_dimension_widget(QtWidgets.QLineEdit, "eV"),
+    )
+    assert not value_edit.isEnabled()
+    assert value_edit.text() == ""
+
+
 def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1468,9 +1544,8 @@ def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     figurecomposer_plot_array._update_current_selection_source(tool, "data")
-    assert tool.tool_status.operations[0].map_selections == (
-        FigureDataSelectionState(source="data"),
-    )
+    assert tool.tool_status.operations[0].sources == ("data",)
+    assert tool.tool_status.operations[0].map_selections == ()
 
     missing_operation = FigureOperationState.plot_array(
         label="missing", source="missing"
@@ -1515,6 +1590,13 @@ def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
         qsel={"y": 0.0},
         mean_dims=("x",),
     )
+
+    empty_selection = FigureDataSelectionState(source="data", qsel={"x": 0.0})
+    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
+        empty_selection,
+        "x",
+        "keep",
+    ) == FigureDataSelectionState(source="data")
 
     combo = figurecomposer_plot_array._plot_array_selection_mode_combo(
         tool,

@@ -28,8 +28,6 @@ class _ReduceDimensionRow:
         axis: int,
         dim: Hashable,
         row: int,
-        *,
-        require_choice: bool,
     ) -> None:
         self.axis = axis
         self.dim = dim
@@ -45,11 +43,10 @@ class _ReduceDimensionRow:
 
         self.action_combo = QtWidgets.QComboBox()
         self.action_combo.setObjectName(f"reduce_dimension_action_{axis}")
-        self.action_combo.addItem("Choose...", None)
         self.action_combo.addItem("Keep", "keep")
         self.action_combo.addItem("Select", "select")
         self.action_combo.addItem("Aggregate", "aggregate")
-        self.action_combo.setCurrentIndex(0 if require_choice else 1)
+        self.action_combo.setCurrentIndex(0)
 
         self.scalar_controls = _ScalarSelectionControls(
             data,
@@ -151,8 +148,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             self.grid_layout.addWidget(header, 0, column)
         layout.addLayout(self.grid_layout)
 
-        non_singleton_dims = [dim for dim in data.dims if data.sizes[dim] != 1]
-        keep_without_choice = set(non_singleton_dims[:4])
         self.rows: list[_ReduceDimensionRow] = []
         for axis, dim in enumerate(data.dims):
             self.rows.append(
@@ -161,9 +156,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
                     axis,
                     dim,
                     axis + 1,
-                    require_choice=(
-                        data.sizes[dim] != 1 and dim not in keep_without_choice
-                    ),
                 )
             )
 
@@ -247,9 +239,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         except Exception:
             return ""
 
-    def _choices_complete(self) -> bool:
-        return all(row.action is not None for row in self.rows)
-
     @staticmethod
     def _processed_ndim_from_shape(shape: tuple[int, ...]) -> int:
         if len(shape) == 1:
@@ -295,12 +284,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.StandardButton.Open
         )
         self._result_data = None
-
-        if not self._choices_complete():
-            self.preview_label.setText("Choose an action for each required dimension.")
-            if ok_button is not None:
-                ok_button.setEnabled(False)
-            return
 
         valid = self._set_preview_from_metadata(*self._preview_dims_shape())
         if ok_button is not None:

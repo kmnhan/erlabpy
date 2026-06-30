@@ -7456,8 +7456,12 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     )
 
     assert not open_button.isEnabled()
-
+    assert all(row.action == "keep" for row in dialog.rows)
     row = dialog.rows[-1]
+    assert row.action_combo.findData(None) == -1
+    assert [
+        row.action_combo.itemText(index) for index in range(row.action_combo.count())
+    ] == ["Keep", "Select", "Aggregate"]
     _set_combo_data(row.action_combo, "select")
     row.scalar_controls.index_spin.setValue(2)
 
@@ -7668,6 +7672,7 @@ def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
     assert dialog._set_preview_from_metadata(("profile",), (5,))
 
     row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "keep")
     dialog.accept()
     assert len(warnings) == 1
     assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted

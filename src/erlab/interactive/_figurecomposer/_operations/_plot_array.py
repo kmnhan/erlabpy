@@ -185,10 +185,13 @@ def _plot_array_operation_with_selection(
     operation: FigureOperationState,
     selection: FigureDataSelectionState,
 ) -> FigureOperationState:
+    map_selections = (
+        (selection,) if selection.isel or selection.qsel or selection.mean_dims else ()
+    )
     return operation.model_copy(
         update={
             "sources": (selection.source,),
-            "map_selections": (selection,),
+            "map_selections": map_selections,
         }
     )
 
@@ -209,7 +212,7 @@ def _update_current_selection_source(
 
 
 _PLOT_ARRAY_SELECTION_MODE_LABELS = {
-    "keep": "Keep",
+    "keep": "None",
     "isel": "isel",
     "qsel": "qsel",
     "mean": "Mean",
@@ -341,11 +344,14 @@ def _connect_plot_array_selection_dimension_controls(
 ) -> None:
     def mode_changed(value: typing.Any) -> None:
         mode = value if isinstance(value, str) else ""
-        value_edit.setEnabled(mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
-        if mode in _PLOT_ARRAY_SELECTION_VALUE_MODES:
+        value_mode = mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
+        value_edit.setEnabled(value_mode)
+        if value_mode:
             if value_edit.text().strip():
                 _update_current_selection_dimension(tool, dim, mode, value_edit.text())
             return
+        value_edit.clear()
+        value_edit.setModified(False)
         _update_current_selection_dimension(tool, dim, mode)
 
     def value_changed(text: str) -> None:
