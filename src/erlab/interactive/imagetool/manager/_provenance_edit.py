@@ -82,7 +82,6 @@ _NATIVE_TERMINAL_CURRENT_DATA_EDITORS: tuple[
     (dialogs.GaussianFilterDialog, provenance.GaussianFilterOperation),
     (dialogs.DivideByCoordDialog, provenance.DivideByCoordOperation),
     (dialogs.SortByDialog, provenance.SortByOperation),
-    (dialogs.LeadingEdgeDialog, provenance.LeadingEdgeOperation),
 )
 
 
@@ -2055,11 +2054,6 @@ class _ProvenanceEditController:
                     sort_keys.add(name)
             if not all(key in sort_keys for key in operation.variables):
                 return None
-        if (
-            isinstance(operation, provenance.LeadingEdgeOperation)
-            and operation.dim not in data.dims
-        ):
-            return None
         return data
 
     def _terminal_affine_coord_edit_seed(

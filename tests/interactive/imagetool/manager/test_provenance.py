@@ -5102,15 +5102,6 @@ def _native_current_seed_data() -> xr.DataArray:
             manager_provenance_edit.dialogs.SortByDialog,
             id="sortby",
         ),
-        pytest.param(
-            provenance.LeadingEdgeOperation(
-                dim="eV",
-                fraction=0.25,
-                direction="negative",
-            ),
-            manager_provenance_edit.dialogs.LeadingEdgeDialog,
-            id="leading_edge",
-        ),
     ],
 )
 def test_manager_terminal_current_data_edit_opens_without_replay(
@@ -5120,11 +5111,7 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
     dialog_cls: type[manager_provenance_edit.dialogs._DataManipulationDialog],
 ) -> None:
     base = _native_current_seed_data()
-    current = (
-        base.copy(deep=False)
-        if isinstance(operation, provenance.LeadingEdgeOperation)
-        else operation.apply(base, parent_data=base)
-    )
+    current = operation.apply(base, parent_data=base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -5162,10 +5149,6 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
             captured["ascending"] = dialog.ascending_combo.currentData(
                 QtCore.Qt.ItemDataRole.UserRole
             )
-        elif isinstance(dialog, manager_provenance_edit.dialogs.LeadingEdgeDialog):
-            captured["dim"] = dialog._selected_dim
-            captured["fraction"] = float(dialog.fraction_spin.value())
-            captured["direction"] = dialog._direction
         return int(QtWidgets.QDialog.DialogCode.Rejected)
 
     monkeypatch.setattr(dialog_cls, "exec", exec_dialog)
@@ -5202,10 +5185,6 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
     elif isinstance(operation, provenance.SortByOperation):
         assert captured["sort_keys"] == ("order",)
         assert captured["ascending"] is False
-    elif isinstance(operation, provenance.LeadingEdgeOperation):
-        assert captured["dim"] == "eV"
-        assert captured["fraction"] == pytest.approx(0.25)
-        assert captured["direction"] == "negative"
 
 
 def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
