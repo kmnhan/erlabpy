@@ -7,6 +7,7 @@ import traceback
 import typing
 import warnings
 
+import numpy as np
 from qtpy import QtCore, QtWidgets
 
 import erlab
@@ -68,6 +69,21 @@ class _OperationDialogMatch:
     start: int
     stop: int
     focus: str | None = None
+
+
+_NATIVE_TERMINAL_CURRENT_DATA_EDITORS: tuple[
+    tuple[
+        type[dialogs._DataManipulationDialog],
+        type[provenance.ToolProvenanceOperation],
+    ],
+    ...,
+] = (
+    (dialogs.NormalizeDialog, provenance.NormalizeOperation),
+    (dialogs.GaussianFilterDialog, provenance.GaussianFilterOperation),
+    (dialogs.DivideByCoordDialog, provenance.DivideByCoordOperation),
+    (dialogs.SortByDialog, provenance.SortByOperation),
+    (dialogs.LeadingEdgeDialog, provenance.LeadingEdgeOperation),
+)
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -1910,19 +1926,27 @@ class _ProvenanceEditController:
             operation_index=dialog_match.start,
             stage_index=ref.stage_index,
         )
-        try:
-            prefix_data, _prefix = self._replay_candidate_result(
-                node,
-                row.scope,
-                spec._prefix_before_ref(start_ref),
-            )
-        except _TrustedScriptReplayCancelled:
-            raise
-        except Exception as exc:
-            raise _ProvenanceReplayFailure(
-                "opening the provenance editor: replaying the input to this step",
-                exc,
-            ) from exc
+        prefix_data = self._native_edit_seed_data_without_replay(
+            node,
+            spec,
+            ref,
+            dialog_match,
+            operations,
+        )
+        if prefix_data is None:
+            try:
+                prefix_data, _prefix = self._replay_candidate_result(
+                    node,
+                    row.scope,
+                    spec._prefix_before_ref(start_ref),
+                )
+            except _TrustedScriptReplayCancelled:
+                raise
+            except Exception as exc:
+                raise _ProvenanceReplayFailure(
+                    "opening the provenance editor: replaying the input to this step",
+                    exc,
+                ) from exc
 
         dialog_parent = (
             self._manager if isinstance(self._manager, QtWidgets.QWidget) else None
@@ -1955,6 +1979,131 @@ class _ProvenanceEditController:
             if temp_tool is not None:
                 temp_tool.close()
                 temp_tool.deleteLater()
+
+    def _native_edit_seed_data_without_replay(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: provenance.ToolProvenanceSpec,
+        ref: provenance._ProvenanceStepRef,
+        dialog_match: _OperationDialogMatch,
+        operations: Sequence[provenance.ToolProvenanceOperation],
+    ) -> xr.DataArray | None:
+        for seed_builder in (
+            self._terminal_current_data_edit_seed,
+            self._terminal_affine_coord_edit_seed,
+        ):
+            seed_data = seed_builder(node, spec, ref, dialog_match, operations)
+            if seed_data is not None:
+                return seed_data
+        return None
+
+    def _terminal_current_data_edit_seed(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: provenance.ToolProvenanceSpec,
+        ref: provenance._ProvenanceStepRef,
+        dialog_match: _OperationDialogMatch,
+        operations: Sequence[provenance.ToolProvenanceOperation],
+    ) -> xr.DataArray | None:
+        if len(operations) != 1:
+            return None
+        if dialog_match.stop != len(_operations_for_ref(spec, ref)):
+            return None
+        operation = operations[0]
+        if not any(
+            issubclass(dialog_match.dialog_cls, dialog_cls)
+            and isinstance(operation, operation_cls)
+            for dialog_cls, operation_cls in _NATIVE_TERMINAL_CURRENT_DATA_EDITORS
+        ):
+            return None
+        try:
+            data = node.current_source_data().copy(deep=False)
+        except Exception:
+            return None
+        if isinstance(operation, provenance.NormalizeOperation) and not set(
+            operation.dims
+        ).issubset(data.dims):
+            return None
+        if isinstance(operation, provenance.GaussianFilterOperation):
+            if not set(operation.sigma).issubset(data.dims):
+                return None
+            try:
+                for dim in operation.sigma:
+                    coord = np.asarray(data[dim].values, dtype=np.float64)
+                    if (
+                        coord.size < 2
+                        or np.allclose(np.diff(coord), 0.0)
+                        or not erlab.utils.array.is_uniform_spaced(coord)
+                    ):
+                        return None
+            except Exception:
+                return None
+        if isinstance(operation, provenance.DivideByCoordOperation):
+            if operation.coord_name not in data.coords:
+                return None
+            coord = data.coords[operation.coord_name]
+            if (
+                not set(coord.dims).issubset(data.dims)
+                or not np.issubdtype(coord.dtype, np.number)
+                or np.issubdtype(coord.dtype, np.complexfloating)
+            ):
+                return None
+        if isinstance(operation, provenance.SortByOperation):
+            sort_keys = set(data.dims)
+            for name, coord in data.coords.items():
+                if (
+                    coord.ndim == 1
+                    and len(coord.dims) == 1
+                    and coord.dims[0] in data.dims
+                ):
+                    sort_keys.add(name)
+            if not all(key in sort_keys for key in operation.variables):
+                return None
+        if (
+            isinstance(operation, provenance.LeadingEdgeOperation)
+            and operation.dim not in data.dims
+        ):
+            return None
+        return data
+
+    def _terminal_affine_coord_edit_seed(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: provenance.ToolProvenanceSpec,
+        ref: provenance._ProvenanceStepRef,
+        dialog_match: _OperationDialogMatch,
+        operations: Sequence[provenance.ToolProvenanceOperation],
+    ) -> xr.DataArray | None:
+        if not issubclass(dialog_match.dialog_cls, dialogs.AssignCoordsDialog):
+            return None
+        if len(operations) != 1:
+            return None
+        operation = operations[0]
+        if not isinstance(operation, provenance.AffineCoordOperation):
+            return None
+        if operation.scale == 0.0:
+            return None
+
+        if dialog_match.stop != len(_operations_for_ref(spec, ref)):
+            return None
+
+        try:
+            data = node.current_source_data().copy(deep=False)
+            coord = data.coords[operation.coord_name]
+            coord_values = np.asarray(coord.values)
+            if not np.issubdtype(coord_values.dtype, np.number) or np.issubdtype(
+                coord_values.dtype,
+                np.complexfloating,
+            ):
+                return None
+            old_coord_values = (coord_values - operation.offset) / operation.scale
+            if not np.all(np.isfinite(old_coord_values)):
+                return None
+            return data.assign_coords(
+                {operation.coord_name: coord.copy(data=old_coord_values)}
+            )
+        except Exception:
+            return None
 
     @staticmethod
     def _restore_native_edit_dialog(

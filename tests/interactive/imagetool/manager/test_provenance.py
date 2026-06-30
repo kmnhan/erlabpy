@@ -5062,6 +5062,486 @@ def test_manager_provenance_native_selection_edit_restores_slice_operations(
     ]
 
 
+def _native_current_seed_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=("x", "eV"),
+        coords={
+            "x": [0.0, 1.0, 2.0],
+            "eV": [-1.0, 0.0, 1.0, 2.0],
+            "scale": ("x", [1.0, 2.0, 4.0]),
+            "order": ("x", [2.0, 1.0, 3.0]),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "dialog_cls"),
+    [
+        pytest.param(
+            provenance.NormalizeOperation(
+                dims=("x",),
+                mode="minmax",
+                denominator_rtol=1e-7,
+            ),
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            id="normalize",
+        ),
+        pytest.param(
+            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            manager_provenance_edit.dialogs.GaussianFilterDialog,
+            id="gaussian",
+        ),
+        pytest.param(
+            provenance.DivideByCoordOperation(coord_name="scale"),
+            manager_provenance_edit.dialogs.DivideByCoordDialog,
+            id="divide_by_coord",
+        ),
+        pytest.param(
+            provenance.SortByOperation(variables=("order",), ascending=False),
+            manager_provenance_edit.dialogs.SortByDialog,
+            id="sortby",
+        ),
+        pytest.param(
+            provenance.LeadingEdgeOperation(
+                dim="eV",
+                fraction=0.25,
+                direction="negative",
+            ),
+            manager_provenance_edit.dialogs.LeadingEdgeDialog,
+            id="leading_edge",
+        ),
+    ],
+)
+def test_manager_terminal_current_data_edit_opens_without_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    operation: provenance.ToolProvenanceOperation,
+    dialog_cls: type[manager_provenance_edit.dialogs._DataManipulationDialog],
+) -> None:
+    base = _native_current_seed_data()
+    current = (
+        base.copy(deep=False)
+        if isinstance(operation, provenance.LeadingEdgeOperation)
+        else operation.apply(base, parent_data=base)
+    )
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current
+    controller = _fake_edit_controller(node)
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args, **_kwargs: pytest.fail("opening the editor should not replay"),
+    )
+
+    captured: dict[str, typing.Any] = {}
+
+    def exec_dialog(
+        dialog: manager_provenance_edit.dialogs._DataManipulationDialog,
+    ) -> int:
+        captured["dialog_cls"] = type(dialog)
+        if isinstance(dialog, manager_provenance_edit.dialogs.NormalizeDialog):
+            captured["dims"] = tuple(
+                dim for dim, check in dialog.dim_checks.items() if check.isChecked()
+            )
+            captured["mode"] = dialog._mode
+            captured["denominator_rtol"] = dialog.denominator_rtol
+        elif isinstance(dialog, manager_provenance_edit.dialogs.GaussianFilterDialog):
+            captured["dims"] = tuple(
+                dim for dim, check in dialog.dim_checks.items() if check.isChecked()
+            )
+            captured["sigma"] = {
+                dim: dialog._spin_value(dialog.sigma_spins[dim])
+                for dim in dialog.sigma_spins
+            }
+        elif isinstance(dialog, manager_provenance_edit.dialogs.DivideByCoordDialog):
+            captured["coord_name"] = dialog._selected_coord_name
+        elif isinstance(dialog, manager_provenance_edit.dialogs.SortByDialog):
+            captured["sort_keys"] = dialog._sort_keys
+            captured["ascending"] = dialog.ascending_combo.currentData(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
+        elif isinstance(dialog, manager_provenance_edit.dialogs.LeadingEdgeDialog):
+            captured["dim"] = dialog._selected_dim
+            captured["fraction"] = float(dialog.fraction_spin.value())
+            captured["direction"] = dialog._direction
+        return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(dialog_cls, "exec", exec_dialog)
+
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+    dialog_match = manager_provenance_edit._dialog_match_for_operation_ref(
+        spec,
+        row.edit_ref,
+    )
+    assert dialog_match is not None
+
+    assert (
+        controller._edited_native_operations(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            dialog_match,
+        )
+        is None
+    )
+
+    assert captured["dialog_cls"] is dialog_cls
+    if isinstance(operation, provenance.NormalizeOperation):
+        assert captured["dims"] == ("x",)
+        assert captured["mode"] == "minmax"
+        assert captured["denominator_rtol"] == pytest.approx(1e-7)
+    elif isinstance(operation, provenance.GaussianFilterOperation):
+        assert captured["dims"] == ("x",)
+        assert captured["sigma"]["x"] == pytest.approx(0.25)
+    elif isinstance(operation, provenance.DivideByCoordOperation):
+        assert captured["coord_name"] == "scale"
+    elif isinstance(operation, provenance.SortByOperation):
+        assert captured["sort_keys"] == ("order",)
+        assert captured["ascending"] is False
+    elif isinstance(operation, provenance.LeadingEdgeOperation):
+        assert captured["dim"] == "eV"
+        assert captured["fraction"] == pytest.approx(0.25)
+        assert captured["direction"] == "negative"
+
+
+def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    base = _native_current_seed_data()
+    operation = provenance.NormalizeOperation(
+        dims=("x",),
+        mode="minmax",
+        denominator_rtol=1e-7,
+    )
+    current = operation.apply(base, parent_data=base)
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current
+    controller = _fake_edit_controller(node)
+    replayed: list[provenance.ToolProvenanceSpec] = []
+    replaced: list[provenance.ToolProvenanceSpec] = []
+
+    def replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed.append(candidate)
+        return current, candidate
+
+    monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
+    monkeypatch.setattr(
+        controller,
+        "_replace_node_data",
+        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+    )
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.NormalizeDialog,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Accepted),
+    )
+
+    row = spec.display_rows()[1]
+    controller.edit_row(row)
+
+    assert replayed == [spec]
+    assert replaced == [spec]
+
+
+def test_manager_affine_coord_edit_opens_without_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    base = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+    )
+    operation = provenance.AffineCoordOperation(
+        coord_name="y",
+        scale=2.0,
+        offset=0.5,
+    )
+    current = operation.apply(base, parent_data=base)
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current
+    controller = _fake_edit_controller(node)
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args, **_kwargs: pytest.fail("opening the editor should not replay"),
+    )
+
+    captured: dict[str, typing.Any] = {}
+
+    def exec_dialog(dialog: manager_provenance_edit.dialogs.AssignCoordsDialog) -> int:
+        captured["coord_name"] = dialog.current_coord_name
+        captured["scale"] = float(dialog.coord_widget.scale_spin.value())
+        captured["offset"] = float(dialog.coord_widget.offset_spin.value())
+        captured["reference_coord"] = dialog.coord_widget._old_coord.copy()
+        captured["dialog_coord"] = dialog.slicer_area.data["y"].values.copy()
+        return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.AssignCoordsDialog,
+        "exec",
+        exec_dialog,
+    )
+
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+    dialog_match = manager_provenance_edit._dialog_match_for_operation_ref(
+        spec,
+        row.edit_ref,
+    )
+    assert dialog_match is not None
+
+    assert (
+        controller._edited_native_operations(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            dialog_match,
+        )
+        is None
+    )
+
+    assert captured["coord_name"] == "y"
+    assert captured["scale"] == 2.0
+    assert captured["offset"] == 0.5
+    np.testing.assert_allclose(captured["reference_coord"], base.y.values)
+    np.testing.assert_allclose(captured["dialog_coord"], base.y.values)
+
+
+def test_manager_affine_coord_edit_accept_still_replays_for_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    base = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+    )
+    operation = provenance.AffineCoordOperation(
+        coord_name="y",
+        scale=2.0,
+        offset=0.5,
+    )
+    current = operation.apply(base, parent_data=base)
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current
+    controller = _fake_edit_controller(node)
+    replayed: list[provenance.ToolProvenanceSpec] = []
+    replaced: list[provenance.ToolProvenanceSpec] = []
+
+    def replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed.append(candidate)
+        return current, candidate
+
+    monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
+    monkeypatch.setattr(
+        controller,
+        "_replace_node_data",
+        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+    )
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.AssignCoordsDialog,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Accepted),
+    )
+
+    row = spec.display_rows()[1]
+    controller.edit_row(row)
+
+    assert replayed == [spec]
+    assert replaced == [spec]
+
+
+@pytest.mark.parametrize(
+    ("operations", "current_data"),
+    [
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="y",
+                    scale=2.0,
+                    offset=0.5,
+                ),
+                provenance.TransposeOperation(dims=("y", "x")),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [20.5, 40.5, 60.5]},
+            ).transpose("y", "x"),
+            id="nonterminal",
+        ),
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="y",
+                    scale=0.0,
+                    offset=0.5,
+                ),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [0.5, 0.5, 0.5]},
+            ),
+            id="zero-scale",
+        ),
+    ],
+)
+def test_manager_affine_coord_edit_falls_back_to_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    current_data: xr.DataArray,
+) -> None:
+    replay_data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+    )
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current_data
+    controller = _fake_edit_controller(node)
+    replayed: list[provenance.ToolProvenanceSpec] = []
+
+    def replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed.append(candidate)
+        return replay_data, candidate
+
+    monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
+    monkeypatch.setattr(
+        manager_provenance_edit.dialogs.AssignCoordsDialog,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+    dialog_match = manager_provenance_edit._dialog_match_for_operation_ref(
+        spec,
+        row.edit_ref,
+    )
+    assert dialog_match is not None
+
+    assert (
+        controller._edited_native_operations(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            dialog_match,
+        )
+        is None
+    )
+    assert len(replayed) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["nonterminal", "current-source-unavailable", "leading-edge-missing-dim"],
+)
+def test_manager_terminal_current_data_edit_falls_back_to_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    case: str,
+) -> None:
+    replay_data = _native_current_seed_data()
+    operation: provenance.ToolProvenanceOperation
+    if case == "nonterminal":
+        operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
+        operations: tuple[provenance.ToolProvenanceOperation, ...] = (
+            operation,
+            provenance.TransposeOperation(dims=("eV", "x")),
+        )
+        current_data = operation.apply(replay_data, parent_data=replay_data).transpose(
+            "eV",
+            "x",
+        )
+        dialog_cls = manager_provenance_edit.dialogs.NormalizeDialog
+    elif case == "current-source-unavailable":
+        operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
+        operations = (operation,)
+        current_data = None
+        dialog_cls = manager_provenance_edit.dialogs.NormalizeDialog
+    else:
+        operation = provenance.LeadingEdgeOperation(
+            dim="eV",
+            fraction=0.25,
+            direction="negative",
+        )
+        operations = (operation,)
+        current_data = operation.apply(replay_data, parent_data=replay_data)
+        dialog_cls = manager_provenance_edit.dialogs.LeadingEdgeDialog
+
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
+    node = _fake_edit_node(spec)
+    if current_data is None:
+        node.current_source_data = lambda: (_ for _ in ()).throw(
+            RuntimeError("missing current data")
+        )
+    else:
+        node.current_source_data = lambda: current_data
+    controller = _fake_edit_controller(node)
+    replayed: list[provenance.ToolProvenanceSpec] = []
+
+    def replay_candidate_result(
+        _node: typing.Any,
+        _scope: typing.Literal["display", "source"],
+        candidate: provenance.ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        replayed.append(candidate)
+        return replay_data, candidate
+
+    monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
+    monkeypatch.setattr(
+        dialog_cls,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+    dialog_match = manager_provenance_edit._dialog_match_for_operation_ref(
+        spec,
+        row.edit_ref,
+    )
+    assert dialog_match is not None
+
+    assert (
+        controller._edited_native_operations(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            dialog_match,
+        )
+        is None
+    )
+    assert len(replayed) == 1
+
+
 def test_manager_provenance_edit_controller_native_dialog_error_branches() -> None:
     controller = _fake_edit_controller()
     operation = provenance.NormalizeOperation(dims=("x",), mode="area")
