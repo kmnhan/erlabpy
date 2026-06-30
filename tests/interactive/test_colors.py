@@ -10,6 +10,7 @@ from erlab.interactive.colors import (
     BetterImageItem,
     ColorCycleDialog,
     ColorMapComboBox,
+    matplotlib_colormap_name,
     pg_colormap_from_name,
     pg_colormap_names,
     pg_colormap_powernorm,
@@ -490,6 +491,60 @@ def test_colormap_combobox_exposes_matplotlib_name_for_colorcet(qtbot):
 
     assert combo.currentText() == "CET_C1"
     assert combo.current_matplotlib_name() == "cet_CET_C1"
+
+
+def test_matplotlib_colormap_name_checks_again_after_loading(monkeypatch) -> None:
+    available: set[str] = set()
+
+    def has_colormap(name: str) -> bool:
+        return name in available
+
+    def load_colormaps() -> None:
+        available.update({"late_cmap", "cet_late_colorcet"})
+
+    token = erlab.interactive.colors._ALL_COLORMAPS_LOADED.set(False)
+    try:
+        monkeypatch.setattr(
+            erlab.interactive.colors, "_matplotlib_has_colormap", has_colormap
+        )
+        monkeypatch.setattr(
+            erlab.interactive.colors, "load_all_colormaps", load_colormaps
+        )
+
+        assert matplotlib_colormap_name("late_cmap") == "late_cmap"
+        available.clear()
+        assert matplotlib_colormap_name("late_colorcet") == "cet_late_colorcet"
+    finally:
+        erlab.interactive.colors._ALL_COLORMAPS_LOADED.reset(token)
+
+
+def test_colormap_combobox_explicit_icon_and_fallback_helpers(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    assert combo._find_colormap_index(None) == -1
+
+    pixmap = QtGui.QPixmap(16, 16)
+    pixmap.fill(QtGui.QColor("red"))
+    with QtCore.QSignalBlocker(combo):
+        combo._add_colormap_item("viridis", QtGui.QIcon(pixmap))
+
+    assert combo.itemData(0) == "viridis"
+    assert not combo.itemIcon(0).isNull()
+
+    combo.clear()
+    combo.addItem("viridis")
+    combo.setCurrentIndex(0)
+    assert combo.current_matplotlib_name() == "viridis"
+
+
+def test_colormap_combobox_load_thumbnail_ignores_invalid_index(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    combo.load_thumbnail(-1)
+
+    assert combo.count() == 0
 
 
 def test_colormap_thumbnail_pixmap_uses_string_cache(qtbot) -> None:
