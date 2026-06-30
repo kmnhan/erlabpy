@@ -54,7 +54,6 @@ class _ReduceDimensionRow:
             axis,
             object_name_prefix="reduce_dimension",
             current_index=data.sizes[dim] // 2,
-            include_width=False,
             default_method="isel",
         )
         self.reducer_combo = QtWidgets.QComboBox()
@@ -68,6 +67,7 @@ class _ReduceDimensionRow:
                 self.action_combo,
                 self.scalar_controls.method_combo,
                 self.scalar_controls.stack,
+                self.scalar_controls.width_widget,
                 self.reducer_combo,
             )
         ):
@@ -75,6 +75,8 @@ class _ReduceDimensionRow:
 
         self.action_combo.currentIndexChanged.connect(self.sync_widgets)
         self.action_combo.currentIndexChanged.connect(dialog.update_preview)
+        self.scalar_controls.method_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.scalar_controls.width_check.toggled.connect(self.sync_widgets)
         self.scalar_controls.connect_changed(dialog.update_preview)
         self.reducer_combo.currentIndexChanged.connect(dialog.update_preview)
         self.sync_widgets()
@@ -90,14 +92,25 @@ class _ReduceDimensionRow:
 
     def sync_widgets(self) -> None:
         action = self.action
-        self.scalar_controls.method_combo.setEnabled(action == "select")
-        self.scalar_controls.stack.setEnabled(action == "select")
+        is_selecting = action == "select"
+        width_enabled = is_selecting and self.scalar_controls.method == "qsel"
+        self.scalar_controls.method_combo.setEnabled(is_selecting)
+        self.scalar_controls.stack.setEnabled(is_selecting)
+        self.scalar_controls.width_widget.setEnabled(width_enabled)
+        self.scalar_controls.width_spin.setEnabled(
+            width_enabled and self.scalar_controls.width_check.isChecked()
+        )
         self.reducer_combo.setEnabled(action == "aggregate")
 
     def selection_indexer(self) -> tuple[Hashable, typing.Any] | None:
         if self.action != "select":
             return None
         return self.scalar_controls.indexer()
+
+    def qsel_width_indexer(self) -> tuple[str, float] | None:
+        if self.action != "select":
+            return None
+        return self.scalar_controls.qsel_width_indexer()
 
     def aggregate_operation(self) -> provenance.QSelAggregationOperation | None:
         if self.action != "aggregate":
@@ -141,7 +154,7 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         self.grid_layout.setHorizontalSpacing(8)
         self.grid_layout.setVerticalSpacing(4)
         for column, label in enumerate(
-            ("Dimension", "Size", "Action", "Method", "Selection", "Reducer")
+            ("Dimension", "Size", "Action", "Method", "Selection", "Width", "Reducer")
         ):
             header = QtWidgets.QLabel(label)
             header.setObjectName(f"reduce_dimension_header_{column}")
@@ -210,6 +223,10 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             if indexer is not None:
                 dim, value = indexer
                 selection_target[row.scalar_controls.method][dim] = value
+                width_indexer = row.qsel_width_indexer()
+                if width_indexer is not None:
+                    width_dim, width = width_indexer
+                    qsel_kwargs[width_dim] = width
                 continue
             aggregate_operation = row.aggregate_operation()
             if aggregate_operation is not None:
