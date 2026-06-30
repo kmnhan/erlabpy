@@ -13,9 +13,14 @@ import typing
 import pydantic
 from qtpy import QtCore
 
-from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._options.schema import (
+    AppOptions,
+    normalize_workspace_compression_mode,
+)
 
 _SETTINGS_PATH_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
+_WORKSPACE_COMPRESSION_PATH = "io/workspace/compression"
+_LEGACY_WORKSPACE_COMPRESS_PATH = "io/workspace/compress"
 
 
 def _qsettings_to_dict(
@@ -96,9 +101,14 @@ def read_settings(qsettings: QtCore.QSettings) -> AppOptions:
         An instance of AppOptions populated with values from QSettings.
 
     """
-    return AppOptions.model_validate(
-        _qsettings_to_dict(qsettings, AppOptions().model_dump())
-    )
+    values = _qsettings_to_dict(qsettings, AppOptions().model_dump())
+    if not qsettings.contains(_WORKSPACE_COMPRESSION_PATH) and qsettings.contains(
+        _LEGACY_WORKSPACE_COMPRESS_PATH
+    ):
+        values["io"]["workspace"]["compression"] = normalize_workspace_compression_mode(
+            qsettings.value(_LEGACY_WORKSPACE_COMPRESS_PATH)
+        )
+    return AppOptions.model_validate(values)
 
 
 def write_settings(opts: AppOptions, qsettings: QtCore.QSettings) -> None:
@@ -111,11 +121,14 @@ def write_settings(opts: AppOptions, qsettings: QtCore.QSettings) -> None:
     qsettings : QtCore.QSettings
         The QSettings object to write to.
     """
+    qsettings.remove(_LEGACY_WORKSPACE_COMPRESS_PATH)
     _dict_to_qsettings(opts.model_dump(), qsettings)
 
 
 def option_value(model: AppOptions, name: str) -> typing.Any:
     """Return an option value by slash-separated path."""
+    if name == _LEGACY_WORKSPACE_COMPRESS_PATH:
+        return option_value(model, _WORKSPACE_COMPRESSION_PATH) != "none"
     value: typing.Any = model
     for key in name.split("/"):
         value = getattr(value, key)
@@ -126,6 +139,9 @@ def option_model_with_value(
     model: AppOptions, name: str, value: typing.Any
 ) -> AppOptions:
     """Return a copy of *model* with one slash-separated option path changed."""
+    if name == _LEGACY_WORKSPACE_COMPRESS_PATH:
+        name = _WORKSPACE_COMPRESSION_PATH
+        value = normalize_workspace_compression_mode(value)
     data = model.model_dump()
     target = data
     keys = name.split("/")
@@ -251,6 +267,8 @@ class OptionManager:
 
     def get(self, name: str) -> typing.Any:
         """Get settings by name."""
+        if name == _LEGACY_WORKSPACE_COMPRESS_PATH:
+            return self.get(_WORKSPACE_COMPRESSION_PATH) != "none"
         keys = name.split("/")
         option: typing.Any = self.model.model_dump()
         for key in keys:
@@ -265,10 +283,23 @@ class OptionManager:
         """Set settings by name and value."""
         with self._lock:
             qsettings = self.qsettings
+            if name == _LEGACY_WORKSPACE_COMPRESS_PATH:
+                qsettings.remove(_LEGACY_WORKSPACE_COMPRESS_PATH)
+                if value is None:
+                    qsettings.remove(_WORKSPACE_COMPRESSION_PATH)
+                else:
+                    qsettings.setValue(
+                        _WORKSPACE_COMPRESSION_PATH,
+                        normalize_workspace_compression_mode(value),
+                    )
+                qsettings.sync()
+                return
             if value is None:
                 qsettings.remove(name)
             else:
                 qsettings.setValue(name, value)
+            if name == _WORKSPACE_COMPRESSION_PATH:
+                qsettings.remove(_LEGACY_WORKSPACE_COMPRESS_PATH)
             qsettings.sync()
 
     def __getitem__(self, name: str) -> typing.Any:

@@ -125,6 +125,75 @@ def _stylesheet_names(value: typing.Any) -> list[str]:
     return out
 
 
+class _ChoiceSlider(QtWidgets.QWidget):
+    sigValueChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        choices: typing.Sequence[typing.Mapping[str, typing.Any]],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        if not choices:
+            raise ValueError("Choice slider requires at least one choice")
+        self._choices = tuple(
+            (str(choice.get("label", choice.get("value"))), choice.get("value"))
+            for choice in choices
+        )
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.slider.setRange(0, len(self._choices) - 1)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(1)
+        self.slider.setTickInterval(1)
+        self.slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        self.slider.valueChanged.connect(self._slider_value_changed)
+        self.setFocusProxy(self.slider)
+
+        label_row = QtWidgets.QWidget(self)
+        label_layout = QtWidgets.QHBoxLayout(label_row)
+        label_layout.setContentsMargins(0, 0, 0, 0)
+        label_layout.setSpacing(0)
+        for label, _value in self._choices:
+            label_widget = QtWidgets.QLabel(label, label_row)
+            label_widget.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            label_widget.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            label_layout.addWidget(label_widget, 1)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self.slider)
+        layout.addWidget(label_row)
+
+    def count(self) -> int:
+        return len(self._choices)
+
+    def itemText(self, index: int) -> str:
+        return self._choices[index][0]
+
+    def itemData(self, index: int) -> typing.Any:
+        return self._choices[index][1]
+
+    def findData(self, value: typing.Any) -> int:
+        for index, (_label, choice_value) in enumerate(self._choices):
+            if choice_value == value:
+                return index
+        return -1
+
+    def currentData(self) -> typing.Any:
+        return self.itemData(self.slider.value())
+
+    def setCurrentData(self, value: typing.Any) -> None:
+        index = self.findData(value)
+        if index < 0:
+            raise ValueError(f"Unknown choice slider value: {value!r}")
+        self.slider.setValue(index)
+
+    def _slider_value_changed(self, _value: int) -> None:
+        self.sigValueChanged.emit(self.currentData())
+
+
 class _SettingsRow(QtWidgets.QFrame):
     def __init__(
         self,
@@ -408,6 +477,8 @@ class OptionDialog(QtWidgets.QDialog):
             return StylesheetListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
+        if ui_type == "choice_slider":
+            return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
             combo = QtWidgets.QComboBox(self)
             for choice in extra.get("ui_limits", ()):
@@ -481,6 +552,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigDpiChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
+        elif isinstance(control, _ChoiceSlider):
+            control.sigValueChanged.connect(
+                lambda _value, row=row: self._control_changed(row)
+            )
         elif isinstance(control, QtWidgets.QComboBox):
             control.currentIndexChanged.connect(
                 lambda _index, row=row: self._control_changed(row)
@@ -546,6 +621,8 @@ class OptionDialog(QtWidgets.QDialog):
             return True
         if isinstance(control, FigureDpiOverrideWidget):
             return False
+        if isinstance(control, _ChoiceSlider):
+            return False
         return isinstance(control, QtWidgets.QComboBox) and not isinstance(
             control, erlab.interactive.colors.ColorMapComboBox
         )
@@ -573,6 +650,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.value()
         if isinstance(control, erlab.interactive.colors.ColorMapComboBox):
             return control.currentText()
+        if isinstance(control, _ChoiceSlider):
+            return control.currentData()
         if isinstance(control, QtWidgets.QComboBox):
             value = control.currentData()
             return control.currentText() if value is None else value
@@ -605,6 +684,9 @@ class OptionDialog(QtWidgets.QDialog):
         if isinstance(control, erlab.interactive.colors.ColorMapComboBox):
             control.ensure_populated()
             control.setCurrentText(str(value))
+            return
+        if isinstance(control, _ChoiceSlider):
+            control.setCurrentData(value)
             return
         if isinstance(control, QtWidgets.QComboBox):
             index = control.findData(value)

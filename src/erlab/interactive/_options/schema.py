@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import typing
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import erlab
 
@@ -58,8 +58,26 @@ __all__ = [
     "ColorOptions",
     "FigureOptions",
     "IOOptions",
+    "WorkspaceCompressionMode",
     "WorkspaceOptions",
+    "normalize_workspace_compression_mode",
 ]
+
+WorkspaceCompressionMode = typing.Literal["none", "blosclz3", "zstd1"]
+
+
+def normalize_workspace_compression_mode(value: typing.Any) -> typing.Any:
+    """Return the canonical workspace compression mode for legacy values."""
+    if isinstance(value, bool):
+        return "zstd1" if value else "none"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "0", "no", "off"}:
+            return "none"
+        if normalized in {"true", "1", "yes", "on"}:
+            return "zstd1"
+        return normalized
+    return value
 
 
 def _unique_seq(seq: list[str]) -> list[str]:
@@ -188,12 +206,20 @@ class DaskOptions(BaseModel):
 class WorkspaceOptions(BaseModel):
     """ImageTool Manager workspace file options."""
 
-    compress: bool = Field(
-        default=True,
-        title="Compress workspace files",
+    compression: WorkspaceCompressionMode = Field(
+        default="zstd1",
+        title="Workspace compression",
         description=(
-            "Compress large numeric data arrays when saving ImageTool Manager "
-            "workspace files."
+            "Choose how much workspace saves compress large numeric data. Off uses "
+            "more disk space; Compact writes smaller files and may read more slowly."
+        ),
+        json_schema_extra=_workspace_extra(
+            ui_type="choice_slider",
+            ui_choices=[
+                {"label": "Off", "value": "none"},
+                {"label": "Standard", "value": "blosclz3"},
+                {"label": "Compact", "value": "zstd1"},
+            ],
         ),
     )
     use_incremental: bool = Field(
@@ -213,6 +239,20 @@ class WorkspaceOptions(BaseModel):
             "for these paths."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_compress(cls, value: typing.Any) -> typing.Any:
+        if not isinstance(value, dict):
+            return value
+        if "compression" not in value and "compress" in value:
+            value = {**value, "compression": value["compress"]}
+        return value
+
+    @field_validator("compression", mode="before")
+    @classmethod
+    def normalize_compression(cls, value: typing.Any) -> typing.Any:
+        return normalize_workspace_compression_mode(value)
 
 
 class IOOptions(BaseModel):

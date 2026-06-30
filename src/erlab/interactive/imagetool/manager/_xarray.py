@@ -16,6 +16,8 @@ from xarray.backends import CachingFileManager, H5NetCDFStore
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterator
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
+
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 
@@ -99,21 +101,53 @@ def ensure_workspace_hdf5_filters_registered() -> None:
 
 
 def workspace_compression_enabled() -> bool:
+    return workspace_compression_mode() != "none"
+
+
+def workspace_compression_mode() -> WorkspaceCompressionMode:
     import erlab
 
-    return bool(erlab.interactive.options.model.io.workspace.compress)
+    return erlab.interactive.options.model.io.workspace.compression
 
 
-def _workspace_blosc2_encoding() -> dict[str, typing.Any]:
+def _workspace_blosc2_encoding(
+    compression_mode: WorkspaceCompressionMode,
+) -> dict[str, typing.Any]:
+    if compression_mode == "none":
+        return {}
+
     ensure_workspace_hdf5_filters_registered()
+    match compression_mode:
+        case "blosclz3":
+            cname = "blosclz"
+            clevel = 3
+        case "zstd1":
+            cname = "zstd"
+            clevel = 1
+        case _:
+            raise ValueError(f"Unknown workspace compression mode: {compression_mode}")
 
     return dict(
         hdf5plugin.Blosc2(
-            cname="blosclz",
-            clevel=3,
+            cname=cname,
+            clevel=clevel,
             filters=hdf5plugin.Blosc2.SHUFFLE,
         )
     )
+
+
+def _resolve_workspace_compression_mode(
+    *,
+    compression_mode: WorkspaceCompressionMode | None,
+    compress: bool | None,
+) -> WorkspaceCompressionMode:
+    if compression_mode is not None:
+        return compression_mode
+    if compress is False:
+        return "none"
+    if compress is True:
+        return "zstd1"
+    return workspace_compression_mode()
 
 
 def _should_compress_workspace_variable(
@@ -148,10 +182,13 @@ def workspace_dataset_encoding(
     *,
     min_bytes: int = _WORKSPACE_COMPRESSION_MIN_BYTES,
     compress: bool | None = None,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> dict[Hashable, dict[str, typing.Any]]:
     """Return h5netcdf encodings for workspace data variables."""
-    if compress is None:
-        compress = workspace_compression_enabled()
+    compression_mode = _resolve_workspace_compression_mode(
+        compression_mode=compression_mode, compress=compress
+    )
+    compression_encoding = _workspace_blosc2_encoding(compression_mode)
 
     encoding: dict[Hashable, dict[str, typing.Any]] = {}
     for name, data_array in ds.data_vars.items():
@@ -159,10 +196,10 @@ def workspace_dataset_encoding(
         chunksizes = _workspace_chunksizes_for_dataarray(data_array)
         if chunksizes is not None:
             var_encoding["chunksizes"] = chunksizes
-        if compress and _should_compress_workspace_variable(
+        if compression_encoding and _should_compress_workspace_variable(
             data_array.variable, min_bytes=min_bytes
         ):
-            var_encoding.update(_workspace_blosc2_encoding())
+            var_encoding.update(compression_encoding)
         if var_encoding:
             encoding[name] = var_encoding
     return encoding
@@ -173,15 +210,19 @@ def workspace_datatree_encoding(
     *,
     min_bytes: int = _WORKSPACE_COMPRESSION_MIN_BYTES,
     compress: bool | None = None,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> dict[str, dict[Hashable, dict[str, typing.Any]]]:
     """Return nested h5netcdf encodings for workspace payloads."""
-    if compress is None:
-        compress = workspace_compression_enabled()
+    compression_mode = _resolve_workspace_compression_mode(
+        compression_mode=compression_mode, compress=compress
+    )
 
     encoding: dict[str, dict[Hashable, dict[str, typing.Any]]] = {}
     for node in tree.subtree:
         node_encoding = workspace_dataset_encoding(
-            node.to_dataset(inherit=False), min_bytes=min_bytes, compress=compress
+            node.to_dataset(inherit=False),
+            min_bytes=min_bytes,
+            compression_mode=compression_mode,
         )
         if node_encoding:
             encoding[node.path] = node_encoding
