@@ -378,6 +378,12 @@ def _current_workspace_schema_version() -> int:
     return _WORKSPACE_SCHEMA_VERSION
 
 
+def _workspace_path_is_itws(
+    fname: str | os.PathLike[str],
+) -> bool:
+    return pathlib.Path(fname).suffix.lower() == ".itws"
+
+
 def _set_legacy_workspace_schema(
     attrs: MutableMapping[typing.Hashable, typing.Any],
 ) -> None:
@@ -1070,6 +1076,8 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
     import h5py
 
     if not pathlib.Path(fname).exists():
+        return
+    if not _workspace_path_is_itws(fname):
         return
     with _xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
