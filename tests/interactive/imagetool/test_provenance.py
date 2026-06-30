@@ -1829,6 +1829,239 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
         data.isel(z=slice(0, 1)).squeeze(dim=("z",), drop=True),
     )
 
+    chained_squeeze_data = xr.DataArray(
+        np.ones((1, 1)),
+        dims=("x", "z"),
+        name="scan",
+    )
+    chained_squeeze_spec = provenance.full_data(
+        provenance.SqueezeOperation(dims=("z",)),
+        provenance.SqueezeOperation(),
+    )
+    chained_squeeze_entries = chained_squeeze_spec.display_entries(
+        parent_data=chained_squeeze_data
+    )
+    assert [entry.label for entry in chained_squeeze_entries] == [
+        "Start from current parent ImageTool data",
+        'squeeze(dim=("z",))',
+        "squeeze()",
+    ]
+    chained_squeeze_code = typing.cast(
+        "str",
+        chained_squeeze_spec.display_code(parent_data=chained_squeeze_data),
+    )
+    chained_namespace = _exec_generated_code(
+        chained_squeeze_code,
+        {"data": chained_squeeze_data.copy(deep=True)},
+    )
+    chained_squeezed = chained_namespace["derived"]
+    assert isinstance(chained_squeezed, xr.DataArray)
+    xr.testing.assert_identical(
+        chained_squeezed,
+        chained_squeeze_data.squeeze(dim=("z",)).squeeze(),
+    )
+
+
+def test_tool_provenance_display_streamlining_is_metadata_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _base_data()
+    calls: list[str] = []
+
+    def record_apply(
+        self: provenance.ToolProvenanceOperation,
+        data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        calls.append(self.op)
+        return data
+
+    monkeypatch.setattr(
+        provenance.SymmetrizeNfoldOperation,
+        "apply",
+        record_apply,
+    )
+    monkeypatch.setattr(
+        provenance.KspaceConvertOperation,
+        "apply",
+        record_apply,
+    )
+    spec = provenance.full_data(
+        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
+        provenance.KspaceConvertOperation(),
+    )
+
+    rows = spec.display_rows(parent_data=data)
+    entries = spec.display_entries(parent_data=data)
+    code = spec.display_code(parent_data=data)
+
+    assert calls == []
+    assert any(row.entry.label.startswith("Rotational Symmetrize") for row in rows)
+    assert any(entry.label.startswith("Convert to momentum") for entry in entries)
+    assert code is not None
+    assert "symmetrize_nfold" in code
+    assert ".kspace.convert(" in code
+
+    staged_spec = provenance.script(
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+        replay_stages=(provenance.ReplayStage.from_source_spec(spec),),
+    )
+    assert staged_spec.display_rows(parent_data=data)
+    assert staged_spec.display_code(parent_data=data) is not None
+    assert calls == []
+
+    spec.apply(data)
+    assert calls == ["symmetrize_nfold", "kspace_convert"]
+
+
+def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None:
+    spec = provenance.full_data(
+        provenance.TransposeOperation(dims=("x", "y", "z")),
+        provenance.SqueezeOperation(),
+        provenance.RestoreNonuniformDimsOperation(),
+    )
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Start from current parent ImageTool data",
+        "transpose(('x', 'y', 'z'))",
+        "squeeze()",
+        "Restore nonuniform dimensions",
+    ]
+    unknown_code = typing.cast("str", spec.display_code())
+    assert ".transpose(" in unknown_code
+    assert ".squeeze()" in unknown_code
+    assert "restore_nonuniform_dims" in unknown_code
+
+    data = _base_data()
+    assert [entry.label for entry in spec.display_entries(parent_data=data)] == [
+        "Start from current parent ImageTool data",
+    ]
+    assert spec.display_code(parent_data=data) is None
+
+
+def test_tool_provenance_display_metadata_context_branches() -> None:
+    data = _base_data()
+    context_cls = _provenance_framework._ProvenanceDisplayContext
+
+    context = context_cls.from_source("full_data", data)
+    assert context.dims == data.dims
+    assert context.sizes == dict(data.sizes)
+    nonuniform_data = xr.DataArray(np.ones(2), dims=("x_idx",), name="scan")
+    assert context_cls.from_source("public_data", nonuniform_data).dims is None
+    assert context_cls.dims_may_restore_nonuniform(("x_idx",))
+    assert not context_cls.dims_may_restore_nonuniform(("x",))
+
+    indexer_size = context_cls._isel_indexer_size
+    assert indexer_size(slice(None, None, 2), 5) == (True, 3)
+    assert indexer_size(True, 5) == (False, None)
+    assert indexer_size(np.bool_(False), 5) == (False, None)
+    assert indexer_size(1, 5) == (True, None)
+    assert indexer_size(np.int64(1), 5) == (True, None)
+    assert indexer_size(xr.DataArray([0], dims=("index",)), 5) == (False, None)
+    assert indexer_size(np.array(1), 5) == (True, None)
+    assert indexer_size(np.array([0, 2]), 5) == (True, 2)
+    assert indexer_size(np.array([[0, 1]]), 5) == (False, None)
+    assert indexer_size(np.array([True, False]), 5) == (False, None)
+    assert indexer_size(range(0, 5, 2), 5) == (True, 3)
+    assert indexer_size([True, False], 5) == (False, None)
+    assert indexer_size([0, 2], 5) == (True, 2)
+    assert indexer_size(object(), 5) == (False, None)
+
+    assert context.advance(provenance.SortCoordOrderOperation()) == context
+    assert context.advance(provenance.RenameOperation(name="renamed")) == context
+    assert (
+        context.advance(
+            _provenance_framework._SourceViewOperation(source_kind="full_data")
+        )
+        == context
+    )
+    assert (
+        context.advance(
+            _provenance_framework._SourceViewOperation(source_kind="public_data")
+        )
+        == context
+    )
+    nonuniform_context = context_cls(("x_idx", "y"), {"x_idx": 3, "y": 4})
+    assert (
+        nonuniform_context.advance(
+            _provenance_framework._SourceViewOperation(source_kind="public_data")
+        ).dims
+        is None
+    )
+    assert context.advance(provenance.QSelOperation()) == context
+    assert context.advance(provenance.QSelOperation(kwargs={"x": 1.0})).dims is None
+    assert context.advance(provenance.SelOperation()) == context
+    assert context.advance(provenance.SelOperation(kwargs={"x": 1.0})).dims is None
+    assert context.advance(provenance.IselOperation()) == context
+    assert context.advance(provenance.IselOperation(kwargs={"missing": 0})).dims is None
+    assert (
+        context.advance(
+            provenance.IselOperation(kwargs={"x": xr.DataArray([0], dims=("index",))})
+        ).dims
+        is None
+    )
+    assert context.advance(provenance.IselOperation(kwargs={"z": 0})).dims == (
+        "x",
+        "y",
+    )
+    vector_index_context = context.advance(
+        provenance.IselOperation(kwargs={"x": [0, 2]})
+    )
+    assert vector_index_context.dims == data.dims
+    assert vector_index_context.sizes == {"x": 2, "y": 4, "z": 2}
+    assert (
+        context.advance(provenance.TransposeOperation(dims=("x", "missing", "z"))).dims
+        is None
+    )
+    assert context.advance(provenance.TransposeOperation()).dims == ("z", "y", "x")
+
+    unknown_context = context_cls()
+    assert unknown_context.advance(provenance.TransposeOperation()).dims is None
+    assert unknown_context.advance(provenance.SqueezeOperation()).dims is None
+
+    assert context.advance(provenance.SqueezeOperation(dims=("missing",))).dims is None
+    mixed_squeeze_context = context_cls.from_source(
+        "full_data", xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
+    )
+    assert (
+        mixed_squeeze_context.advance(provenance.SqueezeOperation(dims=("x", "z"))).dims
+        is None
+    )
+    assert (
+        mixed_squeeze_context.advance(provenance.SqueezeOperation(dims=("z",)))
+        == mixed_squeeze_context
+    )
+    assert mixed_squeeze_context.advance(
+        provenance.SqueezeOperation(dims=("x",))
+    ).dims == ("z",)
+    assert mixed_squeeze_context.advance(provenance.SqueezeOperation()).dims == ("z",)
+    assert context.advance(provenance.RestoreNonuniformDimsOperation()) == context
+    assert (
+        nonuniform_context.advance(provenance.RestoreNonuniformDimsOperation()).dims
+        is None
+    )
+    assert context.advance(provenance.AverageOperation(dims=("x",))).dims is None
+
+    staged_spec = provenance.script(
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+        replay_stages=(
+            provenance.ReplayStage(
+                source_kind="full_data",
+                operations=(
+                    provenance.RestoreNonuniformDimsOperation(),
+                    provenance.SqueezeOperation(),
+                ),
+            ),
+        ),
+    )
+    assert [
+        entry.label for entry in staged_spec._code_fallback_entries(parent_data=data)
+    ] == ["Run script"]
+
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 

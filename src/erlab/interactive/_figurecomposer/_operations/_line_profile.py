@@ -655,7 +655,7 @@ def _add_line_coordinate_color_controls(
         cmap_combo,
         cmap_combo.activated,
         lambda _index: _update_current_line_color_cmap(
-            tool, cmap_combo.currentText(), reverse_check.isChecked()
+            tool, cmap_combo.current_matplotlib_name(), reverse_check.isChecked()
         ),
     )
     tool._connect_editor_signal(
@@ -663,7 +663,7 @@ def _add_line_coordinate_color_controls(
         reverse_check.stateChanged,
         lambda state: _update_current_line_color_cmap(
             tool,
-            cmap_combo.currentText(),
+            cmap_combo.current_matplotlib_name(),
             QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked,
         ),
     )

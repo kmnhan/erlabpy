@@ -300,15 +300,17 @@ class _DataManipulationDialog(QtWidgets.QDialog):
 
     def __init__(
         self,
-        slicer_area: ImageSlicerArea,
+        slicer_area: ImageSlicerArea | None,
         *,
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
     ) -> None:
-        super().__init__(slicer_area)
+        super().__init__(slicer_area if dialog_parent is None else dialog_parent)
         if self.title is not None:
             self.setWindowTitle(self.title)
 
+        self._slicer_area: Callable[[], ImageSlicerArea | None]
         self.slicer_area = slicer_area
         self._provenance_edit_mode = provenance_edit_mode
         self._batch_manager = (
@@ -353,7 +355,10 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
-    def slicer_area(self, value: ImageSlicerArea) -> None:
+    def slicer_area(self, value: ImageSlicerArea | None) -> None:
+        if value is None:
+            self._slicer_area = lambda: None
+            return
         self._slicer_area = weakref.ref(value)
 
     @property
@@ -452,7 +457,10 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         return ""
 
     def _copy_data_name(self) -> str:
-        return self.slicer_area.watched_data_name or "data"
+        slicer_area = self._slicer_area()
+        if slicer_area is None:
+            return "data"
+        return slicer_area.watched_data_name or "data"
 
 
 class DataTransformDialog(_DataManipulationDialog):
@@ -535,15 +543,17 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def __init__(
         self,
-        slicer_area: ImageSlicerArea,
+        slicer_area: ImageSlicerArea | None,
         *,
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(
             slicer_area,
             batch_manager=batch_manager,
             provenance_edit_mode=provenance_edit_mode,
+            dialog_parent=dialog_parent,
         )
         if self.is_provenance_edit_mode:
             return
@@ -1025,11 +1035,13 @@ class DataFilterDialog(_DataManipulationDialog):
         *,
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(
             slicer_area,
             batch_manager=batch_manager,
             provenance_edit_mode=provenance_edit_mode,
+            dialog_parent=dialog_parent,
         )
         self._previewed: bool = False
         self._starting_applied_func = self.slicer_area._applied_func
@@ -1998,21 +2010,17 @@ class _SelectionRow:
         self.dim = dim
 
         data = dialog.public_data
-        current_index = dialog.array_slicer.get_index(
-            dialog.slicer_area.current_cursor, axis
-        )
+        current_index = dialog._current_selection_index(axis)
+        bin_values = dialog._selection_bin_values()
+        binned = dialog._selection_binned()
         scalar_controls = _ScalarSelectionControls(
             data,
             dim,
             axis,
             object_name_prefix="selection",
             current_index=current_index,
-            bin_value=dialog.array_slicer.get_bin_values(
-                dialog.slicer_area.current_cursor
-            )[axis],
-            is_binned=dialog.array_slicer.get_binned(dialog.slicer_area.current_cursor)[
-                axis
-            ],
+            bin_value=bin_values[axis],
+            is_binned=binned[axis],
         )
         self._scalar_controls = scalar_controls
         self._coord_ascending = scalar_controls.coord_ascending
@@ -2318,9 +2326,38 @@ class SelectionDialog(DataTransformDialog):
         provenance.QSelOperation,
     )
 
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea | None = None,
+        *,
+        batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
+        source_data: xr.DataArray | None = None,
+    ) -> None:
+        if slicer_area is None:
+            if source_data is None:
+                raise ValueError(
+                    "SelectionDialog requires a slicer area or source data"
+                )
+            if not provenance_edit_mode:
+                raise ValueError(
+                    "Source-data-only SelectionDialog requires provenance edit mode"
+                )
+        self._source_data = source_data
+        super().__init__(
+            slicer_area,
+            batch_manager=batch_manager,
+            provenance_edit_mode=provenance_edit_mode,
+            dialog_parent=dialog_parent,
+        )
+
     def setup_widgets(self) -> None:
+        source_data = self._source_data
+        if source_data is None:
+            source_data = self.slicer_area.data
         self.public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-            self.slicer_area.data
+            source_data
         )
 
         self.grid_layout = QtWidgets.QGridLayout()
@@ -2369,6 +2406,23 @@ class SelectionDialog(DataTransformDialog):
         self.layout_.addRow("Result", self.preview_label)
         self.layout_.addRow("Code", self.code_preview)
         self.update_preview()
+
+    def _current_selection_index(self, axis: int) -> int:
+        if self._source_data is None:
+            return self.array_slicer.get_index(self.slicer_area.current_cursor, axis)
+        dim = self.public_data.dims[axis]
+        size = self.public_data.sizes[dim]
+        return max(0, min(size // 2, size - 1))
+
+    def _selection_bin_values(self) -> tuple[float, ...]:
+        if self._source_data is None:
+            return self.array_slicer.get_bin_values(self.slicer_area.current_cursor)
+        return (0.0,) * self.public_data.ndim
+
+    def _selection_binned(self) -> tuple[bool, ...]:
+        if self._source_data is None:
+            return self.array_slicer.get_binned(self.slicer_area.current_cursor)
+        return (False,) * self.public_data.ndim
 
     def _selection_kwargs(
         self,

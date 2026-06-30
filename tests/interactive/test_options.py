@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typing
 
+import pydantic
 import pytest
 from qtpy import QtWidgets
 
@@ -14,7 +15,11 @@ from erlab.interactive._options.core import (
     option_paths,
     workspace_overridable_option_paths,
 )
-from erlab.interactive._options.parameters import ColorListWidget, StylesheetListWidget
+from erlab.interactive._options.parameters import (
+    ColorListWidget,
+    FigureDpiOverrideWidget,
+    StylesheetListWidget,
+)
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.colors import ColorMapComboBox
 
@@ -202,6 +207,12 @@ def test_stylesheet_editor_fits_settings_page(dialog: OptionDialog, qtbot):
         "figure/stylesheets",
         StylesheetListWidget,
     )
+    _control(
+        dialog,
+        "user",
+        "figure/dpi",
+        FigureDpiOverrideWidget,
+    )
 
     qtbot.waitUntil(lambda: page.horizontalScrollBar().maximum() == 0)
 
@@ -324,6 +335,13 @@ def test_dialog_control_value_helpers(dialog: OptionDialog, qtbot):
         "ggplot",
     ]
 
+    figure_dpi = FigureDpiOverrideWidget()
+    qtbot.addWidget(figure_dpi)
+    assert dialog._control_value(figure_dpi, "figure/dpi") is None
+    figure_dpi.override_check.setChecked(True)
+    figure_dpi.dpi_spin.setValue(180.0)
+    assert dialog._control_value(figure_dpi, "figure/dpi") == pytest.approx(180.0)
+
     list_line = QtWidgets.QLineEdit("one, two,, ")
     qtbot.addWidget(list_line)
     assert dialog._control_value(list_line, "colors/cmap/exclude") == ["one", "two"]
@@ -355,6 +373,17 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     qtbot.addWidget(text_line)
     dialog._set_control_value(text_line, "io/default_loader", "example")
     assert text_line.text() == "example"
+
+    figure_dpi = FigureDpiOverrideWidget()
+    qtbot.addWidget(figure_dpi)
+    dialog._set_control_value(figure_dpi, "figure/dpi", 150.0)
+    assert figure_dpi.override_check.isChecked()
+    assert figure_dpi.dpi_spin.isEnabled()
+    assert figure_dpi.get_dpi() == pytest.approx(150.0)
+    dialog._set_control_value(figure_dpi, "figure/dpi", None)
+    assert not figure_dpi.override_check.isChecked()
+    assert not figure_dpi.dpi_spin.isEnabled()
+    assert figure_dpi.get_dpi() is None
 
 
 def test_dialog_spinbox_constraint_variants(
@@ -434,6 +463,33 @@ def test_workspace_override_switch_saves_sparse_override(qtbot):
 
     assert manager.overrides[path] == "bwr"
     assert combo.isEnabled()
+
+
+def test_workspace_figure_dpi_override_supports_unset_and_numeric(qtbot):
+    path = "figure/dpi"
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+    dlg.scope_tabs.setCurrentIndex(1)
+
+    control = typing.cast(
+        "FigureDpiOverrideWidget",
+        _control(dlg, "workspace", path, FigureDpiOverrideWidget),
+    )
+    override = _override(dlg, path)
+
+    assert not control.isEnabled()
+    override.setChecked(True)
+    assert manager.overrides[path] is None
+    assert control.isEnabled()
+
+    control.override_check.setChecked(True)
+    control.dpi_spin.setValue(180.0)
+    assert manager.overrides[path] == pytest.approx(180.0)
+
+    control.override_check.setChecked(False)
+    assert manager.overrides[path] is None
 
 
 def test_workspace_control_change_without_override_is_ignored(qtbot):
@@ -655,12 +711,14 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     assert "colors/cmap/name" in paths
     assert "colors/cmap/packages" not in paths
     assert "io/workspace/compress" not in paths
+    assert "figure/dpi" in paths
     assert normalize_workspace_option_overrides(
         {
             "colors/cmap/name": "bwr",
             "io/workspace/compress": False,
+            "figure/dpi": 180.0,
         }
-    ) == {"colors/cmap/name": "bwr"}
+    ) == {"colors/cmap/name": "bwr", "figure/dpi": 180.0}
 
 
 def test_options_get_set():
@@ -670,24 +728,38 @@ def test_options_get_set():
     assert options["io/workspace/compress"] is True
     assert options["io/workspace/use_incremental"] is True
     assert options["io/workspace/incremental_save_on_remote"] is False
+    assert options["figure/dpi"] is None
 
     options["colors/cmap/name"] = "viridis"
     options["io/workspace/compress"] = False
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
     options["figure/stylesheets"] = ["classic", "missing-style"]
+    options["figure/dpi"] = 150.0
 
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compress"] is False
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
+    assert options["figure/dpi"] == pytest.approx(150.0)
     assert not options.model.io.workspace.compress
     assert not options.model.io.workspace.use_incremental
     assert options.model.io.workspace.incremental_save_on_remote
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
+    assert options.model.figure.dpi == pytest.approx(150.0)
+
+    options["figure/dpi"] = None
+    assert options["figure/dpi"] is None
 
     options.restore()
+    assert options["figure/dpi"] is None
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, "not-a-number"])
+def test_figure_dpi_option_validates(value: object) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        AppOptions.model_validate({"figure": {"dpi": value}})
 
 
 def test_option_manager_uses_configured_settings_path(monkeypatch, tmp_path):

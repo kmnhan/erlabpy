@@ -1415,6 +1415,82 @@ def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) ->
     )
 
 
+def test_figure_composer_plot_array_qsel_to_keep_clears_selection(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("eV", "beta", "alpha"),
+        coords={
+            "eV": [-1.0, 0.0, 1.0],
+            "beta": [-0.5, 0.5],
+            "alpha": [0.0, 1.0],
+        },
+        name="map",
+    )
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+
+    def current_dimension_widget(
+        widget_type: type[QtWidgets.QWidget], dim: str
+    ) -> QtWidgets.QWidget:
+        widget = next(
+            (
+                candidate
+                for candidate in tool.findChildren(widget_type)
+                if candidate.property("figure_composer_plot_array_dim") == dim
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert widget is not None
+        return widget
+
+    def activate_dimension_mode(dim: str, mode: str) -> None:
+        combo = typing.cast(
+            "QtWidgets.QComboBox",
+            current_dimension_widget(QtWidgets.QComboBox, dim),
+        )
+        index = combo.findData(mode)
+        assert index >= 0
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+
+    activate_dimension_mode("eV", "qsel")
+    qsel_edit = typing.cast(
+        "QtWidgets.QLineEdit",
+        current_dimension_widget(QtWidgets.QLineEdit, "eV"),
+    )
+    assert qsel_edit.isEnabled()
+    qsel_edit.setText("0.0")
+    qsel_edit.setModified(True)
+    qsel_edit.editingFinished.emit()
+
+    updated = tool.tool_status.operations[0]
+    assert updated.map_selections == (
+        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
+    )
+
+    activate_dimension_mode("eV", "keep")
+
+    updated = tool.tool_status.operations[0]
+    assert updated.sources == ("data",)
+    assert updated.map_selections == ()
+    value_edit = typing.cast(
+        "QtWidgets.QLineEdit",
+        current_dimension_widget(QtWidgets.QLineEdit, "eV"),
+    )
+    assert not value_edit.isEnabled()
+    assert value_edit.text() == ""
+
+
 def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1468,9 +1544,8 @@ def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     figurecomposer_plot_array._update_current_selection_source(tool, "data")
-    assert tool.tool_status.operations[0].map_selections == (
-        FigureDataSelectionState(source="data"),
-    )
+    assert tool.tool_status.operations[0].sources == ("data",)
+    assert tool.tool_status.operations[0].map_selections == ()
 
     missing_operation = FigureOperationState.plot_array(
         label="missing", source="missing"
@@ -1515,6 +1590,13 @@ def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
         qsel={"y": 0.0},
         mean_dims=("x",),
     )
+
+    empty_selection = FigureDataSelectionState(source="data", qsel={"x": 0.0})
+    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
+        empty_selection,
+        "x",
+        "keep",
+    ) == FigureDataSelectionState(source="data")
 
     combo = figurecomposer_plot_array._plot_array_selection_mode_combo(
         tool,
@@ -1637,6 +1719,209 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     cmap_combo.activated.emit(cmap_combo.currentIndex())
 
     assert tool.tool_status.operations[0].cmap == cmap
+
+
+def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
+    qtbot,
+) -> None:
+    pytest.importorskip("colorcet")
+
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("colors")
+
+    cmap_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                erlab.interactive.colors.ColorMapComboBox,
+                "figureComposerPlotArrayCmapCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert cmap_combo is not None
+    cmap_combo.load_all()
+    cmap_combo.setCurrentText("CET_C1")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
+
+    operation = tool.tool_status.operations[0]
+    assert operation.cmap == "cet_CET_C1"
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(operation)["cmap"] == "cet_CET_C1"
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_code_kwargs(operation)["cmap"]
+        == "cet_CET_C1"
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert tool.figure.axes[0].images[-1].get_cmap().name == "cet_CET_C1"
+
+
+def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-image-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data").isel(eV=0)
+        operation = FigureOperationState.plot_array(label="plot_array", source="data")
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_list.setCurrentRow(0)
+        tool._select_step_section("colors")
+
+        cmap_combo = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    erlab.interactive.colors.ColorMapComboBox,
+                    "figureComposerPlotArrayCmapCombo",
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        cmap_reverse_check = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    QtWidgets.QCheckBox, "figureComposerPlotArrayCmapReverseCheck"
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert cmap_combo is not None
+        assert cmap_reverse_check is not None
+        assert cmap_combo.currentText() == "plasma"
+        assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
+        assert tool.tool_status.operations[0].cmap is None
+
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        assert tool.figure.axes[0].images[-1].get_cmap().name == "plasma"
+        assert "cmap" not in figurecomposer_plot_array._plot_array_kwargs(
+            tool.tool_status.operations[0]
+        )
+
+        cmap_reverse_check.setChecked(True)
+
+        assert tool.tool_status.operations[0].cmap == "plasma_r"
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
+
+
+def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-slices-image-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data").isel(eV=0)
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=("data",),
+        )
+        tool = FigureComposerTool.from_sources(
+            {"data": data},
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        )
+        qtbot.addWidget(tool)
+        tool.operation_list.setCurrentRow(0)
+        tool._select_step_section("colors")
+
+        cmap_combo = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    erlab.interactive.colors.ColorMapComboBox,
+                    "figureComposerCmapCombo",
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        cmap_reverse_check = next(
+            (
+                candidate
+                for candidate in tool.findChildren(
+                    QtWidgets.QCheckBox, "figureComposerCmapReverseCheck"
+                )
+                if candidate.property("figure_composer_editor_generation")
+                == tool._operation_editor_generation
+            ),
+            None,
+        )
+        assert cmap_combo is not None
+        assert cmap_reverse_check is not None
+        assert cmap_combo.currentText() == "plasma"
+        assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
+        assert tool.tool_status.operations[0].cmap is None
+
+        kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+            tool, tool.tool_status.operations[0]
+        )
+        assert "cmap" not in kwargs
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        assert tool.figure.axes[0].images[-1].get_cmap().name == "plasma"
+
+        cmap_reverse_check.setChecked(True)
+
+        assert tool.tool_status.operations[0].cmap == "plasma_r"
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
 
 
 def test_figure_composer_plot_array_colormap_editor_initialization_edges(
@@ -1806,7 +2091,7 @@ def test_figure_composer_plot_array_render_and_generated_code(
             "norm_gamma": 0.5,
             "vmin": 0.0,
             "vmax": 2.0,
-            "extra_kwargs": {"aspect": "equal"},
+            "aspect": "equal",
         }
     )
     tool = FigureComposerTool.from_sources(
@@ -1841,6 +2126,151 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "eplt.plot_array(data.qsel(eV=0.0).T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
+
+
+def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("view")
+
+    aspect_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                QtWidgets.QComboBox,
+                "figureComposerPlotArrayAspectCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert aspect_combo is not None
+    assert [aspect_combo.itemData(index) for index in range(aspect_combo.count())] == [
+        None,
+        "auto",
+        "equal",
+    ]
+    assert aspect_combo.currentData() is None
+
+    _activate_combo_index(aspect_combo, aspect_combo.findData("equal"))
+    assert tool.tool_status.operations[0].aspect == "equal"
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(tool.tool_status.operations[0])[
+            "aspect"
+        ]
+        == "equal"
+    )
+
+    _activate_combo_index(aspect_combo, aspect_combo.findData("auto"))
+    assert tool.tool_status.operations[0].aspect == "auto"
+    assert (
+        figurecomposer_plot_array._plot_array_code_kwargs(
+            tool.tool_status.operations[0]
+        )["aspect"]
+        == "auto"
+    )
+
+    _activate_combo_index(aspect_combo, aspect_combo.findData(None))
+    assert tool.tool_status.operations[0].aspect is None
+    assert "aspect" not in figurecomposer_plot_array._plot_array_kwargs(
+        tool.tool_status.operations[0]
+    )
+
+
+def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    ).model_copy(update={"aspect": 2.5})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("view")
+
+    aspect_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                QtWidgets.QComboBox,
+                "figureComposerPlotArrayAspectCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+
+    assert aspect_combo is not None
+    assert aspect_combo.currentData() is _editor_controls.MIXED_VALUE
+    assert tool.tool_status.operations[0].aspect == 2.5
+
+    _activate_combo_index(aspect_combo, aspect_combo.findData("auto"))
+
+    assert tool.tool_status.operations[0].aspect == "auto"
+
+
+def test_figure_composer_plot_array_aspect_control_shows_mixed_batch_value(
+    qtbot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    )
+
+    class _BatchTool:
+        def _batch_is_mixed(
+            self,
+            _operation: FigureOperationState,
+            _value: Callable[[FigureOperationState], object],
+        ) -> bool:
+            return True
+
+        def _mark_editor_control(self, _widget: QtWidgets.QWidget) -> None:
+            return
+
+        def _connect_editor_signal(
+            self,
+            _owner: QtWidgets.QWidget,
+            signal: object,
+            slot: Callable[..., None],
+        ) -> None:
+            signal.connect(slot)
+
+        def _update_current_operation(self, **_updates: object) -> None:
+            return
+
+    combo = figurecomposer_plot_array._plot_array_aspect_combo(
+        typing.cast("FigureComposerTool", _BatchTool()),
+        operation,
+        parent=parent,
+    )
+
+    item = typing.cast("typing.Any", combo.model()).item(0)
+    assert combo.currentData() is _editor_controls.MIXED_VALUE
+    assert item is not None
+    assert not item.isEnabled()
 
 
 def test_figure_composer_plot_array_colorbar_limit_changes_update_recipe(
@@ -2103,7 +2533,7 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
             "gamma": 0.75,
             "vmin": 0.0,
             "vmax": 1.0,
-            "extra_kwargs": {"aspect": "equal"},
+            "aspect": "equal",
         }
     )
 
@@ -2121,7 +2551,19 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
 
     code_kwargs = figurecomposer_plot_array._plot_array_code_kwargs(power_operation)
     assert code_kwargs == runtime_kwargs
+    override_operation = power_operation.model_copy(
+        update={"extra_kwargs": {"aspect": "auto"}}
+    )
+    assert (
+        figurecomposer_plot_array._plot_array_kwargs(override_operation)["aspect"]
+        == "auto"
+    )
     assert figurecomposer_plot_array._norm_gamma_value(power_operation) == 0.75
+
+    assert figurecomposer_plot_array._format_aspect_value(None) == ""
+    assert figurecomposer_plot_array._format_aspect_value("equal") == "equal"
+    assert figurecomposer_plot_array._format_aspect_value(2) == "2"
+    assert figurecomposer_plot_array._format_aspect_value((1, 2)) == "(1, 2)"
 
     norm_operation = power_operation.model_copy(
         update={
@@ -3855,6 +4297,10 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
                 name="plot",
                 axes=FigureAxesSelectionState(axes=((0, 0),)),
             ),
+            FigureOperationState.plot_array(
+                label="image plot",
+                source="image",
+            ).model_copy(update={"colorbar": "right"}),
         ),
         primary_source="image",
     )
@@ -3985,6 +4431,40 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
     _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
 
+    tool.operation_list.setCurrentRow(4)
+    tool._update_operation_editor()
+    tool._select_step_section("selection")
+    plot_array_selection_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_selection_page is not None
+    _assert_step_editor_section(
+        plot_array_selection_page,
+        "figureComposerPlotArraySelectionDataSection",
+    )
+    _assert_step_editor_section(
+        plot_array_selection_page,
+        "figureComposerPlotArraySelectionDimensionsSection",
+    )
+    tool._select_step_section("view")
+    plot_array_view_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_view_page is not None
+    _assert_step_editor_section(
+        plot_array_view_page, "figureComposerPlotArrayViewImageSection"
+    )
+    _assert_step_editor_section(
+        plot_array_view_page, "figureComposerPlotArrayViewAxesSection"
+    )
+    tool._select_step_section("colors")
+    plot_array_colors_page = tool.step_editor_stack.currentWidget()
+    assert plot_array_colors_page is not None
+    _assert_step_editor_section(
+        plot_array_colors_page,
+        "figureComposerPlotArrayColorsImageColorSection",
+    )
+    _assert_step_editor_section(
+        plot_array_colors_page,
+        "figureComposerPlotArrayColorsColorbarSection",
+    )
+
 
 def test_figure_composer_norm_helpers_cover_structured_and_custom_norms(
     monkeypatch,
@@ -4047,6 +4527,62 @@ def test_figure_composer_norm_helpers_cover_structured_and_custom_norms(
     assert custom_calls[-1] == ((), {"alpha": 3})
     assert figurecomposer_norms._norm_code(custom_no_gamma) == (
         "eplt.CustomNorm(alpha=3)"
+    )
+
+
+def test_figure_composer_cmap_helpers_normalize_colorcet_names() -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+
+    assert figurecomposer_norms._cmap_base_and_reverse("CET_C1_r") == (
+        "cet_CET_C1",
+        True,
+    )
+    assert figurecomposer_norms._cmap_with_reverse("fire", True) == "cet_fire_r"
+
+
+def test_figure_composer_plot_slices_kwargs_normalize_colorcet_colormaps(
+    qtbot,
+) -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"cmap": "CET_C1"})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    assert figurecomposer_plot_slices._plot_slices_kwargs(tool, operation)["cmap"] == (
+        "cet_CET_C1"
+    )
+
+    panel_operation = operation.model_copy(
+        update={
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="fire",
+                ),
+            ),
+        }
+    )
+
+    assert (
+        figurecomposer_plot_slices._plot_slices_kwargs(tool, panel_operation)["cmap"]
+        == "cet_fire"
     )
 
 
@@ -4976,6 +5512,12 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     assert figurecomposer_plot_slices._panel_cmap_argument(tool, operation) == [
         ["magma", "plasma"]
     ]
+    assert figurecomposer_plot_slices._effective_panel_cmap(
+        FigureOperationState.plot_slices(label="default", sources=("data",)),
+        FigurePlotSlicesPanelStyleState(map_index=0, slice_index=0),
+    ) == figurecomposer_plot_slices._matplotlib_cmap_name(
+        options.model.colors.cmap.name
+    )
     assert figurecomposer_plot_slices._panel_line_kw_argument(tool, operation) == [
         [{"linewidth": 1.5, "color": "red"}, {"linewidth": 1.5, "color": "blue"}]
     ]
@@ -5843,6 +6385,7 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
     )
     qtbot.addWidget(editor)
     emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
@@ -5893,6 +6436,7 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
     )
     qtbot.addWidget(editor)
     emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
@@ -5933,6 +6477,59 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
             norm_name="PowerNorm",
         ),
     )
+
+
+def test_figure_composer_plot_slices_panel_style_editor_reverses_mixed_cmap(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "cmap": "viridis",
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="magma",
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    cmap="plasma",
+                ),
+            ),
+        }
+    )
+    keys = (
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+    )
+    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+        operation,
+        keys,
+        lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
+    )
+    qtbot.addWidget(editor)
+    emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
+    editor.sigPanelStylesChanged.connect(emitted.append)
+
+    for row in range(editor.panel_list.count()):
+        item = editor.panel_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+    editor._sync_controls()
+    assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    with QtCore.QSignalBlocker(editor.cmap_override_check):
+        editor.cmap_override_check.setCheckState(QtCore.Qt.CheckState.Checked)
+
+    editor._cmap_reverse_changed(QtCore.Qt.CheckState.Checked.value)
+
+    assert emitted
+    assert tuple(style.cmap for style in emitted[-1]) == ("viridis_r", "viridis_r")
 
 
 def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
@@ -9025,6 +9622,46 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert export.dpi == expected_export_dpi
     assert export.transparent is expected_transparent
     assert export.bbox_inches == expected_bbox
+
+
+def test_figure_composer_default_dpi_option_overrides_stylesheet(
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(stylesheets=["classic"], dpi=180.0)}
+    )
+    monkeypatch.setattr(
+        figurecomposer_defaults,
+        "_configured_stylesheets",
+        lambda: ("classic",),
+    )
+
+    assert figurecomposer_defaults._default_figure_dpi() == 180.0
+    assert FigureSubplotsState().dpi == 180.0
+
+
+def test_figure_composer_dpi_option_affects_only_new_recipes(
+    qtbot,
+    restore_interactive_options,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(dpi=120.0)}
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    assert tool.tool_status.setup.dpi == 120.0
+
+    options.model = options.model.model_copy(
+        update={"figure": FigureOptions(dpi=220.0)}
+    )
+    new_tool = FigureComposerTool(data)
+    qtbot.addWidget(new_tool)
+
+    assert tool.tool_status.setup.dpi == 120.0
+    assert new_tool.tool_status.setup.dpi == 220.0
 
 
 def test_figure_composer_defaults_skip_unavailable_stylesheets(
@@ -13591,6 +14228,66 @@ def test_figure_composer_toolbar_line_style_widget_updates_all_controls(qtbot) -
     assert updated.line_kw["dash_capstyle"] == "round"
     assert "mfc" not in updated.line_kw
     assert "custom" not in updated.line_kw
+
+
+def test_figure_composer_toolbar_plot_slices_panel_cmap_uses_stylesheet(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    style_name = "erlab-test-toolbar-panel-cmap"
+    style_dir = tmp_path / "stylelib"
+    style_dir.mkdir()
+    (style_dir / f"{style_name}.mplstyle").write_text(
+        "image.cmap: plasma\n", encoding="utf-8"
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=mpl.MatplotlibDeprecationWarning)
+        import matplotlib.style.core as mpl_style_core
+
+    mpl_style_core.USER_LIBRARY_PATHS.append(str(style_dir))
+    try:
+        mpl_style.reload_library()
+        _set_figure_stylesheets([style_name])
+        data = _figure_composer_image_source("data")
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=("data",),
+            axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+            slice_dim="eV",
+            slice_values=(-0.5, 0.5),
+        )
+        tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(ncols=2),
+                sources=(FigureSourceState(name="data", label="data"),),
+                operations=(operation,),
+                primary_source="data",
+            ),
+        )
+        qtbot.addWidget(tool)
+        tool.show_figure_window(activate=False)
+
+        figurecomposer_toolbar_dialogs.show_axes_customize_dialog(tool)
+        dialog = typing.cast("QtWidgets.QDialog", tool._axes_customize_dialog)
+        qtbot.addWidget(dialog)
+        editor = dialog.findChild(figurecomposer_plot_slices._PanelStyleEditorWidget)
+        assert editor is not None
+        assert editor.cmap_combo.currentText() == "plasma"
+        assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+        editor.cmap_override_check.click()
+
+        assert tool.tool_status.operations[0].panel_styles == (
+            FigurePlotSlicesPanelStyleState(
+                map_index=0,
+                slice_index=0,
+                cmap="plasma",
+            ),
+        )
+    finally:
+        mpl_style_core.USER_LIBRARY_PATHS.remove(str(style_dir))
+        mpl_style.reload_library()
 
 
 def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
@@ -21818,6 +22515,22 @@ def test_figure_composer_line_colormap_equal_values_use_midpoint() -> None:
     )
     expected = plt.get_cmap("viridis")([0.45, 0.45])
     np.testing.assert_allclose(colors, expected)
+
+
+def test_figure_composer_line_colormap_normalizes_colorcet_name() -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors.load_all_colormaps()
+    operation = FigureOperationState.line(label="profiles", source="data").model_copy(
+        update={
+            "line_color_cmap": "fire",
+            "line_color_cmap_reverse": True,
+        }
+    )
+
+    assert figurecomposer_line_colormap.effective_line_color_cmap(operation) == (
+        "cet_fire_r"
+    )
 
 
 def test_figure_composer_line_colormap_rejects_invalid_trim() -> None:

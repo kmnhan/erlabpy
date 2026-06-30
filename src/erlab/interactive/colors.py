@@ -10,6 +10,7 @@ __all__ = [
     "ColorMapGammaWidget",
     "color_to_QColor",
     "is_dark_mode",
+    "matplotlib_colormap_name",
     "pg_colormap_from_name",
     "pg_colormap_names",
     "pg_colormap_powernorm",
@@ -38,6 +39,36 @@ _ALL_COLORMAPS_LOADED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "all_colormaps_loaded", default=False
 )
 _POWER_NORM_LUT_CACHE_SIZE = 64
+
+
+def _matplotlib_has_colormap(name: str) -> bool:
+    import matplotlib as mpl
+
+    return name in mpl.colormaps
+
+
+def _colorcet_matplotlib_candidate(name: str) -> str:
+    return name if name.startswith("cet_") else f"cet_{name}"
+
+
+def matplotlib_colormap_name(name: str) -> str:
+    """Return the Matplotlib colormap name matching a pyqtgraph display name."""
+    if not name or _matplotlib_has_colormap(name):
+        return name
+
+    candidate = _colorcet_matplotlib_candidate(name)
+    if _matplotlib_has_colormap(candidate):
+        return candidate
+
+    if not _ALL_COLORMAPS_LOADED.get():
+        with contextlib.suppress(Exception):
+            load_all_colormaps()
+        if _matplotlib_has_colormap(name):
+            return name
+        if _matplotlib_has_colormap(candidate):
+            return candidate
+
+    return name
 
 
 def load_all_colormaps() -> None:
@@ -84,7 +115,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self._populated = True
         with QtCore.QSignalBlocker(self):
             for name in pg_colormap_names("matplotlib", exclude_local=True):
-                self.addItem(name)
+                self._add_colormap_item(name)
             if self.default_cmap is not None:
                 self.setCurrentText(self.default_cmap)
                 self.load_thumbnail(self.currentIndex())
@@ -114,25 +145,51 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self._menu.popup(self.mapToGlobal(position))
 
     def load_thumbnail(self, index: int) -> None:
-        if not self.thumbnails_loaded:
+        if not self.thumbnails_loaded and 0 <= index < self.count():
             text = self.itemText(index)
             with contextlib.suppress(RuntimeError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
+        current_data = self.currentData()
+        current_colormap = (
+            current_data if isinstance(current_data, str) else self.currentText()
+        )
+        restored_current = False
         with QtCore.QSignalBlocker(self):
             load_all_colormaps()
             self.loaded_all = True
             self.clear()
             for name in pg_colormap_names("all", exclude_local=True):
-                self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
-        self.thumbnails_loaded = False
-        self.resetCmap()
+                self._add_colormap_item(name)
+            self.thumbnails_loaded = False
+            if current_colormap:
+                restored_current = self._set_current_text_if_available(current_colormap)
+            if not restored_current:
+                self.setCurrentIndex(-1)
+        if not restored_current:
+            self.resetCmap()
+
+    def _add_colormap_item(self, name: str, icon: QtGui.QIcon | None = None) -> None:
+        matplotlib_name = matplotlib_colormap_name(name)
+        if icon is None:
+            self.addItem(name, matplotlib_name)
+        else:
+            self.addItem(icon, name, matplotlib_name)
+
+    def _find_colormap_index(self, text: str | None) -> int:
+        if text is None:
+            return -1
+        index = self.findText(text)
+        if index >= 0:
+            return index
+        index = self.findData(text)
+        if index >= 0:
+            return index
+        return self.findData(matplotlib_colormap_name(text))
 
     def _set_current_text_if_available(self, text: str | None) -> bool:
-        if text is None:
-            return False
-        index = self.findText(text)
+        index = self._find_colormap_index(text)
         if index < 0:
             return False
         self.setCurrentIndex(index)
@@ -207,6 +264,13 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             return
         if self.count():
             self.setCurrentIndex(0)
+
+    def current_matplotlib_name(self) -> str:
+        """Return the selected colormap name as registered by Matplotlib."""
+        data = self.currentData()
+        if isinstance(data, str):
+            return data
+        return matplotlib_colormap_name(self.currentText())
 
     def setCurrentText(self, text: str | None) -> None:
         """Set the current text of the combobox."""
@@ -1251,6 +1315,17 @@ def pg_colormap_powernorm(
     return cmap
 
 
+def _colormap_qpixmap(cmap: pg.ColorMap, w: int, h: int) -> QtGui.QPixmap:
+    cmap_arr = cmap.getLookupTable(0, 1, w, alpha=True)[:, None]
+    img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format.Format_RGBA8888)
+    return QtGui.QPixmap.fromImage(img).scaled(w, h)
+
+
+@functools.cache
+def _cached_colormap_qpixmap(name: str, w: int, h: int) -> QtGui.QPixmap:
+    return _colormap_qpixmap(pg_colormap_from_name(name, skipCache=True), w, h)
+
+
 def pg_colormap_to_QPixmap(
     cmap: str | pg.ColorMap, w: int = 64, h: int = 16, skipCache: bool = True
 ) -> QtGui.QPixmap:
@@ -1263,8 +1338,9 @@ def pg_colormap_to_QPixmap(
     w, h
         Specifies the dimension of the pixmap.
     skipCache : bool, optional
-        Whether to skip cache, by default `True`. Passed onto
-        :func:`pg_colormap_from_name`.
+        Whether to skip the pyqtgraph colormap cache when resolving a string colormap,
+        by default `True`. Pass `False` to bypass the thumbnail cache and request the
+        pyqtgraph-cached colormap.
 
     Returns
     -------
@@ -1272,16 +1348,12 @@ def pg_colormap_to_QPixmap(
 
     """
     if isinstance(cmap, str):
-        cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
-    # cmap_arr = np.reshape(cmap.getColors()[:, None], (1, -1, 4), order='C')
-    # cmap_arr = np.reshape(
-    # cmap.getLookupTable(0, 1, w, alpha=True)[:, None], (1, -1, 4),
-    # order='C')
-    cmap_arr = cmap.getLookupTable(0, 1, w, alpha=True)[:, None]
-
-    # print(cmap_arr.shape)
-    img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format.Format_RGBA8888)
-    return QtGui.QPixmap.fromImage(img).scaled(w, h)
+        name = matplotlib_colormap_name(cmap)
+        w, h = int(w), int(h)
+        if not skipCache:
+            return _colormap_qpixmap(pg_colormap_from_name(name, skipCache=False), w, h)
+        return QtGui.QPixmap(_cached_colormap_qpixmap(name, w, h))
+    return _colormap_qpixmap(cmap, int(w), int(h))
 
 
 class ColorCycleDialog(QtWidgets.QDialog):

@@ -10,8 +10,11 @@ from erlab.interactive.colors import (
     BetterImageItem,
     ColorCycleDialog,
     ColorMapComboBox,
+    matplotlib_colormap_name,
+    pg_colormap_from_name,
     pg_colormap_names,
     pg_colormap_powernorm,
+    pg_colormap_to_QPixmap,
 )
 
 
@@ -470,6 +473,200 @@ def test_colormap_combobox_ignores_unavailable_text(qtbot):
     combo.setCurrentText(missing)
 
     assert combo.currentText() == valid
+
+
+def test_colormap_combobox_exposes_matplotlib_name_for_colorcet(qtbot):
+    pytest.importorskip("colorcet")
+
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.load_all()
+
+    combo.setCurrentText("CET_C1")
+
+    assert combo.currentText() == "CET_C1"
+    assert combo.current_matplotlib_name() == "cet_CET_C1"
+
+    combo.setCurrentText("cet_CET_C1")
+
+    assert combo.currentText() == "CET_C1"
+    assert combo.current_matplotlib_name() == "cet_CET_C1"
+
+
+def test_matplotlib_colormap_name_checks_again_after_loading(monkeypatch) -> None:
+    available: set[str] = set()
+
+    def has_colormap(name: str) -> bool:
+        return name in available
+
+    def load_colormaps() -> None:
+        available.update({"late_cmap", "cet_late_colorcet"})
+
+    token = erlab.interactive.colors._ALL_COLORMAPS_LOADED.set(False)
+    try:
+        monkeypatch.setattr(
+            erlab.interactive.colors, "_matplotlib_has_colormap", has_colormap
+        )
+        monkeypatch.setattr(
+            erlab.interactive.colors, "load_all_colormaps", load_colormaps
+        )
+
+        assert matplotlib_colormap_name("late_cmap") == "late_cmap"
+        available.clear()
+        assert matplotlib_colormap_name("late_colorcet") == "cet_late_colorcet"
+    finally:
+        erlab.interactive.colors._ALL_COLORMAPS_LOADED.reset(token)
+
+
+def test_colormap_combobox_explicit_icon_and_fallback_helpers(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    assert combo._find_colormap_index(None) == -1
+
+    pixmap = QtGui.QPixmap(16, 16)
+    pixmap.fill(QtGui.QColor("red"))
+    with QtCore.QSignalBlocker(combo):
+        combo._add_colormap_item("viridis", QtGui.QIcon(pixmap))
+
+    assert combo.itemData(0) == "viridis"
+    assert not combo.itemIcon(0).isNull()
+
+    combo.clear()
+    combo.addItem("viridis")
+    combo.setCurrentIndex(0)
+    assert combo.current_matplotlib_name() == "viridis"
+
+
+def test_colormap_combobox_load_thumbnail_ignores_invalid_index(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    combo.load_thumbnail(-1)
+
+    assert combo.count() == 0
+
+
+def test_colormap_thumbnail_pixmap_uses_string_cache(qtbot) -> None:
+    erlab.interactive.colors._cached_colormap_qpixmap.cache_clear()
+
+    first = pg_colormap_to_QPixmap("viridis")
+    second = pg_colormap_to_QPixmap("viridis")
+
+    assert not first.isNull()
+    assert not second.isNull()
+    cache_info = erlab.interactive.colors._cached_colormap_qpixmap.cache_info()
+    assert cache_info.hits == 1
+    assert cache_info.misses == 1
+
+
+def test_colormap_thumbnail_pixmap_normalizes_colorcet_cache_key(qtbot) -> None:
+    pytest.importorskip("colorcet")
+
+    erlab.interactive.colors._cached_colormap_qpixmap.cache_clear()
+
+    display_pixmap = pg_colormap_to_QPixmap("CET_C1")
+    matplotlib_pixmap = pg_colormap_to_QPixmap("cet_CET_C1")
+
+    assert not display_pixmap.isNull()
+    assert not matplotlib_pixmap.isNull()
+    cache_info = erlab.interactive.colors._cached_colormap_qpixmap.cache_info()
+    assert cache_info.hits == 1
+    assert cache_info.misses == 1
+
+
+def test_colormap_combobox_load_all_defers_thumbnail_rendering(
+    qtbot, monkeypatch
+) -> None:
+    rendered: list[str] = []
+
+    def record_thumbnail(name, *args, **kwargs):
+        rendered.append(name)
+        return QtGui.QPixmap(64, 16)
+
+    monkeypatch.setattr(
+        erlab.interactive.colors, "pg_colormap_to_QPixmap", record_thumbnail
+    )
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    combo.load_all()
+
+    assert combo.count() == len(pg_colormap_names("all", exclude_local=True))
+    assert rendered == []
+
+    combo.load_thumbnail(0)
+
+    assert rendered == [combo.itemText(0)]
+
+
+def test_colormap_combobox_load_all_keeps_current_selection(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.ensure_populated()
+    if combo.count() < 2:
+        pytest.skip("Need multiple colormaps to test selection preservation")
+    combo.setCurrentIndex(1)
+    current_name = combo.current_matplotlib_name()
+
+    combo.load_all()
+
+    assert combo.current_matplotlib_name() == current_name
+
+
+def test_colormap_comboboxes_share_thumbnail_cache(qtbot) -> None:
+    erlab.interactive.colors._cached_colormap_qpixmap.cache_clear()
+    first = ColorMapComboBox()
+    second = ColorMapComboBox()
+    qtbot.addWidget(first)
+    qtbot.addWidget(second)
+    first.ensure_populated()
+    second.ensure_populated()
+
+    first.load_thumbnail(0)
+    second.load_thumbnail(0)
+
+    cache_info = erlab.interactive.colors._cached_colormap_qpixmap.cache_info()
+    assert cache_info.hits == 1
+    assert cache_info.misses == 1
+
+
+def test_colormap_thumbnail_pixmap_does_not_cache_colormap_objects(qtbot) -> None:
+    erlab.interactive.colors._cached_colormap_qpixmap.cache_clear()
+    cmap = pg_colormap_from_name("viridis")
+
+    first = pg_colormap_to_QPixmap(cmap)
+    second = pg_colormap_to_QPixmap(cmap)
+
+    assert not first.isNull()
+    assert not second.isNull()
+    cache_info = erlab.interactive.colors._cached_colormap_qpixmap.cache_info()
+    assert cache_info.hits == 0
+    assert cache_info.misses == 0
+
+
+def test_colormap_thumbnail_pixmap_respects_skip_cache_false(
+    qtbot, monkeypatch
+) -> None:
+    original = erlab.interactive.colors.pg_colormap_from_name
+    calls: list[tuple[str, bool]] = []
+
+    def record_colormap_lookup(name: str, skipCache: bool = True):
+        calls.append((name, skipCache))
+        return original(name, skipCache=skipCache)
+
+    monkeypatch.setattr(
+        erlab.interactive.colors, "pg_colormap_from_name", record_colormap_lookup
+    )
+    erlab.interactive.colors._cached_colormap_qpixmap.cache_clear()
+
+    pixmap = pg_colormap_to_QPixmap("viridis", skipCache=False)
+
+    assert not pixmap.isNull()
+    assert calls == [("viridis", False)]
+    cache_info = erlab.interactive.colors._cached_colormap_qpixmap.cache_info()
+    assert cache_info.hits == 0
+    assert cache_info.misses == 0
 
 
 def test_colormap_combobox_missing_default_load_all_falls_back(qtbot):

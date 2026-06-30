@@ -368,6 +368,20 @@ class FigureOptions(BaseModel):
         ),
         json_schema_extra=_workspace_extra(ui_type="matplotlib_stylesheets"),
     )
+    dpi: float | None = Field(
+        default=None,
+        title="DPI",
+        description=(
+            "Optional default DPI for new Figure Composer figures. "
+            "Leave unset to use the active stylesheet default."
+        ),
+        ge=1.0,
+        le=10000.0,
+        json_schema_extra=_workspace_extra(
+            ui_type="figure_dpi_override",
+            ui_step=10.0,
+        ),
+    )
 
     @field_validator("stylesheets", mode="before")
     @classmethod

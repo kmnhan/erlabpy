@@ -345,6 +345,7 @@ class FigureOperationState(pydantic.BaseModel):
     xlim: FigureLimit | None = None
     ylim: FigureLimit | None = None
     crop: bool = True
+    aspect: str | float | None = None
     same_limits: bool | str = False
     axis: str = "auto"
     show_all_labels: bool = False

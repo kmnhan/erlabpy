@@ -13,6 +13,7 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
     _selection_code,
 )
+from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
@@ -24,6 +25,7 @@ from erlab.interactive._figurecomposer._norms import (
     _cmap_base_and_reverse,
     _cmap_with_reverse,
     _effective_norm_name,
+    _matplotlib_cmap_name,
     _norm_code,
     _norm_combo_choices,
     _norm_combo_text,
@@ -38,7 +40,10 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
     StepSection,
 )
-from erlab.interactive._figurecomposer._rendering import _axes_from_selection
+from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _tool_figure_options_context,
+)
 from erlab.interactive._figurecomposer._sources import (
     _public_source_data,
     _selected_data,
@@ -180,10 +185,13 @@ def _plot_array_operation_with_selection(
     operation: FigureOperationState,
     selection: FigureDataSelectionState,
 ) -> FigureOperationState:
+    map_selections = (
+        (selection,) if selection.isel or selection.qsel or selection.mean_dims else ()
+    )
     return operation.model_copy(
         update={
             "sources": (selection.source,),
-            "map_selections": (selection,),
+            "map_selections": map_selections,
         }
     )
 
@@ -204,7 +212,7 @@ def _update_current_selection_source(
 
 
 _PLOT_ARRAY_SELECTION_MODE_LABELS = {
-    "keep": "Keep",
+    "keep": "None",
     "isel": "isel",
     "qsel": "qsel",
     "mean": "Mean",
@@ -336,11 +344,14 @@ def _connect_plot_array_selection_dimension_controls(
 ) -> None:
     def mode_changed(value: typing.Any) -> None:
         mode = value if isinstance(value, str) else ""
-        value_edit.setEnabled(mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
-        if mode in _PLOT_ARRAY_SELECTION_VALUE_MODES:
+        value_mode = mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
+        value_edit.setEnabled(value_mode)
+        if value_mode:
             if value_edit.text().strip():
                 _update_current_selection_dimension(tool, dim, mode, value_edit.text())
             return
+        value_edit.clear()
+        value_edit.setModified(False)
         _update_current_selection_dimension(tool, dim, mode)
 
     def value_changed(text: str) -> None:
@@ -464,6 +475,11 @@ def _build_plot_array_selection_page(
     page, layout = tool._new_step_form_page("figureComposerPlotArraySelectionPage")
     selection = _primary_selection(operation)
 
+    tool._add_form_section(
+        layout,
+        "Data",
+        object_name="figureComposerPlotArraySelectionDataSection",
+    )
     summary = QtWidgets.QLabel(_selection_summary(tool, operation), page)
     summary.setObjectName("figureComposerPlotArraySelectionSummary")
     summary.setWordWrap(True)
@@ -490,6 +506,11 @@ def _build_plot_array_selection_page(
         "Data array selected before plot_array draws this image.",
     )
 
+    tool._add_form_section(
+        layout,
+        "Dimensions",
+        object_name="figureComposerPlotArraySelectionDimensionsSection",
+    )
     source_data = None if source_mixed else _plot_array_source_data(tool, operation)
     if source_mixed or source_data is None:
         dimensions_message = QtWidgets.QLabel(
@@ -599,12 +620,14 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
         kwargs["ylim"] = operation.ylim
     if operation.crop:
         kwargs["crop"] = True
+    if operation.aspect is not None:
+        kwargs["aspect"] = operation.aspect
     if operation.colorbar != "none":
         kwargs["colorbar"] = True
     if operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
-        kwargs["cmap"] = operation.cmap
+        kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -653,12 +676,14 @@ def _plot_array_code_kwargs(operation: FigureOperationState) -> dict[str, typing
         kwargs["ylim"] = operation.ylim
     if operation.crop:
         kwargs["crop"] = True
+    if operation.aspect is not None:
+        kwargs["aspect"] = operation.aspect
     if operation.colorbar != "none":
         kwargs["colorbar"] = True
     if operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
     if operation.cmap is not None:
-        kwargs["cmap"] = operation.cmap
+        kwargs["cmap"] = _matplotlib_cmap_name(operation.cmap)
     if _use_powernorm_plot_kwargs(operation):
         gamma = operation.norm_gamma
         if gamma is None:
@@ -715,6 +740,51 @@ def _plot_limit_update_callback(
     )
 
 
+def _format_aspect_value(value: typing.Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int | float):
+        return f"{float(value):g}"
+    return str(value)
+
+
+def _plot_array_aspect_combo(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QComboBox:
+    aspect_options: tuple[tuple[str, str | None], ...] = (
+        ("default", None),
+        ("auto", "auto"),
+        ("equal", "equal"),
+    )
+    aspect_mixed = tool._batch_is_mixed(operation, lambda target: target.aspect)
+    combo = QtWidgets.QComboBox(parent)
+    tool._mark_editor_control(combo)
+    if aspect_mixed:
+        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
+    elif operation.aspect not in {None, "auto", "equal"}:
+        combo.addItem(_format_aspect_value(operation.aspect), MIXED_VALUE)
+    for label, value in aspect_options:
+        combo.addItem(label, value)
+    if aspect_mixed:
+        typing.cast("typing.Any", combo.model()).item(0).setEnabled(False)
+        combo.setCurrentIndex(0)
+    elif operation.aspect in {None, "auto", "equal"}:
+        combo.setCurrentIndex(combo.findData(operation.aspect))
+    else:
+        typing.cast("typing.Any", combo.model()).item(0).setEnabled(False)
+
+    ComboBoxDataControlAdapter(combo).connect_commit(
+        tool._connect_editor_signal,
+        lambda value: tool._update_current_operation(aspect=value),
+    )
+    return combo
+
+
 def _norm_gamma_value(operation: FigureOperationState) -> float:
     if operation.norm_gamma is not None:
         return operation.norm_gamma
@@ -766,6 +836,19 @@ def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
     tool._update_current_operation_rebuild(**updates)
 
 
+def _plot_array_default_cmap(tool: FigureComposerTool) -> str:
+    with _tool_figure_options_context(tool):
+        return str(_styled_rcparams_value("image.cmap"))
+
+
+def _plot_array_cmap_base_and_reverse(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, bool]:
+    if operation.cmap is None:
+        return _cmap_base_and_reverse(_plot_array_default_cmap(tool))
+    return _cmap_base_and_reverse(operation.cmap)
+
+
 def _update_current_cmap(
     tool: FigureComposerTool,
     *,
@@ -776,7 +859,7 @@ def _update_current_cmap(
     if current is None:
         return
     _index, operation = current
-    old_base, old_reverse = _cmap_base_and_reverse(operation.cmap)
+    old_base, old_reverse = _plot_array_cmap_base_and_reverse(tool, operation)
     if base is None:
         base = old_base
     if reverse is None:
@@ -789,6 +872,11 @@ def _build_plot_array_view_page(
 ) -> QtWidgets.QWidget:
     page, layout = tool._new_step_form_page("figureComposerPlotArrayViewPage")
 
+    tool._add_form_section(
+        layout,
+        "Image",
+        object_name="figureComposerPlotArrayViewImageSection",
+    )
     data = _safe_selected_plot_array_data(tool, operation)
     summary = QtWidgets.QLabel(
         "No source data is available."
@@ -821,6 +909,20 @@ def _build_plot_array_view_page(
         "Swap the x/y orientation before calling plot_array.",
     )
 
+    aspect_combo = _plot_array_aspect_combo(tool, operation, parent=page)
+    aspect_combo.setObjectName("figureComposerPlotArrayAspectCombo")
+    tool._add_form_row(
+        layout,
+        "Aspect",
+        aspect_combo,
+        "Aspect argument passed through to imshow.",
+    )
+
+    tool._add_form_section(
+        layout,
+        "Axes",
+        object_name="figureComposerPlotArrayViewAxesSection",
+    )
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
     for label, attr in (("x", "xlim"), ("y", "ylim")):
         text, mixed = tool._batch_text(
@@ -870,16 +972,21 @@ def _build_plot_array_colors_page(
 ) -> QtWidgets.QWidget:
     page, layout = tool._new_step_form_page("figureComposerPlotArrayColorsPage")
 
+    tool._add_form_section(
+        layout,
+        "Image color",
+        object_name="figureComposerPlotArrayColorsImageColorSection",
+    )
     cmap_widget = QtWidgets.QWidget(page)
     cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
     cmap_layout.setContentsMargins(0, 0, 0, 0)
     cmap_layout.setSpacing(4)
-    cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
+    cmap_base, cmap_reversed = _plot_array_cmap_base_and_reverse(tool, operation)
     cmap_mixed = tool._batch_is_mixed(
-        operation, lambda target: _cmap_base_and_reverse(target.cmap)[0]
+        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[0]
     )
     reverse_mixed = tool._batch_is_mixed(
-        operation, lambda target: _cmap_base_and_reverse(target.cmap)[1]
+        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[1]
     )
     cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_widget)
     tool._mark_editor_control(cmap_combo)
@@ -906,7 +1013,7 @@ def _build_plot_array_colors_page(
         lambda _index, combo=cmap_combo: (
             None
             if tool._mixed_combo_text(combo.currentText())
-            else _update_current_cmap(tool, base=combo.currentText())
+            else _update_current_cmap(tool, base=combo.current_matplotlib_name())
         ),
     )
     cmap_combo.blockSignals(False)
@@ -1044,6 +1151,11 @@ def _build_plot_array_colors_page(
         "Extra dict literal or keyword arguments for the norm constructor.",
     )
 
+    tool._add_form_section(
+        layout,
+        "Colorbar",
+        object_name="figureComposerPlotArrayColorsColorbarSection",
+    )
     colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
     colorbar_combo = tool._combo(
         ["none", "right"],
@@ -1163,6 +1275,7 @@ def _section_summary(
                     ("x", operation.xlim),
                     ("y", operation.ylim),
                     ("T", operation.transpose),
+                    ("aspect", operation.aspect),
                 )
                 if value
             ]

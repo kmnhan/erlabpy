@@ -7456,8 +7456,13 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     )
 
     assert not open_button.isEnabled()
-
+    assert all(row.action == "keep" for row in dialog.rows)
     row = dialog.rows[-1]
+    assert not row.scalar_controls.width_widget.isEnabled()
+    assert row.action_combo.findData(None) == -1
+    assert [
+        row.action_combo.itemText(index) for index in range(row.action_combo.count())
+    ] == ["Keep", "Select", "Aggregate"]
     _set_combo_data(row.action_combo, "select")
     row.scalar_controls.index_spin.setValue(2)
 
@@ -7475,6 +7480,81 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     dialog.accept()
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
     xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_qsel_width(qtbot) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    open_button = dialog.button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Open
+    )
+    row = dialog.rows[-1]
+
+    _set_combo_data(row.action_combo, "select")
+    assert row.scalar_controls.method == "isel"
+    assert not row.scalar_controls.width_widget.isEnabled()
+
+    _set_combo_data(row.scalar_controls.method_combo, "sel")
+    assert not row.scalar_controls.width_widget.isEnabled()
+
+    _set_combo_data(row.scalar_controls.method_combo, "qsel")
+    assert row.scalar_controls.width_widget.isEnabled()
+    assert not row.scalar_controls.width_spin.isEnabled()
+    row.scalar_controls.value_spin.setValue(2.0)
+    row.scalar_controls.width_check.setChecked(True)
+    assert row.scalar_controls.width_spin.isEnabled()
+    row.scalar_controls.width_spin.setValue(2.0)
+
+    operation = provenance.QSelOperation(kwargs={"x": 2.0, "x_width": 2.0})
+    expected = data.qsel(x=2.0, x_width=2.0)
+    assert open_button.isEnabled()
+    assert dialog.source_operations() == [operation]
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    xarray.testing.assert_identical(dialog.result_data, expected)
+
+
+def test_high_dimensional_reduction_dialog_qsel_width_omission(qtbot) -> None:
+    data = _high_dimensional_data()
+    dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
+    qtbot.addWidget(dialog)
+    row = dialog.rows[-1]
+
+    _set_combo_data(row.action_combo, "select")
+    _set_combo_data(row.scalar_controls.method_combo, "qsel")
+    row.scalar_controls.value_spin.setValue(2.0)
+
+    assert row.scalar_controls.width_widget.isEnabled()
+    assert not row.scalar_controls.width_spin.isEnabled()
+    assert dialog.source_operations() == [provenance.QSelOperation(kwargs={"x": 2.0})]
+
+    row.scalar_controls.width_check.setChecked(True)
+    row.scalar_controls.width_spin.setValue(0.0)
+    assert dialog.source_operations() == [provenance.QSelOperation(kwargs={"x": 2.0})]
+
+    row.scalar_controls.width_spin.setValue(1.0)
+    _set_combo_data(row.scalar_controls.method_combo, "sel")
+    assert not row.scalar_controls.width_widget.isEnabled()
+    assert not row.scalar_controls.width_spin.isEnabled()
+    assert dialog.source_operations() == [provenance.SelOperation(kwargs={"x": 2.0})]
+
+    _set_combo_data(row.scalar_controls.method_combo, "qsel")
+    _set_combo_data(row.action_combo, "keep")
+    assert not row.scalar_controls.width_widget.isEnabled()
+    assert not row.scalar_controls.width_spin.isEnabled()
+    assert row.qsel_width_indexer() is None
+    assert dialog.source_operations() == []
+
+    _set_combo_data(row.action_combo, "aggregate")
+    assert not row.scalar_controls.width_widget.isEnabled()
+    assert not row.scalar_controls.width_spin.isEnabled()
+    assert dialog.source_operations() == [
+        provenance.QSelAggregationOperation(dims=("x",), func="mean")
+    ]
 
 
 def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
@@ -7668,6 +7748,7 @@ def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
     assert dialog._set_preview_from_metadata(("profile",), (5,))
 
     row = dialog.rows[-1]
+    _set_combo_data(row.action_combo, "keep")
     dialog.accept()
     assert len(warnings) == 1
     assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
@@ -7756,6 +7837,16 @@ def test_scalar_selection_controls_non_numeric_and_width_branches(qtbot) -> None
     numeric_controls.width_check.setChecked(True)
     numeric_controls.width_spin.setValue(0.0)
     assert numeric_controls.qsel_width_indexer() is None
+
+
+def test_selection_dialog_source_data_only_requires_edit_mode() -> None:
+    data = _selection_4d_data()
+
+    with pytest.raises(ValueError, match="requires a slicer area or source data"):
+        SelectionDialog(None)
+
+    with pytest.raises(ValueError, match="requires provenance edit mode"):
+        SelectionDialog(None, source_data=data)
 
 
 def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:
