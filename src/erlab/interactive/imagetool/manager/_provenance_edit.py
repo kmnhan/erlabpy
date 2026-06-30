@@ -1924,19 +1924,37 @@ class _ProvenanceEditController:
                 exc,
             ) from exc
 
-        temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
+        dialog_parent = (
+            self._manager if isinstance(self._manager, QtWidgets.QWidget) else None
+        )
+        temp_tool = None
         try:
-            dialog = dialog_match.dialog_cls(
-                temp_tool.slicer_area,
-                provenance_edit_mode=True,
-            )
+            if issubclass(dialog_match.dialog_cls, dialogs.SelectionDialog):
+                selection_dialog_cls = typing.cast(
+                    "type[dialogs.SelectionDialog]",
+                    dialog_match.dialog_cls,
+                )
+                dialog = selection_dialog_cls(
+                    provenance_edit_mode=True,
+                    dialog_parent=dialog_parent,
+                    source_data=prefix_data,
+                )
+            else:
+                temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
+                temp_tool.hide()
+                dialog = dialog_match.dialog_cls(
+                    temp_tool.slicer_area,
+                    provenance_edit_mode=True,
+                    dialog_parent=dialog_parent,
+                )
             self._restore_native_edit_dialog(dialog, operations, dialog_match.focus)
             if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
                 return None
             return dialog.provenance_edit_operations()
         finally:
-            temp_tool.close()
-            temp_tool.deleteLater()
+            if temp_tool is not None:
+                temp_tool.close()
+                temp_tool.deleteLater()
 
     @staticmethod
     def _restore_native_edit_dialog(

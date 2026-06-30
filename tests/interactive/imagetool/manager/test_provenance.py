@@ -1107,6 +1107,82 @@ def _trust_required_script_spec() -> provenance.ToolProvenanceSpec:
     )
 
 
+def test_manager_selection_provenance_edit_restores_from_high_dimensional_source(
+    qtbot: typing.Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_data = xr.DataArray(
+        np.zeros((2, 3, 4, 5, 6)),
+        dims=("scan", "eV", "kx", "ky", "temperature"),
+    )
+    spec = provenance.full_data(provenance.IselOperation(kwargs={"scan": 1}))
+    node = _fake_edit_node(spec)
+    node.detached_live_parent_data = parent_data
+
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    manager._metadata_node_uid = "node"
+    manager._tool_graph = types.SimpleNamespace(nodes={"node": node})
+    manager._selected_imagetool_targets = lambda: ()
+    manager._node_for_target = lambda target: manager._tool_graph.nodes[target]
+    manager._parent_node = lambda _node: pytest.fail("parent data should be detached")
+    manager._script_input_can_reload = lambda *_args, **_kwargs: True
+    manager._rebuild_script_provenance = lambda *_args, **_kwargs: pytest.fail(
+        "selection edit should not rebuild script provenance"
+    )
+    manager._ensure_script_provenance_trusted = lambda *_args, **_kwargs: None
+    manager._update_info = lambda **_kwargs: None
+    controller = manager_provenance_edit._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool,
+        "ImageTool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "selection provenance edits should not create a temporary ImageTool"
+        ),
+    )
+
+    captured: dict[str, typing.Any] = {}
+
+    def exec_dialog(dialog: SelectionDialog) -> int:
+        scan_row = next(row for row in dialog.rows if row.dim == "scan")
+        captured["parent"] = dialog.parent()
+        captured["dims"] = dialog.public_data.dims
+        captured["scan_checked"] = scan_row.use_check.isChecked()
+        captured["scan_method"] = scan_row.method
+        captured["scan_index"] = int(scan_row.index_start_spin.value())
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(SelectionDialog, "exec", exec_dialog)
+
+    row = spec.display_rows(parent_data=parent_data)[1]
+    assert row.edit_ref is not None
+    dialog_match = manager_provenance_edit._dialog_match_for_operation_ref(
+        spec,
+        row.edit_ref,
+    )
+    assert dialog_match is not None
+
+    replacements = controller._edited_native_operations(
+        node,
+        row,
+        spec,
+        row.edit_ref,
+        dialog_match,
+    )
+
+    assert captured == {
+        "parent": manager,
+        "dims": parent_data.dims,
+        "scan_checked": True,
+        "scan_method": "isel",
+        "scan_index": 1,
+    }
+    assert replacements == [provenance.IselOperation(kwargs={"scan": 1})]
+
+
 def test_manager_source_bound_derivation_rows_are_metadata_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
