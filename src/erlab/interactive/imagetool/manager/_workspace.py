@@ -1244,14 +1244,32 @@ def _workspace_h5py_dataset_variable(
     return _workspace_h5py_decode_coord_variable(variable, name)
 
 
+def _workspace_h5py_create_kwargs(
+    encoding: Mapping[str, typing.Any] | None,
+) -> dict[str, typing.Any]:
+    if encoding is None:
+        return {}
+    kwargs: dict[str, typing.Any] = {}
+    if "chunksizes" in encoding:
+        kwargs["chunks"] = encoding["chunksizes"]
+    for key in ("compression", "compression_opts", "shuffle", "fletcher32"):
+        if key in encoding:
+            kwargs[key] = encoding[key]
+    return kwargs
+
+
 def _workspace_h5py_create_dataset(
-    group: typing.Any, name: str, variable: xr.Variable
+    group: typing.Any,
+    name: str,
+    variable: xr.Variable,
+    *,
+    encoding: Mapping[str, typing.Any] | None = None,
 ) -> typing.Any | None:
     payload = _workspace_h5py_variable_payload(variable, name)
     if payload is None:
         return None
     data, attrs, dtype = payload
-    kwargs: dict[str, typing.Any] = {}
+    kwargs = _workspace_h5py_create_kwargs(encoding)
     if dtype is not None:
         kwargs["dtype"] = dtype
     dataset = group.create_dataset(name, data=data, **kwargs)
@@ -1620,10 +1638,15 @@ def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
 def _write_workspace_independent_tool_items_h5py(
     group: typing.Any,
     ds: xr.Dataset,
+    *,
+    encoding: Mapping[typing.Hashable, Mapping[str, typing.Any]] | None = None,
 ) -> bool:
     for variable_name, data_array in ds.data_vars.items():
         dataset = _workspace_h5py_create_dataset(
-            group, str(variable_name), data_array.variable
+            group,
+            str(variable_name),
+            data_array.variable,
+            encoding=None if encoding is None else encoding.get(variable_name),
         )
         if dataset is None:
             return False
@@ -1659,8 +1682,12 @@ def _write_workspace_dataset_group_h5py(
         try:
             for key, value in ds.attrs.items():
                 group.attrs[key] = value
+            if encoding is None:
+                encoding = _xarray.workspace_dataset_encoding(ds)
             if _workspace_h5py_dataset_has_only_independent_tool_items(ds, data_name):
-                if not _write_workspace_independent_tool_items_h5py(group, ds):
+                if not _write_workspace_independent_tool_items_h5py(
+                    group, ds, encoding=encoding
+                ):
                     del parent[group_name]
                     return False
                 return True
@@ -1683,19 +1710,11 @@ def _write_workspace_dataset_group_h5py(
                 dim_scales.append(coord_dataset)
                 dim_scales_by_name[dim] = coord_dataset
 
-            if encoding is None:
-                encoding = _xarray.workspace_dataset_encoding(ds)
             data_encoding = encoding.get(data_name, {})
-            create_kwargs: dict[str, typing.Any] = {}
-            if "chunksizes" in data_encoding:
-                create_kwargs["chunks"] = data_encoding["chunksizes"]
-            for key in ("compression", "compression_opts", "shuffle", "fletcher32"):
-                if key in data_encoding:
-                    create_kwargs[key] = data_encoding[key]
             data_dataset = group.create_dataset(
                 str(data_name),
                 data=np.asarray(data_array.data),
-                **create_kwargs,
+                **_workspace_h5py_create_kwargs(data_encoding),
             )
             for dim_index, scale in enumerate(dim_scales):
                 data_dataset.dims[dim_index].attach_scale(scale)
@@ -1758,7 +1777,10 @@ def _write_workspace_dataset_group_h5py(
             for extra_name in _workspace_h5py_extra_tool_data_names(ds, data_name):
                 extra_data = ds[extra_name]
                 extra_dataset = _workspace_h5py_create_dataset(
-                    group, str(extra_name), extra_data.variable
+                    group,
+                    str(extra_name),
+                    extra_data.variable,
+                    encoding=encoding.get(extra_name),
                 )
                 if extra_dataset is None:
                     del parent[group_name]

@@ -3412,6 +3412,9 @@ def test_workspace_writer_encodes_saved_tool_spaced_associated_coord(
 def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     tmp_path,
 ) -> None:
+    import h5py
+    import hdf5plugin
+
     data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
     primary = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -3425,9 +3428,9 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
         name="primary",
     )
     secondary = xr.DataArray(
-        np.arange(4.0),
+        np.arange(200_000.0),
         dims=("z",),
-        coords={"z": np.linspace(0.0, 1.0, 4)},
+        coords={"z": np.linspace(0.0, 1.0, 200_000)},
         name=None,
     )
     ds = primary.to_dataset(name=data_name)
@@ -3445,12 +3448,28 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     assert manager_workspace._workspace_dataset_can_write_h5py(
         imagetool_serialization.encode_private_coords(ds, data_name)
     )
+    with h5py.File(fname, "r") as h5_file:
+        assert hdf5plugin.Blosc2.filter_id in _hdf5_filter_ids(h5_file["0/tool/data_1"])
     xr.testing.assert_identical(loaded[data_name], primary.rename(data_name))
     xr.testing.assert_equal(
         loaded[data_name].coords["Fake Motor"], primary.coords["Fake Motor"]
     )
     restored_secondary = erlab.interactive.utils._tool_data_from_blob(loaded["data_1"])
     xr.testing.assert_equal(restored_secondary, secondary)
+
+    old_value = erlab.interactive.options["io/workspace/compress"]
+    try:
+        erlab.interactive.options["io/workspace/compress"] = False
+        uncompressed_fname = tmp_path / "uncompressed-saved-tool-extra-blob.itws"
+        manager_workspace._write_workspace_dataset_group_to_file(
+            uncompressed_fname, "0/tool", ds
+        )
+    finally:
+        erlab.interactive.options["io/workspace/compress"] = old_value
+    with h5py.File(uncompressed_fname, "r") as h5_file:
+        assert hdf5plugin.Blosc2.filter_id not in _hdf5_filter_ids(
+            h5_file["0/tool/data_1"]
+        )
 
 
 def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> None:
