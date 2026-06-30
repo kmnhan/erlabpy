@@ -1983,23 +1983,27 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
     tool.operation_list.setCurrentRow(0)
     tool._select_step_section("view")
 
-    aspect_edit = next(
+    aspect_combo = next(
         (
             candidate
             for candidate in tool.findChildren(
-                QtWidgets.QLineEdit,
-                "figureComposerPlotArrayAspectEdit",
+                QtWidgets.QComboBox,
+                "figureComposerPlotArrayAspectCombo",
             )
             if candidate.property("figure_composer_editor_generation")
             == tool._operation_editor_generation
         ),
         None,
     )
-    assert aspect_edit is not None
-    assert aspect_edit.text() == ""
+    assert aspect_combo is not None
+    assert [aspect_combo.itemData(index) for index in range(aspect_combo.count())] == [
+        None,
+        "auto",
+        "equal",
+    ]
+    assert aspect_combo.currentData() is None
 
-    aspect_edit.setText("equal")
-    aspect_edit.editingFinished.emit()
+    _activate_combo_index(aspect_combo, aspect_combo.findData("equal"))
     assert tool.tool_status.operations[0].aspect == "equal"
     assert (
         figurecomposer_plot_array._plot_array_kwargs(tool.tool_status.operations[0])[
@@ -2008,22 +2012,60 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
         == "equal"
     )
 
-    aspect_edit.setText("2.5")
-    aspect_edit.editingFinished.emit()
-    assert tool.tool_status.operations[0].aspect == 2.5
+    _activate_combo_index(aspect_combo, aspect_combo.findData("auto"))
+    assert tool.tool_status.operations[0].aspect == "auto"
     assert (
         figurecomposer_plot_array._plot_array_code_kwargs(
             tool.tool_status.operations[0]
         )["aspect"]
-        == 2.5
+        == "auto"
     )
 
-    aspect_edit.setText("")
-    aspect_edit.editingFinished.emit()
+    _activate_combo_index(aspect_combo, aspect_combo.findData(None))
     assert tool.tool_status.operations[0].aspect is None
     assert "aspect" not in figurecomposer_plot_array._plot_array_kwargs(
         tool.tool_status.operations[0]
     )
+
+
+def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data").isel(eV=0)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    ).model_copy(update={"aspect": 2.5})
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("view")
+
+    aspect_combo = next(
+        (
+            candidate
+            for candidate in tool.findChildren(
+                QtWidgets.QComboBox,
+                "figureComposerPlotArrayAspectCombo",
+            )
+            if candidate.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+
+    assert aspect_combo is not None
+    assert aspect_combo.currentData() is _editor_controls.MIXED_VALUE
+    assert tool.tool_status.operations[0].aspect == 2.5
+
+    _activate_combo_index(aspect_combo, aspect_combo.findData("auto"))
+
+    assert tool.tool_status.operations[0].aspect == "auto"
 
 
 def test_figure_composer_plot_array_colorbar_limit_changes_update_recipe(
@@ -2316,13 +2358,6 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
     assert figurecomposer_plot_array._format_aspect_value(None) == ""
     assert figurecomposer_plot_array._format_aspect_value("equal") == "equal"
     assert figurecomposer_plot_array._format_aspect_value(2) == "2"
-    assert figurecomposer_plot_array._aspect_value_from_text("") is None
-    assert figurecomposer_plot_array._aspect_value_from_text("auto") == "auto"
-    assert figurecomposer_plot_array._aspect_value_from_text("equal") == "equal"
-    assert figurecomposer_plot_array._aspect_value_from_text("2") == 2.0
-    assert figurecomposer_plot_array._aspect_value_from_text("custom") == "custom"
-    assert figurecomposer_plot_array._aspect_value_from_text("'manual'") == "manual"
-    assert figurecomposer_plot_array._aspect_value_from_text("[1, 2]") == "[1, 2]"
 
     norm_operation = power_operation.model_copy(
         update={

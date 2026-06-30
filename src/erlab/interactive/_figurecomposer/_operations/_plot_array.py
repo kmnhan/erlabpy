@@ -60,7 +60,6 @@ from erlab.interactive._figurecomposer._text import (
     _dict_from_text,
     _format_dict,
     _format_plot_limit,
-    _literal_from_text,
     _plot_limit_from_text,
     _RawCode,
 )
@@ -745,21 +744,46 @@ def _format_aspect_value(value: typing.Any) -> str:
     return str(value)
 
 
-def _aspect_value_from_text(text: str) -> str | float | None:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    if stripped in {"auto", "equal"}:
-        return stripped
-    try:
-        value = _literal_from_text(stripped)
-    except FigureComposerInputError:
-        return stripped
-    if isinstance(value, str):
-        return value
-    if not isinstance(value, int | float):
-        return stripped
-    return float(value)
+def _plot_array_aspect_combo(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    *,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QComboBox:
+    aspect_options: tuple[tuple[str, str | None], ...] = (
+        ("default", None),
+        ("auto", "auto"),
+        ("equal", "equal"),
+    )
+    aspect_mixed = tool._batch_is_mixed(operation, lambda target: target.aspect)
+    combo = QtWidgets.QComboBox(parent)
+    tool._mark_editor_control(combo)
+    if aspect_mixed:
+        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
+    elif operation.aspect not in {None, "auto", "equal"}:
+        combo.addItem(_format_aspect_value(operation.aspect), MIXED_VALUE)
+    for label, value in aspect_options:
+        combo.addItem(label, value)
+    if aspect_mixed:
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        combo.setCurrentIndex(0)
+    elif operation.aspect in {None, "auto", "equal"}:
+        for index in range(combo.count()):
+            if combo.itemData(index) == operation.aspect:
+                combo.setCurrentIndex(index)
+                break
+    else:
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+
+    ComboBoxDataControlAdapter(combo).connect_commit(
+        tool._connect_editor_signal,
+        lambda value: tool._update_current_operation(aspect=value),
+    )
+    return combo
 
 
 def _norm_gamma_value(operation: FigureOperationState) -> float:
@@ -886,24 +910,12 @@ def _build_plot_array_view_page(
         "Swap the x/y orientation before calling plot_array.",
     )
 
-    aspect_text, aspect_mixed = tool._batch_text(
-        operation,
-        lambda target: target.aspect,
-        _format_aspect_value,
-    )
-    aspect_edit = tool._line_edit(aspect_text, parent=page)
-    aspect_edit.setObjectName("figureComposerPlotArrayAspectEdit")
-    tool._apply_mixed_line_edit(aspect_edit, aspect_mixed)
-    tool._connect_line_edit_finished(
-        aspect_edit,
-        lambda text: tool._update_current_operation(
-            aspect=_aspect_value_from_text(text)
-        ),
-    )
+    aspect_combo = _plot_array_aspect_combo(tool, operation, parent=page)
+    aspect_combo.setObjectName("figureComposerPlotArrayAspectCombo")
     tool._add_form_row(
         layout,
         "Aspect",
-        aspect_edit,
+        aspect_combo,
         "Aspect argument passed through to imshow.",
     )
 
