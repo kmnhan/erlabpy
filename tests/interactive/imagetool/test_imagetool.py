@@ -7546,6 +7546,7 @@ def test_high_dimensional_reduction_dialog_qsel_width_omission(qtbot) -> None:
     _set_combo_data(row.action_combo, "keep")
     assert not row.scalar_controls.width_widget.isEnabled()
     assert not row.scalar_controls.width_spin.isEnabled()
+    assert row.qsel_width_indexer() is None
     assert dialog.source_operations() == []
 
     _set_combo_data(row.action_combo, "aggregate")
@@ -7836,6 +7837,16 @@ def test_scalar_selection_controls_non_numeric_and_width_branches(qtbot) -> None
     numeric_controls.width_check.setChecked(True)
     numeric_controls.width_spin.setValue(0.0)
     assert numeric_controls.qsel_width_indexer() is None
+
+
+def test_selection_dialog_source_data_only_requires_edit_mode() -> None:
+    data = _selection_4d_data()
+
+    with pytest.raises(ValueError, match="requires a slicer area or source data"):
+        SelectionDialog(None)
+
+    with pytest.raises(ValueError, match="requires provenance edit mode"):
+        SelectionDialog(None, source_data=data)
 
 
 def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:

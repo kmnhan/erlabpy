@@ -9,6 +9,8 @@ from erlab.interactive._options.parameters import (
     _STYLESHEET_NAME_ROLE,
     ColorListParameter,
     ColorListWidget,
+    FigureDpiOverrideParameter,
+    FigureDpiOverrideWidget,
     StylesheetListParameter,
     StylesheetListWidget,
     _stylesheet_names,
@@ -71,6 +73,20 @@ def test_colorlistparameter_save_state() -> None:
     param = ColorListParameter(name="colors", value=[QtGui.QColor("#010203")])
     state = param.saveState()
     assert state["value"][0][:3] == (1, 2, 3)
+
+
+def test_figure_dpi_override_parameter_item_widget(qtbot) -> None:
+    param = FigureDpiOverrideParameter(name="dpi", value=150.0)
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(widget)
+
+    assert isinstance(widget, FigureDpiOverrideWidget)
+    assert not item.hideWidget
+    assert widget.value() == pytest.approx(150.0)
+
+    widget.override_check.setChecked(False)
+    assert param.value() is None
 
 
 def test_style_library_paths_falls_back_to_matplotlib_core(monkeypatch) -> None:

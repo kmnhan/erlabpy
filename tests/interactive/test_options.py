@@ -749,6 +749,9 @@ def test_options_get_set():
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
     assert options.model.figure.dpi == pytest.approx(150.0)
 
+    options["figure/dpi"] = None
+    assert options["figure/dpi"] is None
+
     options.restore()
     assert options["figure/dpi"] is None
 

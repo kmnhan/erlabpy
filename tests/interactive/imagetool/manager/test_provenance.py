@@ -5071,6 +5071,7 @@ def _native_current_seed_data() -> xr.DataArray:
             "eV": [-1.0, 0.0, 1.0, 2.0],
             "scale": ("x", [1.0, 2.0, 4.0]),
             "order": ("x", [2.0, 1.0, 3.0]),
+            "meta": "scan",
         },
     )
 
@@ -5232,6 +5233,108 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
     assert replaced == [spec]
 
 
+def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = _native_current_seed_data()
+    operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
+    operations: tuple[provenance.ToolProvenanceOperation, ...] = (
+        operation,
+        provenance.SortByOperation(variables=("x",)),
+    )
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: data
+    controller = _fake_edit_controller(node)
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+
+    seed = controller._terminal_current_data_edit_seed(
+        node,
+        spec,
+        row.edit_ref,
+        manager_provenance_edit._OperationDialogMatch(
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            0,
+            len(operations),
+        ),
+        operations,
+    )
+
+    assert seed is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "dialog_cls", "current_data"),
+    [
+        pytest.param(
+            provenance.NormalizeOperation(dims=("missing",), mode="minmax"),
+            manager_provenance_edit.dialogs.NormalizeDialog,
+            _native_current_seed_data(),
+            id="normalize-missing-dim",
+        ),
+        pytest.param(
+            provenance.GaussianFilterOperation(sigma={"missing": 0.25}),
+            manager_provenance_edit.dialogs.GaussianFilterDialog,
+            _native_current_seed_data(),
+            id="gaussian-missing-dim",
+        ),
+        pytest.param(
+            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            manager_provenance_edit.dialogs.GaussianFilterDialog,
+            _native_current_seed_data().isel(x=slice(0, 1)),
+            id="gaussian-degenerate-coord",
+        ),
+        pytest.param(
+            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            manager_provenance_edit.dialogs.GaussianFilterDialog,
+            _native_current_seed_data().assign_coords(x=["a", "b", "c"]),
+            id="gaussian-nonnumeric-coord",
+        ),
+        pytest.param(
+            provenance.DivideByCoordOperation(coord_name="missing"),
+            manager_provenance_edit.dialogs.DivideByCoordDialog,
+            _native_current_seed_data(),
+            id="divide-by-missing-coord",
+        ),
+        pytest.param(
+            provenance.DivideByCoordOperation(coord_name="label"),
+            manager_provenance_edit.dialogs.DivideByCoordDialog,
+            _native_current_seed_data().assign_coords(label=("x", ["a", "b", "c"])),
+            id="divide-by-nonnumeric-coord",
+        ),
+        pytest.param(
+            provenance.SortByOperation(variables=("missing",)),
+            manager_provenance_edit.dialogs.SortByDialog,
+            _native_current_seed_data(),
+            id="sortby-missing-key",
+        ),
+    ],
+)
+def test_manager_terminal_current_data_edit_seed_rejects_invalid_metadata(
+    tmp_path: pathlib.Path,
+    operation: provenance.ToolProvenanceOperation,
+    dialog_cls: type[manager_provenance_edit.dialogs._DataManipulationDialog],
+    current_data: xr.DataArray,
+) -> None:
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current_data
+    controller = _fake_edit_controller(node)
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+
+    seed = controller._terminal_current_data_edit_seed(
+        node,
+        spec,
+        row.edit_ref,
+        manager_provenance_edit._OperationDialogMatch(dialog_cls, 0, 1),
+        (operation,),
+    )
+
+    assert seed is None
+
+
 def test_manager_affine_coord_edit_opens_without_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
@@ -5346,6 +5449,108 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
 
     assert replayed == [spec]
     assert replaced == [spec]
+
+
+@pytest.mark.parametrize(
+    ("operations", "current_data"),
+    [
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="y",
+                    scale=2.0,
+                    offset=0.5,
+                ),
+                provenance.SortByOperation(variables=("y",)),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [20.5, 40.5, 60.5]},
+            ),
+            id="grouped-operations",
+        ),
+        pytest.param(
+            (provenance.NormalizeOperation(dims=("x",), mode="minmax"),),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+            ),
+            id="wrong-operation",
+        ),
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="y",
+                    scale=2.0,
+                    offset=0.5,
+                ),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [10.0 + 0.0j, 20.0 + 0.0j, 30.0 + 0.0j]},
+            ),
+            id="complex-coordinate",
+        ),
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="y",
+                    scale=2.0,
+                    offset=0.5,
+                ),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [10.0, np.inf, 30.0]},
+            ),
+            id="nonfinite-coordinate",
+        ),
+        pytest.param(
+            (
+                provenance.AffineCoordOperation(
+                    coord_name="missing",
+                    scale=2.0,
+                    offset=0.5,
+                ),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+            ),
+            id="missing-coordinate",
+        ),
+    ],
+)
+def test_manager_affine_coord_edit_seed_rejects_unsafe_current_data(
+    tmp_path: pathlib.Path,
+    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    current_data: xr.DataArray,
+) -> None:
+    spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
+    node = _fake_edit_node(spec)
+    node.current_source_data = lambda: current_data
+    controller = _fake_edit_controller(node)
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+
+    seed = controller._terminal_affine_coord_edit_seed(
+        node,
+        spec,
+        row.edit_ref,
+        manager_provenance_edit._OperationDialogMatch(
+            manager_provenance_edit.dialogs.AssignCoordsDialog,
+            0,
+            len(operations),
+        ),
+        operations,
+    )
+
+    assert seed is None
 
 
 @pytest.mark.parametrize(

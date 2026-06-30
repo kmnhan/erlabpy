@@ -771,19 +771,12 @@ def _plot_array_aspect_combo(
     for label, value in aspect_options:
         combo.addItem(label, value)
     if aspect_mixed:
-        item = typing.cast("typing.Any", combo.model()).item(0)
-        if item is not None:
-            item.setEnabled(False)
+        typing.cast("typing.Any", combo.model()).item(0).setEnabled(False)
         combo.setCurrentIndex(0)
     elif operation.aspect in {None, "auto", "equal"}:
-        for index in range(combo.count()):
-            if combo.itemData(index) == operation.aspect:
-                combo.setCurrentIndex(index)
-                break
+        combo.setCurrentIndex(combo.findData(operation.aspect))
     else:
-        item = typing.cast("typing.Any", combo.model()).item(0)
-        if item is not None:
-            item.setEnabled(False)
+        typing.cast("typing.Any", combo.model()).item(0).setEnabled(False)
 
     ComboBoxDataControlAdapter(combo).connect_commit(
         tool._connect_editor_signal,

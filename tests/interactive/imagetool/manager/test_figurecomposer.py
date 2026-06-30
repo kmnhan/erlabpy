@@ -2229,6 +2229,50 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
     assert tool.tool_status.operations[0].aspect == "auto"
 
 
+def test_figure_composer_plot_array_aspect_control_shows_mixed_batch_value(
+    qtbot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data",
+    )
+
+    class _BatchTool:
+        def _batch_is_mixed(
+            self,
+            _operation: FigureOperationState,
+            _value: Callable[[FigureOperationState], object],
+        ) -> bool:
+            return True
+
+        def _mark_editor_control(self, _widget: QtWidgets.QWidget) -> None:
+            return
+
+        def _connect_editor_signal(
+            self,
+            _owner: QtWidgets.QWidget,
+            signal: object,
+            slot: Callable[..., None],
+        ) -> None:
+            signal.connect(slot)
+
+        def _update_current_operation(self, **_updates: object) -> None:
+            return
+
+    combo = figurecomposer_plot_array._plot_array_aspect_combo(
+        typing.cast("FigureComposerTool", _BatchTool()),
+        operation,
+        parent=parent,
+    )
+
+    item = typing.cast("typing.Any", combo.model()).item(0)
+    assert combo.currentData() is _editor_controls.MIXED_VALUE
+    assert item is not None
+    assert not item.isEnabled()
+
+
 def test_figure_composer_plot_array_colorbar_limit_changes_update_recipe(
     qtbot,
 ) -> None:
@@ -2519,6 +2563,7 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
     assert figurecomposer_plot_array._format_aspect_value(None) == ""
     assert figurecomposer_plot_array._format_aspect_value("equal") == "equal"
     assert figurecomposer_plot_array._format_aspect_value(2) == "2"
+    assert figurecomposer_plot_array._format_aspect_value((1, 2)) == "(1, 2)"
 
     norm_operation = power_operation.model_copy(
         update={
@@ -5467,6 +5512,12 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     assert figurecomposer_plot_slices._panel_cmap_argument(tool, operation) == [
         ["magma", "plasma"]
     ]
+    assert figurecomposer_plot_slices._effective_panel_cmap(
+        FigureOperationState.plot_slices(label="default", sources=("data",)),
+        FigurePlotSlicesPanelStyleState(map_index=0, slice_index=0),
+    ) == figurecomposer_plot_slices._matplotlib_cmap_name(
+        options.model.colors.cmap.name
+    )
     assert figurecomposer_plot_slices._panel_line_kw_argument(tool, operation) == [
         [{"linewidth": 1.5, "color": "red"}, {"linewidth": 1.5, "color": "blue"}]
     ]
@@ -6426,6 +6477,59 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
             norm_name="PowerNorm",
         ),
     )
+
+
+def test_figure_composer_plot_slices_panel_style_editor_reverses_mixed_cmap(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "cmap": "viridis",
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="magma",
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    cmap="plasma",
+                ),
+            ),
+        }
+    )
+    keys = (
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+    )
+    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+        operation,
+        keys,
+        lambda _owner, signal, slot: signal.connect(slot),
+        "viridis",
+    )
+    qtbot.addWidget(editor)
+    emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
+    editor.sigPanelStylesChanged.connect(emitted.append)
+
+    for row in range(editor.panel_list.count()):
+        item = editor.panel_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+    editor._sync_controls()
+    assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    with QtCore.QSignalBlocker(editor.cmap_override_check):
+        editor.cmap_override_check.setCheckState(QtCore.Qt.CheckState.Checked)
+
+    editor._cmap_reverse_changed(QtCore.Qt.CheckState.Checked.value)
+
+    assert emitted
+    assert tuple(style.cmap for style in emitted[-1]) == ("viridis_r", "viridis_r")
 
 
 def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
