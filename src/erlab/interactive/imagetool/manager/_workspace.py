@@ -72,6 +72,8 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
+
 _WORKSPACE_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
@@ -129,6 +131,7 @@ class _WorkspaceSaveSnapshot:
     generation: int
     root_attrs: dict[str, typing.Any]
     delta_save_count: int
+    compression_mode: WorkspaceCompressionMode = "zstd1"
     full_tree: xr.DataTree | None = None
     copy_source: str | None = None
     copy_groups: tuple[tuple[str, str, dict[str, typing.Any] | None], ...] = ()
@@ -207,6 +210,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.rewrite_groups,
                     self._snapshot.attr_updates,
                     self._snapshot.root_attrs,
+                    compression_mode=self._snapshot.compression_mode,
                 )
             else:
                 _write_full_workspace_tree_file(
@@ -215,6 +219,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    compression_mode=self._snapshot.compression_mode,
                 )
             ok = True
         except Exception:
@@ -1797,8 +1802,9 @@ def _write_workspace_dataset_group_to_file(
     ds: xr.Dataset,
     *,
     lock_path: str | os.PathLike[str] | None = None,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
-    encoding = _xarray.workspace_dataset_encoding(ds)
+    encoding = _xarray.workspace_dataset_encoding(ds, compression_mode=compression_mode)
     if lock_path is not None:
         normalized_lock_path = _xarray._normalized_file_path(lock_path)
         if normalized_lock_path is not None and any(
@@ -1851,6 +1857,8 @@ def _write_workspace_constructor_groups_to_pending(
     constructor: Mapping[str, xr.Dataset],
     group_path: str,
     pending_path: str,
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     target_group_path = group_path.strip("/")
     pending_path = pending_path.strip("/")
@@ -1867,7 +1875,11 @@ def _write_workspace_constructor_groups_to_pending(
             pending_path if not relative_path else f"{pending_path}/{relative_path}"
         )
         _write_workspace_dataset_group_to_file(
-            fname, pending_group_path, ds, lock_path=fname
+            fname,
+            pending_group_path,
+            ds,
+            lock_path=fname,
+            compression_mode=compression_mode,
         )
 
 
@@ -1961,6 +1973,8 @@ def _write_workspace_transaction_pending_groups(
     fname: str | os.PathLike[str],
     rewrite_map: Mapping[str, tuple[str, dict[str, xr.Dataset]]],
     pending_root: str,
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     try:
         for group_path, (rewrite_group_path, constructor) in sorted(
@@ -1972,6 +1986,7 @@ def _write_workspace_transaction_pending_groups(
                 constructor,
                 rewrite_group_path,
                 pending_group_path,
+                compression_mode=compression_mode,
             )
     except Exception:
         with _open_workspace_h5_file_for_update(fname) as h5_file:
@@ -2019,6 +2034,8 @@ def _write_workspace_transaction_file(
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
     ],
     root_attrs: Mapping[str, typing.Any],
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     _recover_workspace_transactions(fname)
     rewrite_map = {
@@ -2040,7 +2057,12 @@ def _write_workspace_transaction_file(
         root_attrs,
     )
     try:
-        _write_workspace_transaction_pending_groups(fname, rewrite_map, pending_root)
+        _write_workspace_transaction_pending_groups(
+            fname,
+            rewrite_map,
+            pending_root,
+            compression_mode=compression_mode,
+        )
         _commit_workspace_transaction(
             fname,
             txn_path,
@@ -2061,6 +2083,7 @@ def _write_full_workspace_tree_file(
     *,
     copy_source: str | os.PathLike[str] | None = None,
     copy_groups: Iterable[tuple[str, str, dict[str, typing.Any] | None]] = (),
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     import shutil
 
@@ -2133,7 +2156,12 @@ def _write_full_workspace_tree_file(
                 continue
             ds = node.to_dataset(inherit=False)
             if ds.variables or ds.attrs:
-                _write_workspace_dataset_group_to_file(tmp_fname, group_path, ds)
+                _write_workspace_dataset_group_to_file(
+                    tmp_fname,
+                    group_path,
+                    ds,
+                    compression_mode=compression_mode,
+                )
 
         _validate_workspace_h5_file(tmp_fname)
         _fsync_file(tmp_fname)

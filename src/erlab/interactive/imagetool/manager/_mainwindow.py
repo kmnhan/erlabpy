@@ -66,6 +66,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -3888,6 +3889,9 @@ class ImageToolManager(_ImageToolManagerBase):
             delta_save_count=delta_save_count
         )
 
+    def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
+        return self._workspace_controller._workspace_compression_mode()
+
     def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
         return self._workspace_controller._workspace_layout_snapshot()
 
@@ -3896,8 +3900,16 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> None:
         self._workspace_controller._restore_workspace_layout(manifest)
 
-    def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
-        self._workspace_controller._write_full_workspace_file(fname)
+    def _write_full_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        reuse_unchanged_groups: bool = True,
+    ) -> None:
+        self._workspace_controller._write_full_workspace_file(
+            fname,
+            reuse_unchanged_groups=reuse_unchanged_groups,
+        )
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
         return self._workspace_controller._workspace_highest_dirty_data_roots()
@@ -3911,9 +3923,13 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
+        reuse_unchanged_groups: bool = True,
     ) -> None:
         self._workspace_controller._save_workspace_document(
-            fname, force_full=force_full, document_access=document_access
+            fname,
+            force_full=force_full,
+            document_access=document_access,
+            reuse_unchanged_groups=reuse_unchanged_groups,
         )
 
     def _workspace_save_dialog(

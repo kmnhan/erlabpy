@@ -14,6 +14,7 @@ import warnings
 import weakref
 from collections.abc import Callable, Iterable, Mapping
 
+import hdf5plugin
 import numpy as np
 import pydantic
 import pytest
@@ -699,6 +700,7 @@ def test_manager_workspace_option_overrides_roundtrip_and_mark_dirty(
     overrides = {
         "colors/cmap/name": "viridis",
         "colors/max_rendered_abs_value": 12.0,
+        "io/workspace/compression": "none",
         "figure/stylesheets": ["classic", "missing-style"],
     }
 
@@ -2640,6 +2642,15 @@ def _hdf5_filter_ids(dataset) -> list[int]:
     return [create_plist.get_filter(i)[0] for i in range(create_plist.get_nfilters())]
 
 
+def _hdf5_blosc2_level_codec(dataset) -> tuple[int, int] | None:
+    create_plist = dataset.id.get_create_plist()
+    for index in range(create_plist.get_nfilters()):
+        filter_id, _flags, cd_values, _name = create_plist.get_filter(index)
+        if filter_id == hdf5plugin.Blosc2.filter_id:
+            return cd_values[4], cd_values[6]
+    return None
+
+
 def _transaction_test_root_attrs(delta_save_count: int = 0) -> dict[str, object]:
     manifest: dict[str, object] = {
         "schema_version": 4,
@@ -2720,11 +2731,44 @@ def test_workspace_dataset_encoding_compresses_only_large_numeric_payloads() -> 
     assert set(encoding) == {"large"}
     assert encoding["large"] == dict(
         hdf5plugin.Blosc2(
-            cname="blosclz",
-            clevel=3,
+            cname="zstd",
+            clevel=1,
             filters=hdf5plugin.Blosc2.SHUFFLE,
         )
     )
+
+
+def test_workspace_dataset_encoding_supports_compression_modes() -> None:
+    ds = xr.Dataset(
+        {
+            "large": (
+                ("x", "y"),
+                np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
+            )
+        }
+    )
+
+    assert manager_xarray.workspace_dataset_encoding(ds, compression_mode="none") == {}
+    assert manager_xarray.workspace_dataset_encoding(
+        ds, compression_mode="blosclz3"
+    ) == {
+        "large": dict(
+            hdf5plugin.Blosc2(
+                cname="blosclz",
+                clevel=3,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            )
+        )
+    }
+    assert manager_xarray.workspace_dataset_encoding(ds, compression_mode="zstd1") == {
+        "large": dict(
+            hdf5plugin.Blosc2(
+                cname="zstd",
+                clevel=1,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            )
+        )
+    }
 
 
 def test_workspace_dataset_encoding_respects_compression_preference() -> None:
@@ -2736,15 +2780,30 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
             )
         }
     )
-    old_value = erlab.interactive.options["io/workspace/compress"]
+    old_value = erlab.interactive.options["io/workspace/compression"]
     try:
-        erlab.interactive.options["io/workspace/compress"] = False
+        erlab.interactive.options["io/workspace/compression"] = "none"
         assert manager_xarray.workspace_dataset_encoding(ds) == {}
 
-        erlab.interactive.options["io/workspace/compress"] = True
-        assert set(manager_xarray.workspace_dataset_encoding(ds)) == {"large"}
+        erlab.interactive.options["io/workspace/compression"] = "blosclz3"
+        assert manager_xarray.workspace_dataset_encoding(ds)["large"] == dict(
+            hdf5plugin.Blosc2(
+                cname="blosclz",
+                clevel=3,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            )
+        )
+
+        erlab.interactive.options["io/workspace/compression"] = "zstd1"
+        assert manager_xarray.workspace_dataset_encoding(ds)["large"] == dict(
+            hdf5plugin.Blosc2(
+                cname="zstd",
+                clevel=1,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            )
+        )
     finally:
-        erlab.interactive.options["io/workspace/compress"] = old_value
+        erlab.interactive.options["io/workspace/compression"] = old_value
 
 
 def test_workspace_dataset_encoding_persists_dask_chunksizes() -> None:
@@ -3450,6 +3509,7 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     )
     with h5py.File(fname, "r") as h5_file:
         assert hdf5plugin.Blosc2.filter_id in _hdf5_filter_ids(h5_file["0/tool/data_1"])
+        assert _hdf5_blosc2_level_codec(h5_file["0/tool/data_1"]) == (1, 5)
     xr.testing.assert_identical(loaded[data_name], primary.rename(data_name))
     xr.testing.assert_equal(
         loaded[data_name].coords["Fake Motor"], primary.coords["Fake Motor"]
@@ -3457,15 +3517,23 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     restored_secondary = erlab.interactive.utils._tool_data_from_blob(loaded["data_1"])
     xr.testing.assert_equal(restored_secondary, secondary)
 
-    old_value = erlab.interactive.options["io/workspace/compress"]
+    old_value = erlab.interactive.options["io/workspace/compression"]
     try:
-        erlab.interactive.options["io/workspace/compress"] = False
+        erlab.interactive.options["io/workspace/compression"] = "blosclz3"
+        blosclz_fname = tmp_path / "blosclz-saved-tool-extra-blob.itws"
+        manager_workspace._write_workspace_dataset_group_to_file(
+            blosclz_fname, "0/tool", ds
+        )
+
+        erlab.interactive.options["io/workspace/compression"] = "none"
         uncompressed_fname = tmp_path / "uncompressed-saved-tool-extra-blob.itws"
         manager_workspace._write_workspace_dataset_group_to_file(
             uncompressed_fname, "0/tool", ds
         )
     finally:
-        erlab.interactive.options["io/workspace/compress"] = old_value
+        erlab.interactive.options["io/workspace/compression"] = old_value
+    with h5py.File(blosclz_fname, "r") as h5_file:
+        assert _hdf5_blosc2_level_codec(h5_file["0/tool/data_1"]) == (3, 0)
     with h5py.File(uncompressed_fname, "r") as h5_file:
         assert hdf5plugin.Blosc2.filter_id not in _hdf5_filter_ids(
             h5_file["0/tool/data_1"]
@@ -8871,12 +8939,15 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
                 ]
             ],
             root_attrs: Mapping[str, typing.Any],
+            **kwargs: typing.Any,
         ) -> None:
             rewrite_groups = tuple(rewrite_groups)
             updates = tuple(attr_updates)
             assert rewrite_groups == ()
             attr_write_calls.extend(update[0] for update in updates)
-            original_transaction_write(_fname, rewrite_groups, updates, root_attrs)
+            original_transaction_write(
+                _fname, rewrite_groups, updates, root_attrs, **kwargs
+            )
 
         monkeypatch.setattr(
             manager_workspace,
@@ -9320,6 +9391,32 @@ def test_manager_workspace_high_risk_path_forces_full_save_snapshot(
         try:
             assert snapshot.full_tree is not None
             assert snapshot.delta_save_count == 0
+        finally:
+            snapshot.close()
+
+
+def test_manager_workspace_save_snapshot_uses_compression_override(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        manager._set_workspace_option_overrides(
+            {"io/workspace/compression": "blosclz3"}
+        )
+        assert manager._workspace_compression_mode() == "blosclz3"
+
+        snapshot = manager._workspace_save_snapshot(tmp_path / "snapshot.itws")
+        try:
+            assert snapshot.compression_mode == "blosclz3"
         finally:
             snapshot.close()
 

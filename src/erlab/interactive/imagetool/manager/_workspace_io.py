@@ -59,6 +59,7 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace_state import (
         _WorkspaceStateSnapshot,
@@ -2208,6 +2209,9 @@ class _WorkspaceIOController:
             option_overrides=self._workspace_option_overrides_snapshot(),
         )
 
+    def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
+        return self._manager.effective_interactive_options.io.workspace.compression
+
     def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
         return {
             "window_state": _qt_state.qt_window_state_payload(self._manager),
@@ -2454,9 +2458,19 @@ class _WorkspaceIOController:
                 else:
                     self._manager._standalone_app_pending_states[key] = app_state
 
-    def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
+    def _write_full_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        reuse_unchanged_groups: bool = True,
+    ) -> None:
         tree: xr.DataTree = self._manager._to_datatree()
-        copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(tree)
+        if reuse_unchanged_groups:
+            copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(
+                tree
+            )
+        else:
+            copy_source, copy_groups = None, ()
         try:
             _manager_workspace._write_full_workspace_tree_file(
                 fname,
@@ -2464,6 +2478,7 @@ class _WorkspaceIOController:
                 self._manager._workspace_root_attrs_payload(delta_save_count=0),
                 copy_source=copy_source,
                 copy_groups=copy_groups,
+                compression_mode=self._workspace_compression_mode(),
             )
         finally:
             tree.close()
@@ -2539,6 +2554,7 @@ class _WorkspaceIOController:
                 snapshot.rewrite_groups,
                 snapshot.attr_updates,
                 snapshot.root_attrs,
+                compression_mode=snapshot.compression_mode,
             )
         finally:
             snapshot.close()
@@ -2549,6 +2565,7 @@ class _WorkspaceIOController:
         *,
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
+        reuse_unchanged_groups: bool = True,
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
@@ -2557,6 +2574,7 @@ class _WorkspaceIOController:
                     access.path,
                     force_full=force_full,
                     document_access=access,
+                    reuse_unchanged_groups=reuse_unchanged_groups,
                 )
             return
 
@@ -2569,7 +2587,10 @@ class _WorkspaceIOController:
                 force_full or self._manager._workspace_requires_full_save(fname)
             )
             if requires_full_save:
-                self._manager._write_full_workspace_file(fname)
+                self._manager._write_full_workspace_file(
+                    fname,
+                    reuse_unchanged_groups=reuse_unchanged_groups,
+                )
                 self._manager._workspace_state.delta_save_count = 0
                 self._manager._workspace_state.schema_version = (
                     _manager_workspace._current_workspace_schema_version()
@@ -2988,6 +3009,7 @@ class _WorkspaceIOController:
             generation=generation,
             root_attrs=root_attrs,
             delta_save_count=delta_save_count,
+            compression_mode=self._workspace_compression_mode(),
             rewrite_groups=tuple(rewrite_groups),
             attr_updates=tuple(attr_updates),
         )
@@ -3028,6 +3050,7 @@ class _WorkspaceIOController:
             generation=generation,
             root_attrs=self._manager._workspace_root_attrs_payload(delta_save_count=0),
             delta_save_count=0,
+            compression_mode=self._workspace_compression_mode(),
             full_tree=tree,
             copy_source=copy_source,
             copy_groups=copy_groups,
@@ -3472,7 +3495,10 @@ class _WorkspaceIOController:
                     fname,
                     engine="h5netcdf",
                     invalid_netcdf=True,
-                    encoding=_manager_xarray.workspace_datatree_encoding(tree),
+                    encoding=_manager_xarray.workspace_datatree_encoding(
+                        tree,
+                        compression_mode=self._workspace_compression_mode(),
+                    ),
                 )
         finally:
             tree.close()
