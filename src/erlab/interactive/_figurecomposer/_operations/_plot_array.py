@@ -218,6 +218,21 @@ _PLOT_ARRAY_SELECTION_MODE_LABELS = {
     "mean": "Mean",
 }
 _PLOT_ARRAY_SELECTION_VALUE_MODES = {"isel", "qsel"}
+_PLOT_ARRAY_SELECTION_VALUE_MESSAGE = (
+    "Enter a selection value, such as 0 or slice(0, 2)."
+)
+_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE = "Enter a qsel width, such as 0.1."
+_PLOT_ARRAY_SELECTION_MODE_TOOLTIP = (
+    "Choose whether this dimension stays, is selected, or is averaged."
+)
+_PLOT_ARRAY_SELECTION_VALUE_TOOLTIP = (
+    "Selection value. Use integer positions or slices for isel; use coordinate "
+    "values or slices for qsel."
+)
+_PLOT_ARRAY_SELECTION_WIDTH_TOOLTIP = (
+    "Optional qsel width centered on the value. Leave blank for nearest "
+    "coordinate selection."
+)
 
 
 def _plot_array_selection_dim_mode(
@@ -225,7 +240,7 @@ def _plot_array_selection_dim_mode(
 ) -> str:
     if dim in selection.isel:
         return "isel"
-    if dim in selection.qsel:
+    if dim in selection.qsel or _plot_array_selection_width_key(dim) in selection.qsel:
         return "qsel"
     if dim in selection.mean_dims:
         return "mean"
@@ -242,18 +257,40 @@ def _plot_array_selection_dim_value_text(
     return ""
 
 
+def _plot_array_selection_width_key(dim: str) -> str:
+    return f"{dim}_width"
+
+
+def _plot_array_selection_dim_width_text(
+    selection: FigureDataSelectionState, dim: str
+) -> str:
+    width_key = _plot_array_selection_width_key(dim)
+    if width_key in selection.qsel:
+        return erlab.interactive.utils._parse_single_arg(selection.qsel[width_key])
+    return ""
+
+
 def _plot_array_selection_value_from_text(text: str) -> typing.Any:
     stripped = text.strip()
     if not stripped:
-        raise FigureComposerInputError(
-            "Enter a selection value, such as 0 or slice(0, 2)."
-        )
+        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_VALUE_MESSAGE)
     try:
         return _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
     except FigureComposerInputError as exc:
-        raise FigureComposerInputError(
-            "Enter a selection value, such as 0 or slice(0, 2)."
-        ) from exc
+        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_VALUE_MESSAGE) from exc
+
+
+def _plot_array_selection_width_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
+    except FigureComposerInputError as exc:
+        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE) from exc
+    if isinstance(value, slice):
+        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE)
+    return value
 
 
 def _plot_array_selection_with_dimension(
@@ -261,16 +298,24 @@ def _plot_array_selection_with_dimension(
     dim: str,
     mode: str,
     value: typing.Any = None,
+    width: typing.Any = None,
 ) -> FigureDataSelectionState:
     isel = dict(selection.isel)
     qsel = dict(selection.qsel)
     mean_dims = [target for target in selection.mean_dims if target != dim]
     isel.pop(dim, None)
     qsel.pop(dim, None)
+    qsel.pop(_plot_array_selection_width_key(dim), None)
     if mode == "isel":
         isel[dim] = value
     elif mode == "qsel":
+        if isinstance(value, slice) and width is not None:
+            raise FigureComposerInputError(
+                "A qsel slice cannot also use a width argument."
+            )
         qsel[dim] = value
+        if width is not None:
+            qsel[_plot_array_selection_width_key(dim)] = width
     elif mode == "mean":
         mean_dims.append(dim)
     return selection.model_copy(
@@ -287,6 +332,7 @@ def _update_current_selection_dimension(
     dim: str,
     mode: str,
     value_text: str = "",
+    width_text: str = "",
 ) -> None:
     if mode not in _PLOT_ARRAY_SELECTION_MODE_LABELS:
         return
@@ -294,6 +340,9 @@ def _update_current_selection_dimension(
         _plot_array_selection_value_from_text(value_text)
         if mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
         else None
+    )
+    width = (
+        _plot_array_selection_width_from_text(width_text) if mode == "qsel" else None
     )
 
     def update_operation(
@@ -304,6 +353,7 @@ def _update_current_selection_dimension(
             dim,
             mode,
             value,
+            width,
         )
         return _plot_array_operation_with_selection(target, selection)
 
@@ -341,29 +391,73 @@ def _connect_plot_array_selection_dimension_controls(
     dim: str,
     mode_combo: QtWidgets.QComboBox,
     value_edit: QtWidgets.QLineEdit,
+    width_edit: QtWidgets.QLineEdit,
 ) -> None:
+    def set_control_visibility(mode: str) -> None:
+        value_edit.setVisible(mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
+        width_edit.setVisible(mode == "qsel")
+
+    def current_value_text() -> str:
+        return value_edit.text()
+
+    def current_width_text() -> str:
+        return width_edit.text()
+
+    def clear_hidden_controls(mode: str) -> None:
+        if mode not in _PLOT_ARRAY_SELECTION_VALUE_MODES:
+            value_edit.clear()
+            value_edit.setModified(False)
+            tool._clear_editor_input_error(value_edit)
+        if mode != "qsel":
+            width_edit.clear()
+            width_edit.setModified(False)
+            tool._clear_editor_input_error(width_edit)
+
     def mode_changed(value: typing.Any) -> None:
         mode = value if isinstance(value, str) else ""
+        set_control_visibility(mode)
+        clear_hidden_controls(mode)
         value_mode = mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
-        value_edit.setEnabled(value_mode)
         if value_mode:
-            if value_edit.text().strip():
-                _update_current_selection_dimension(tool, dim, mode, value_edit.text())
+            if current_value_text().strip():
+                _update_current_selection_dimension(
+                    tool,
+                    dim,
+                    mode,
+                    current_value_text(),
+                    current_width_text(),
+                )
             return
-        value_edit.clear()
-        value_edit.setModified(False)
         _update_current_selection_dimension(tool, dim, mode)
 
     def value_changed(text: str) -> None:
         mode = mode_combo.currentData()
         if isinstance(mode, str) and mode in _PLOT_ARRAY_SELECTION_VALUE_MODES:
-            _update_current_selection_dimension(tool, dim, mode, text)
+            _update_current_selection_dimension(
+                tool,
+                dim,
+                mode,
+                text,
+                current_width_text(),
+            )
+
+    def width_changed(text: str) -> None:
+        mode = mode_combo.currentData()
+        if isinstance(mode, str) and mode == "qsel":
+            _update_current_selection_dimension(
+                tool,
+                dim,
+                mode,
+                current_value_text(),
+                text,
+            )
 
     ComboBoxDataControlAdapter(mode_combo).connect_commit(
         tool._connect_editor_signal,
         mode_changed,
     )
     tool._connect_line_edit_finished(value_edit, value_changed)
+    tool._connect_line_edit_finished(width_edit, width_changed)
 
 
 def _plot_array_source_code(
@@ -555,10 +649,20 @@ def _build_plot_array_selection_page(
                 _primary_selection(target), dim_name
             )
 
+        def width_getter(target: FigureOperationState, dim_name: str = dim_name) -> str:
+            return _plot_array_selection_dim_width_text(
+                _primary_selection(target), dim_name
+            )
+
         mode_mixed = tool._batch_is_mixed(operation, mode_getter)
         value_text, value_mixed = tool._batch_text(
             operation,
             value_getter,
+            str,
+        )
+        width_text, width_mixed = tool._batch_text(
+            operation,
+            width_getter,
             str,
         )
         current_mode = (
@@ -581,33 +685,43 @@ def _build_plot_array_selection_page(
             f"figureComposerPlotArraySelectionModeCombo{dim_index}"
         )
         mode_combo.setProperty("figure_composer_plot_array_dim", dim_name)
+        mode_combo.setToolTip(_PLOT_ARRAY_SELECTION_MODE_TOOLTIP)
         value_edit = tool._line_edit(value_text, parent=row)
         value_edit.setObjectName(
             f"figureComposerPlotArraySelectionValueEdit{dim_index}"
         )
         value_edit.setProperty("figure_composer_plot_array_dim", dim_name)
+        value_edit.setProperty("figure_composer_plot_array_selection_field", "value")
         value_edit.setPlaceholderText("value")
-        value_edit.setEnabled(
-            current_mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
-            if current_mode is not None
-            else False
-        )
+        value_edit.setToolTip(_PLOT_ARRAY_SELECTION_VALUE_TOOLTIP)
+        value_edit.setVisible(current_mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
         tool._apply_mixed_line_edit(value_edit, value_mixed)
+        width_edit = tool._line_edit(width_text, parent=row)
+        width_edit.setObjectName(
+            f"figureComposerPlotArraySelectionWidthEdit{dim_index}"
+        )
+        width_edit.setProperty("figure_composer_plot_array_dim", dim_name)
+        width_edit.setProperty("figure_composer_plot_array_selection_field", "width")
+        width_edit.setPlaceholderText("width")
+        width_edit.setToolTip(_PLOT_ARRAY_SELECTION_WIDTH_TOOLTIP)
+        width_edit.setVisible(current_mode == "qsel")
+        tool._apply_mixed_line_edit(width_edit, width_mixed)
         _connect_plot_array_selection_dimension_controls(
             tool,
             dim_name,
             mode_combo,
             value_edit,
+            width_edit,
         )
 
         row_layout.addWidget(mode_combo)
         row_layout.addWidget(value_edit, 1)
+        row_layout.addWidget(width_edit, 1)
         tool._add_form_row(
             layout,
             dim_name,
             row,
-            "Keep this dimension, select by integer index, select by coordinate, "
-            "or average it before plotting.",
+            "Choose how this dimension is prepared before plotting.",
         )
     return page
 
