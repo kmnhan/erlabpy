@@ -43,6 +43,7 @@ from __future__ import annotations
 import base64
 import collections.abc
 import contextlib
+import ctypes
 import errno
 import json
 import logging
@@ -50,6 +51,8 @@ import math
 import numbers
 import os
 import pathlib
+import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -60,6 +63,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pydantic
+import xarray as xr
 from qtpy import QtCore
 
 import erlab
@@ -72,7 +76,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 
     import h5py
-    import xarray as xr
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
 else:
@@ -300,8 +303,6 @@ def _workspace_lock_path(fname: str | os.PathLike[str]) -> str:
 def _hide_workspace_lock_file(lock_path: str) -> None:
     if sys.platform == "darwin":
         with contextlib.suppress(AttributeError, OSError):
-            import stat
-
             if not stat.S_ISREG(os.lstat(lock_path).st_mode):
                 return
             os.chflags(lock_path, stat.UF_HIDDEN)
@@ -310,8 +311,6 @@ def _hide_workspace_lock_file(lock_path: str) -> None:
         return
 
     with contextlib.suppress(Exception):
-        import ctypes
-
         windll = getattr(ctypes, "windll", None)
         if windll is None:
             return
@@ -1330,8 +1329,6 @@ def _workspace_h5py_coord_dims_fit(
 def _workspace_h5py_variable_payload(
     variable: xr.Variable, name: typing.Hashable
 ) -> tuple[typing.Any, dict[typing.Hashable, typing.Any], typing.Any] | None:
-    import xarray as xr
-
     try:
         if variable.dtype.kind == "M":
             variable = xr.coders.CFDatetimeCoder().encode(variable, name=str(name))
@@ -1372,8 +1369,6 @@ def _workspace_h5py_read_values(dataset: typing.Any) -> typing.Any:
 def _workspace_h5py_decode_coord_variable(
     variable: xr.Variable, name: str
 ) -> xr.Variable | None:
-    import xarray as xr
-
     attrs = variable.attrs
     dtype_attr = attrs.get("dtype")
     units_attr = attrs.get("units")
@@ -1399,8 +1394,6 @@ def _workspace_h5py_dataset_variable(
     name: str,
     exclude_attrs: Iterable[typing.Hashable],
 ) -> xr.Variable | None:
-    import xarray as xr
-
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
     variable = xr.Variable(
@@ -1433,6 +1426,16 @@ def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, 
     }
 
 
+def _workspace_h5py_blosc2_options_match(
+    actual_options: tuple[int, ...], expected_options: tuple[int, ...]
+) -> bool:
+    if actual_options == expected_options:
+        return True
+    if len(actual_options) < 7 or len(expected_options) < 7:
+        return False
+    return actual_options[4:7] == expected_options[4:7]
+
+
 def _workspace_h5py_dataset_matches_encoding(
     dataset: typing.Any,
     encoding: Mapping[typing.Any, typing.Any],
@@ -1445,7 +1448,12 @@ def _workspace_h5py_dataset_matches_encoding(
     if actual_options is None:
         return False
     expected_options = encoding.get("compression_opts")
-    return expected_options is None or actual_options == tuple(expected_options)
+    if expected_options is None:
+        return True
+    expected_options = tuple(expected_options)
+    if int(expected_filter) == _xarray.hdf5plugin.Blosc2.filter_id:
+        return _workspace_h5py_blosc2_options_match(actual_options, expected_options)
+    return actual_options == expected_options
 
 
 def _workspace_h5_group_matches_compression_mode(
@@ -1486,7 +1494,7 @@ def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
     return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
 
 
-def _workspace_h5_group_matches_current_compression(
+def _h5_group_matches_compression(
     h5_file: typing.Any,
     group_path: str,
     compression_mode: WorkspaceCompressionMode,
@@ -1693,8 +1701,6 @@ def _workspace_h5py_dataset_independent_tool_variable(
     *,
     exclude_attrs: Iterable[typing.Hashable],
 ) -> xr.Variable | None:
-    import xarray as xr
-
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
     attrs = _h5py_attrs_to_dict(dataset.attrs, exclude=exclude_attrs)
@@ -1739,8 +1745,6 @@ def _read_workspace_dataset_group_h5py(
     *,
     preferred_data_name: str | None = None,
 ) -> xr.Dataset | None:
-    import xarray as xr
-
     _xarray.ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
     internal_attrs = (
@@ -2459,8 +2463,6 @@ def _write_full_workspace_tree_file(
     copy_groups: Iterable[tuple[str, str, dict[str, typing.Any] | None]] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
-    import shutil
-
     fname = os.fsdecode(fname)
     use_scratch = _workspace_path_is_high_risk(fname)
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None

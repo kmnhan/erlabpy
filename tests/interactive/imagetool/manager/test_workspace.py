@@ -2808,6 +2808,12 @@ def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
         assert manager_workspace._workspace_h5py_dataset_matches_encoding(
             compressed, {"compression": hdf5plugin.Blosc2.filter_id}
         )
+        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
+            compressed, manager_xarray._workspace_blosc2_encoding("zstd1")
+        )
+        assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
+            compressed, manager_xarray._workspace_blosc2_encoding("blosclz3")
+        )
         assert not manager_workspace._workspace_h5_group_matches_compression_mode(
             h5_file,
             "missing",
@@ -10934,6 +10940,76 @@ def test_manager_manifest_first_full_save_copies_clean_payloads(
         with h5py.File(fname, "r") as h5_file:
             assert "0/imagetool" in h5_file
             assert "1/imagetool" in h5_file
+
+
+def test_manager_manifest_first_full_save_preserves_clean_mismatched_compression(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_compression = erlab.interactive.options["io/workspace/compression"]
+    try:
+        erlab.interactive.options["io/workspace/compression"] = "none"
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(
+                np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
+                dims=("x", "y"),
+            )
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+            fname = tmp_path / "manifest-copy-mismatched-compression.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            manager._adopt_workspace_path(fname)
+            manager._mark_workspace_clean()
+            with h5py.File(fname, "r") as h5_file:
+                data_ds = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                assert _hdf5_blosc2_level_codec(data_ds) is None
+
+            writes: list[
+                tuple[
+                    str | os.PathLike[str] | None,
+                    tuple[tuple[str, str, dict[str, typing.Any] | None], ...],
+                ]
+            ] = []
+            original_write = manager_workspace._write_full_workspace_tree_file
+
+            def _record_write(*args, **kwargs) -> None:
+                writes.append(
+                    (kwargs.get("copy_source"), tuple(kwargs.get("copy_groups", ())))
+                )
+                original_write(*args, **kwargs)
+
+            erlab.interactive.options["io/workspace/compression"] = "zstd1"
+            monkeypatch.setattr(
+                manager,
+                "_serialize_workspace_node",
+                lambda *_args, **_kwargs: pytest.fail(
+                    "Clean mismatched payload should be copied"
+                ),
+            )
+            monkeypatch.setattr(
+                manager_workspace,
+                "_write_full_workspace_tree_file",
+                _record_write,
+            )
+
+            manager._save_workspace_document(fname, force_full=True)
+
+            assert writes[-1] == (
+                str(fname),
+                (("0/imagetool", "0/imagetool", None),),
+            )
+            with h5py.File(fname, "r") as h5_file:
+                data_ds = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                assert _hdf5_blosc2_level_codec(data_ds) is None
+    finally:
+        erlab.interactive.options["io/workspace/compression"] = old_compression
 
 
 def test_manager_manifest_first_full_save_serializes_only_dirty_data(

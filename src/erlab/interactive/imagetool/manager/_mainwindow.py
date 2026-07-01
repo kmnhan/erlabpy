@@ -3933,7 +3933,7 @@ class ImageToolManager(_ImageToolManagerBase):
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         self._workspace_controller._write_full_workspace_file(
             fname,
@@ -3954,7 +3954,7 @@ class ImageToolManager(_ImageToolManagerBase):
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         self._workspace_controller._save_workspace_document(
             fname,
