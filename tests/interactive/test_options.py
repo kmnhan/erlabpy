@@ -4,7 +4,7 @@ import typing
 
 import pydantic
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._options.ui as options_ui
 from erlab.interactive._options import OptionDialog, options
@@ -20,7 +20,11 @@ from erlab.interactive._options.parameters import (
     FigureDpiOverrideWidget,
     StylesheetListWidget,
 )
-from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._options.schema import (
+    AppOptions,
+    WorkspaceOptions,
+    normalize_workspace_compression_mode,
+)
 from erlab.interactive.colors import ColorMapComboBox
 
 
@@ -451,6 +455,62 @@ def test_choice_slider_labels_align_with_ticks(qtbot):
         assert label.geometry().right() < label_row.width()
 
 
+def test_choice_slider_edge_cases(qtbot):
+    slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+    qtbot.addWidget(slider)
+
+    empty_row = options_ui._ChoiceSliderLabelRow(slider, ())
+    qtbot.addWidget(empty_row)
+    assert empty_row.edge_margins() == (0, 0)
+
+    with pytest.raises(ValueError, match="at least one choice"):
+        options_ui._ChoiceSlider(())
+
+    choice_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(choice_slider)
+
+    assert choice_slider.itemText(1) == "Standard"
+    assert choice_slider.findData("missing") == -1
+    with pytest.raises(ValueError, match="Unknown choice slider value"):
+        choice_slider.setCurrentData("missing")
+
+    events: list[None] = []
+    original_sync = choice_slider._sync_label_geometry
+
+    def _record_sync() -> None:
+        events.append(None)
+        original_sync()
+
+    choice_slider._sync_label_geometry = _record_sync
+    QtWidgets.QApplication.sendEvent(
+        choice_slider, QtCore.QEvent(QtCore.QEvent.Type.FontChange)
+    )
+    assert events
+
+
+def test_choice_slider_label_row_raises_without_style(qtbot):
+    class _StylelessSlider:
+        def initStyleOption(self, _option) -> None:
+            return None
+
+        def style(self) -> None:
+            return None
+
+    row = options_ui._ChoiceSliderLabelRow(
+        typing.cast("QtWidgets.QSlider", _StylelessSlider()), ("Off",)
+    )
+    qtbot.addWidget(row)
+
+    with pytest.raises(RuntimeError, match="has no Qt style"):
+        row.edge_margins()
+
+
 def test_dialog_spinbox_constraint_variants(
     monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog, qtbot
 ):
@@ -832,6 +892,40 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" false ", "none"),
+        ("OFF", "none"),
+        ("1", "zstd1"),
+        ("yes", "zstd1"),
+        (" BloscLz3 ", "blosclz3"),
+        (None, None),
+    ],
+)
+def test_workspace_compression_mode_normalizes_legacy_values(
+    value: object, expected: object
+) -> None:
+    assert normalize_workspace_compression_mode(value) == expected
+
+    migrated = WorkspaceOptions.model_validate({"compress": False})
+    assert migrated.compression == "none"
+
+    with pytest.raises(pydantic.ValidationError):
+        WorkspaceOptions.model_validate("not-a-workspace-options")
+
+
+def test_option_path_helpers_support_legacy_workspace_compress() -> None:
+    from erlab.interactive._options.core import option_model_with_value, option_value
+
+    model = AppOptions()
+
+    assert option_value(model, "io/workspace/compress") is True
+
+    disabled = option_model_with_value(model, "io/workspace/compress", False)
+    assert disabled.io.workspace.compression == "none"
+
+
 def test_options_get_set():
     options.restore()
 
@@ -869,6 +963,9 @@ def test_options_get_set():
     options["io/workspace/compress"] = True
     assert options["io/workspace/compression"] == "zstd1"
     assert options["io/workspace/compress"] is True
+
+    options["io/workspace/compress"] = None
+    assert options["io/workspace/compression"] == "zstd1"
 
     options["figure/dpi"] = None
     assert options["figure/dpi"] is None

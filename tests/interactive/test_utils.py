@@ -444,6 +444,32 @@ def test_tool_window_failed_deferred_restore_can_retry(qtbot) -> None:
     assert restored.deferred_runs == 1
 
 
+def test_tool_window_deferred_restore_helper_edges(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _DeferredRestoreTool(data)
+    qtbot.addWidget(win)
+    win._restoring_from_dataset = True
+    win._defer_restored_tool_work = True
+
+    with pytest.raises(TypeError, match="requires a callback or key"):
+        win._defer_restore_work(typing.cast("typing.Callable[[], None]", None))
+
+    calls: list[None] = []
+    win._defer_restore_work(lambda: calls.append(None), key="manual")
+    assert not win._flush_restore_work(run_on_show_only=True)
+    assert calls == []
+    assert win._flush_restore_work(key="manual")
+    assert calls == [None]
+
+    win._discard_restore_work()
+
+    win._flushing_restore_work = True
+    try:
+        assert not win._flush_restore_work()
+    finally:
+        win._flushing_restore_work = False
+
+
 @pytest.fixture
 def action():
     action = QtGui.QAction("Test Action")

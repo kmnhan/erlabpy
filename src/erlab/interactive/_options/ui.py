@@ -312,7 +312,7 @@ class _ChoiceSlider(QtWidgets.QWidget):
         if margins.left() != left_margin or margins.right() != right_margin:
             self._slider_layout.setContentsMargins(left_margin, 0, right_margin, 0)
             layout = self.layout()
-            if layout is not None:
+            if layout is not None:  # pragma: no branch
                 layout.activate()
         self._label_row.update_label_positions()
 

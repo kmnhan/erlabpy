@@ -2759,7 +2759,224 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
         assert set(h5_file) == {"0"}
         manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
         assert "delta_save_count" not in manifest
-        assert "transaction_protocol" not in manifest
+
+
+def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "not-workspace.itws"
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.create_group("0")
+
+    with pytest.raises(ValueError, match="Not a valid workspace file"):
+        manager_workspace._workspace_live_root_group_copy_groups(fname)
+    with pytest.raises(ValueError, match="Not a valid workspace file"):
+        manager_workspace._workspace_h5_paths_storage_size(fname, ("0",))
+    with pytest.raises(ValueError, match="Not a valid workspace file"):
+        manager_workspace._workspace_live_h5_storage_size(fname)
+
+    assert (
+        manager_workspace._workspace_obsolete_estimate(tmp_path / "missing.itws") == 0
+    )
+    assert manager_workspace._workspace_h5_object_storage_size(object()) == 0
+
+
+def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "filters.h5"
+    with h5py.File(fname, "w") as h5_file:
+        plain = h5_file.create_dataset("plain", data=np.arange(3))
+        compressed = h5_file.create_dataset(
+            "compressed",
+            data=np.arange(3),
+            **hdf5plugin.Blosc2(
+                cname="zstd",
+                clevel=1,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            ),
+        )
+        group = h5_file.create_group("payload")
+        group.create_dataset("data", data=np.arange(3), compression="gzip")
+
+        assert manager_workspace._workspace_h5py_dataset_matches_encoding(plain, {})
+        assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
+            plain, {"compression": hdf5plugin.Blosc2.filter_id}
+        )
+        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
+            compressed, {"compression": hdf5plugin.Blosc2.filter_id}
+        )
+        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+            h5_file,
+            "missing",
+            xr.Dataset({"data": ("x", np.arange(3))}),
+            "none",
+        )
+        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+            h5_file,
+            "payload",
+            xr.Dataset({"missing": ("x", np.arange(3))}),
+            "none",
+        )
+        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+            h5_file,
+            "payload",
+            xr.Dataset({"data": ("x", np.arange(3))}),
+            "none",
+        )
+
+
+def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> None:
+    import h5py
+
+    class _FakeH5Type:
+        def __init__(
+            self,
+            type_class: object,
+            *,
+            super_type: "_FakeH5Type | None" = None,
+            member_types: tuple["_FakeH5Type", ...] = (),
+        ) -> None:
+            self._type_class = type_class
+            self._super_type = super_type
+            self._member_types = member_types
+            self.closed = False
+
+        def get_class(self) -> object:
+            return self._type_class
+
+        def get_super(self) -> "_FakeH5Type":
+            if self._super_type is None:
+                raise RuntimeError("missing super type")
+            return self._super_type
+
+        def get_nmembers(self) -> int:
+            return len(self._member_types)
+
+        def get_member_type(self, index: int) -> "_FakeH5Type":
+            return self._member_types[index]
+
+        def close(self) -> None:
+            self.closed = True
+
+    array_member = _FakeH5Type(h5py.h5t.REFERENCE)
+    array_type = _FakeH5Type(h5py.h5t.ARRAY, super_type=array_member)
+    assert manager_workspace._workspace_h5py_type_contains_reference(array_type)
+    assert array_member.closed
+
+    plain_member = _FakeH5Type(h5py.h5t.INTEGER)
+    compound_type = _FakeH5Type(h5py.h5t.COMPOUND, member_types=(plain_member,))
+    assert not manager_workspace._workspace_h5py_type_contains_reference(compound_type)
+    assert plain_member.closed
+
+    fname = tmp_path / "dimension-scales.h5"
+    with h5py.File(fname, "w") as h5_file:
+        source = h5_file.create_group("source")
+        source.create_group("nested")
+        source.create_dataset("plain", data=np.arange(2))
+        source["plain"].attrs["_Netcdf4Coordinates"] = np.array([0, 1])
+        source.create_dataset("scale_without_dimid", data=np.arange(2))
+        source["scale_without_dimid"].attrs["CLASS"] = b"DIMENSION_SCALE"
+        source["named_type"] = np.dtype("int32")
+
+        scale = source.create_dataset("x", data=np.arange(2))
+        scale.attrs["CLASS"] = b"DIMENSION_SCALE"
+        scale.attrs["NAME"] = b"x"
+        scale.attrs["_Netcdf4Dimid"] = np.int32(0)
+
+        values = source.create_dataset("values", data=np.arange(2))
+        values.attrs["_Netcdf4Coordinates"] = np.array([0])
+        values_missing_scale = source.create_dataset(
+            "values_missing_scale", data=np.arange(2)
+        )
+        values_missing_scale.attrs["_Netcdf4Coordinates"] = np.array([99])
+        source.attrs["reference"] = values.ref
+        source.attrs["reference_array"] = np.array([values.ref], dtype=h5py.ref_dtype)
+        source.attrs["reference_compound"] = np.array(
+            [(values.ref, 1)],
+            dtype=np.dtype([("reference", h5py.ref_dtype), ("value", np.int32)]),
+        )[0]
+
+        target = h5_file.create_group("target")
+        target.create_group("nested")
+        target.create_dataset("plain", data=np.arange(2))
+        target.create_dataset("scale_without_dimid", data=np.arange(2))
+        target["named_type"] = np.dtype("int32")
+        target.create_dataset("x", data=np.arange(2))
+        target.create_dataset("values", data=np.arange(2))
+        target.create_dataset("values_missing_scale", data=np.arange(2))
+
+        assert manager_workspace._workspace_h5py_attr_text(np.bytes_(b"x")) == "x"
+        assert (
+            manager_workspace._workspace_h5py_attr_text(
+                types.SimpleNamespace(decode=lambda: "decoded")
+            )
+            == "decoded"
+        )
+        assert manager_workspace._workspace_h5py_attr_text("x") == "x"
+        assert manager_workspace._workspace_h5py_attr_text(object()) is None
+
+        manager_workspace._workspace_h5py_rebuild_dimension_scales(source, target)
+
+        assert "reference" not in target.attrs
+        assert "reference_array" not in target.attrs
+        assert "reference_compound" not in target.attrs
+        assert target["x"].attrs["_Netcdf4Dimid"] == 0
+        assert len(target["values"].dims[0]) == 1
+
+
+def test_copy_workspace_h5_group_to_open_file_edge_cases(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "copy.h5"
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.create_dataset("dataset", data=np.arange(2))
+        h5_file.create_group("source").create_dataset("data", data=np.arange(2))
+        h5_file.create_group("target").create_group("source")
+
+        assert not manager_workspace._copy_workspace_h5_group_to_open_file(
+            h5_file, h5_file, "missing", "target/missing", None
+        )
+        assert not manager_workspace._copy_workspace_h5_group_to_open_file(
+            h5_file, h5_file, "dataset", "target/dataset", None
+        )
+        assert manager_workspace._copy_workspace_h5_group_to_open_file(
+            h5_file,
+            h5_file,
+            "source",
+            "target/source",
+            {"title": "copied"},
+        )
+        assert h5_file["target/source"].attrs["title"] == "copied"
+
+
+def test_write_workspace_dataset_group_h5py_cleans_failed_independent_items(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "independent-items.itws"
+    saved_tool_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        {
+            saved_tool_data_name: (
+                (manager_workspace._SAVED_TOOL_DATA_REFERENCE_DIM,),
+                np.empty(0, dtype=np.float64),
+            )
+        }
+    )
+    monkeypatch.setattr(
+        manager_workspace,
+        "_workspace_h5py_create_dataset",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert not manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/tool", ds
+    )
+
+    import h5py
+
+    with h5py.File(fname, "r") as h5_file:
+        assert "0/tool" not in h5_file
 
 
 def test_workspace_dataset_encoding_compresses_only_large_numeric_payloads() -> None:
@@ -2824,6 +3041,22 @@ def test_workspace_dataset_encoding_supports_compression_modes() -> None:
             )
         )
     }
+    assert manager_xarray.workspace_dataset_encoding(ds, compress=True) == {
+        "large": dict(
+            hdf5plugin.Blosc2(
+                cname="zstd",
+                clevel=1,
+                filters=hdf5plugin.Blosc2.SHUFFLE,
+            )
+        )
+    }
+    with pytest.raises(ValueError, match="Unknown workspace compression mode"):
+        manager_xarray.workspace_dataset_encoding(
+            ds,
+            compression_mode=typing.cast(
+                "manager_xarray.WorkspaceCompressionMode", "missing"
+            ),
+        )
 
 
 def test_workspace_dataset_encoding_respects_compression_preference() -> None:
@@ -2838,6 +3071,7 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
     old_value = erlab.interactive.options["io/workspace/compression"]
     try:
         erlab.interactive.options["io/workspace/compression"] = "none"
+        assert not manager_xarray.workspace_compression_enabled()
         assert manager_xarray.workspace_dataset_encoding(ds) == {}
 
         erlab.interactive.options["io/workspace/compression"] = "blosclz3"
@@ -4603,6 +4837,41 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
 
+def test_manager_load_workspace_file_falls_back_after_fast_path_error(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        fname = tmp_path / "load-fallback.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        def _raise_fast_load(*_args, **_kwargs) -> bool:
+            raise RuntimeError("fast load failed")
+
+        monkeypatch.setattr(manager, "_from_h5py_workspace_file", _raise_fast_load)
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._workspace_state.path == fname.resolve()
+
+
 def test_manager_from_h5py_workspace_logs_restore_failure(
     qtbot,
     caplog,
@@ -4721,8 +4990,14 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
         tool = DerivativeTool(data)
         monkeypatch.setattr(tool, "can_save_and_load", lambda: False)
         manager.add_childtool(tool, 0, show=False)
+        manager.add_childtool(_AddedTimeChildTool(data), 0, show=False)
         manager._mark_workspace_clean()
         tree = manager._to_datatree()
+        monkeypatch.setitem(
+            manager._tool_graph.nodes,
+            "missing-tool",
+            types.SimpleNamespace(is_imagetool=False, tool_window=None),
+        )
         try:
             manifest_without_identities = {
                 "schema_version": manager_workspace._current_workspace_schema_version(),
@@ -4772,6 +5047,7 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
             )
         finally:
             tree.close()
+            manager._tool_graph.nodes.pop("missing-tool", None)
 
 
 def test_prepare_workspace_transaction_promotes_missing_attr_fallback(
@@ -5088,6 +5364,43 @@ def test_write_full_workspace_tree_file_scratch_exdev_fallback(
     assert replace_calls[1][0].parent == fname.parent
     assert replace_calls[1][1] == fname
     assert not list(fname.parent.glob(f"{fname.name}.tmp-*"))
+
+
+def test_write_full_workspace_tree_file_rejects_file_repack_on_network_path(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "network.itws"
+    _write_transaction_test_workspace(fname)
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_high_risk", lambda *_: True
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda *_: True
+    )
+
+    with pytest.raises(ValueError, match="File-level workspace repack cannot run"):
+        manager_workspace._write_full_workspace_tree_file(
+            fname,
+            None,
+            _transaction_test_root_attrs(),
+            copy_source=fname,
+            copy_groups=(("0", "0", None),),
+        )
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(5.0, title="network")}
+    )
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname,
+            tree,
+            _transaction_test_root_attrs(),
+            copy_source=fname,
+            copy_groups=(("0", "0", None),),
+        )
+    finally:
+        tree.close()
+    assert _read_transaction_test_value(fname) == 5.0
 
 
 def test_write_full_workspace_tree_file_scratch_replace_failure_preserves_old(
@@ -7754,6 +8067,16 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
     assert manager_workspace._workspace_manifest_repack_estimate(
         {"delta_save_count": 2}, delta_save_count=2
     ) == (0, 0, False)
+    assert manager_workspace._workspace_manifest_repack_estimate(
+        None, delta_save_count=2
+    ) == (0, 0, False)
+    assert (
+        manager_workspace._workspace_manifest_nonnegative_int(
+            {"estimated_obsolete_bytes": "not-an-int"},
+            "estimated_obsolete_bytes",
+        )
+        == 0
+    )
     assert (
         manager_workspace._workspace_manifest_from_attrs(
             {manager_workspace._WORKSPACE_MANIFEST_ATTR: "{not-json"}
@@ -7770,6 +8093,15 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
         )
         == 0
     )
+    with pytest.raises(ValueError, match="current workspace schema"):
+        manager_workspace._compacted_workspace_root_attrs(
+            {"imagetool_workspace_schema_version": 1}
+        )
+    assert manager_workspace._workspace_root_attrs_with_repack_estimate(
+        {"imagetool_workspace_schema_version": 1},
+        estimated_obsolete_bytes=1,
+        replacement_delta_count=1,
+    ) == {"imagetool_workspace_schema_version": 1}
 
 
 def test_workspace_path_risk_detection_fallbacks(monkeypatch, tmp_path) -> None:
@@ -10105,12 +10437,284 @@ def test_manager_workspace_save_snapshot_uses_compression_override(
             {"io/workspace/compression": "blosclz3"}
         )
         assert manager._workspace_compression_mode() == "blosclz3"
+        manager._workspace_state.delta_save_count = 2
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=128,
+            replacement_delta_count=3,
+            known=False,
+        )
+        root_attrs = manager._workspace_root_attrs_payload()
+        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        assert manifest["delta_save_count"] == 2
+        assert "estimated_obsolete_bytes" not in manifest
+        root_attrs = manager._workspace_root_attrs_payload(
+            delta_save_count=1,
+            estimated_obsolete_bytes=1024,
+            replacement_delta_count=5,
+            repack_estimate_known=True,
+        )
+        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        assert manifest["estimated_obsolete_bytes"] == 1024
+        assert manifest["replacement_delta_count"] == 5
 
         snapshot = manager._workspace_save_snapshot(tmp_path / "snapshot.itws")
         try:
             assert snapshot.compression_mode == "blosclz3"
         finally:
             snapshot.close()
+
+
+def test_manager_workspace_delta_save_updates_repack_state(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        writes: list[tuple[object, ...]] = []
+
+        def _snapshot(
+            generation: int,
+            root_attrs: dict[str, typing.Any],
+            delta_save_count: int,
+        ) -> manager_workspace._WorkspaceSaveSnapshot:
+            return manager_workspace._WorkspaceSaveSnapshot(
+                generation=generation,
+                root_attrs=root_attrs,
+                delta_save_count=delta_save_count,
+                estimated_obsolete_bytes=256,
+                replacement_delta_count=4,
+                rewrite_groups=(),
+                attr_updates=(),
+            )
+
+        def _record_write(*args, **kwargs) -> None:
+            writes.append((*args, kwargs))
+
+        monkeypatch.setattr(manager, "_workspace_delta_save_snapshot", _snapshot)
+        monkeypatch.setattr(
+            manager_workspace,
+            "_write_workspace_transaction_file",
+            _record_write,
+        )
+
+        manager._workspace_state.dirty_generation = 5
+        manager._workspace_state.delta_save_count = 6
+        manager._workspace_controller._save_workspace_delta(tmp_path / "delta.itws")
+
+        assert writes
+        assert manager._workspace_state.delta_save_count == 7
+        assert manager._workspace_state.estimated_obsolete_bytes == 256
+        assert manager._workspace_state.replacement_delta_count == 4
+
+
+def test_manager_workspace_delta_snapshot_keeps_replacement_count_for_missing_groups(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=100,
+            replacement_delta_count=2,
+        )
+
+        monkeypatch.setattr(
+            manager,
+            "_workspace_highest_dirty_data_roots",
+            lambda: ("uid",),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_workspace_rewrite_group_snapshot",
+            lambda _uid: ("0", {}),
+        )
+        monkeypatch.setattr(manager, "_iter_descendant_uids", lambda _uid: ())
+        monkeypatch.setattr(
+            controller,
+            "_workspace_manifest_node_uids",
+            lambda _root_attrs: frozenset(),
+        )
+        monkeypatch.setattr(
+            controller,
+            "_workspace_stale_reference_rewrite_uids",
+            lambda _manifest_uids: (),
+        )
+        monkeypatch.setattr(
+            manager_workspace,
+            "_workspace_h5_paths_storage_size",
+            lambda *_args, **_kwargs: (256, 0),
+        )
+
+        snapshot = controller._workspace_delta_save_snapshot(1, {}, 3)
+
+        assert snapshot.estimated_obsolete_bytes == 356
+        assert snapshot.replacement_delta_count == 2
+
+
+def test_manager_write_full_workspace_file_can_disable_group_reuse(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+        tree = xr.DataTree()
+        writes: list[dict[str, typing.Any]] = []
+
+        monkeypatch.setattr(manager, "_to_datatree", lambda: tree)
+        monkeypatch.setattr(
+            manager,
+            "_workspace_full_save_copy_groups",
+            lambda *_args, **_kwargs: pytest.fail("copy groups should not be reused"),
+        )
+
+        def _record_write(*_args, **kwargs) -> None:
+            writes.append(kwargs)
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_write_full_workspace_tree_file",
+            _record_write,
+        )
+
+        controller._write_full_workspace_file(
+            tmp_path / "full.itws", reuse_unchanged_groups=False
+        )
+
+        assert writes
+        assert writes[0]["copy_source"] is None
+        assert writes[0]["copy_groups"] == ()
+
+
+def test_manager_associate_loaded_legacy_workspace_resets_repack_state(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        converted = tmp_path / "converted.itws"
+        manager._workspace_state.path = converted.resolve()
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_workspace_schema_requires_conversion",
+            lambda _schema_version: True,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_legacy_workspace_as_v4",
+            lambda *_, **__: (str(converted), None),
+        )
+
+        manager._associate_loaded_workspace_file(
+            tmp_path / "legacy.itws",
+            1,
+            delta_save_count=5,
+            estimated_obsolete_bytes=100,
+            replacement_delta_count=2,
+            repack_estimate_known=False,
+            rebind_data=False,
+        )
+
+        assert manager._workspace_state.path == converted
+        assert manager._workspace_state.delta_save_count == 0
+        assert manager._workspace_state.estimated_obsolete_bytes == 0
+        assert manager._workspace_state.replacement_delta_count == 0
+        assert manager._workspace_state.repack_estimate_known
+
+
+def test_manager_workspace_file_repack_snapshot_guards(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        manager._workspace_state.path = None
+        assert controller._workspace_file_repack_snapshot(1) is None
+
+        manager._workspace_state.path = tmp_path / "network.itws"
+        monkeypatch.setattr(
+            manager_workspace,
+            "_workspace_path_is_likely_network_path",
+            lambda _path: True,
+        )
+        assert controller._workspace_file_repack_snapshot(1) is None
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_workspace_path_is_likely_network_path",
+            lambda _path: False,
+        )
+        monkeypatch.setattr(
+            manager_workspace,
+            "_workspace_file_repack_payload",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("repack failed")),
+        )
+        assert controller._workspace_file_repack_snapshot(1) is None
+
+
+def test_manager_workspace_shutdown_repack_gate_edges(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        manager._workspace_state.path = None
+        assert not controller._workspace_should_repack_before_shutdown()
+
+        workspace_path = tmp_path / "workspace.itws"
+        manager._workspace_state.path = workspace_path
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=0,
+            replacement_delta_count=0,
+            known=False,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_workspace_obsolete_estimate",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("estimate failed")),
+        )
+        assert not controller._workspace_should_repack_before_shutdown()
+
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=100,
+            replacement_delta_count=1,
+        )
+        assert not controller._workspace_should_repack_before_shutdown()
+
+        workspace_path.touch()
+        assert not controller._workspace_should_repack_before_shutdown()
 
 
 def test_workspace_remote_incremental_option_allows_delta_save(
