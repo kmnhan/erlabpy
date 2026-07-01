@@ -1488,6 +1488,8 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     return
 
+            self._compact_workspace_before_shutdown()
+
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
             self._registry_heartbeat.stop()
@@ -3905,10 +3907,12 @@ class ImageToolManager(_ImageToolManagerBase):
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         self._workspace_controller._write_full_workspace_file(
             fname,
             reuse_unchanged_groups=reuse_unchanged_groups,
+            require_matching_compression=require_matching_compression,
         )
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
@@ -3924,12 +3928,14 @@ class ImageToolManager(_ImageToolManagerBase):
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         self._workspace_controller._save_workspace_document(
             fname,
             force_full=force_full,
             document_access=document_access,
             reuse_unchanged_groups=reuse_unchanged_groups,
+            require_matching_compression=require_matching_compression,
         )
 
     def _workspace_save_dialog(
@@ -4049,9 +4055,17 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._workspace_full_save_snapshot(generation)
 
     def _workspace_full_save_copy_groups(
-        self, tree: xr.DataTree
+        self,
+        tree: xr.DataTree,
+        *,
+        compression_mode: WorkspaceCompressionMode | None = None,
+        require_matching_compression: bool = False,
     ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
-        return self._workspace_controller._workspace_full_save_copy_groups(tree)
+        return self._workspace_controller._workspace_full_save_copy_groups(
+            tree,
+            compression_mode=compression_mode,
+            require_matching_compression=require_matching_compression,
+        )
 
     def _open_workspace_save_wait_dialog(
         self,

@@ -2463,11 +2463,14 @@ class _WorkspaceIOController:
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         tree: xr.DataTree = self._manager._to_datatree()
         if reuse_unchanged_groups:
             copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(
-                tree
+                tree,
+                compression_mode=self._workspace_compression_mode(),
+                require_matching_compression=require_matching_compression,
             )
         else:
             copy_source, copy_groups = None, ()
@@ -2566,6 +2569,7 @@ class _WorkspaceIOController:
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
@@ -2575,6 +2579,7 @@ class _WorkspaceIOController:
                     force_full=force_full,
                     document_access=access,
                     reuse_unchanged_groups=reuse_unchanged_groups,
+                    require_matching_compression=require_matching_compression,
                 )
             return
 
@@ -2590,6 +2595,7 @@ class _WorkspaceIOController:
                 self._manager._write_full_workspace_file(
                     fname,
                     reuse_unchanged_groups=reuse_unchanged_groups,
+                    require_matching_compression=require_matching_compression,
                 )
                 self._manager._workspace_state.delta_save_count = 0
                 self._manager._workspace_state.schema_version = (
@@ -3045,7 +3051,10 @@ class _WorkspaceIOController:
         self, generation: int
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
         tree = self._manager._to_datatree()
-        copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(tree)
+        copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(
+            tree,
+            compression_mode=self._workspace_compression_mode(),
+        )
         return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs=self._manager._workspace_root_attrs_payload(delta_save_count=0),
@@ -3057,7 +3066,11 @@ class _WorkspaceIOController:
         )
 
     def _workspace_full_save_copy_groups(
-        self, tree: xr.DataTree
+        self,
+        tree: xr.DataTree,
+        *,
+        compression_mode: WorkspaceCompressionMode | None = None,
+        require_matching_compression: bool = False,
     ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
         if self._manager._workspace_state.path is None:
             return None, ()
@@ -3101,32 +3114,55 @@ class _WorkspaceIOController:
                 ):
                     identities[(uid, kind)] = f"{path}/{kind}"
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
-        for uid, node in self._manager._tool_graph.nodes.items():
-            if (
-                uid in self._manager._workspace_state.dirty_data
-                or uid in self._manager._workspace_state.dirty_added
-            ):
-                continue
-            if not node.is_imagetool:
-                tool = node.tool_window
-                if tool is None or not tool.can_save_and_load():
+        context = contextlib.nullcontext(None)
+        if require_matching_compression and compression_mode is not None:
+            import h5py
+
+            context = h5py.File(workspace_path, "r")
+        with context as h5_file:
+            for uid, node in self._manager._tool_graph.nodes.items():
+                if (
+                    uid in self._manager._workspace_state.dirty_data
+                    or uid in self._manager._workspace_state.dirty_added
+                ):
                     continue
-            kind = "imagetool" if node.is_imagetool else "tool"
-            source_path = identities.get((uid, kind))
-            if source_path is None:
-                continue
-            payload_path = self._manager._workspace_payload_path(uid)
-            try:
-                payload_tree = typing.cast("xr.DataTree", tree[payload_path])
-            except KeyError:
-                continue
-            attrs = None
-            if (
-                uid in self._manager._workspace_state.dirty_state
-                or source_path != payload_path
-            ):
-                attrs = dict(payload_tree.to_dataset(inherit=False).attrs)
-            copy_groups.append((source_path, payload_path, attrs))
+                if not node.is_imagetool:
+                    tool = node.tool_window
+                    if tool is None or not tool.can_save_and_load():
+                        continue
+                kind = "imagetool" if node.is_imagetool else "tool"
+                source_path = identities.get((uid, kind))
+                if source_path is None:
+                    continue
+                payload_path = self._manager._workspace_payload_path(uid)
+                try:
+                    payload_tree = typing.cast("xr.DataTree", tree[payload_path])
+                except KeyError:
+                    continue
+                payload_ds = payload_tree.to_dataset(inherit=False)
+                compression_matches = (
+                    h5_file is None
+                    or compression_mode is None
+                    or _manager_workspace._workspace_h5_group_matches_compression_mode(
+                        h5_file,
+                        source_path,
+                        payload_ds,
+                        compression_mode,
+                    )
+                )
+                if (
+                    require_matching_compression
+                    and compression_mode is not None
+                    and not compression_matches
+                ):
+                    continue
+                attrs = None
+                if (
+                    uid in self._manager._workspace_state.dirty_state
+                    or source_path != payload_path
+                ):
+                    attrs = dict(payload_ds.attrs)
+                copy_groups.append((source_path, payload_path, attrs))
         return str(workspace_path), tuple(copy_groups)
 
     def _open_workspace_save_wait_dialog(
@@ -3426,7 +3462,7 @@ class _WorkspaceIOController:
                 self._manager._save_workspace_document(
                     workspace_path,
                     force_full=True,
-                    reuse_unchanged_groups=False,
+                    require_matching_compression=True,
                 )
                 self._manager._rebind_workspace_backed_imagetools(
                     workspace_path,

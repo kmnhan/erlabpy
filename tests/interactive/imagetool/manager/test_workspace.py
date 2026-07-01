@@ -4937,6 +4937,14 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
             group[manager_workspace_io._ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
         )
+    opened = manager_xarray.open_workspace_datatree(fname, chunks=None)
+    try:
+        xr.testing.assert_identical(
+            opened["0/imagetool"].to_dataset()[manager_workspace_io._ITOOL_DATA_NAME],
+            rewritten[manager_workspace_io._ITOOL_DATA_NAME],
+        )
+    finally:
+        opened.close()
 
 
 def test_write_full_workspace_tree_file_network_scratch_skips_copy_reuse(
@@ -5808,7 +5816,7 @@ def test_manager_close_save_path_updates_file_path(
         assert not manager._workspace_state.closing_document
 
 
-def test_manager_close_does_not_compact_workspace(
+def test_manager_close_compacts_clean_delta_workspace(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -5828,7 +5836,7 @@ def test_manager_close_does_not_compact_workspace(
 
         assert manager.close()
 
-    assert compact_calls == []
+    assert compact_calls == ["compact"]
 
 
 def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
@@ -7023,7 +7031,7 @@ def test_manager_compact_workspace_edge_paths(
         assert focus_restores == [None]
 
 
-def test_manager_compact_workspace_rewrites_without_copy_groups(
+def test_manager_compact_workspace_copies_matching_groups(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -7084,7 +7092,9 @@ def test_manager_compact_workspace_rewrites_without_copy_groups(
 
         assert manager.compact_workspace()
 
-        assert full_write_calls[-1] == (None, ())
+        copy_source, copy_groups = full_write_calls[-1]
+        assert copy_source == str(fname)
+        assert copy_groups
 
 
 def test_manager_compact_workspace_reduces_internal_holes(
@@ -7180,14 +7190,36 @@ def test_manager_compact_workspace_reapplies_compression_mode(
                     is None
                 )
 
+            original_write = manager_workspace._write_full_workspace_tree_file
+            full_write_calls: list[
+                tuple[str | os.PathLike[str] | None, tuple[object, ...]]
+            ] = []
+
+            def _record_full_write(
+                write_fname: str | os.PathLike[str],
+                write_tree: xr.DataTree,
+                root_attrs: Mapping[str, typing.Any],
+                **kwargs: typing.Any,
+            ) -> None:
+                full_write_calls.append(
+                    (kwargs.get("copy_source"), tuple(kwargs.get("copy_groups", ())))
+                )
+                original_write(write_fname, write_tree, root_attrs, **kwargs)
+
             erlab.interactive.options["io/workspace/compression"] = "zstd1"
             monkeypatch.setattr(
                 erlab.interactive.utils,
                 "wait_dialog",
                 lambda *args, **kwargs: contextlib.nullcontext(),
             )
+            monkeypatch.setattr(
+                manager_workspace,
+                "_write_full_workspace_tree_file",
+                _record_full_write,
+            )
             assert manager.compact_workspace()
 
+            assert full_write_calls[-1] == (str(fname), ())
             with h5py.File(fname, "r") as h5_file:
                 assert _hdf5_blosc2_level_codec(
                     h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]

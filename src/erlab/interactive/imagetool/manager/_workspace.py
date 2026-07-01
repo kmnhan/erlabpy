@@ -86,6 +86,9 @@ _WORKSPACE_ENCODED_ATTRS_VERSION = 1
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
 _SAVED_TOOL_DATA_BLOB_DIM_PREFIX = _serialization.SAVED_TOOL_DATA_BLOB_DIM_PREFIX
+_WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
+    {"CLASS", "NAME", "DIMENSION_LIST", "REFERENCE_LIST"}
+)
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):
@@ -1263,6 +1266,200 @@ def _workspace_h5py_create_kwargs(
     return kwargs
 
 
+def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, ...]]:
+    create_plist = dataset.id.get_create_plist()
+    return {
+        create_plist.get_filter(index)[0]: tuple(create_plist.get_filter(index)[2])
+        for index in range(create_plist.get_nfilters())
+    }
+
+
+def _workspace_h5py_dataset_matches_encoding(
+    dataset: typing.Any,
+    encoding: Mapping[typing.Hashable, typing.Any],
+) -> bool:
+    filters = _workspace_h5py_filter_options(dataset)
+    expected_filter = encoding.get("compression")
+    if expected_filter is None:
+        return not filters
+    actual_options = filters.get(int(expected_filter))
+    if actual_options is None:
+        return False
+    expected_options = encoding.get("compression_opts")
+    return expected_options is None or actual_options == tuple(expected_options)
+
+
+def _workspace_h5_group_matches_compression_mode(
+    h5_file: typing.Any,
+    group_path: str,
+    ds: xr.Dataset,
+    compression_mode: WorkspaceCompressionMode,
+) -> bool:
+    group_path = group_path.strip("/")
+    if group_path not in h5_file:
+        return False
+    group = h5_file[group_path]
+    encoding = _xarray.workspace_dataset_encoding(ds, compression_mode=compression_mode)
+    for name in ds.data_vars:
+        dataset_name = str(name)
+        if dataset_name not in group:
+            return False
+        dataset = group[dataset_name]
+        if not _workspace_h5py_dataset_matches_encoding(
+            dataset, encoding.get(name, {})
+        ):
+            return False
+    return True
+
+
+def _workspace_h5py_attr_text(value: typing.Any) -> str | None:
+    if isinstance(value, bytes):
+        return value.decode()
+    if hasattr(value, "decode"):
+        decoded = value.decode()
+        return str(decoded)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
+    return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
+
+
+def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
+    import h5py
+
+    type_class = type_id.get_class()
+    if type_class == h5py.h5t.REFERENCE:
+        return True
+    if type_class in {h5py.h5t.ARRAY, h5py.h5t.VLEN}:
+        super_type = type_id.get_super()
+        try:
+            return _workspace_h5py_type_contains_reference(super_type)
+        finally:
+            super_type.close()
+    if type_class == h5py.h5t.COMPOUND:
+        for index in range(type_id.get_nmembers()):
+            member_type = type_id.get_member_type(index)
+            try:
+                if _workspace_h5py_type_contains_reference(member_type):
+                    return True
+            finally:
+                member_type.close()
+    return False
+
+
+def _workspace_h5py_attr_contains_reference(
+    source_attrs: typing.Any, key: typing.Hashable
+) -> bool:
+    attr_id = source_attrs.get_id(key)
+    type_id = attr_id.get_type()
+    try:
+        return _workspace_h5py_type_contains_reference(type_id)
+    finally:
+        type_id.close()
+        attr_id.close()
+
+
+def _workspace_h5py_copy_regular_attrs(
+    source_attrs: typing.Any,
+    target_attrs: typing.Any,
+    *,
+    skip_dimension_scale_attrs: bool,
+) -> None:
+    for key, value in source_attrs.items():
+        if skip_dimension_scale_attrs and key in _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS:
+            continue
+        if _workspace_h5py_attr_contains_reference(source_attrs, key):
+            continue
+        target_attrs[key] = value
+
+
+def _workspace_h5py_rebuild_dimension_scales(
+    source_group: typing.Any,
+    target_group: typing.Any,
+) -> None:
+    import h5py
+    import numpy as np
+
+    _workspace_h5py_copy_regular_attrs(
+        source_group.attrs,
+        target_group.attrs,
+        skip_dimension_scale_attrs=False,
+    )
+    scales_by_id: dict[int, typing.Any] = {}
+    for name, source_obj in source_group.items():
+        target_obj = target_group[name]
+        if isinstance(source_obj, h5py.Group):
+            _workspace_h5py_rebuild_dimension_scales(source_obj, target_obj)
+            continue
+        if not isinstance(source_obj, h5py.Dataset):
+            continue
+        _workspace_h5py_copy_regular_attrs(
+            source_obj.attrs,
+            target_obj.attrs,
+            skip_dimension_scale_attrs=True,
+        )
+        if not _workspace_h5py_dataset_is_dimension_scale(source_obj):
+            continue
+        dim_id = source_obj.attrs.get("_Netcdf4Dimid")
+        if dim_id is None:
+            continue
+        scale_name = _workspace_h5py_attr_text(source_obj.attrs.get("NAME")) or name
+        target_obj.make_scale(scale_name)
+        target_obj.attrs["_Netcdf4Dimid"] = np.int32(dim_id)
+        if "_Netcdf4Coordinates" in source_obj.attrs:
+            target_obj.attrs["_Netcdf4Coordinates"] = source_obj.attrs[
+                "_Netcdf4Coordinates"
+            ]
+        scales_by_id[int(dim_id)] = target_obj
+
+    for name, source_obj in source_group.items():
+        if not isinstance(source_obj, h5py.Dataset):
+            continue
+        if _workspace_h5py_dataset_is_dimension_scale(source_obj):
+            continue
+        if "_Netcdf4Coordinates" not in source_obj.attrs:
+            continue
+        target_obj = target_group[name]
+        coordinate_ids = np.asarray(source_obj.attrs["_Netcdf4Coordinates"]).reshape(-1)
+        if len(coordinate_ids) != target_obj.ndim:
+            continue
+        for axis, dim_id in enumerate(coordinate_ids):
+            scale = scales_by_id.get(int(dim_id))
+            if scale is not None:
+                target_obj.dims[axis].attach_scale(scale)
+
+
+def _copy_workspace_h5_group_to_open_file(
+    source_file: typing.Any,
+    target_file: typing.Any,
+    source_path: str,
+    target_path: str,
+    attrs: Mapping[str, typing.Any] | None,
+) -> bool:
+    import h5py
+
+    source_path = source_path.strip("/")
+    target_path = target_path.strip("/")
+    if source_path not in source_file:
+        return False
+    source_group = source_file[source_path]
+    if not isinstance(source_group, h5py.Group):
+        return False
+    parent = _ensure_h5_parent_group(target_file, target_path)
+    target_name = target_path.rsplit("/", maxsplit=1)[-1]
+    if target_name in parent:
+        del parent[target_name]
+    source_file.copy(source_path, parent, name=target_name, without_attrs=True)
+    target_group = parent[target_name]
+    _workspace_h5py_rebuild_dimension_scales(source_group, target_group)
+    if attrs is not None:
+        _replace_h5_attrs(target_group.attrs, attrs)
+    return True
+
+
 def _workspace_h5py_create_dataset(
     group: typing.Any,
     name: str,
@@ -2106,44 +2303,24 @@ def _write_full_workspace_tree_file(
             copy_source = None
             copy_groups_tuple = ()
         if copy_source is not None and copy_groups_tuple:
-            with _xarray._workspace_file_lock(copy_source):
-                shutil.copyfile(copy_source, tmp_fname)
-            staging_root = f"__itws_copy_{uuid.uuid4().hex}"
-            staged_groups: list[
-                tuple[str, tuple[str, str, dict[str, typing.Any] | None]]
-            ] = []
-            with h5py.File(tmp_fname, "a") as tmp_file:
-                tmp_file.create_group(staging_root)
-                for index, (source_path, destination_path, attrs) in enumerate(
-                    copy_groups_tuple
-                ):
-                    source_path = source_path.strip("/")
-                    if source_path not in tmp_file:
-                        continue
-                    stage_path = f"{staging_root}/{index}"
-                    _move_h5_path(tmp_file, source_path, stage_path)
-                    staged_groups.append(
-                        (stage_path, (source_path, destination_path, attrs))
-                    )
-
-                for name in list(tmp_file):
-                    if name != staging_root:
-                        del tmp_file[name]
+            with (
+                _xarray._workspace_file_lock(copy_source),
+                h5py.File(copy_source, "r") as source_file,
+                h5py.File(tmp_fname, "w") as tmp_file,
+            ):
                 _write_root_attrs_to_open_workspace_file(
                     tmp_file, root_attrs, replace=True
                 )
-
-                for stage_path, (
-                    _source_path,
-                    destination_path,
-                    attrs,
-                ) in staged_groups:
+                for source_path, destination_path, attrs in copy_groups_tuple:
                     destination_path = destination_path.strip("/")
-                    _move_h5_path(tmp_file, stage_path, destination_path)
-                    if attrs is not None:
-                        _replace_h5_attrs(tmp_file[destination_path].attrs, attrs)
-                    copied_paths.add(destination_path)
-                del tmp_file[staging_root]
+                    if _copy_workspace_h5_group_to_open_file(
+                        source_file,
+                        tmp_file,
+                        source_path,
+                        destination_path,
+                        attrs,
+                    ):
+                        copied_paths.add(destination_path)
         else:
             with h5py.File(tmp_fname, "w") as tmp_file:
                 _write_root_attrs_to_open_workspace_file(
