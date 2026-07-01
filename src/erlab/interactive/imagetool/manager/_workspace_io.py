@@ -3136,38 +3136,25 @@ class _WorkspaceIOController:
         if not offload_targets:
             return False
 
-        if self._manager._workspace_state.path is None:
-            return self.save_as(
-                native=native,
-                on_finished=lambda save_succeeded: (
-                    self._offload_targets_to_current_workspace(offload_targets)
-                    if save_succeeded
-                    and not self._manager.is_workspace_modified
-                    and self._manager._workspace_state.path is not None
-                    else None
-                ),
-            )
-        if (
-            self._manager.is_workspace_modified
-            or self._manager._workspace_state.needs_full_save
-        ):
-            return self.save(
-                native=native,
-                on_finished=lambda save_succeeded: (
-                    self._offload_targets_to_current_workspace(offload_targets)
-                    if save_succeeded
-                    and not self._manager.is_workspace_modified
-                    and self._manager._workspace_state.path is not None
-                    else None
-                ),
-            )
+        def _offload_after_save(save_succeeded: bool) -> None:
+            if not save_succeeded or self._manager.is_workspace_modified:
+                return
+            if self._manager._workspace_state.path is None:
+                return
+            self._offload_targets_to_current_workspace(offload_targets)
 
+        state = self._manager._workspace_state
+        if state.path is None:
+            return self.save_as(native=native, on_finished=_offload_after_save)
+        if self._manager.is_workspace_modified or state.needs_full_save:
+            return self.save(native=native, on_finished=_offload_after_save)
         return self._offload_targets_to_current_workspace(offload_targets)
 
     def _offload_targets_to_current_workspace(
         self, offload_targets: Iterable[int | str]
     ) -> bool:
-        if self._manager._workspace_state.path is None:
+        workspace_path = self._manager._workspace_state.path
+        if workspace_path is None:
             return False
 
         origin = self._manager._active_managed_window()
@@ -3176,12 +3163,12 @@ class _WorkspaceIOController:
                 origin or self._manager, "Offloading to workspace..."
             ):
                 self._manager._rebind_workspace_backed_imagetools(
-                    self._manager._workspace_state.path,
+                    workspace_path,
                     targets=offload_targets,
                     chunks={},
                 )
                 _manager_workspace._write_workspace_root_attrs_to_file(
-                    self._manager._workspace_state.path,
+                    workspace_path,
                     self._manager._workspace_root_attrs_payload(
                         delta_save_count=self._manager._workspace_state.delta_save_count
                     ),
