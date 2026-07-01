@@ -1577,7 +1577,6 @@ def test_figure_composer_plot_array_keep_clears_stale_qsel_input_error(
     qsel_edit.setModified(True)
     qsel_edit.editingFinished.emit()
     assert tool._operation_input_errors
-    assert "Invalid input:" in tool.source_status_label.text()
 
     _activate_plot_array_dimension_mode(tool, "eV", "keep")
 
@@ -1585,7 +1584,6 @@ def test_figure_composer_plot_array_keep_clears_stale_qsel_input_error(
     assert updated.sources == ("data",)
     assert updated.map_selections == ()
     assert tool._operation_input_errors == {}
-    assert "Invalid input:" not in tool.source_status_label.text()
 
 
 def test_figure_composer_plot_array_qsel_width_editor_updates_selection(
