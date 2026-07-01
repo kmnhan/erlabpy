@@ -529,11 +529,57 @@ def test_details_panel_update_info_hides_missing_child_preview_pixmap(
     assert preview_widget.pixmaps == []
 
 
+def test_details_panel_update_info_uses_default_child_preview_aspect_ratio() -> None:
+    class _FakePreviewWidget:
+        def __init__(self) -> None:
+            self.visible = False
+            self.pixmap_calls: list[tuple[QtGui.QPixmap, dict[str, object]]] = []
+
+        def setPixmap(self, pixmap: QtGui.QPixmap, **kwargs: object) -> None:
+            self.pixmap_calls.append((pixmap, kwargs))
+
+        def setVisible(self, visible: bool) -> None:
+            self.visible = visible
+
+    metadata_nodes: list[object] = []
+    preview_widget = _FakePreviewWidget()
+    pixmap = QtGui.QPixmap(16, 8)
+    pixmap.fill(QtGui.QColor("red"))
+    node = types.SimpleNamespace(
+        uid="child-1",
+        is_imagetool=False,
+        tool_window=types.SimpleNamespace(
+            preview_pixmap=pixmap,
+            preview_pixmap_stale=False,
+            preview_imageitem=None,
+        ),
+    )
+    manager = types.SimpleNamespace(
+        text_box=types.SimpleNamespace(setHtml=lambda _html: None),
+        preview_widget=preview_widget,
+        _selected_imagetool_targets=list,
+        _selected_tool_uids=lambda: ["child-1"],
+        _node_for_target=lambda _target: node,
+        _node_info_html=lambda _node: "<p>child</p>",
+        _set_metadata_node=lambda metadata_node: metadata_nodes.append(metadata_node),
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    controller._update_info(uid="child-1")
+
+    assert metadata_nodes == [node]
+    assert preview_widget.pixmap_calls == [(pixmap, {})]
+    assert preview_widget.visible is True
+
+
 def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
     preview = manager_widgets._SingleImagePreview()
     qtbot.addWidget(preview)
 
     preview.setPixmap(QtGui.QPixmap())
+    preview._fit_pixmap_in_view()
     preview.setVisible(True)
     preview.show()
 
@@ -567,6 +613,29 @@ def test_single_image_preview_keeps_legacy_stretch_on_resize(qtbot) -> None:
 
     assert first_transform.m11() != pytest.approx(first_transform.m22())
     assert second_transform.m11() != pytest.approx(second_transform.m22())
+
+
+def test_single_image_preview_can_keep_aspect_ratio_on_resize(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+    pixmap = QtGui.QPixmap(160, 80)
+    pixmap.fill(QtGui.QColor("red"))
+
+    preview.resize(320, 80)
+    preview.setPixmap(
+        pixmap,
+        aspect_ratio_mode=QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+    )
+    preview.setVisible(True)
+    qtbot.waitExposed(preview)
+    first_transform = preview.transform()
+
+    preview.resize(120, 300)
+    qtbot.wait(0)
+    second_transform = preview.transform()
+
+    assert first_transform.m11() == pytest.approx(first_transform.m22())
+    assert second_transform.m11() == pytest.approx(second_transform.m22())
 
 
 def test_batch_action_transform_error_paths(

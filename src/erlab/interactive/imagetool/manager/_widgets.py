@@ -1269,19 +1269,28 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self._pixmapitem = typing.cast(
             "QtWidgets.QGraphicsPixmapItem", _scene.addPixmap(QtGui.QPixmap())
         )
+        self._aspect_ratio_mode = QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.setToolTip("Main image preview")
         self.hide()
 
-    def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+    def setPixmap(
+        self,
+        pixmap: QtGui.QPixmap,
+        *,
+        aspect_ratio_mode: QtCore.Qt.AspectRatioMode = (
+            QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
+        ),
+    ) -> None:
+        self._aspect_ratio_mode = aspect_ratio_mode
         if pixmap.isNull():
             self._pixmapitem.setPixmap(QtGui.QPixmap())
             self.hide()
             self.updateGeometry()
             return
         self._pixmapitem.setPixmap(pixmap)
-        self.fitInView(self._pixmapitem)
+        self._fit_pixmap_in_view()
 
     def setVisible(self, visible: bool) -> None:
         if visible and self._pixmapitem.pixmap().isNull():
@@ -1305,12 +1314,17 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)
-        self.fitInView(self._pixmapitem)
+        self._fit_pixmap_in_view()
 
     def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
         # Disable scrolling by ignoring wheel events
         if event:
             event.ignore()
+
+    def _fit_pixmap_in_view(self) -> None:
+        if self._pixmapitem.pixmap().isNull():
+            return
+        self.fitInView(self._pixmapitem, self._aspect_ratio_mode)
 
 
 class _WidgetsController:
