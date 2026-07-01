@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 import functools
@@ -58,11 +59,17 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
+    import h5py
+
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace_state import (
         _WorkspaceStateSnapshot,
     )
+else:
+    import lazy_loader as _lazy
+
+    h5py = _lazy.load("h5py")
 
 logger = logging.getLogger(__name__)
 _WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
@@ -2607,6 +2614,7 @@ class _WorkspaceIOController:
         root_attrs: dict[str, typing.Any],
         *,
         compression_mode: WorkspaceCompressionMode,
+        require_matching_compression: bool,
     ) -> _manager_workspace._WorkspaceSaveSnapshot | None:
         if _manager_workspace._workspace_path_is_likely_network_path(fname):
             return None
@@ -2617,17 +2625,16 @@ class _WorkspaceIOController:
 
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
         serialize_uids = self._workspace_full_save_dirty_payload_uids()
+        reason_counts: collections.Counter[str] = collections.Counter()
+        copied_bytes = 0
+        serialized_existing_bytes = 0
+        plan_started_at = time.perf_counter()
         try:
-            import h5py
-
             _manager_xarray.ensure_workspace_hdf5_filters_registered()
             with (
                 _manager_xarray._workspace_file_lock(workspace_path),
                 h5py.File(workspace_path, "r") as h5_file,
             ):
-                group_matches_compression = (
-                    _manager_workspace._workspace_h5_group_matches_current_compression
-                )
                 for (
                     uid,
                     kind,
@@ -2635,26 +2642,59 @@ class _WorkspaceIOController:
                 ) in self._workspace_full_save_manifest_entries(root_attrs):
                     node = self._manager._tool_graph.nodes.get(uid)
                     if node is None:
+                        reason_counts["missing_node"] += 1
                         continue
                     if not node.is_imagetool:
                         tool = node.tool_window
                         if tool is None or not tool.can_save_and_load():
+                            reason_counts["unsupported_tool"] += 1
                             continue
                     source_path = identities.get((uid, kind))
                     if source_path is None or source_path != payload_path:
                         serialize_uids.add(uid)
+                        reason_counts[
+                            "missing_source" if source_path is None else "moved"
+                        ] += 1
                         continue
                     if uid in serialize_uids:
+                        state = self._manager._workspace_state
+                        if uid in state.dirty_added:
+                            reason_counts["dirty_added"] += 1
+                        elif uid in state.dirty_data:
+                            reason_counts["dirty_data"] += 1
+                        elif uid in state.dirty_state:
+                            reason_counts["dirty_state"] += 1
+                        else:
+                            reason_counts["dirty_descendant"] += 1
+                        if source_path in h5_file:
+                            serialized_existing_bytes += (
+                                _manager_workspace._workspace_h5_object_storage_size(
+                                    h5_file[source_path]
+                                )
+                            )
                         continue
-                    compression_matches = group_matches_compression(
-                        h5_file,
-                        source_path,
-                        compression_mode,
-                    )
-                    if not compression_matches:
+                    if (
+                        require_matching_compression
+                        and not _manager_workspace._h5_group_matches_compression(
+                            h5_file, source_path, compression_mode
+                        )
+                    ):
                         serialize_uids.add(uid)
+                        reason_counts["compression_mismatch"] += 1
+                        if source_path in h5_file:
+                            serialized_existing_bytes += (
+                                _manager_workspace._workspace_h5_object_storage_size(
+                                    h5_file[source_path]
+                                )
+                            )
                         continue
                     copy_groups.append((source_path, payload_path, None))
+                    if source_path in h5_file:
+                        copied_bytes += (
+                            _manager_workspace._workspace_h5_object_storage_size(
+                                h5_file[source_path]
+                            )
+                        )
         except Exception:
             logger.debug(
                 "Falling back to DataTree full-save snapshot",
@@ -2663,6 +2703,17 @@ class _WorkspaceIOController:
             return None
 
         tree = self._workspace_datatree_for_payload_uids(serialize_uids)
+        logger.debug(
+            "Workspace manifest-first full-save plan: copied %d groups "
+            "(%.1f MiB), serialized %d existing groups (%.1f MiB), "
+            "reasons=%s, planning %.3f s",
+            len(copy_groups),
+            copied_bytes / 1024**2,
+            len(serialize_uids),
+            serialized_existing_bytes / 1024**2,
+            dict(reason_counts),
+            time.perf_counter() - plan_started_at,
+        )
         return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs=root_attrs,
@@ -2678,7 +2729,7 @@ class _WorkspaceIOController:
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         snapshot = self._workspace_full_save_snapshot(
             self._manager._workspace_state.dirty_generation,
@@ -2787,7 +2838,7 @@ class _WorkspaceIOController:
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
@@ -3336,7 +3387,7 @@ class _WorkspaceIOController:
         *,
         fname: str | os.PathLike[str] | None = None,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = True,
+        require_matching_compression: bool = False,
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
         compression_mode = self._workspace_compression_mode()
         root_attrs = self._manager._workspace_root_attrs_payload(delta_save_count=0)
@@ -3356,6 +3407,7 @@ class _WorkspaceIOController:
                 fname,
                 root_attrs,
                 compression_mode=compression_mode,
+                require_matching_compression=require_matching_compression,
             )
             if snapshot is not None:
                 return snapshot
@@ -3488,8 +3540,6 @@ class _WorkspaceIOController:
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
         context = contextlib.nullcontext(None)
         if require_matching_compression and compression_mode is not None:
-            import h5py
-
             context = h5py.File(workspace_path, "r")
         with context as h5_file:
             for uid, node in self._manager._tool_graph.nodes.items():
