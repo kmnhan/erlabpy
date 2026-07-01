@@ -56,11 +56,17 @@ jobs:
           - group: "cov-qt-imagetool"
             timeout-minutes: 30
             use-xdist: true
+          - group: "cov-qt-manager-figurecomposer"
+            timeout-minutes: 25
+            use-xdist: true
           - group: "cov-qt-manager-mainwindow"
             timeout-minutes: 25
             use-xdist: true
-          - group: "cov-qt-manager-workspace"
-            timeout-minutes: 25
+          - group: "cov-qt-manager-workspace-a"
+            timeout-minutes: 20
+            use-xdist: true
+          - group: "cov-qt-manager-workspace-b"
+            timeout-minutes: 20
             use-xdist: true
           - group: "cov-qt-manager-provenance-console"
             timeout-minutes: 30
