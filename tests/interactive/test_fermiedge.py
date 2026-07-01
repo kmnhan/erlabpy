@@ -82,6 +82,34 @@ def _configure_goldtool_state(
         win.post_fit(edge_center, edge_stderr)
 
 
+def _spy_goldtool_post_fit(monkeypatch: pytest.MonkeyPatch) -> list[GoldTool]:
+    calls: list[GoldTool] = []
+    original_post_fit = GoldTool.post_fit
+
+    def tracked_post_fit(
+        self: GoldTool,
+        edge_center: xr.DataArray,
+        edge_stderr: xr.DataArray,
+        *,
+        task: EdgeFitTask | None = None,
+    ) -> None:
+        calls.append(self)
+        original_post_fit(self, edge_center, edge_stderr, task=task)
+
+    monkeypatch.setattr(GoldTool, "post_fit", tracked_post_fit)
+    return calls
+
+
+def _drop_goldtool_fit_payload(ds: xr.Dataset) -> xr.Dataset:
+    return ds.drop_vars(
+        [
+            GoldTool._PERSISTED_FIT_ALONG_VAR,
+            GoldTool._PERSISTED_EDGE_CENTER_VAR,
+            GoldTool._PERSISTED_EDGE_STDERR_VAR,
+        ]
+    )
+
+
 def test_goldtool_can_save_and_load() -> None:
     assert GoldTool.can_save_and_load() is True
 
@@ -242,6 +270,18 @@ def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
         filename = f"{tmp_dir_name}/goldtool_fitted.h5"
         win.to_file(filename)
 
+        with xr.load_dataset(filename, engine="h5netcdf") as saved:
+            saved_state = json.loads(saved.attrs["tool_state"])
+            assert saved_state["schema_version"] == 2
+            assert "fit_snapshot" not in saved_state
+            assert "go" not in saved_state["edge_values"]
+            assert "copy" not in saved_state["poly_values"]
+            assert "itool" not in saved_state["poly_values"]
+            assert "save" not in saved_state["poly_values"]
+            assert GoldTool._PERSISTED_FIT_ALONG_VAR in saved
+            assert GoldTool._PERSISTED_EDGE_CENTER_VAR in saved
+            assert GoldTool._PERSISTED_EDGE_STDERR_VAR in saved
+
         win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
         qtbot.addWidget(win_restored)
         assert isinstance(win_restored, GoldTool)
@@ -251,6 +291,211 @@ def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
         assert isinstance(win_restored.result, scipy.interpolate.BSpline)
         xr.testing.assert_identical(win.corrected, win_restored.corrected)
         assert str(win_restored.info_text) == str(win.info_text)
+
+
+def test_goldtool_loads_legacy_state_with_raw_dicts_and_fit_snapshot(
+    qtbot, gold
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    snapshot = win.tool_status.fit_snapshot
+    assert snapshot is not None
+
+    saved = _drop_goldtool_fit_payload(win.to_dataset())
+    legacy_state = json.loads(saved.attrs["tool_state"])
+    legacy_state.pop("schema_version", None)
+    legacy_state["edge_values"] = {
+        **dict(win.params_edge.values),
+        "go": True,
+        "unknown": "ignored",
+        "Method": "unsupported-method",
+        "# CPU": 0,
+    }
+    legacy_state["poly_values"] = {
+        **dict(win.params_poly.values),
+        "itool": True,
+        "copy": True,
+        "save": True,
+        "unknown": "ignored",
+    }
+    legacy_state["spline_values"] = {
+        **dict(win.params_spl.values),
+        "itool": True,
+        "copy": True,
+        "unknown": "ignored",
+    }
+    legacy_state["tab_index"] = "invalid"
+    legacy_state["fit_snapshot"] = snapshot.model_dump()
+    saved.attrs["tool_state"] = json.dumps(legacy_state)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+
+    assert restored.params_tab.currentIndex() == 0
+    assert restored.params_edge.values["Method"] == "least_squares"
+    assert restored.params_edge.values["# CPU"] == 1
+    assert "go" not in restored.tool_status.edge_values.model_dump(by_alias=True)
+    assert "copy" not in restored.tool_status.poly_values.model_dump(by_alias=True)
+    xr.testing.assert_equal(restored.edge_center, win.edge_center)
+    xr.testing.assert_equal(restored.edge_stderr, win.edge_stderr)
+
+
+def test_goldtool_deferred_restore_fit_payload(qtbot, gold, monkeypatch) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    expected_corrected = win.corrected
+    saved = win.to_dataset()
+
+    post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved, _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+
+    assert post_fit_calls == []
+    assert not hasattr(restored, "edge_center")
+    assert restored.result is None
+    assert restored._pending_persisted_fit_snapshot is not None
+
+    restored._flush_restore_work()
+
+    assert post_fit_calls == [restored]
+    assert restored._pending_persisted_fit_snapshot is None
+    assert isinstance(restored.result, scipy.interpolate.BSpline)
+    xr.testing.assert_identical(restored.corrected, expected_corrected)
+
+
+def test_goldtool_deferred_restore_legacy_fit_snapshot(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    snapshot = win.tool_status.fit_snapshot
+    assert snapshot is not None
+
+    saved = _drop_goldtool_fit_payload(win.to_dataset())
+    legacy_state = json.loads(saved.attrs["tool_state"])
+    legacy_state["fit_snapshot"] = snapshot.model_dump()
+    saved.attrs["tool_state"] = json.dumps(legacy_state)
+
+    post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved, _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+
+    assert post_fit_calls == []
+    assert not hasattr(restored, "edge_center")
+    assert restored._pending_persisted_fit_snapshot is not None
+
+    restored._flush_restore_work()
+
+    assert post_fit_calls == [restored]
+    assert restored._pending_persisted_fit_snapshot is None
+    xr.testing.assert_equal(restored.edge_center, win.edge_center)
+    xr.testing.assert_equal(restored.edge_stderr, win.edge_stderr)
+
+
+def test_goldtool_deferred_restore_resaves_fit_payload_before_show(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    expected_corrected = win.corrected
+    saved = win.to_dataset()
+
+    post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved, _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+
+    resaved = restored.to_dataset()
+
+    assert post_fit_calls == []
+    assert restored.result is None
+    assert restored._pending_persisted_fit_snapshot is not None
+    assert GoldTool._PERSISTED_FIT_ALONG_VAR in resaved
+    assert GoldTool._PERSISTED_EDGE_CENTER_VAR in resaved
+    assert GoldTool._PERSISTED_EDGE_STDERR_VAR in resaved
+
+    eager_restored = erlab.interactive.utils.ToolWindow.from_dataset(resaved)
+    qtbot.addWidget(eager_restored)
+    assert isinstance(eager_restored, GoldTool)
+
+    assert post_fit_calls == [eager_restored]
+    assert isinstance(eager_restored.result, scipy.interpolate.BSpline)
+    xr.testing.assert_identical(eager_restored.corrected, expected_corrected)
+
+
+def test_goldtool_deferred_restore_update_data_refits_pending_fit(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    saved = win.to_dataset()
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved, _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+    assert not hasattr(restored, "edge_center")
+    assert restored._pending_persisted_fit_snapshot is not None
+
+    called: list[bool] = []
+    monkeypatch.setattr(restored, "perform_edge_fit", lambda: called.append(True))
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.02
+
+    assert restored.update_data(new_gold) is False
+
+    assert called == [True]
+    assert restored._pending_persisted_fit_snapshot is None
+    assert not hasattr(restored, "edge_center")
+    xr.testing.assert_identical(restored.data, new_gold)
+
+
+@pytest.mark.parametrize("defer_restore_work", [False, True])
+def test_goldtool_legacy_bad_fit_snapshot_lengths_raise(
+    qtbot, gold, defer_restore_work
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+
+    saved = win.to_dataset()
+    legacy_state = json.loads(saved.attrs["tool_state"])
+    legacy_state["fit_snapshot"] = {
+        "along_coords": [0.0, 1.0],
+        "edge_center": [0.0],
+        "edge_stderr": [0.0, 0.0],
+    }
+    saved.attrs["tool_state"] = json.dumps(legacy_state)
+
+    with pytest.raises(ValueError, match="mismatched array lengths"):
+        erlab.interactive.utils.ToolWindow.from_dataset(
+            saved, _defer_restore_work=defer_restore_work
+        )
+
+
+def test_goldtool_handles_missing_cpu_count(qtbot, gold, monkeypatch) -> None:
+    monkeypatch.setattr("erlab.interactive.fermiedge.os.cpu_count", lambda: None)
+
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    cpu_widget = typing.cast("QtWidgets.QSpinBox", win.params_edge.widgets["# CPU"])
+    assert cpu_widget.value() == 1
+    assert cpu_widget.maximum() == 1
 
 
 def test_goldtool_duplicate_roundtrip(qtbot, gold) -> None:
@@ -664,6 +909,52 @@ def test_goldtool_perform_edge_fit_ignores_pending_or_closing_updates(
     win.perform_edge_fit()
 
     assert win._fit_task is None
+
+
+@pytest.mark.parametrize(
+    "empty_case", ["empty_roi", "overlarge_bin_x", "overlarge_bin_y"]
+)
+def test_goldtool_perform_edge_fit_skips_empty_selection(
+    qtbot, gold, monkeypatch, empty_case
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    if empty_case == "empty_roi":
+        between = float((gold.alpha.values[0] + gold.alpha.values[1]) / 2)
+        win.params_roi._x_decimals = 12
+        win.params_roi.modify_roi(x0=between, x1=between, y0=-0.2, y1=0.1)
+    elif empty_case == "overlarge_bin_x":
+        typing.cast("QtWidgets.QSpinBox", win.params_edge.widgets["Bin x"]).setValue(
+            gold.sizes["alpha"] + 1
+        )
+    else:
+        typing.cast("QtWidgets.QSpinBox", win.params_edge.widgets["Bin y"]).setValue(
+            gold.sizes["eV"] + 1
+        )
+
+    class _ThreadPoolDouble:
+        def __init__(self) -> None:
+            self.started_tasks: list[EdgeFitTask] = []
+
+        def activeThreadCount(self) -> int:
+            return 0
+
+        def start(self, task: EdgeFitTask) -> None:
+            self.started_tasks.append(task)
+
+    warnings: list[bool] = []
+    threadpool = _ThreadPoolDouble()
+    monkeypatch.setattr(
+        win, "_show_empty_fit_selection_warning", lambda: warnings.append(True)
+    )
+    win._threadpool = threadpool  # type: ignore[assignment]
+
+    win.perform_edge_fit()
+
+    assert warnings == [True]
+    assert win._fit_task is None
+    assert threadpool.started_tasks == []
 
 
 def test_goldtool_post_fit_accepts_current_task_and_disconnects(

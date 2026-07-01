@@ -11,7 +11,7 @@ import time
 import traceback
 import typing
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 import numpy as np
 import pydantic
@@ -60,6 +60,8 @@ LMFIT_METHODS = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_GOLDTOOL_STATE_SCHEMA_VERSION = 2
 
 
 def _disconnect_signal(signal: typing.Any) -> None:
@@ -181,9 +183,9 @@ class _GoldUpdateRequest:
     had_fit: bool
     roi_limits: tuple[float, float, float, float]
     tab_index: int
-    edge_values: dict[str, typing.Any]
-    poly_values: dict[str, typing.Any]
-    spline_values: dict[str, typing.Any]
+    edge_values: "_GoldEdgeState"
+    poly_values: "_GoldPolyState"
+    spline_values: "_GoldSplineState"
     refit: bool
 
 
@@ -191,6 +193,90 @@ class _GoldFitSnapshot(pydantic.BaseModel):
     along_coords: list[float]
     edge_center: list[float]
     edge_stderr: list[float]
+
+
+class _GoldStateBase(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(
+        extra="ignore",
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+
+class _GoldEdgeState(_GoldStateBase):
+    temperature: float = pydantic.Field(default=30.0, alias="T (K)")
+    fix_temperature: bool = pydantic.Field(default=True, alias="Fix T")
+    bin_x: int = pydantic.Field(default=1, alias="Bin x")
+    bin_y: int = pydantic.Field(default=1, alias="Bin y")
+    resolution: float = pydantic.Field(default=0.02, alias="Resolution")
+    fast: bool = pydantic.Field(default=False, alias="Fast")
+    linear: bool = pydantic.Field(default=True, alias="Linear")
+    method: str = pydantic.Field(default="least_squares", alias="Method")
+    scale_cov: bool = pydantic.Field(default=True, alias="Scale cov")
+    num_cpu: int = pydantic.Field(default=1, alias="# CPU")
+
+    @pydantic.field_validator("bin_x", "bin_y", "num_cpu", mode="before")
+    @classmethod
+    def _positive_int(cls, value: typing.Any) -> int:
+        with contextlib.suppress(TypeError, ValueError):
+            return max(1, int(value))
+        return 1
+
+    @pydantic.field_validator("method", mode="before")
+    @classmethod
+    def _supported_method(cls, value: typing.Any) -> str:
+        method = str(value)
+        if method in LMFIT_METHODS:
+            return method
+        logger.warning(
+            "Unknown saved lmfit method %r for goldtool; using least_squares",
+            value,
+        )
+        return "least_squares"
+
+
+class _GoldPolyState(_GoldStateBase):
+    degree: int = pydantic.Field(default=4, alias="Degree")
+    scale_cov: bool = pydantic.Field(default=True, alias="Scale cov")
+    residuals: bool = pydantic.Field(default=False, alias="Residuals")
+    corrected: bool = pydantic.Field(default=False, alias="Corrected")
+    shift_coords: bool = pydantic.Field(default=True, alias="Shift coords")
+
+
+class _GoldSplineState(_GoldStateBase):
+    auto: bool = pydantic.Field(default=True, alias="Auto")
+    lambda_value: float = pydantic.Field(default=0.0, alias="lambda")
+    residuals: bool = pydantic.Field(default=False, alias="Residuals")
+    corrected: bool = pydantic.Field(default=False, alias="Corrected")
+    shift_coords: bool = pydantic.Field(default=True, alias="Shift coords")
+
+
+class _GoldToolState(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+    schema_version: int = _GOLDTOOL_STATE_SCHEMA_VERSION
+    data_name: str
+    roi_limits: tuple[float, float, float, float]
+    edge_values: _GoldEdgeState
+    poly_values: _GoldPolyState
+    spline_values: _GoldSplineState
+    tab_index: typing.Literal[0, 1]
+    refit_on_source_update: bool = False
+    fit_snapshot: _GoldFitSnapshot | None = None
+
+    @pydantic.field_validator("schema_version", mode="before")
+    @classmethod
+    def _coerce_schema_version(cls, value: typing.Any) -> int:
+        with contextlib.suppress(TypeError, ValueError):
+            return int(value)
+        return _GOLDTOOL_STATE_SCHEMA_VERSION
+
+    @pydantic.field_validator("tab_index", mode="before")
+    @classmethod
+    def _coerce_tab_index(cls, value: typing.Any) -> typing.Literal[0, 1]:
+        with contextlib.suppress(TypeError, ValueError):
+            return 1 if int(value) == 1 else 0
+        return 0
 
 
 class GoldTool(erlab.interactive.utils.AnalysisWindow):
@@ -221,6 +307,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """
 
     tool_name = "goldtool"
+    _PERSISTED_FIT_SNAPSHOT_KEY: typing.ClassVar[str] = "__goldtool_fit_snapshot__"
+    _PERSISTED_FIT_POINT_DIM: typing.ClassVar[str] = "__goldtool_fit_point__"
+    _PERSISTED_FIT_ALONG_VAR: typing.ClassVar[str] = "__goldtool_fit_along__"
+    _PERSISTED_EDGE_CENTER_VAR: typing.ClassVar[str] = "__goldtool_edge_center__"
+    _PERSISTED_EDGE_STDERR_VAR: typing.ClassVar[str] = "__goldtool_edge_stderr__"
     COPY_PROVENANCE: typing.ClassVar = (
         erlab.interactive.utils.ToolScriptProvenanceDefinition(
             start_label="Start from current goldtool input data",
@@ -247,15 +338,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
     }
 
-    class StateModel(pydantic.BaseModel):
-        data_name: str
-        roi_limits: tuple[float, float, float, float]
-        edge_values: dict[str, typing.Any]
-        poly_values: dict[str, typing.Any]
-        spline_values: dict[str, typing.Any]
-        tab_index: typing.Literal[0, 1]
-        refit_on_source_update: bool = False
-        fit_snapshot: _GoldFitSnapshot | None = None
+    class StateModel(_GoldToolState):
+        pass
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
@@ -333,6 +417,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             x_decimals=x_decimals,
             y_decimals=y_decimals,
         )
+        cpu_count = os.cpu_count() or 1
         self.params_edge = erlab.interactive.utils.ParameterGroup(
             {
                 "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
@@ -362,9 +447,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
                 "# CPU": {
                     "qwtype": "spin",
-                    "value": os.cpu_count(),
+                    "value": cpu_count,
                     "minimum": 1,
-                    "maximum": os.cpu_count(),
+                    "maximum": cpu_count,
                 },
                 "go": {
                     "qwtype": "pushbtn",
@@ -544,6 +629,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
+        self._pending_persisted_fit_snapshot: _GoldFitSnapshot | None = None
         self._reset_history_stack()
 
     @property
@@ -554,28 +640,40 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def data_name(self, value: str) -> None:
         self._argnames["data"] = value
 
+    def _fit_snapshot(self) -> _GoldFitSnapshot | None:
+        if not (hasattr(self, "edge_center") and hasattr(self, "edge_stderr")):
+            return getattr(self, "_pending_persisted_fit_snapshot", None)
+        return _GoldFitSnapshot(
+            along_coords=np.asarray(
+                self.edge_center[self._along_dim].values, dtype=float
+            ).tolist(),
+            edge_center=np.asarray(self.edge_center.values, dtype=float).tolist(),
+            edge_stderr=np.asarray(self.edge_stderr.values, dtype=float).tolist(),
+        )
+
+    def _edge_state_from_widgets(self) -> _GoldEdgeState:
+        return _GoldEdgeState.model_validate(dict(self.params_edge.values))
+
+    def _poly_state_from_widgets(self) -> _GoldPolyState:
+        return _GoldPolyState.model_validate(dict(self.params_poly.values))
+
+    def _spline_state_from_widgets(self) -> _GoldSplineState:
+        return _GoldSplineState.model_validate(dict(self.params_spl.values))
+
     @property
     def tool_status(self) -> StateModel:
-        fit_snapshot: _GoldFitSnapshot | None = None
-        if hasattr(self, "edge_center") and hasattr(self, "edge_stderr"):
-            fit_snapshot = _GoldFitSnapshot(
-                along_coords=np.asarray(
-                    self.edge_center[self._along_dim].values, dtype=float
-                ).tolist(),
-                edge_center=np.asarray(self.edge_center.values, dtype=float).tolist(),
-                edge_stderr=np.asarray(self.edge_stderr.values, dtype=float).tolist(),
-            )
         return self.StateModel(
+            schema_version=_GOLDTOOL_STATE_SCHEMA_VERSION,
             data_name=self.data_name,
             roi_limits=self.params_roi.roi_limits,
-            edge_values=dict(self.params_edge.values),
-            poly_values=dict(self.params_poly.values),
-            spline_values=dict(self.params_spl.values),
+            edge_values=self._edge_state_from_widgets(),
+            poly_values=self._poly_state_from_widgets(),
+            spline_values=self._spline_state_from_widgets(),
             tab_index=typing.cast(
                 "typing.Literal[0, 1]", self.params_tab.currentIndex()
             ),
             refit_on_source_update=self.refit_on_source_update_check.isChecked(),
-            fit_snapshot=fit_snapshot,
+            fit_snapshot=self._fit_snapshot(),
         )
 
     @tool_status.setter
@@ -590,9 +688,15 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             QtCore.QSignalBlocker(self.params_tab),
             QtCore.QSignalBlocker(self.refit_on_source_update_check),
         ):
-            self._restore_parameter_group_values(self.params_edge, status.edge_values)
-            self._restore_parameter_group_values(self.params_poly, status.poly_values)
-            self._restore_parameter_group_values(self.params_spl, status.spline_values)
+            self._restore_parameter_group_values(
+                self.params_edge, status.edge_values.model_dump(by_alias=True)
+            )
+            self._restore_parameter_group_values(
+                self.params_poly, status.poly_values.model_dump(by_alias=True)
+            )
+            self._restore_parameter_group_values(
+                self.params_spl, status.spline_values.model_dump(by_alias=True)
+            )
             self.params_tab.setCurrentIndex(status.tab_index)
             self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
 
@@ -602,7 +706,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._sync_spline_lambda_enabled()
 
         if status.fit_snapshot is not None:
-            self._restore_fit_snapshot(status.fit_snapshot)
+            self._restore_or_defer_fit_snapshot(
+                status.fit_snapshot, key=self._PERSISTED_FIT_SNAPSHOT_KEY
+            )
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -645,11 +751,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         from erlab.utils.formatting import format_darr_shape_html
 
         status = self.tool_status
-        edge = status.edge_values
+        edge = status.edge_values.model_dump(by_alias=True)
         mode = "Polynomial" if status.tab_index == 0 else "Spline"
         mode_params = (
             status.poly_values if status.tab_index == 0 else status.spline_values
-        )
+        ).model_dump(by_alias=True)
 
         roi_rows = [
             ("Along range", f"{status.roi_limits[0]} to {status.roi_limits[2]}"),
@@ -725,6 +831,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         return info
 
     def _clear_edge_fit_results(self) -> None:
+        self._pending_persisted_fit_snapshot = None
+        self._discard_restore_work(key=self._PERSISTED_FIT_SNAPSHOT_KEY)
         self.result = None
         self._fit_task = None
         self.progress.reset()
@@ -758,9 +866,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     @staticmethod
     def _restore_parameter_group_values(
         group: erlab.interactive.utils.ParameterGroup,
-        values: dict[str, typing.Any],
+        values: Mapping[str, typing.Any],
     ) -> None:
         for name, value in values.items():
+            if name not in group.widgets:
+                logger.debug("Ignoring unknown saved goldtool parameter %r", name)
+                continue
             widget = group.widgets[name]
             widget.blockSignals(True)
             try:
@@ -772,14 +883,18 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 elif isinstance(widget, QtWidgets.QComboBox):
                     index = widget.findText(str(value))
                     if index < 0:
-                        raise ValueError(
-                            f"Unknown saved value {value!r} for {name!r} in goldtool"
+                        logger.warning(
+                            "Ignoring unknown saved goldtool value %r for %r",
+                            value,
+                            name,
                         )
+                        continue
                     widget.setCurrentIndex(index)
             finally:
                 widget.blockSignals(False)
 
-    def _restore_fit_snapshot(self, snapshot: _GoldFitSnapshot) -> None:
+    @staticmethod
+    def _validate_fit_snapshot(snapshot: _GoldFitSnapshot) -> None:
         if not (
             len(snapshot.along_coords)
             == len(snapshot.edge_center)
@@ -787,6 +902,20 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         ):
             raise ValueError("Saved goldtool fit snapshot has mismatched array lengths")
 
+    def _restore_or_defer_fit_snapshot(
+        self, snapshot: _GoldFitSnapshot, *, key: str
+    ) -> None:
+        self._validate_fit_snapshot(snapshot)
+        self._pending_persisted_fit_snapshot = snapshot
+        self._run_or_defer_restore_work(
+            lambda snapshot=snapshot: self._restore_fit_snapshot(snapshot),
+            key=key,
+            run_on_show=True,
+        )
+
+    def _restore_fit_snapshot(self, snapshot: _GoldFitSnapshot) -> None:
+        self._validate_fit_snapshot(snapshot)
+        self._pending_persisted_fit_snapshot = None
         coords = {self._along_dim: np.asarray(snapshot.along_coords, dtype=float)}
         self.post_fit(
             xr.DataArray(
@@ -800,6 +929,65 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 dims=(self._along_dim,),
             ),
         )
+
+    @property
+    def _saved_tool_attrs(self) -> dict:
+        attrs = super()._saved_tool_attrs
+        attrs["tool_state"] = self.tool_status.model_dump_json(exclude={"fit_snapshot"})
+        return attrs
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        snapshot = self._fit_snapshot()
+        if snapshot is None:
+            snapshot = self._pending_persisted_fit_snapshot
+        if snapshot is None:
+            return ds
+
+        ds = ds.copy()
+        dim = self._PERSISTED_FIT_POINT_DIM
+        ds[self._PERSISTED_FIT_ALONG_VAR] = xr.DataArray(
+            np.asarray(snapshot.along_coords, dtype=float),
+            dims=(dim,),
+        )
+        ds[self._PERSISTED_EDGE_CENTER_VAR] = xr.DataArray(
+            np.asarray(snapshot.edge_center, dtype=float),
+            dims=(dim,),
+        )
+        ds[self._PERSISTED_EDGE_STDERR_VAR] = xr.DataArray(
+            np.asarray(snapshot.edge_stderr, dtype=float),
+            dims=(dim,),
+        )
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        required_vars = (
+            self._PERSISTED_FIT_ALONG_VAR,
+            self._PERSISTED_EDGE_CENTER_VAR,
+            self._PERSISTED_EDGE_STDERR_VAR,
+        )
+        if not all(name in ds for name in required_vars):
+            return
+
+        self._restore_or_defer_fit_snapshot(
+            _GoldFitSnapshot(
+                along_coords=np.asarray(
+                    ds[self._PERSISTED_FIT_ALONG_VAR].values, dtype=float
+                ).tolist(),
+                edge_center=np.asarray(
+                    ds[self._PERSISTED_EDGE_CENTER_VAR].values, dtype=float
+                ).tolist(),
+                edge_stderr=np.asarray(
+                    ds[self._PERSISTED_EDGE_STDERR_VAR].values, dtype=float
+                ).tolist(),
+            ),
+            key=self._PERSISTED_FIT_SNAPSHOT_KEY,
+        )
+
+    def _flush_restore_work_for_save(self) -> None:
+        if self._pending_persisted_fit_snapshot is None:
+            super()._flush_restore_work_for_save()
+            return
+        self._flush_restore_work(skip=(self._PERSISTED_FIT_SNAPSHOT_KEY,))
 
     def _ensure_serializable_state(self) -> None:
         if self.data_corr is not None:
@@ -839,12 +1027,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _make_update_request(self, data: xr.DataArray) -> _GoldUpdateRequest:
         return _GoldUpdateRequest(
             data=data,
-            had_fit=hasattr(self, "edge_center"),
+            had_fit=self._fit_snapshot() is not None,
             roi_limits=self.params_roi.roi_limits,
             tab_index=self.params_tab.currentIndex(),
-            edge_values=dict(self.params_edge.values),
-            poly_values=dict(self.params_poly.values),
-            spline_values=dict(self.params_spl.values),
+            edge_values=self._edge_state_from_widgets(),
+            poly_values=self._poly_state_from_widgets(),
+            spline_values=self._spline_state_from_widgets(),
             refit=self.refit_on_source_update_check.isChecked(),
         )
 
@@ -889,13 +1077,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 QtCore.QSignalBlocker(self.params_tab),
             ):
                 self._restore_parameter_group_values(
-                    self.params_edge, request.edge_values
+                    self.params_edge, request.edge_values.model_dump(by_alias=True)
                 )
                 self._restore_parameter_group_values(
-                    self.params_poly, request.poly_values
+                    self.params_poly, request.poly_values.model_dump(by_alias=True)
                 )
                 self._restore_parameter_group_values(
-                    self.params_spl, request.spline_values
+                    self.params_spl, request.spline_values.model_dump(by_alias=True)
                 )
                 self.params_tab.setCurrentIndex(request.tab_index)
             self._toggle_fast()
@@ -986,12 +1174,23 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = self.roi_limits_ordered
         params = self.params_edge.values
-        n_total: int = len(
+        selected_along = (
             self.data[self._along_dim]
             .coarsen({self._along_dim: int(params["Bin x"])}, boundary="trim")
             .mean()
             .sel({self._along_dim: slice(x0, x1)})
         )
+        selected_eV = (
+            self.data.eV.coarsen(eV=int(params["Bin y"]), boundary="trim")
+            .mean()
+            .sel(eV=slice(y0, y1))
+        )
+        n_total = len(selected_along)
+        if n_total == 0 or selected_eV.size == 0:
+            self.progress.reset()
+            self._show_empty_fit_selection_warning()
+            self._emit_info_changed()
+            return
         self.progress.setMaximum(n_total)
         self._abort_fit_task()
         task = EdgeFitTask(self.data, self._along_dim, x0, y0, x1, y1, params)
@@ -1009,6 +1208,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
         self._threadpool.start(task)
         self._emit_info_changed()
+
+    def _show_empty_fit_selection_warning(self) -> None:
+        QtWidgets.QMessageBox.warning(
+            self,
+            "Empty fit selection",
+            "The selected goldtool ROI does not contain enough points to fit.",
+        )
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
@@ -1040,6 +1246,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._fit_closing or not erlab.interactive.utils.qt_is_valid(self)
         ):
             return
+        self._pending_persisted_fit_snapshot = None
+        self._discard_restore_work(key=self._PERSISTED_FIT_SNAPSHOT_KEY)
         self.progress.reset()
         if task is not None:
             self._disconnect_fit_task_signals(task)
@@ -1163,6 +1371,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @property
     def corrected(self) -> xr.DataArray:
+        self._flush_restore_work(key=self._PERSISTED_FIT_SNAPSHOT_KEY)
         target = self.data if self.data_corr is None else self.data_corr
         return erlab.analysis.gold.correct_with_edge(
             target,
