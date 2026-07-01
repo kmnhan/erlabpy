@@ -231,6 +231,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         return msg_box
 
+    @QtCore.Slot()
     def _mark_workspace_layout_dirty(self) -> None:
         self._workspace_controller._mark_workspace_layout_dirty()
 

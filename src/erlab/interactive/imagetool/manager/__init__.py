@@ -317,7 +317,7 @@ def _choose_startup_manager_target(
     )
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
-    target_list.itemDoubleClicked.connect(lambda _item: dialog.accept())
+    target_list.itemDoubleClicked.connect(dialog.accept)
     layout.addWidget(buttons)
 
     if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
