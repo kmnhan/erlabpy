@@ -1139,7 +1139,13 @@ class _DetailsPanelController:
                 ):
                     self._schedule_tool_preview_update(node.uid)
                 if preview_pixmap is not None and not preview_pixmap.isNull():
-                    self._manager.preview_widget.setPixmap(preview_pixmap)
+                    if self._is_figure_composer_tool(tool_window):
+                        self._manager.preview_widget.setPixmap(
+                            preview_pixmap,
+                            aspect_ratio_mode=QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                        )
+                    else:
+                        self._manager.preview_widget.setPixmap(preview_pixmap)
                     self._manager.preview_widget.setVisible(True)
                     return
 
@@ -1215,6 +1221,12 @@ class _DetailsPanelController:
         )
         if callable(request):
             request(delay_ms=0)
+
+    @staticmethod
+    def _is_figure_composer_tool(tool_window: object | None) -> bool:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        return isinstance(tool_window, FigureComposerTool)
 
     def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
         for uid in sorted(pending):

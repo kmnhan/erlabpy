@@ -27968,6 +27968,36 @@ def test_manager_figure_selection_defers_preview_generation(
         assert refresh_calls == []
 
 
+def test_manager_figure_selection_keeps_preview_aspect_ratio(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_tool = FigureComposerTool(data)
+        preview_pixmap = QtGui.QPixmap(160, 80)
+        preview_pixmap.fill(QtGui.QColor("red"))
+        figure_tool._preview_pixmap_cache = preview_pixmap
+        figure_tool._preview_pixmap_generation += 1
+        figure_tool._preview_thumbnail_cache.clear()
+        figure_tool._preview_pixmap_stale = False
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        manager.preview_widget.resize(120, 300)
+        manager._select_figure_uid(figure_uid)
+
+        assert manager.preview_widget.isVisible()
+        transform = manager.preview_widget.transform()
+        assert transform.m11() == pytest.approx(transform.m22())
+
+
 def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
     qtbot,
     monkeypatch,

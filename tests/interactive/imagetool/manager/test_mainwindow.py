@@ -569,6 +569,29 @@ def test_single_image_preview_keeps_legacy_stretch_on_resize(qtbot) -> None:
     assert second_transform.m11() != pytest.approx(second_transform.m22())
 
 
+def test_single_image_preview_can_keep_aspect_ratio_on_resize(qtbot) -> None:
+    preview = manager_widgets._SingleImagePreview()
+    qtbot.addWidget(preview)
+    pixmap = QtGui.QPixmap(160, 80)
+    pixmap.fill(QtGui.QColor("red"))
+
+    preview.resize(320, 80)
+    preview.setPixmap(
+        pixmap,
+        aspect_ratio_mode=QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+    )
+    preview.setVisible(True)
+    qtbot.waitExposed(preview)
+    first_transform = preview.transform()
+
+    preview.resize(120, 300)
+    qtbot.wait(0)
+    second_transform = preview.transform()
+
+    assert first_transform.m11() == pytest.approx(first_transform.m22())
+    assert second_transform.m11() == pytest.approx(second_transform.m22())
+
+
 def test_batch_action_transform_error_paths(
     qtbot,
     monkeypatch,
