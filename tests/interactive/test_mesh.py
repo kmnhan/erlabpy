@@ -182,6 +182,38 @@ def test_meshtool_autofind_and_persistence(
     xr.testing.assert_identical(restored.tool_data, win.tool_data)
 
 
+def test_meshtool_deferred_restore_queues_initial_preview(
+    qtbot, meshy_data, monkeypatch
+) -> None:
+    win: MeshTool = meshtool(meshy_data, execute=False)
+    qtbot.addWidget(win)
+    saved = win.to_dataset()
+    calls: list[tuple[MeshTool, bool]] = []
+    original = MeshTool.set_data_beforecalc
+
+    def _tracked_set_data_beforecalc(self: MeshTool, initial: bool = False) -> None:
+        calls.append((self, initial))
+        original(self, initial=initial)
+
+    monkeypatch.setattr(
+        MeshTool,
+        "set_data_beforecalc",
+        _tracked_set_data_beforecalc,
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, MeshTool)
+    assert calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: calls == [(restored, True)], timeout=5000)
+
+
 def test_meshtool_autofind_invalid_peaks_warns_and_keeps_values(
     qtbot, meshy_data, monkeypatch
 ) -> None:

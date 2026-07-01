@@ -201,7 +201,10 @@ class _ChoiceSliderLabelRow(QtWidgets.QWidget):
         self._slider.initStyleOption(option)
         option.sliderPosition = index
         option.sliderValue = index
-        handle_rect = self._slider.style().subControlRect(
+        style = self._slider.style()
+        if style is None:
+            raise RuntimeError("Workspace compression slider has no Qt style")
+        handle_rect = style.subControlRect(
             QtWidgets.QStyle.ComplexControl.CC_Slider,
             option,
             QtWidgets.QStyle.SubControl.SC_SliderHandle,

@@ -363,7 +363,7 @@ def _acquire_workspace_document_lock(
 
 
 def _workspace_manifest_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> dict[str, typing.Any]:
     raw_manifest = attrs.get(_WORKSPACE_MANIFEST_ATTR)
     if isinstance(raw_manifest, bytes):
@@ -377,7 +377,7 @@ def _workspace_manifest_from_attrs(
 
 
 def _workspace_delta_save_count_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> int:
     value = _workspace_manifest_from_attrs(attrs).get("delta_save_count", 0)
     with contextlib.suppress(TypeError, ValueError):
@@ -414,7 +414,7 @@ def _workspace_manifest_repack_estimate(
 
 
 def _workspace_file_metadata_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> tuple[int, int, dict[str, typing.Any] | None]:
     schema_version = int(attrs.get("imagetool_workspace_schema_version", 1))
     manifest = None
@@ -424,7 +424,7 @@ def _workspace_file_metadata_from_attrs(
 
 
 def _compacted_workspace_root_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> dict[str, typing.Any]:
     schema_version, _delta_save_count, manifest = _workspace_file_metadata_from_attrs(
         attrs
@@ -441,7 +441,7 @@ def _compacted_workspace_root_attrs(
     compacted_manifest.pop("estimated_obsolete_bytes", None)
     compacted_manifest.pop("replacement_delta_count", None)
 
-    root_attrs = dict(attrs)
+    root_attrs = {str(key): value for key, value in attrs.items()}
     root_attrs["imagetool_workspace_schema_version"] = _WORKSPACE_SCHEMA_VERSION
     root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(compacted_manifest)
     root_attrs["erlab_version"] = erlab.__version__
@@ -449,7 +449,7 @@ def _compacted_workspace_root_attrs(
 
 
 def _workspace_root_attrs_with_repack_estimate(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
     *,
     estimated_obsolete_bytes: int,
     replacement_delta_count: int,
@@ -459,7 +459,7 @@ def _workspace_root_attrs_with_repack_estimate(
         attrs
     )
     if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
-        return dict(attrs)
+        return {str(key): value for key, value in attrs.items()}
     updated_manifest = dict(manifest)
     if delta_save_count > 0 and repack_estimate_known:
         updated_manifest["estimated_obsolete_bytes"] = max(
@@ -472,7 +472,7 @@ def _workspace_root_attrs_with_repack_estimate(
         updated_manifest.pop("estimated_obsolete_bytes", None)
         updated_manifest.pop("replacement_delta_count", None)
 
-    root_attrs = dict(attrs)
+    root_attrs = {str(key): value for key, value in attrs.items()}
     root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(updated_manifest)
     return root_attrs
 
@@ -1465,7 +1465,7 @@ def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, 
 
 def _workspace_h5py_dataset_matches_encoding(
     dataset: typing.Any,
-    encoding: Mapping[typing.Hashable, typing.Any],
+    encoding: Mapping[typing.Any, typing.Any],
 ) -> bool:
     filters = _workspace_h5py_filter_options(dataset)
     expected_filter = encoding.get("compression")

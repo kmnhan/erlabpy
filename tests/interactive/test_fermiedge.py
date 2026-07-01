@@ -973,6 +973,40 @@ def test_restool(qtbot) -> None:
     tmp_dir.cleanup()
 
 
+def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypatch):
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    win.live_check.setChecked(True)
+    saved = win.to_dataset()
+    calls: list[ResolutionTool] = []
+
+    def _tracked_start_fit_worker(self: ResolutionTool) -> bool:
+        calls.append(self)
+        return True
+
+    monkeypatch.setattr(
+        ResolutionTool,
+        "_start_fit_worker",
+        _tracked_start_fit_worker,
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, ResolutionTool)
+    assert restored.live_check.isChecked()
+    assert calls == []
+
+    restored.do_fit()
+
+    assert calls == [restored]
+
+
 def test_restool_undo_redo_state_change(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1

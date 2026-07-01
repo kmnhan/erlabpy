@@ -995,6 +995,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._last_fit_y: np.ndarray | None = None
         self._last_residual: np.ndarray | None = None
         self._last_result_ds: xr.Dataset | None = None
+        self._pending_persisted_fit_result_blob: np.ndarray | None = None
+        self._pending_persisted_fit_is_current = False
         self._slider_drag_range: tuple[float, float] | None = None
         self._fit_is_current: bool = False
         self._table_widths_initialized: bool = False
@@ -2877,6 +2879,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(restore.result)
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        if self._pending_persisted_fit_result_blob is not None:
+            ds = ds.copy()
+            ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+                np.array(self._pending_persisted_fit_result_blob, copy=True),
+                dims=(self._PERSISTED_FIT_RESULT_DIM,),
+            )
+            ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(
+                self._pending_persisted_fit_is_current
+            )
+            return ds
         if self._last_result_ds is None:
             return ds
         ds = ds.copy()
@@ -2887,21 +2899,46 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
         return ds
 
-    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
-        if self._PERSISTED_FIT_RESULT_VAR not in ds:
-            return
+    def _restore_persisted_fit_result_blob(
+        self, blob: np.ndarray, *, fit_is_current: bool
+    ) -> None:
         self._last_result_ds = _load_lmfit_for_ftool_restore(
-            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(
-                ds[self._PERSISTED_FIT_RESULT_VAR].values
-            )
+            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
         )
         result = self._last_result_ds.modelfit_results.compute().item()
         self._set_fit_stats(result)
         self._update_fit_curve()
-        if bool(ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)):
+        if fit_is_current:
             self._mark_fit_fresh()
         else:
             self._mark_fit_stale()
+        self._pending_persisted_fit_result_blob = None
+        self._pending_persisted_fit_is_current = False
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return
+        blob = np.array(
+            ds[self._PERSISTED_FIT_RESULT_VAR].values,
+            copy=True,
+        )
+        fit_is_current = bool(ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False))
+        self._pending_persisted_fit_result_blob = blob
+        self._pending_persisted_fit_is_current = fit_is_current
+        self._run_or_defer_restore_work(
+            lambda: self._restore_persisted_fit_result_blob(
+                blob,
+                fit_is_current=fit_is_current,
+            ),
+            key=self._PERSISTED_FIT_RESULT_VAR,
+            run_on_show=True,
+        )
+
+    def _flush_restore_work_for_save(self) -> None:
+        if self._pending_persisted_fit_result_blob is None:
+            super()._flush_restore_work_for_save()
+            return
+        self._flush_restore_work(skip=(self._PERSISTED_FIT_RESULT_VAR,))
 
     def _fit_running(self) -> bool:
         # Consider any live thread object as running to avoid startup/teardown races.
@@ -3356,6 +3393,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def _save_fit(self) -> None:
+        self._flush_restore_work()
         if self._last_result_ds is None:
             self._show_warning("No fit result", "There is no fit result to save.")
             return

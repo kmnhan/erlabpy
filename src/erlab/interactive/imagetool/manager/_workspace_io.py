@@ -1329,6 +1329,7 @@ class _WorkspaceIOController:
                     ds,
                     _source_parent_data=source_parent_data,
                     _tool_data_reference_resolver=_tool_data_reference_resolver,
+                    _defer_restore_work=True,
                 )
             )
         with _workspace_load_stage(profiler, "tool manager registration"):

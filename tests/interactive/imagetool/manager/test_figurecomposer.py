@@ -27599,6 +27599,49 @@ def test_figure_composer_visible_restore_queues_auto_redraw(
     assert render_calls == [((restored,), {"show_window": True})]
 
 
+def test_figure_composer_deferred_restore_delays_visible_redraw(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"line": data},
+        sources=(FigureSourceState(name="line", label="line"),),
+        operations=(FigureOperationState.line(label="line", source="line"),),
+        primary_source="line",
+    )
+    qtbot.addWidget(tool)
+    ds = tool.to_dataset()
+    window_state = json.loads(ds.attrs["tool_window_state"])
+    window_state["visible"] = True
+    ds.attrs["tool_window_state"] = json.dumps(window_state)
+
+    render_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def record_render(*args, **kwargs) -> None:
+        render_calls.append((args, kwargs))
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", record_render)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert render_calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
+    assert render_calls == [((restored,), {"show_window": True})]
+
+
 def test_figure_composer_skips_preview_cache_when_unrendered(
     qtbot, monkeypatch
 ) -> None:

@@ -2025,6 +2025,35 @@ def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
     assert call_count == 2
 
 
+def test_ktool_deferred_restore_queues_preview_update(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    saved = win.to_dataset()
+    calls: list[KspaceTool] = []
+    original = KspaceTool._update_now
+
+    def _tracked_update_now(self: KspaceTool) -> None:
+        calls.append(self)
+        original(self)
+
+    monkeypatch.setattr(KspaceTool, "_update_now", _tracked_update_now)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    _add_hidden_tool(qtbot, restored)
+    assert isinstance(restored, KspaceTool)
+    assert calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: calls == [restored], timeout=5000)
+
+
 def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
     data = anglemap.copy().assign_coords(hv=6.2)
     data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)

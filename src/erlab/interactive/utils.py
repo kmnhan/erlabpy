@@ -10,6 +10,7 @@ import ast
 import bisect
 import collections
 import contextlib
+import contextvars
 import enum
 import fnmatch
 import importlib
@@ -100,6 +101,11 @@ __all__ = [
 _LOAD_UI_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 _TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
+
+
+_TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
+    contextvars.ContextVar("_TOOL_WINDOW_RESTORE_DEFER", default=None)
+)
 
 
 def _manager_perf_timing_enabled() -> bool:
@@ -3167,6 +3173,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
+    - Optional restored caches, preview data, and calculated results should use
+      `_run_or_defer_restore_work` or `_defer_restore_work` instead of running
+      expensive work unconditionally during restore. Direct calls to
+      `from_dataset` remain eager; the ImageTool manager uses this protected framework
+      internally so hidden restored tools do not slow down workspace loading.
+
     For tools that support refreshing their data from an ImageTool source, subclasses
     should also override the following hooks:
 
@@ -3230,6 +3242,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        restore_defer = _TOOL_WINDOW_RESTORE_DEFER.get()
 
         self._tool_root_widget = QtWidgets.QWidget(self)
         self._tool_root_layout = QtWidgets.QVBoxLayout(self._tool_root_widget)
@@ -3294,7 +3307,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._history_write_timer.setSingleShot(True)
         self._history_write_timer.setInterval(_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS)
         self._history_write_timer.timeout.connect(self._flush_pending_history_write)
-        self._restoring_from_dataset = False
+        self._restoring_from_dataset = restore_defer is not None
+        self._defer_restored_tool_work = bool(restore_defer)
+        self._deferred_restore_work: dict[
+            Hashable, tuple[Callable[[], None], bool]
+        ] = {}
+        self._flushing_restore_work = False
 
         menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
         self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
@@ -3444,6 +3462,145 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self.undo_action.setEnabled(self.undoable)
         if hasattr(self, "redo_action") and qt_is_valid(self.redo_action):
             self.redo_action.setEnabled(self.redoable)
+
+    @property
+    def _dataset_restore_in_progress(self) -> bool:
+        """Return whether saved dataset state is currently being applied."""
+        return self._restoring_from_dataset
+
+    @property
+    def _should_defer_restore_work(self) -> bool:
+        """Return whether optional restore work should be queued instead of run."""
+        return (
+            self._dataset_restore_in_progress
+            and self._defer_restored_tool_work
+            and not self._flushing_restore_work
+        )
+
+    @staticmethod
+    def _restore_work_key(
+        callback: Callable[[], None] | None = None,
+        *,
+        key: Hashable | None = None,
+    ) -> Hashable | None:
+        if key is not None:
+            return key
+        if callback is None:
+            return None
+        return typing.cast("Hashable", callback)
+
+    def _defer_restore_work(
+        self,
+        callback: Callable[[], None],
+        *,
+        key: Hashable | None = None,
+        run_on_show: bool = False,
+    ) -> bool:
+        """Queue optional work only when dataset restore is currently deferred.
+
+        Subclasses can call this from restore hooks when the eager fallback needs a
+        different execution path. It returns ``True`` only when the callback was queued;
+        otherwise the caller remains responsible for running the work.
+
+        Use this only for derived UI/cache/result work. Required validation and state
+        needed to make the restored tool structurally valid must still run eagerly.
+        """
+        if not self._should_defer_restore_work:
+            return False
+        task_key = self._restore_work_key(callback, key=key)
+        if task_key is None:
+            raise TypeError("restore work requires a callback or key")
+        self._deferred_restore_work[task_key] = (callback, run_on_show)
+        return True
+
+    def _run_or_defer_restore_work(
+        self,
+        callback: Callable[[], None],
+        *,
+        key: Hashable | None = None,
+        run_on_show: bool = False,
+    ) -> bool:
+        """Run optional restore work now, or queue it while restore is deferred.
+
+        This is the default hook for subclass authors. Call it where restore-time work
+        would otherwise deserialize, render, or recompute optional data. The callback is
+        run immediately for normal standalone restores and queued during manager
+        workspace restore. Set ``run_on_show=True`` when hidden tools can wait until the
+        user shows the window.
+
+        The callback itself is normally the queue key, so repeated calls coalesce. Pass
+        ``key`` only when another method must address the work by a stable handle, for
+        example to preserve a raw persisted payload while saving.
+        """
+        if self._defer_restore_work(
+            callback,
+            key=key,
+            run_on_show=run_on_show,
+        ):
+            return True
+        if key is None:
+            self._discard_restore_work(callback)
+        else:
+            self._discard_restore_work(key=key)
+        callback()
+        return False
+
+    def _discard_restore_work(
+        self,
+        callback: Callable[[], None] | None = None,
+        *,
+        key: Hashable | None = None,
+    ) -> None:
+        """Drop queued restore work that has been superseded by fresher work.
+
+        Subclasses should call this sparingly, only when explicit recomputation has
+        already produced the data that a queued restore callback would produce. This
+        prevents stale restore-time previews or caches from running later.
+        """
+        if not self._flushing_restore_work:
+            task_key = self._restore_work_key(callback, key=key)
+            if task_key is not None:
+                self._deferred_restore_work.pop(task_key, None)
+
+    def _flush_restore_work(
+        self,
+        callback: Callable[[], None] | None = None,
+        *,
+        key: Hashable | None = None,
+        run_on_show_only: bool = False,
+        skip: Iterable[Hashable] = (),
+    ) -> bool:
+        """Materialize queued work before returning data or serialized state.
+
+        `ToolWindow` already calls this before save, copy/provenance generation, output
+        access, show, and close. Subclasses should call it only at narrower correctness
+        boundaries they own, such as a property that returns a derived result. Use
+        ``skip`` only when saving can preserve a still-deferred raw payload unchanged.
+        """
+        if self._flushing_restore_work:
+            return False
+        skip_keys = frozenset(skip)
+        flushed = False
+        task_key = self._restore_work_key(callback, key=key)
+        if task_key is None:
+            tasks = list(self._deferred_restore_work.items())
+        elif task_key in self._deferred_restore_work:
+            tasks = [(task_key, self._deferred_restore_work[task_key])]
+        else:
+            return False
+        for pending_key, (pending_callback, run_on_show) in tasks:
+            if pending_key in skip_keys:
+                continue
+            if run_on_show_only and not run_on_show:
+                continue
+            self._flushing_restore_work = True
+            try:
+                pending_callback()
+            finally:
+                self._flushing_restore_work = False
+            self._deferred_restore_work.pop(pending_key, None)
+            flushed = True
+        return flushed
 
     @QtCore.Slot()
     def undo(self) -> None:
@@ -3648,7 +3805,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return target
 
     def current_provenance_spec(
-        self,
+        self, *, flush_deferred_restore: bool = True
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
         """Return replay provenance for the main copy-code action.
 
@@ -3656,8 +3813,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         this method only when the tool needs custom behavior beyond
         ``ToolScriptProvenanceDefinition``. This describes the main tool action, not
         any manager-tracked child ImageTool outputs declared in ``IMAGE_TOOL_OUTPUTS``.
+
+        Parameters
+        ----------
+        flush_deferred_restore
+            Whether to materialize optional restored work before building provenance.
+            Keep the default for user-facing copy/export paths. Manager metadata scans
+            may pass ``False`` so dependency checks do not slow down workspace loading.
         """
-        return self._resolve_script_provenance(self.COPY_PROVENANCE)
+        return self._resolve_script_provenance(
+            self.COPY_PROVENANCE,
+            flush_deferred_restore=flush_deferred_restore,
+        )
 
     @property
     def input_provenance_spec(
@@ -3956,7 +4123,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         *,
         data: xr.DataArray | None = None,
         include_parent_provenance: bool = True,
+        flush_deferred_restore: bool = True,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if flush_deferred_restore and not self._flushing_restore_work:
+            self._flush_restore_work()
         if definition is None:
             return None
         input_provenance = (
@@ -4000,8 +4170,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
         overriding this method directly. The base implementation resolves
-        ``output_id`` against that mapping and calls the declared data method.
+        ``output_id`` against that mapping, flushes any deferred restored work, and
+        calls the declared data method.
         """
+        self._flush_restore_work()
         _, definition = self._image_output_definition(output_id)
         return typing.cast(
             "Callable[[], xr.DataArray | None]",
@@ -4015,9 +4187,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
         overriding this method directly. The base implementation resolves
-        ``output_id`` against that mapping and resolves the declared provenance
-        definition.
+        ``output_id`` against that mapping, flushes any deferred restored work, and
+        resolves the declared provenance definition.
         """
+        self._flush_restore_work()
         _, definition = self._image_output_definition(output_id)
         return self._resolve_script_provenance(definition.provenance, data=data)
 
@@ -4098,6 +4271,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         output_id: str | enum.Enum,
     ) -> erlab.interactive.imagetool.ImageTool | None:
         """Open or refresh a manager-tracked child ImageTool for a declared output."""
+        self._flush_restore_work()
         normalized_output_id, _ = self._image_output_definition(output_id)
         return self._open_output_imagetool(
             data,
@@ -4122,6 +4296,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         detached replay provenance when the caller provides it. Standalone tools create
         a fresh standalone ImageTool window.
         """
+        self._flush_restore_work()
         return self._open_output_imagetool(
             data,
             output_id=None,
@@ -4803,6 +4978,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Restore named data artifacts saved by `_persistence_data_items()`."""
         del data_items, ds
 
+    def _flush_restore_work_for_save(self) -> None:
+        """Materialize deferred restore work required before serialization."""
+        self._flush_restore_work()
+
     @contextlib.contextmanager
     def _save_tool_data_reference_context(
         self, available_node_uids: Iterable[str] | None = None
@@ -4897,12 +5076,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
 
+        Deferred restore work is flushed before serialization unless a subclass
+        save hook explicitly preserves a raw persisted payload unchanged.
+
         Returns
         -------
         Dataset
             A dataset containing the data and attributes needed to restore the tool.
 
         """
+        self._flush_restore_work_for_save()
         self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
         return self._append_persistence_payload(ds)
@@ -5035,6 +5218,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
         """Restore a tool window from a :class:`xarray.Dataset`.
 
+        Normal standalone restores are eager: optional restored work runs before this
+        method returns. The ImageTool manager passes private internal keywords to defer
+        optional work for hidden workspace tools; those keywords are not part of the
+        public user-facing API.
+
         Parameters
         ----------
         ds
@@ -5052,6 +5240,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "Callable[[Mapping[str, typing.Any]], xr.DataArray | None] | None",
             kwargs.pop("_tool_data_reference_resolver", None),
         )
+        defer_restore_work = bool(kwargs.pop("_defer_restore_work", False))
         ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
 
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
@@ -5079,88 +5268,99 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
         if tool_data_name == "<none-value>":
             tool_data_name = None
-        tool = cls_obj(
-            data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
-        )
-        previous_restoring = bool(getattr(tool, "_restoring_from_dataset", False))
+        token = _TOOL_WINDOW_RESTORE_DEFER.set(defer_restore_work)
+        try:
+            tool = cls_obj(
+                data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
+            )
+        finally:
+            _TOOL_WINDOW_RESTORE_DEFER.reset(token)
+        previous_restoring = False
+        previous_defer_restore = False
         tool._restoring_from_dataset = True
+        tool._defer_restored_tool_work = defer_restore_work
         try:
             with tool._history_suppressed():
                 tool.tool_status = cls_obj.StateModel.model_validate_json(
                     ds.attrs["tool_state"]
                 )
+            tool._tool_display_name = ds.attrs.get("tool_display_name", "")
+            source_spec = None
+            if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
+                try:
+                    provenance = erlab.interactive.imagetool.provenance
+                    source_spec = provenance.parse_tool_provenance_spec(
+                        typing.cast(
+                            "Mapping[str, typing.Any]",
+                            json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
+                        )
+                    )
+                    source_spec = provenance.require_live_source_spec(source_spec)
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved tool source provenance for %s",
+                        cls_obj.__qualname__,
+                        exc_info=True,
+                    )
+            source_binding = None
+            if source_spec is None and _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
+                try:
+                    provenance = erlab.interactive.imagetool.provenance
+                    binding_type = provenance.ImageToolSelectionSourceBinding
+                    source_binding = binding_type.model_validate(
+                        typing.cast(
+                            "Mapping[str, typing.Any]",
+                            json.loads(ds.attrs[_TOOL_SOURCE_BINDING_ATTR]),
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved tool source binding for %s",
+                        cls_obj.__qualname__,
+                        exc_info=True,
+                    )
+            if source_spec is not None or source_binding is not None:
+                tool.set_source_binding(
+                    source_spec,
+                    source_binding=source_binding,
+                    auto_update=bool(
+                        ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
+                    ),
+                    state=typing.cast(
+                        "typing.Literal['fresh', 'stale', 'unavailable']",
+                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
+                    ),
+                )
+            if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
+                try:
+                    tool.set_input_provenance_spec(
+                        typing.cast(
+                            "Mapping[str, typing.Any]",
+                            json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "Ignoring invalid saved tool input provenance for %s",
+                        cls_obj.__qualname__,
+                        exc_info=True,
+                    )
+            tool._restore_persistence_payload(ds)
+            tool._restore_persistence_data_items(data_items, ds)
+            tool.setWindowTitle(ds.attrs["tool_title"])
+            if (
+                not _qt_state.restore_qt_window_state(
+                    tool, ds.attrs.get("tool_window_state")
+                )
+                and "tool_rect" in ds.attrs
+            ):
+                tool.setGeometry(*ds.attrs["tool_rect"])
+            tool._reset_history_stack()
         finally:
             tool._restoring_from_dataset = previous_restoring
-        tool._tool_display_name = ds.attrs.get("tool_display_name", "")
-        source_spec = None
-        if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
-            try:
-                provenance = erlab.interactive.imagetool.provenance
-                source_spec = provenance.parse_tool_provenance_spec(
-                    typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
-                    )
-                )
-                source_spec = provenance.require_live_source_spec(source_spec)
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved tool source provenance for %s",
-                    cls_obj.__qualname__,
-                    exc_info=True,
-                )
-        source_binding = None
-        if source_spec is None and _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
-            try:
-                provenance = erlab.interactive.imagetool.provenance
-                binding_type = provenance.ImageToolSelectionSourceBinding
-                source_binding = binding_type.model_validate(
-                    typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(ds.attrs[_TOOL_SOURCE_BINDING_ATTR]),
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved tool source binding for %s",
-                    cls_obj.__qualname__,
-                    exc_info=True,
-                )
-        if source_spec is not None or source_binding is not None:
-            tool.set_source_binding(
-                source_spec,
-                source_binding=source_binding,
-                auto_update=bool(ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)),
-                state=typing.cast(
-                    "typing.Literal['fresh', 'stale', 'unavailable']",
-                    ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
-                ),
-            )
-        if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
-            try:
-                tool.set_input_provenance_spec(
-                    typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved tool input provenance for %s",
-                    cls_obj.__qualname__,
-                    exc_info=True,
-                )
-        tool._restore_persistence_payload(ds)
-        tool._restore_persistence_data_items(data_items, ds)
-        tool.setWindowTitle(ds.attrs["tool_title"])
-        if (
-            not _qt_state.restore_qt_window_state(
-                tool, ds.attrs.get("tool_window_state")
-            )
-            and "tool_rect" in ds.attrs
-        ):
-            tool.setGeometry(*ds.attrs["tool_rect"])
-        tool._reset_history_stack()
+            tool._defer_restored_tool_work = previous_defer_restore
+        if not defer_restore_work:
+            tool._flush_restore_work()
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:
@@ -5213,7 +5413,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """
         return self.from_dataset(self.to_dataset(), **kwargs)
 
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        self._flush_restore_work(run_on_show_only=True)
+        return super().showEvent(event)
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._flush_restore_work()
         self._flush_pending_history_write()
         return super().closeEvent(event)
 
