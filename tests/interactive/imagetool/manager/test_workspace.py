@@ -1040,6 +1040,7 @@ def test_toolwindow_dataset_uses_window_state_and_keeps_rect_fallback(
 
 def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
     qtbot,
+    monkeypatch,
     tmp_path: pathlib.Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1069,17 +1070,102 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
             tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
             uid = manager._tool_graph.root_wrappers[0].uid
-            entry = next(
-                item
-                for item in manager._workspace_node_manifest_entries()
-                if item["uid"] == uid
-            )
+
+            def _fail_persistence_data_and_state(_self):
+                raise AssertionError("metadata snapshots must not capture full state")
+
+            with monkeypatch.context() as metadata_patch:
+                metadata_patch.setattr(
+                    imagetool_viewer.ImageSlicerArea,
+                    "persistence_data_and_state",
+                    _fail_persistence_data_and_state,
+                )
+                entry = next(
+                    item
+                    for item in manager._workspace_node_manifest_entries()
+                    if item["uid"] == uid
+                )
+                snapshot = manager._workspace_data_backing_snapshot()
+
             assert entry["data_backing"] == "file_lazy"
-            snapshot = manager._workspace_data_backing_snapshot()
             assert snapshot[uid][0] == "file_lazy"
             assert str(file_path.resolve()) in snapshot[uid][1]
         finally:
             opened.close()
+
+
+def test_workspace_lightweight_backing_metadata_classifies_data_without_state(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "lazy.h5"
+    file_data = xr.DataArray(
+        np.arange(16, dtype=float).reshape((4, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(4)},
+        name="lazy",
+    )
+    file_data.to_netcdf(file_path, engine="h5netcdf")
+
+    opened = xr.open_dataarray(file_path, engine="h5netcdf")
+    try:
+        with manager_context() as manager:
+            manager.show()
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+            memory_tool = itool(
+                xr.DataArray(np.arange(9).reshape((3, 3)), dims=["x", "y"]),
+                manager=False,
+                execute=False,
+            )
+            dask_tool = itool(
+                xr.DataArray(np.arange(16).reshape((4, 4)), dims=["x", "y"]).chunk(
+                    {"x": 2, "y": 2}
+                ),
+                manager=False,
+                execute=False,
+                auto_compute=False,
+            )
+            file_tool = itool(opened, manager=False, execute=False)
+            assert isinstance(memory_tool, erlab.interactive.imagetool.ImageTool)
+            assert isinstance(dask_tool, erlab.interactive.imagetool.ImageTool)
+            assert isinstance(file_tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(memory_tool, show=False)
+            manager.add_imagetool(dask_tool, show=False)
+            manager.add_imagetool(file_tool, show=False)
+
+            memory_uid = manager._tool_graph.root_wrappers[0].uid
+            dask_uid = manager._tool_graph.root_wrappers[1].uid
+            file_uid = manager._tool_graph.root_wrappers[2].uid
+
+            def _fail_persistence_data_and_state(_self):
+                raise AssertionError("metadata snapshots must not capture full state")
+
+            with monkeypatch.context() as metadata_patch:
+                metadata_patch.setattr(
+                    imagetool_viewer.ImageSlicerArea,
+                    "persistence_data_and_state",
+                    _fail_persistence_data_and_state,
+                )
+                entries = {
+                    entry["uid"]: entry
+                    for entry in manager._workspace_node_manifest_entries()
+                }
+                snapshot = manager._workspace_data_backing_snapshot()
+
+            assert entries[memory_uid]["data_backing"] == "memory"
+            assert entries[dask_uid]["data_backing"] == "dask"
+            assert entries[file_uid]["data_backing"] == "file_lazy"
+            assert snapshot[memory_uid] == ("memory", ())
+            assert snapshot[dask_uid] == ("dask", ())
+            assert snapshot[file_uid][0] == "file_lazy"
+            assert str(file_path.resolve()) in snapshot[file_uid][1]
+    finally:
+        opened.close()
 
 
 def test_manager_duplicate_goldtool_child(
@@ -11736,6 +11822,47 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         with h5py.File(fname, "r") as h5_file:
             saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 10
+
+
+def test_manager_workspace_full_save_keeps_full_persistence_for_serialized_nodes(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        fname = tmp_path / "full-persistence.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        replacement = data.copy(deep=True)
+        replacement.data = np.asarray(replacement.data) + 1
+        root.slicer_area.replace_source_data(replacement)
+
+        original = imagetool_viewer.ImageSlicerArea.persistence_data_and_state
+        calls = 0
+
+        def _persistence_data_and_state_spy(self):
+            nonlocal calls
+            calls += 1
+            return original(self)
+
+        monkeypatch.setattr(
+            imagetool_viewer.ImageSlicerArea,
+            "persistence_data_and_state",
+            _persistence_data_and_state_spy,
+        )
+
+        manager._save_workspace_document(fname, force_full=True)
+
+        assert calls >= 1
 
 
 def test_manager_workspace_full_save_preserves_in_memory_backing_after_rebind(

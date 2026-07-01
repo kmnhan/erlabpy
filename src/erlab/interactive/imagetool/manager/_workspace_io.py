@@ -2189,9 +2189,8 @@ class _WorkspaceIOController:
                 "display_name": node.display_text,
             }
             if node.is_imagetool and node.imagetool is not None:
-                persistence = node.persistence_view()
                 # Distinguishes embedded data from lazy file-backed/dask payloads.
-                entry["data_backing"] = persistence.data_backing
+                entry["data_backing"] = node.persistence_data_backing()[0]
                 link_info = link_metadata.get(uid)
                 if link_info is not None:
                     # link_group is an ordinal within this manifest, not a stable id.
@@ -3087,9 +3086,9 @@ class _WorkspaceIOController:
         for node in self._manager._tool_graph.nodes.values():
             if not node.is_imagetool or node.imagetool is None:
                 continue
-            persistence = node.persistence_view()
-            kind = typing.cast("str", persistence.data_backing)
-            snapshot[node.uid] = (kind, persistence.source_paths)
+            kind, source_paths = node.persistence_data_backing()
+            if kind is not None:
+                snapshot[node.uid] = (kind, source_paths)
         return snapshot
 
     def _rebind_workspace_backed_imagetools(
