@@ -413,6 +413,44 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     assert figure_dpi.get_dpi() is None
 
 
+def test_choice_slider_labels_align_with_ticks(qtbot):
+    compression_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(compression_slider)
+    compression_slider.resize(360, compression_slider.sizeHint().height())
+    compression_slider.show()
+    QtWidgets.QApplication.processEvents()
+
+    label_row = compression_slider._label_row
+    for index in range(compression_slider.count()):
+        option = QtWidgets.QStyleOptionSlider()
+        compression_slider.slider.initStyleOption(option)
+        option.sliderPosition = index
+        option.sliderValue = index
+        handle_rect = compression_slider.slider.style().subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_Slider,
+            option,
+            QtWidgets.QStyle.SubControl.SC_SliderHandle,
+            compression_slider.slider,
+        )
+        tick_x = label_row.mapFromGlobal(
+            compression_slider.slider.mapToGlobal(handle_rect.center())
+        ).x()
+        label = compression_slider.findChild(
+            QtWidgets.QLabel, f"choiceSliderLabel_{index}"
+        )
+
+        assert label is not None
+        assert abs(label.geometry().center().x() - tick_x) <= 1
+        assert label.geometry().left() >= 0
+        assert label.geometry().right() < label_row.width()
+
+
 def test_dialog_spinbox_constraint_variants(
     monkeypatch: pytest.MonkeyPatch, dialog: OptionDialog, qtbot
 ):

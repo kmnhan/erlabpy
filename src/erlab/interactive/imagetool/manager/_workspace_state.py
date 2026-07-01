@@ -34,6 +34,9 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_generation: int
     dirty_events: tuple[_manager_workspace._WorkspaceDirtyEvent, ...]
     delta_save_count: int
+    estimated_obsolete_bytes: int
+    replacement_delta_count: int
+    repack_estimate_known: bool
     schema_version: int
 
 
@@ -59,6 +62,9 @@ class _ManagerWorkspaceState:
         self.dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
         self.save_in_progress: bool = False
         self.delta_save_count: int = 0
+        self.estimated_obsolete_bytes: int = 0
+        self.replacement_delta_count: int = 0
+        self.repack_estimate_known: bool = True
         self.schema_version: int = (
             _manager_workspace._current_workspace_schema_version()
         )
@@ -143,6 +149,22 @@ class _ManagerWorkspaceState:
             self.apply_dirty_event(event)
         self.dirty_events = events
 
+    def reset_repack_estimate(self) -> None:
+        self.estimated_obsolete_bytes = 0
+        self.replacement_delta_count = 0
+        self.repack_estimate_known = True
+
+    def set_repack_estimate(
+        self,
+        *,
+        estimated_obsolete_bytes: int,
+        replacement_delta_count: int,
+        known: bool = True,
+    ) -> None:
+        self.estimated_obsolete_bytes = max(0, int(estimated_obsolete_bytes))
+        self.replacement_delta_count = max(0, int(replacement_delta_count))
+        self.repack_estimate_known = known
+
     @contextlib.contextmanager
     def load_context(self) -> Iterator[None]:
         self.loading_depth += 1
@@ -169,6 +191,9 @@ class _ManagerWorkspaceState:
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "delta_save_count": self.delta_save_count,
+            "estimated_obsolete_bytes": self.estimated_obsolete_bytes,
+            "replacement_delta_count": self.replacement_delta_count,
+            "repack_estimate_known": self.repack_estimate_known,
             "schema_version": self.schema_version,
         }
 
@@ -188,5 +213,8 @@ class _ManagerWorkspaceState:
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.delta_save_count = snapshot["delta_save_count"]
+        self.estimated_obsolete_bytes = snapshot["estimated_obsolete_bytes"]
+        self.replacement_delta_count = snapshot["replacement_delta_count"]
+        self.repack_estimate_known = snapshot["repack_estimate_known"]
         self.schema_version = snapshot["schema_version"]
         return self.dirty_added | self.dirty_data | self.dirty_state

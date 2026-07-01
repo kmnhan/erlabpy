@@ -3885,10 +3885,18 @@ class ImageToolManager(_ImageToolManagerBase):
         return _WorkspaceIOController._tree_item_child_by_key(item, key)
 
     def _workspace_root_attrs_payload(
-        self, *, delta_save_count: int | None = None
+        self,
+        *,
+        delta_save_count: int | None = None,
+        estimated_obsolete_bytes: int | None = None,
+        replacement_delta_count: int | None = None,
+        repack_estimate_known: bool | None = None,
     ) -> dict[str, typing.Any]:
         return self._workspace_controller._workspace_root_attrs_payload(
-            delta_save_count=delta_save_count
+            delta_save_count=delta_save_count,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
         )
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
@@ -3975,6 +3983,9 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         native: bool = True,
         delta_save_count: int = 0,
+        estimated_obsolete_bytes: int = 0,
+        replacement_delta_count: int = 0,
+        repack_estimate_known: bool = True,
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
@@ -3983,6 +3994,9 @@ class ImageToolManager(_ImageToolManagerBase):
             schema_version,
             native=native,
             delta_save_count=delta_save_count,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
             workspace_access=workspace_access,
             rebind_data=rebind_data,
         )

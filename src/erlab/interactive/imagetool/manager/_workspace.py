@@ -134,7 +134,11 @@ class _WorkspaceSaveSnapshot:
     generation: int
     root_attrs: dict[str, typing.Any]
     delta_save_count: int
+    estimated_obsolete_bytes: int = 0
+    replacement_delta_count: int = 0
+    repack_estimate_known: bool = True
     compression_mode: WorkspaceCompressionMode = "zstd1"
+    file_repack: bool = False
     full_tree: xr.DataTree | None = None
     copy_source: str | None = None
     copy_groups: tuple[tuple[str, str, dict[str, typing.Any] | None], ...] = ()
@@ -207,7 +211,16 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         error_text = ""
         ok = False
         try:
-            if self._snapshot.full_tree is None:
+            if self._snapshot.file_repack:
+                _write_full_workspace_tree_file(
+                    self._fname,
+                    None,
+                    self._snapshot.root_attrs,
+                    copy_source=self._snapshot.copy_source,
+                    copy_groups=self._snapshot.copy_groups,
+                    compression_mode=self._snapshot.compression_mode,
+                )
+            elif self._snapshot.full_tree is None:
                 _write_workspace_transaction_file(
                     self._fname,
                     self._snapshot.rewrite_groups,
@@ -372,6 +385,34 @@ def _workspace_delta_save_count_from_attrs(
     return 0
 
 
+def _workspace_manifest_nonnegative_int(
+    manifest: Mapping[str, typing.Any], key: str
+) -> int:
+    value = manifest.get(key, 0)
+    with contextlib.suppress(TypeError, ValueError):
+        return max(0, int(value))
+    return 0
+
+
+def _workspace_manifest_repack_estimate(
+    manifest: Mapping[str, typing.Any] | None,
+    *,
+    delta_save_count: int,
+) -> tuple[int, int, bool]:
+    if delta_save_count <= 0:
+        return 0, 0, True
+    if manifest is None:
+        return 0, 0, False
+    has_estimate = (
+        "estimated_obsolete_bytes" in manifest and "replacement_delta_count" in manifest
+    )
+    return (
+        _workspace_manifest_nonnegative_int(manifest, "estimated_obsolete_bytes"),
+        _workspace_manifest_nonnegative_int(manifest, "replacement_delta_count"),
+        has_estimate,
+    )
+
+
 def _workspace_file_metadata_from_attrs(
     attrs: Mapping[typing.Hashable, typing.Any],
 ) -> tuple[int, int, dict[str, typing.Any] | None]:
@@ -380,6 +421,60 @@ def _workspace_file_metadata_from_attrs(
     if schema_version >= _WORKSPACE_SCHEMA_VERSION:
         manifest = _workspace_manifest_from_attrs(attrs) or None
     return schema_version, _workspace_delta_save_count_from_attrs(attrs), manifest
+
+
+def _compacted_workspace_root_attrs(
+    attrs: Mapping[typing.Hashable, typing.Any],
+) -> dict[str, typing.Any]:
+    schema_version, _delta_save_count, manifest = _workspace_file_metadata_from_attrs(
+        attrs
+    )
+    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
+        raise ValueError(
+            "File-level workspace repack requires current workspace schema"
+        )
+    compacted_manifest = dict(manifest)
+    compacted_manifest["schema_version"] = _WORKSPACE_SCHEMA_VERSION
+    compacted_manifest["erlab_version"] = erlab.__version__
+    compacted_manifest.pop("delta_save_count", None)
+    compacted_manifest.pop("transaction_protocol", None)
+    compacted_manifest.pop("estimated_obsolete_bytes", None)
+    compacted_manifest.pop("replacement_delta_count", None)
+
+    root_attrs = dict(attrs)
+    root_attrs["imagetool_workspace_schema_version"] = _WORKSPACE_SCHEMA_VERSION
+    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(compacted_manifest)
+    root_attrs["erlab_version"] = erlab.__version__
+    return root_attrs
+
+
+def _workspace_root_attrs_with_repack_estimate(
+    attrs: Mapping[typing.Hashable, typing.Any],
+    *,
+    estimated_obsolete_bytes: int,
+    replacement_delta_count: int,
+    repack_estimate_known: bool = True,
+) -> dict[str, typing.Any]:
+    schema_version, delta_save_count, manifest = _workspace_file_metadata_from_attrs(
+        attrs
+    )
+    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
+        return dict(attrs)
+    updated_manifest = dict(manifest)
+    if delta_save_count > 0 and repack_estimate_known:
+        updated_manifest["estimated_obsolete_bytes"] = max(
+            0, int(estimated_obsolete_bytes)
+        )
+        updated_manifest["replacement_delta_count"] = max(
+            0, int(replacement_delta_count)
+        )
+    else:
+        updated_manifest.pop("estimated_obsolete_bytes", None)
+        updated_manifest.pop("replacement_delta_count", None)
+
+    root_attrs = dict(attrs)
+    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(updated_manifest)
+    return root_attrs
 
 
 def _current_workspace_schema_version() -> int:
@@ -419,6 +514,9 @@ def _workspace_root_attrs_payload(
     loader_state: Mapping[str, typing.Any] | None = None,
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
+    estimated_obsolete_bytes: int = 0,
+    replacement_delta_count: int = 0,
+    repack_estimate_known: bool = True,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -447,6 +545,9 @@ def _workspace_root_attrs_payload(
         # Marks files written through the recoverable in-place delta-save protocol.
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
         manifest["delta_save_count"] = int(delta_save_count)
+        if repack_estimate_known:
+            manifest["estimated_obsolete_bytes"] = max(0, int(estimated_obsolete_bytes))
+            manifest["replacement_delta_count"] = max(0, int(replacement_delta_count))
     return {
         "imagetool_workspace_schema_version": _WORKSPACE_SCHEMA_VERSION,
         _WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
@@ -1144,6 +1245,94 @@ def _read_workspace_root_attrs_h5py(
         if not _workspace_file_is_workspace(h5_file):
             raise ValueError("Not a valid workspace file")
         return _h5py_attrs_to_dict(h5_file.attrs)
+
+
+def _workspace_live_root_group_copy_groups(
+    fname: str | os.PathLike[str],
+) -> tuple[tuple[str, str, dict[str, typing.Any] | None], ...]:
+    import h5py
+
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        return tuple(
+            (name, name, None)
+            for name, item in h5_file.items()
+            if isinstance(item, h5py.Group)
+            and not _is_workspace_internal_group_name(name)
+        )
+
+
+def _workspace_h5_object_storage_size(obj: typing.Any) -> int:
+    import h5py
+
+    if isinstance(obj, h5py.Dataset):
+        return max(0, int(obj.id.get_storage_size()))
+    if isinstance(obj, h5py.Group):
+        return sum(_workspace_h5_object_storage_size(child) for child in obj.values())
+    return 0
+
+
+def _workspace_h5_paths_storage_size(
+    fname: str | os.PathLike[str],
+    paths: Iterable[str],
+) -> tuple[int, int]:
+    import h5py
+
+    total = 0
+    existing_count = 0
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        for path in paths:
+            path = path.strip("/")
+            if path not in h5_file:
+                continue
+            existing_count += 1
+            total += _workspace_h5_object_storage_size(h5_file[path])
+    return total, existing_count
+
+
+def _workspace_live_h5_storage_size(fname: str | os.PathLike[str]) -> int:
+    import h5py
+
+    total = 0
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        for name, item in h5_file.items():
+            if isinstance(item, h5py.Group) and not _is_workspace_internal_group_name(
+                name
+            ):
+                total += _workspace_h5_object_storage_size(item)
+    return total
+
+
+def _workspace_obsolete_estimate(
+    fname: str | os.PathLike[str],
+) -> int:
+    try:
+        file_size = pathlib.Path(fname).stat().st_size
+    except OSError:
+        return 0
+    live_storage_size = _workspace_live_h5_storage_size(fname)
+    return max(0, int(file_size) - live_storage_size)
+
+
+def _workspace_file_repack_payload(
+    fname: str | os.PathLike[str],
+) -> tuple[
+    dict[str, typing.Any], tuple[tuple[str, str, dict[str, typing.Any] | None], ...]
+]:
+    _recover_workspace_transactions(fname)
+    root_attrs = _read_workspace_root_attrs_h5py(fname)
+    return (
+        _compacted_workspace_root_attrs(root_attrs),
+        _workspace_live_root_group_copy_groups(fname),
+    )
 
 
 def _workspace_h5py_dataset_storage_supported(dataset: typing.Any) -> bool:
@@ -2275,7 +2464,7 @@ def _write_workspace_transaction_file(
 
 def _write_full_workspace_tree_file(
     fname: str | os.PathLike[str],
-    tree: xr.DataTree,
+    tree: xr.DataTree | None,
     root_attrs: Mapping[str, typing.Any],
     *,
     copy_source: str | os.PathLike[str] | None = None,
@@ -2300,6 +2489,11 @@ def _write_full_workspace_tree_file(
         _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
         if use_scratch and _workspace_path_is_likely_network_path(fname):
+            if tree is None and copy_source is not None and copy_groups_tuple:
+                raise ValueError(
+                    "File-level workspace repack cannot run when HDF5 group "
+                    "copy reuse is disabled"
+                )
             copy_source = None
             copy_groups_tuple = ()
         if copy_source is not None and copy_groups_tuple:
@@ -2327,18 +2521,19 @@ def _write_full_workspace_tree_file(
                     tmp_file, root_attrs, replace=True
                 )
 
-        for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
-            group_path = node.path.strip("/")
-            if not group_path or group_path in copied_paths:
-                continue
-            ds = node.to_dataset(inherit=False)
-            if ds.variables or ds.attrs:
-                _write_workspace_dataset_group_to_file(
-                    tmp_fname,
-                    group_path,
-                    ds,
-                    compression_mode=compression_mode,
-                )
+        if tree is not None:
+            for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
+                group_path = node.path.strip("/")
+                if not group_path or group_path in copied_paths:
+                    continue
+                ds = node.to_dataset(inherit=False)
+                if ds.variables or ds.attrs:
+                    _write_workspace_dataset_group_to_file(
+                        tmp_fname,
+                        group_path,
+                        ds,
+                        compression_mode=compression_mode,
+                    )
 
         _validate_workspace_h5_file(tmp_fname)
         _fsync_file(tmp_fname)

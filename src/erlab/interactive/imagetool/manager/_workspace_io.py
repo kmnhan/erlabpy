@@ -70,6 +70,10 @@ _WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
 _WORKSPACE_SAVE_SUFFIX_ERROR = "ImageTool workspace documents must be saved as .itws"
 _WORKSPACE_LOAD_SUFFIX_ERROR = "ImageTool workspace files must use the .itws extension"
 _WORKSPACE_SAVE_SUFFIX_WARNING = "ImageTool Manager saves workspaces as .itws files."
+_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES = 128 * 1024 * 1024
+_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO = 0.10
+_workspace_obsolete_estimate = _manager_workspace._workspace_obsolete_estimate
+_workspace_repack_estimate = _manager_workspace._workspace_manifest_repack_estimate
 
 
 def _require_itws_workspace_path(fname: str | os.PathLike[str], message: str) -> None:
@@ -642,6 +646,8 @@ class _WorkspaceIOController:
         self._manager._release_workspace_lock()
         self._manager._workspace_state.lock = workspace_lock
         self._manager._workspace_state.path = workspace_path
+        self._manager._workspace_state.delta_save_count = 0
+        self._manager._workspace_state.reset_repack_estimate()
         if self._manager._workspace_state.path is not None:
             self._manager._recent_directory = str(
                 self._manager._workspace_state.path.parent
@@ -2193,10 +2199,22 @@ class _WorkspaceIOController:
         return None
 
     def _workspace_root_attrs_payload(
-        self, *, delta_save_count: int | None = None
+        self,
+        *,
+        delta_save_count: int | None = None,
+        estimated_obsolete_bytes: int | None = None,
+        replacement_delta_count: int | None = None,
+        repack_estimate_known: bool | None = None,
     ) -> dict[str, typing.Any]:
+        state = self._manager._workspace_state
         if delta_save_count is None:
-            delta_save_count = self._manager._workspace_state.delta_save_count
+            delta_save_count = state.delta_save_count
+        if estimated_obsolete_bytes is None:
+            estimated_obsolete_bytes = state.estimated_obsolete_bytes
+        if replacement_delta_count is None:
+            replacement_delta_count = state.replacement_delta_count
+        if repack_estimate_known is None:
+            repack_estimate_known = state.repack_estimate_known
         return _manager_workspace._workspace_root_attrs_payload(
             root_order=self._manager._workspace_root_indices(),
             nodes=self._manager._workspace_node_manifest_entries(),
@@ -2207,6 +2225,9 @@ class _WorkspaceIOController:
             loader_state=self._workspace_loader_state_snapshot(),
             standalone_apps=self._workspace_standalone_apps_snapshot(),
             option_overrides=self._workspace_option_overrides_snapshot(),
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
         )
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
@@ -2559,6 +2580,12 @@ class _WorkspaceIOController:
                 snapshot.root_attrs,
                 compression_mode=snapshot.compression_mode,
             )
+            self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
+            self._manager._workspace_state.set_repack_estimate(
+                estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
+                replacement_delta_count=snapshot.replacement_delta_count,
+                known=snapshot.repack_estimate_known,
+            )
         finally:
             snapshot.close()
 
@@ -2598,12 +2625,12 @@ class _WorkspaceIOController:
                     require_matching_compression=require_matching_compression,
                 )
                 self._manager._workspace_state.delta_save_count = 0
+                self._manager._workspace_state.reset_repack_estimate()
                 self._manager._workspace_state.schema_version = (
                     _manager_workspace._current_workspace_schema_version()
                 )
             else:
                 self._manager._save_workspace_delta(fname)
-                self._manager._workspace_state.delta_save_count += 1
         finally:
             self._manager._workspace_state.saving_depth -= 1
         self._manager._workspace_state.needs_full_save = False
@@ -2721,6 +2748,9 @@ class _WorkspaceIOController:
         *,
         native: bool = True,
         delta_save_count: int = 0,
+        estimated_obsolete_bytes: int = 0,
+        replacement_delta_count: int = 0,
+        repack_estimate_known: bool = True,
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
@@ -2739,6 +2769,9 @@ class _WorkspaceIOController:
                 return
             associated_fname, associated_lock = converted
             delta_save_count = 0
+            estimated_obsolete_bytes = 0
+            replacement_delta_count = 0
+            repack_estimate_known = True
             schema_version = _manager_workspace._current_workspace_schema_version()
         elif workspace_access is not None:
             associated_lock = workspace_access.take_lock()
@@ -2747,6 +2780,11 @@ class _WorkspaceIOController:
             associated_fname, workspace_lock=associated_lock
         )
         self._manager._workspace_state.delta_save_count = delta_save_count
+        self._manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            known=repack_estimate_known,
+        )
         self._manager._workspace_state.schema_version = schema_version
         self._manager._workspace_state.needs_full_save = (
             _manager_workspace._workspace_schema_requires_full_save(schema_version)
@@ -2986,6 +3024,7 @@ class _WorkspaceIOController:
         root_attrs: dict[str, typing.Any],
         delta_save_count: int,
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        state = self._manager._workspace_state
         rewrite_groups: list[tuple[str, dict[str, xr.Dataset]]] = []
         rewritten_uids: set[str] = set()
         for uid in self._manager._workspace_highest_dirty_data_roots():
@@ -3011,10 +3050,33 @@ class _WorkspaceIOController:
             if update is not None:
                 attr_updates.append(update)
 
+        estimated_obsolete_bytes = state.estimated_obsolete_bytes
+        replacement_delta_count = state.replacement_delta_count
+        repack_estimate_known = state.repack_estimate_known
+        if repack_estimate_known and rewrite_groups and state.path is not None:
+            old_bytes, replaced_group_count = (
+                _manager_workspace._workspace_h5_paths_storage_size(
+                    state.path,
+                    (group_path for group_path, _constructor in rewrite_groups),
+                )
+            )
+            estimated_obsolete_bytes += old_bytes
+            if replaced_group_count > 0:
+                replacement_delta_count += 1
+        root_attrs = _manager_workspace._workspace_root_attrs_with_repack_estimate(
+            root_attrs,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
+        )
+
         return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs=root_attrs,
             delta_save_count=delta_save_count,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
             compression_mode=self._workspace_compression_mode(),
             rewrite_groups=tuple(rewrite_groups),
             attr_updates=tuple(attr_updates),
@@ -3063,6 +3125,64 @@ class _WorkspaceIOController:
             full_tree=tree,
             copy_source=copy_source,
             copy_groups=copy_groups,
+        )
+
+    def _workspace_file_repack_snapshot(
+        self, generation: int
+    ) -> _manager_workspace._WorkspaceSaveSnapshot | None:
+        workspace_path = self._manager._workspace_state.path
+        if workspace_path is None:
+            return None
+        if _manager_workspace._workspace_path_is_likely_network_path(workspace_path):
+            return None
+        try:
+            root_attrs, copy_groups = _manager_workspace._workspace_file_repack_payload(
+                workspace_path
+            )
+        except Exception:
+            logger.debug(
+                "Skipping shutdown compaction; file-level repack snapshot failed",
+                exc_info=True,
+            )
+            return None
+        return _manager_workspace._WorkspaceSaveSnapshot(
+            generation=generation,
+            root_attrs=root_attrs,
+            delta_save_count=0,
+            compression_mode=self._workspace_compression_mode(),
+            file_repack=True,
+            copy_source=str(workspace_path),
+            copy_groups=copy_groups,
+        )
+
+    def _workspace_should_repack_before_shutdown(self) -> bool:
+        workspace_path = self._manager._workspace_state.path
+        if workspace_path is None:
+            return False
+        state = self._manager._workspace_state
+        if state.repack_estimate_known:
+            if state.replacement_delta_count <= 0:
+                return False
+            estimated_obsolete_bytes = state.estimated_obsolete_bytes
+        else:
+            try:
+                estimated_obsolete_bytes = _workspace_obsolete_estimate(workspace_path)
+            except Exception:
+                logger.debug(
+                    "Failed to estimate workspace repack benefit before shutdown",
+                    exc_info=True,
+                )
+                return False
+        try:
+            file_size = pathlib.Path(workspace_path).stat().st_size
+        except OSError:
+            return False
+        if file_size <= 0:
+            return False
+        return (
+            estimated_obsolete_bytes >= _WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES
+            and estimated_obsolete_bytes / file_size
+            >= _WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO
         )
 
     def _workspace_full_save_copy_groups(
@@ -3309,6 +3429,11 @@ class _WorkspaceIOController:
 
         self._manager._workspace_state.needs_full_save = False
         self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
+        self._manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
+            replacement_delta_count=snapshot.replacement_delta_count,
+            known=snapshot.repack_estimate_known,
+        )
         if snapshot.full_tree is not None:
             self._manager._workspace_state.schema_version = (
                 _manager_workspace._current_workspace_schema_version()
@@ -3393,13 +3518,17 @@ class _WorkspaceIOController:
             or self._manager._workspace_state.loading_depth > 0
         ):
             return
+        if not self._workspace_should_repack_before_shutdown():
+            return
         try:
             logger.debug("Compacting workspace before shutdown...")
             self._manager._drain_workspace_deferred_events()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
             try:
-                snapshot = self._manager._workspace_full_save_snapshot(generation)
+                snapshot = self._workspace_file_repack_snapshot(generation)
+                if snapshot is None:
+                    return
             finally:
                 self._manager._workspace_state.saving_depth -= 1
             try:
@@ -3422,6 +3551,7 @@ class _WorkspaceIOController:
                 return
             self._manager._workspace_state.needs_full_save = False
             self._manager._workspace_state.delta_save_count = 0
+            self._manager._workspace_state.reset_repack_estimate()
             self._manager._workspace_state.schema_version = (
                 _manager_workspace._current_workspace_schema_version()
             )
@@ -3480,6 +3610,7 @@ class _WorkspaceIOController:
             return False
 
         self._manager._restore_focus_after_workspace_save(origin)
+        self._manager._workspace_state.reset_repack_estimate()
         return True
 
     def _save_to_file(self, fname: str):
@@ -3596,11 +3727,22 @@ class _WorkspaceIOController:
                             profiler=profiler,
                         )
                         if loaded and associate:
+                            (
+                                estimated_obsolete_bytes,
+                                replacement_delta_count,
+                                repack_estimate_known,
+                            ) = _workspace_repack_estimate(
+                                manifest,
+                                delta_save_count=delta_save_count,
+                            )
                             self._manager._associate_loaded_workspace_file(
                                 access.path,
                                 schema_version,
                                 native=native,
                                 delta_save_count=delta_save_count,
+                                estimated_obsolete_bytes=estimated_obsolete_bytes,
+                                replacement_delta_count=replacement_delta_count,
+                                repack_estimate_known=repack_estimate_known,
                                 workspace_access=access,
                                 rebind_data=False,
                             )
@@ -3633,11 +3775,22 @@ class _WorkspaceIOController:
                     profiler=profiler,
                 )
                 if loaded and associate:
+                    (
+                        estimated_obsolete_bytes,
+                        replacement_delta_count,
+                        repack_estimate_known,
+                    ) = _workspace_repack_estimate(
+                        manifest,
+                        delta_save_count=delta_save_count,
+                    )
                     self._manager._associate_loaded_workspace_file(
                         access.path,
                         schema_version,
                         native=native,
                         delta_save_count=delta_save_count,
+                        estimated_obsolete_bytes=estimated_obsolete_bytes,
+                        replacement_delta_count=replacement_delta_count,
+                        repack_estimate_known=repack_estimate_known,
                         workspace_access=access,
                         rebind_data=False,
                     )

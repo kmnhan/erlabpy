@@ -2707,6 +2707,61 @@ def _assert_no_workspace_internal_groups(fname: pathlib.Path) -> None:
         )
 
 
+def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
+    tmp_path,
+) -> None:
+    import h5py
+
+    fname = tmp_path / "file-repack.itws"
+    _write_transaction_test_workspace(fname)
+    manager_workspace._write_workspace_root_attrs_to_file(
+        fname,
+        _transaction_test_root_attrs(delta_save_count=3),
+        replace=True,
+    )
+    with h5py.File(fname, "a") as h5_file:
+        h5_file.create_group("__itws_pending_orphan")
+        h5_file.create_dataset("root_dataset", data=np.arange(3))
+
+    assert manager_workspace._workspace_live_root_group_copy_groups(fname) == (
+        ("0", "0", None),
+    )
+    storage_size, existing_count = manager_workspace._workspace_h5_paths_storage_size(
+        fname, ("0", "missing")
+    )
+    assert storage_size >= np.dtype(np.float64).itemsize
+    assert existing_count == 1
+    assert manager_workspace._workspace_live_h5_storage_size(fname) == storage_size
+    assert manager_workspace._workspace_obsolete_estimate(fname) >= 0
+    root_attrs, copy_groups = manager_workspace._workspace_file_repack_payload(fname)
+
+    manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+    assert "delta_save_count" not in manifest
+    assert "transaction_protocol" not in manifest
+    assert (
+        manifest["schema_version"]
+        == manager_workspace._current_workspace_schema_version()
+    )
+    assert manifest["erlab_version"] == erlab.__version__
+    assert copy_groups == (("0", "0", None),)
+
+    manager_workspace._write_full_workspace_tree_file(
+        fname,
+        None,
+        root_attrs,
+        copy_source=fname,
+        copy_groups=copy_groups,
+    )
+
+    assert _read_transaction_test_value(fname) == 1.0
+    _assert_no_workspace_internal_groups(fname)
+    with h5py.File(fname, "r") as h5_file:
+        assert set(h5_file) == {"0"}
+        manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert "delta_save_count" not in manifest
+        assert "transaction_protocol" not in manifest
+
+
 def test_workspace_dataset_encoding_compresses_only_large_numeric_payloads() -> None:
     import hdf5plugin
 
@@ -7228,6 +7283,71 @@ def test_manager_compact_workspace_reapplies_compression_mode(
         erlab.interactive.options["io/workspace/compression"] = old_compression
 
 
+def test_manager_shutdown_compact_preserves_existing_dataset_filters(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    old_compression = erlab.interactive.options["io/workspace/compression"]
+    try:
+        erlab.interactive.options["io/workspace/compression"] = "none"
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(
+                np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
+                dims=("x", "y"),
+            )
+
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            uid = manager._tool_graph.root_wrappers[0].uid
+
+            fname = tmp_path / "shutdown-preserve-filters.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            manager._adopt_workspace_path(fname)
+            manager._mark_workspace_clean()
+            manager._mark_node_data_dirty(uid)
+            assert manager.save()
+
+            with h5py.File(fname, "r") as h5_file:
+                assert (
+                    _hdf5_blosc2_level_codec(
+                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                    )
+                    is None
+                )
+
+            erlab.interactive.options["io/workspace/compression"] = "zstd1"
+            monkeypatch.setattr(
+                manager_workspace_io,
+                "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+                1,
+            )
+            monkeypatch.setattr(
+                manager_workspace_io,
+                "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+                0.0,
+            )
+
+            manager._compact_workspace_before_shutdown()
+
+            with h5py.File(fname, "r") as h5_file:
+                assert (
+                    _hdf5_blosc2_level_codec(
+                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                    )
+                    is None
+                )
+    finally:
+        erlab.interactive.options["io/workspace/compression"] = old_compression
+
+
 def test_manager_shutdown_compaction_logs_failure(
     caplog,
     monkeypatch,
@@ -7239,6 +7359,26 @@ def test_manager_shutdown_compaction_logs_failure(
     with manager_context() as manager:
         manager._workspace_state.path = tmp_path / "workspace.itws"
         manager._workspace_state.delta_save_count = 1
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=100,
+            replacement_delta_count=1,
+        )
+
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_should_repack_before_shutdown",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_file_repack_snapshot",
+            lambda generation: manager_workspace._WorkspaceSaveSnapshot(
+                generation=generation,
+                root_attrs=_transaction_test_root_attrs(delta_save_count=1),
+                delta_save_count=0,
+                file_repack=True,
+            ),
+        )
 
         def _fail_worker(
             _fname: str | os.PathLike[str],
@@ -7605,6 +7745,15 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
         )["delta_save_count"]
         == 2
     )
+    manifest = manager_workspace._workspace_manifest_from_attrs(
+        {manager_workspace._WORKSPACE_MANIFEST_ATTR: raw_manifest}
+    )
+    assert manager_workspace._workspace_manifest_repack_estimate(
+        manifest, delta_save_count=2
+    ) == (0, 0, True)
+    assert manager_workspace._workspace_manifest_repack_estimate(
+        {"delta_save_count": 2}, delta_save_count=2
+    ) == (0, 0, False)
     assert (
         manager_workspace._workspace_manifest_from_attrs(
             {manager_workspace._WORKSPACE_MANIFEST_ATTR: "{not-json"}
@@ -9406,6 +9555,12 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         manager._mark_node_state_dirty(uid)
         assert manager.save()
         assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.estimated_obsolete_bytes == 0
+        assert manager._workspace_state.replacement_delta_count == 0
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manifest["estimated_obsolete_bytes"] == 0
+        assert manifest["replacement_delta_count"] == 0
 
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -9415,6 +9570,8 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
 
         assert manager.compact_workspace()
         assert manager._workspace_state.delta_save_count == 0
+        assert manager._workspace_state.estimated_obsolete_bytes == 0
+        assert manager._workspace_state.replacement_delta_count == 0
         _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
             assert (
@@ -9426,8 +9583,57 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
             assert "transaction_protocol" not in manifest
 
 
+def test_manager_workspace_delta_save_tracks_repack_benefit(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "delta-benefit.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+
+        assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.estimated_obsolete_bytes > 0
+        assert manager._workspace_state.replacement_delta_count == 1
+        assert manager._workspace_state.repack_estimate_known
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert (
+            manifest["estimated_obsolete_bytes"]
+            == manager._workspace_state.estimated_obsolete_bytes
+        )
+        assert manifest["replacement_delta_count"] == 1
+
+        manager._save_workspace_document(fname, force_full=True)
+
+        assert manager._workspace_state.delta_save_count == 0
+        assert manager._workspace_state.estimated_obsolete_bytes == 0
+        assert manager._workspace_state.replacement_delta_count == 0
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert "estimated_obsolete_bytes" not in manifest
+        assert "replacement_delta_count" not in manifest
+
+
 def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
     qtbot,
+    monkeypatch,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -9448,13 +9654,29 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
         manager._save_workspace_document(fname, force_full=True)
         manager._adopt_workspace_path(fname)
         manager._mark_workspace_clean()
-        manager._mark_node_state_dirty(uid)
+        manager._mark_node_data_dirty(uid)
         assert manager.save()
         assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.estimated_obsolete_bytes > 0
+        assert manager._workspace_state.replacement_delta_count == 1
+
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+            1,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+            0.0,
+        )
 
         manager._compact_workspace_before_shutdown()
 
         assert manager._workspace_state.delta_save_count == 0
+        assert manager._workspace_state.estimated_obsolete_bytes == 0
+        assert manager._workspace_state.replacement_delta_count == 0
+        _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
             assert (
                 manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs)
@@ -9463,6 +9685,261 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
             manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
             assert "delta_save_count" not in manifest
             assert "transaction_protocol" not in manifest
+
+
+def test_manager_workspace_shutdown_compact_uses_file_level_repack(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "shutdown-file-repack.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.replacement_delta_count == 1
+
+        def _fail_to_datatree() -> xr.DataTree:
+            pytest.fail("Shutdown file-level repack should not serialize tools")
+
+        monkeypatch.setattr(manager, "_to_datatree", _fail_to_datatree)
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+            1,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+            0.0,
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert manager._workspace_state.delta_save_count == 0
+        _assert_no_workspace_internal_groups(fname)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            assert "delta_save_count" not in manifest
+            assert "transaction_protocol" not in manifest
+
+
+def test_manager_workspace_shutdown_compact_skips_state_only_delta(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "shutdown-state-skip.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_state_dirty(uid)
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.replacement_delta_count == 0
+
+        monkeypatch.setattr(
+            manager,
+            "_run_workspace_save_worker",
+            lambda *args, **kwargs: pytest.fail(
+                "State-only shutdown compaction should skip"
+            ),
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert manager._workspace_state.delta_save_count == 1
+
+
+def test_manager_workspace_shutdown_compact_skips_below_threshold_data_delta(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "shutdown-threshold-skip.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == 1
+        assert manager._workspace_state.estimated_obsolete_bytes > 0
+        assert manager._workspace_state.replacement_delta_count == 1
+
+        monkeypatch.setattr(
+            manager,
+            "_run_workspace_save_worker",
+            lambda *args, **kwargs: pytest.fail(
+                "Below-threshold shutdown compaction should skip"
+            ),
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert manager._workspace_state.delta_save_count == 1
+
+
+def test_manager_workspace_shutdown_compact_scans_when_estimate_missing(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "shutdown-missing-estimate.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+        with h5py.File(fname, "a") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest.pop("estimated_obsolete_bytes", None)
+            manifest.pop("replacement_delta_count", None)
+            h5_file.attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                manifest
+            )
+        manager._workspace_state.set_repack_estimate(
+            estimated_obsolete_bytes=0,
+            replacement_delta_count=0,
+            known=False,
+        )
+
+        scan_calls: list[pathlib.Path] = []
+
+        def _fake_estimate(path: str | os.PathLike[str]) -> int:
+            scan_calls.append(pathlib.Path(path))
+            return 100
+
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_workspace_obsolete_estimate",
+            _fake_estimate,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+            1,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+            0.0,
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert scan_calls == [fname.resolve()]
+        assert manager._workspace_state.delta_save_count == 0
+
+
+def test_manager_workspace_shutdown_compact_skips_if_file_repack_unavailable(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "shutdown-fallback-repack.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == 1
+
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+            1,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+            0.0,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_file_repack_snapshot",
+            lambda _generation: None,
+        )
+
+        def _fail_full_save_snapshot(
+            _generation: int,
+        ) -> manager_workspace._WorkspaceSaveSnapshot:
+            pytest.fail("Shutdown compaction should not serialize as a fallback")
+
+        monkeypatch.setattr(
+            manager,
+            "_workspace_full_save_snapshot",
+            _fail_full_save_snapshot,
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert manager._workspace_state.delta_save_count == 1
 
 
 def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
@@ -9486,7 +9963,7 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
         manager._save_workspace_document(fname, force_full=True)
         manager._adopt_workspace_path(fname)
         manager._mark_workspace_clean()
-        manager._mark_node_state_dirty(uid)
+        manager._mark_node_data_dirty(uid)
         assert manager.save()
         assert manager._workspace_state.delta_save_count == 1
 
@@ -9511,6 +9988,16 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
             erlab.interactive.imagetool.manager._workspace_io,
             "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
             0.01,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
+            1,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
+            0.0,
         )
         monkeypatch.setattr(
             manager_workspace,
