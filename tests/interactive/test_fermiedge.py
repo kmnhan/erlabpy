@@ -11,6 +11,8 @@ import xarray_lmfit as xlm
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._fit1d as fit1d_module
+from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive.fermiedge import (
     EdgeFitSignals,
     EdgeFitTask,
@@ -168,6 +170,67 @@ def test_goldtool_roundtrip_unfitted(qtbot, gold) -> None:
         assert win_restored.result is None
         assert not hasattr(win_restored, "edge_center")
         assert not hasattr(win_restored, "edge_stderr")
+
+
+def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
+    win = Fit1DTool(gold.mean("alpha"), data_name="gold_input")
+    qtbot.addWidget(win)
+
+    empty = xr.Dataset()
+    win._restore_persistence_payload(empty)
+    assert win._append_persistence_payload(empty) is empty
+
+    blob = np.array([1, 2, 3], dtype=np.uint8)
+    win._pending_persisted_fit_result_blob = blob
+    win._pending_persisted_fit_is_current = True
+    appended = win._append_persistence_payload(empty)
+    np.testing.assert_array_equal(
+        appended[win._PERSISTED_FIT_RESULT_VAR].values,
+        blob,
+    )
+    assert appended.attrs[win._PERSISTED_FIT_CURRENT_ATTR] is True
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        win, "_flush_restore_work", lambda *_, **__: calls.append("flush")
+    )
+    monkeypatch.setattr(
+        win,
+        "_show_warning",
+        lambda title, message: calls.append(f"{title}: {message}"),
+    )
+
+    win._last_result_ds = None
+    win._save_fit()
+
+    assert calls == ["flush", "No fit result: There is no fit result to save."]
+
+    class _FakeFitResults:
+        def compute(self):
+            return self
+
+        def item(self):
+            return object()
+
+    fake_result_ds = typing.cast(
+        "xr.Dataset",
+        typing.cast("object", type("FakeResultDataset", (), {})()),
+    )
+    fake_result_ds.modelfit_results = _FakeFitResults()
+    monkeypatch.setattr(
+        fit1d_module,
+        "_load_lmfit_for_ftool_restore",
+        lambda load, **_kwargs: fake_result_ds,
+    )
+    monkeypatch.setattr(win, "_set_fit_stats", lambda _result: calls.append("stats"))
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: calls.append("curve"))
+    monkeypatch.setattr(win, "_mark_fit_fresh", lambda: calls.append("fresh"))
+    monkeypatch.setattr(win, "_mark_fit_stale", lambda: calls.append("stale"))
+
+    win._restore_persisted_fit_result_blob(blob, fit_is_current=True)
+    win._restore_persisted_fit_result_blob(blob, fit_is_current=False)
+
+    assert calls[-6:] == ["stats", "curve", "fresh", "stats", "curve", "stale"]
 
 
 def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
@@ -971,6 +1034,40 @@ def test_restool(qtbot) -> None:
     assert str(win_restored.info_text) == str(win.info_text)
 
     tmp_dir.cleanup()
+
+
+def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypatch):
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    win.live_check.setChecked(True)
+    saved = win.to_dataset()
+    calls: list[ResolutionTool] = []
+
+    def _tracked_start_fit_worker(self: ResolutionTool) -> bool:
+        calls.append(self)
+        return True
+
+    monkeypatch.setattr(
+        ResolutionTool,
+        "_start_fit_worker",
+        _tracked_start_fit_worker,
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, ResolutionTool)
+    assert restored.live_check.isChecked()
+    assert calls == []
+
+    restored.do_fit()
+
+    assert calls == [restored]
 
 
 def test_restool_undo_redo_state_change(qtbot) -> None:

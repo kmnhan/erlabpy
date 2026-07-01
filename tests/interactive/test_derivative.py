@@ -136,6 +136,39 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     xr.testing.assert_identical(win.result, result)
 
 
+def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+    win.tab_widget.setCurrentIndex(1)
+    expected = win.result.copy(deep=True)
+    saved = win.to_dataset()
+    calls: list[DerivativeTool] = []
+    original = DerivativeTool._update_result_now
+
+    def _tracked_update_result_now(self: DerivativeTool) -> None:
+        calls.append(self)
+        original(self)
+
+    monkeypatch.setattr(
+        DerivativeTool, "_update_result_now", _tracked_update_result_now
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, DerivativeTool)
+    assert calls == []
+
+    xr.testing.assert_identical(restored.result, expected)
+
+    assert calls == [restored]
+
+
 def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
     data = xr.DataArray(
         np.arange(49).reshape((7, 7)), dims=["x", "y"], name="data"

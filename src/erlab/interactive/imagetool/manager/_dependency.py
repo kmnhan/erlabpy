@@ -33,14 +33,23 @@ class _ManagerDependencyTracker:
 
     def refs_for_uid(self, uid: str) -> tuple[provenance.ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)
-        if node is None or node.provenance_spec is None:
+        if node is None:
             self._ref_cache.pop(uid, None)
             return ()
-        spec_id = id(node.provenance_spec)
+        tool_window = node.tool_window
+        spec = (
+            tool_window.current_provenance_spec(flush_deferred_restore=False)
+            if tool_window is not None
+            else node.provenance_spec
+        )
+        if spec is None:
+            self._ref_cache.pop(uid, None)
+            return ()
+        spec_id = id(spec)
         cached = self._ref_cache.get(uid)
         if cached is not None and cached[0] == spec_id:
             return cached[1]
-        refs = provenance.script_input_dependency_refs(node.provenance_spec)
+        refs = provenance.script_input_dependency_refs(spec)
         self._ref_cache[uid] = (spec_id, refs)
         return refs
 

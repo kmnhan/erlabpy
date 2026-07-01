@@ -5454,12 +5454,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return row_widget
 
     def generated_code(self) -> str:
+        self._flush_restore_work()
         self._flush_pending_editor_commits()
         with self._figure_options_context():
             return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
     @QtCore.Slot()
     def copy_code(self) -> None:
+        self._flush_restore_work()
         if self._warn_invalid_operation_targets():
             return
         try:
@@ -5480,6 +5482,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def export_figure(self) -> None:
+        self._flush_restore_work()
         if self._warn_invalid_operation_targets():
             return
         self._flush_pending_editor_commits()
@@ -5523,7 +5526,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
         self._sync_figure_window_to_recipe_setup()
-        if getattr(self, "_restoring_from_dataset", False):
+        if self._dataset_restore_in_progress:
             self._mark_preview_pixmap_stale()
             return
         _render_preview(self)
@@ -5689,11 +5692,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _queue_post_restore_redraw_if_needed(self, ds: xr.Dataset) -> None:
         if not self._saved_tool_window_visible(ds) or not self._auto_redraw_enabled():
             return
+        if self._defer_restore_work(
+            self._redraw_restored_plot,
+            run_on_show=True,
+        ):
+            return
         erlab.interactive.utils.single_shot(
             self,
             0,
             functools.partial(self._redraw_plot, show_window=True),
         )
+
+    def _redraw_restored_plot(self) -> None:
+        self._redraw_plot(show_window=True)
 
     def _persisted_preview_cache_pixmap(self) -> QtGui.QPixmap | None:
         preview = self._preview_pixmap_cache
@@ -5929,7 +5940,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def source_data(self) -> dict[str, xr.DataArray]:
         return dict(self._source_data)
 
-    def current_provenance_spec(self) -> provenance.ToolProvenanceSpec | None:
+    def current_provenance_spec(
+        self, *, flush_deferred_restore: bool = True
+    ) -> provenance.ToolProvenanceSpec | None:
+        del flush_deferred_restore
         script_inputs = tuple(
             script_input
             for source in self._recipe.sources

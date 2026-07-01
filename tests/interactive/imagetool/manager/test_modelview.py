@@ -19,9 +19,10 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._actions import _ActionsController
+from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
@@ -45,6 +46,51 @@ if typing.TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def test_dependency_tracker_uses_passive_tool_provenance() -> None:
+    source = provenance.script(
+        start_label="Source",
+        seed_code="source = data",
+        active_name="source",
+    )
+    dependent = provenance.script(
+        start_label="Dependent",
+        seed_code="derived = source",
+        active_name="derived",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="source",
+                label="Source",
+                node_uid="source-uid",
+                provenance_spec=source,
+            ),
+        ),
+    )
+
+    class _PassiveTool:
+        def current_provenance_spec(
+            self, *, flush_deferred_restore: bool = True
+        ) -> provenance.ToolProvenanceSpec:
+            assert flush_deferred_restore is False
+            return dependent
+
+    class _PassiveNode:
+        @property
+        def tool_window(self):
+            return _PassiveTool()
+
+        @property
+        def provenance_spec(self):
+            pytest.fail("dependency tracking must not request flushing provenance")
+
+    graph = types.SimpleNamespace(nodes={"dependent-uid": _PassiveNode()})
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+
+    refs = tracker.refs_for_uid("dependent-uid")
+
+    assert len(refs) == 1
+    assert refs[0].node_uid == "source-uid"
 
 
 class _InfoRefreshToolState(pydantic.BaseModel):

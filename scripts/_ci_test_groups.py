@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import pathlib
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
@@ -9,6 +10,30 @@ if TYPE_CHECKING:
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS_ROOT = REPO_ROOT / "tests"
+
+
+def _test_function_names(file_target: str) -> tuple[str, ...]:
+    file_path = REPO_ROOT / file_target
+    tree = ast.parse(file_path.read_text())
+    return tuple(
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    )
+
+
+def _split_test_file_targets(
+    file_target: str, *, index: int, total: int
+) -> tuple[str, ...]:
+    if not 0 <= index < total:
+        raise ValueError("split index must be in range(total)")
+    nodeids = tuple(
+        f"{file_target}::{name}" for name in _test_function_names(file_target)
+    )
+    if not nodeids:
+        raise ValueError(f"No top-level test functions found in {file_target}")
+    return nodeids[index::total]
+
 
 COMPAT_TARGETS: tuple[str, ...] = (
     "tests/accessors/test_fit.py",
@@ -64,14 +89,23 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/test_slicer.py",
         "tests/interactive/imagetool/test_watcher.py",
     ),
-    "cov-qt-manager-mainwindow": (
+    "cov-qt-manager-figurecomposer": (
         "tests/interactive/imagetool/manager/test_figurecomposer.py",
+    ),
+    "cov-qt-manager-mainwindow": (
         "tests/interactive/imagetool/manager/test_mainwindow.py",
         "tests/interactive/imagetool/manager/test_modelview.py",
         "tests/interactive/imagetool/manager/test_wrapper.py",
     ),
-    "cov-qt-manager-workspace": (
+    "cov-qt-manager-workspace-a": _split_test_file_targets(
         "tests/interactive/imagetool/manager/test_workspace.py",
+        index=0,
+        total=2,
+    ),
+    "cov-qt-manager-workspace-b": _split_test_file_targets(
+        "tests/interactive/imagetool/manager/test_workspace.py",
+        index=1,
+        total=2,
     ),
     "cov-qt-manager-provenance-console": (
         "tests/interactive/imagetool/manager/test_provenance.py",
@@ -199,20 +233,33 @@ def coverage_membership() -> dict[str, list[str]]:
     return dict(membership)
 
 
+def coverage_nodeid_membership() -> dict[str, dict[str, list[str]]]:
+    membership: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for group_name, targets in COVERAGE_GROUPS.items():
+        for target in expand_targets(targets):
+            if "::" not in target:
+                continue
+            file_target, nodeid = target.split("::", maxsplit=1)
+            membership[file_target][nodeid].append(group_name)
+    return {file_target: dict(nodeids) for file_target, nodeids in membership.items()}
+
+
 def check_coverage_partition() -> list[str]:
     all_files = set(iter_all_test_files())
     membership = coverage_membership()
+    nodeid_membership = coverage_nodeid_membership()
     counts = Counter(
         {file_target: len(groups) for file_target, groups in membership.items()}
     )
 
-    missing = sorted(all_files - counts.keys())
+    missing = sorted(all_files - counts.keys() - nodeid_membership.keys())
     duplicate_members = {
         file_target: groups
         for file_target, groups in sorted(membership.items())
         if len(groups) > 1
     }
-    extras = sorted(counts.keys() - all_files)
+    split_and_file_members = sorted(counts.keys() & nodeid_membership.keys())
+    extras = sorted((counts.keys() | nodeid_membership.keys()) - all_files)
 
     errors: list[str] = []
     if missing:
@@ -224,6 +271,32 @@ def check_coverage_partition() -> list[str]:
             f"  - {file_target}: {', '.join(groups)}"
             for file_target, groups in duplicate_members.items()
         )
+    if split_and_file_members:
+        errors.append("Covered both as a full file and split nodeids:")
+        errors.extend(f"  - {file_target}" for file_target in split_and_file_members)
+    for file_target, nodeids in sorted(nodeid_membership.items()):
+        expected_nodeids = set(_test_function_names(file_target))
+        missing_nodeids = sorted(expected_nodeids - nodeids.keys())
+        extra_nodeids = sorted(nodeids.keys() - expected_nodeids)
+        duplicate_nodeids = {
+            nodeid: groups
+            for nodeid, groups in sorted(nodeids.items())
+            if len(groups) > 1
+        }
+        if missing_nodeids:
+            errors.append(
+                f"Missing split nodeids from coverage partition: {file_target}"
+            )
+            errors.extend(f"  - {nodeid}" for nodeid in missing_nodeids)
+        if duplicate_nodeids:
+            errors.append(f"Split nodeids covered by multiple groups: {file_target}")
+            errors.extend(
+                f"  - {nodeid}: {', '.join(groups)}"
+                for nodeid, groups in duplicate_nodeids.items()
+            )
+        if extra_nodeids:
+            errors.append(f"Unknown split nodeids in coverage partition: {file_target}")
+            errors.extend(f"  - {nodeid}" for nodeid in extra_nodeids)
     if extras:
         errors.append("Unknown files referenced by coverage groups:")
         errors.extend(f"  - {file_target}" for file_target in extras)

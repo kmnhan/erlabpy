@@ -2264,7 +2264,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.x1_spin.setMinimum(self.x0_spin.value())
 
         self._clear_fit_preview()
-        if self.live_check.isChecked():
+        if self.live_check.isChecked() and not self._dataset_restore_in_progress:
             self._sigTriggerFit.emit()
 
     @QtCore.Slot()
@@ -2288,7 +2288,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.y1_spin.setMinimum(self.y0_spin.value())
 
         self._update_edc()
-        if self.live_check.isChecked():
+        if self.live_check.isChecked() and not self._dataset_restore_in_progress:
             self._sigTriggerFit.emit()
 
 

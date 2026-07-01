@@ -467,6 +467,11 @@ Some implementation details matter:
   and is stored separately in workspace files. If you need to persist expensive
   calculated arrays, use the explicit persistence hooks instead of `tool_status` so
   ordinary history snapshots stay cheap.
+- Keep workspace restore cheap. If a saved tool has optional cached results, preview
+  images, deserialized fit objects, or rendered figures, validate the saved state
+  eagerly but defer that derived work through `ToolWindow` restore hooks. Hidden tools
+  in a manager workspace should not deserialize, recompute, or render data until the
+  user shows the tool or asks for its output.
 - Record undo/redo checkpoints after user-visible state changes by calling
   `_write_state()`. Call `_reset_history_stack()` after construction, file restore,
   duplication, or source-data replacement so a restored or refreshed tool starts from
@@ -514,6 +519,73 @@ Some implementation details matter:
 `DerivativeTool` in `erlab.interactive.derivative` is a good synchronous example:
 `tool_status` captures the preprocessing controls, and `update_data()` swaps in the new
 array while preserving the current settings.
+
+## Defer expensive restored work
+
+Direct `ToolWindow.from_dataset()` calls restore tools eagerly, which keeps scripts and
+standalone file restores simple. The ImageTool manager uses the same restore path with
+an internal deferred mode so loading a workspace can finish before hidden tools rebuild
+optional cached state.
+
+For new tools, split restore work into two categories:
+
+- Required work: validation, source-reference resolution, UI state restoration, and
+  anything needed for the tool to be structurally valid. Run this eagerly.
+- Optional work: derived objects, rendered views, preview data, or result arrays that
+  are expensive to materialize and can be recreated from saved state. Use the restore
+  framework for this work. Existing examples include deserializing saved fit results,
+  building a figure window, and preparing reduced preview data.
+
+The normal pattern is:
+
+```python
+def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+    self._serialized_result = np.array(ds["result_blob"].values, copy=True)
+    self._run_or_defer_restore_work(
+        self._restore_result_cache,
+        run_on_show=True,
+    )
+
+
+def _restore_result_cache(self) -> None:
+    self._result = deserialize_result(self._serialized_result)
+    self._serialized_result = None
+    self._notify_data_changed()
+```
+
+Use `run_on_show=True` when hidden tools can wait until the user shows them. ToolWindow
+will also flush deferred work before saving, copying generated code, returning declared
+ImageTool outputs, closing, and other correctness boundaries it owns.
+
+Call `_flush_restore_work(...)` from a subclass only when that subclass has a narrower
+data boundary. For example, `DerivativeTool.result` flushes the pending recomputation
+before returning the result array. Do not flush from passive metadata paths merely to
+build manager labels or dependency status.
+
+Call `_discard_restore_work(...)` only when explicit work has superseded a queued
+restore callback. For example, if a user-triggered preview update already rebuilt the
+same preview that was queued during restore, discard the queued restore preview so it
+cannot run later and overwrite newer state.
+
+Use an explicit `key=` only when another path must address the deferred work by a
+stable handle. The main use case is saving raw persisted payloads unchanged. For
+example, a tool can keep a serialized result payload pending and have its save hook
+flush other deferred work while skipping that payload, so a save immediately after
+workspace load writes the original payload unchanged.
+
+The restore hook should stay focused on derived work. Required validation and
+source-reference resolution should run before any deferral, and passive manager
+metadata paths should not flush restore work just to build labels or dependency status.
+
+Tests for deferred restore should assert user-visible behavior instead of inspecting the
+internal restore queue:
+
+- direct `from_dataset()` remains eager;
+- manager-style deferred restore does not run the expensive callback during hidden load;
+- showing the tool or requesting its output flushes the callback exactly once;
+- saving before flush preserves any raw serialized payload that is meant to stay raw;
+  and
+- generated code, declared outputs, and provenance remain identical after flush.
 
 ## Add manager-facing metadata
 
@@ -753,6 +825,8 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
   tool uses them;
 - `validate_update_data()` and `update_data()` branches, including {guilabel}`Stale` or
   {guilabel}`Unavailable` cases after the ImageTool that opened the tool changes;
+- deferred restore behavior for any expensive restored cache, preview, render, or
+  result recomputation;
 - dialog accept and cancel paths for any new dialogs, including {guilabel}`Save` and
   {guilabel}`Update Now` paths if the tool participates in automatic updates; and
 - manager launch paths, preferably by patching manager functions unless a live manager

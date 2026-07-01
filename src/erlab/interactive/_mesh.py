@@ -227,7 +227,10 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
         self.higher_order_targets: list[pg.TargetItem] = []
 
-        self.set_data_beforecalc(initial=True)
+        self._run_or_defer_restore_work(
+            self._restore_initial_preview,
+            run_on_show=True,
+        )
 
         opts = erlab.interactive.options.model
         for img in (self.main_image, self.corr_image):
@@ -350,6 +353,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def set_data_beforecalc(self, initial: bool = False) -> None:
+        self._discard_restore_work(self._restore_initial_preview)
         reduced, log_magnitude = self.get_reduced()
         n_pad: int = self.tool_status.n_pad
 
@@ -365,6 +369,9 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.mesh_image.setDataArray(placeholder)
             self.corr_fft_image.setImage(log_magnitude_unpadded)
             self.mask_fft_image.setImage(placeholder.values.T)
+
+    def _restore_initial_preview(self) -> None:
+        self.set_data_beforecalc(initial=True)
 
     @QtCore.Slot()
     def _update_target_pos(self) -> None:
@@ -462,6 +469,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def update(self) -> None:
+        self._discard_restore_work(self._restore_initial_preview)
         with erlab.interactive.utils.wait_dialog(self, "Removing mesh..."):
             (
                 self._corrected,

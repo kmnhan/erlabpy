@@ -4,7 +4,7 @@ import typing
 
 import pydantic
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._options.ui as options_ui
 from erlab.interactive._options import OptionDialog, options
@@ -20,7 +20,11 @@ from erlab.interactive._options.parameters import (
     FigureDpiOverrideWidget,
     StylesheetListWidget,
 )
-from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._options.schema import (
+    AppOptions,
+    WorkspaceOptions,
+    normalize_workspace_compression_mode,
+)
 from erlab.interactive.colors import ColorMapComboBox
 
 
@@ -319,6 +323,20 @@ def test_dialog_control_value_helpers(dialog: OptionDialog, qtbot):
     combo_with_data.addItem("Visible text", "stored-value")
     assert dialog._control_value(combo_with_data, "io/default_loader") == "stored-value"
 
+    compression_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(compression_slider)
+    compression_slider.setCurrentData("blosclz3")
+    assert (
+        dialog._control_value(compression_slider, "io/workspace/compression")
+        == "blosclz3"
+    )
+
     colors = ColorListWidget()
     qtbot.addWidget(colors)
     colors.set_colors(["#ff0000", "#00ff00"])
@@ -364,6 +382,19 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     assert combo.currentData() == "missing"
     assert combo.currentText() == "missing (unavailable)"
 
+    compression_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(compression_slider)
+    dialog._set_control_value(
+        compression_slider, "io/workspace/compression", "blosclz3"
+    )
+    assert compression_slider.currentData() == "blosclz3"
+
     list_line = QtWidgets.QLineEdit()
     qtbot.addWidget(list_line)
     dialog._set_control_value(list_line, "colors/cmap/exclude", ["one", "two"])
@@ -384,6 +415,100 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     assert not figure_dpi.override_check.isChecked()
     assert not figure_dpi.dpi_spin.isEnabled()
     assert figure_dpi.get_dpi() is None
+
+
+def test_choice_slider_labels_align_with_ticks(qtbot):
+    compression_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(compression_slider)
+    compression_slider.resize(360, compression_slider.sizeHint().height())
+    compression_slider.show()
+    QtWidgets.QApplication.processEvents()
+
+    label_row = compression_slider._label_row
+    for index in range(compression_slider.count()):
+        option = QtWidgets.QStyleOptionSlider()
+        compression_slider.slider.initStyleOption(option)
+        option.sliderPosition = index
+        option.sliderValue = index
+        handle_rect = compression_slider.slider.style().subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_Slider,
+            option,
+            QtWidgets.QStyle.SubControl.SC_SliderHandle,
+            compression_slider.slider,
+        )
+        tick_x = label_row.mapFromGlobal(
+            compression_slider.slider.mapToGlobal(handle_rect.center())
+        ).x()
+        label = compression_slider.findChild(
+            QtWidgets.QLabel, f"choiceSliderLabel_{index}"
+        )
+
+        assert label is not None
+        assert abs(label.geometry().center().x() - tick_x) <= 1
+        assert label.geometry().left() >= 0
+        assert label.geometry().right() < label_row.width()
+
+
+def test_choice_slider_edge_cases(qtbot):
+    slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+    qtbot.addWidget(slider)
+
+    empty_row = options_ui._ChoiceSliderLabelRow(slider, ())
+    qtbot.addWidget(empty_row)
+    assert empty_row.edge_margins() == (0, 0)
+
+    with pytest.raises(ValueError, match="at least one choice"):
+        options_ui._ChoiceSlider(())
+
+    choice_slider = options_ui._ChoiceSlider(
+        [
+            {"label": "Off", "value": "none"},
+            {"label": "Standard", "value": "blosclz3"},
+            {"label": "Compact", "value": "zstd1"},
+        ]
+    )
+    qtbot.addWidget(choice_slider)
+
+    assert choice_slider.itemText(1) == "Standard"
+    assert choice_slider.findData("missing") == -1
+    with pytest.raises(ValueError, match="Unknown choice slider value"):
+        choice_slider.setCurrentData("missing")
+
+    events: list[None] = []
+    original_sync = choice_slider._sync_label_geometry
+
+    def _record_sync() -> None:
+        events.append(None)
+        original_sync()
+
+    choice_slider._sync_label_geometry = _record_sync
+    QtWidgets.QApplication.sendEvent(
+        choice_slider, QtCore.QEvent(QtCore.QEvent.Type.FontChange)
+    )
+    assert events
+
+
+def test_choice_slider_label_row_raises_without_style(qtbot):
+    class _StylelessSlider:
+        def initStyleOption(self, _option) -> None:
+            return None
+
+        def style(self) -> None:
+            return None
+
+    row = options_ui._ChoiceSliderLabelRow(
+        typing.cast("QtWidgets.QSlider", _StylelessSlider()), ("Off",)
+    )
+    qtbot.addWidget(row)
+
+    with pytest.raises(RuntimeError, match="has no Qt style"):
+        row.edge_margins()
 
 
 def test_dialog_spinbox_constraint_variants(
@@ -463,6 +588,46 @@ def test_workspace_override_switch_saves_sparse_override(qtbot):
 
     assert manager.overrides[path] == "bwr"
     assert combo.isEnabled()
+
+
+def test_workspace_compression_slider_uses_stored_mode_values(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+
+    user_control = typing.cast(
+        "options_ui._ChoiceSlider",
+        _control(dlg, "user", "io/workspace/compression", options_ui._ChoiceSlider),
+    )
+
+    assert [user_control.itemData(index) for index in range(user_control.count())] == [
+        "none",
+        "blosclz3",
+        "zstd1",
+    ]
+
+    user_control.setCurrentData("blosclz3")
+    assert options.model.io.workspace.compression == "blosclz3"
+
+    dlg.scope_tabs.setCurrentIndex(1)
+    workspace_control = typing.cast(
+        "options_ui._ChoiceSlider",
+        _control(
+            dlg,
+            "workspace",
+            "io/workspace/compression",
+            options_ui._ChoiceSlider,
+        ),
+    )
+    override = _override(dlg, "io/workspace/compression")
+
+    assert not workspace_control.isEnabled()
+    override.setChecked(True)
+    workspace_control.setCurrentData("none")
+
+    assert manager.overrides["io/workspace/compression"] == "none"
+    assert workspace_control.isEnabled()
 
 
 def test_workspace_figure_dpi_override_supports_unset_and_numeric(qtbot):
@@ -710,50 +875,122 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
 
     assert "colors/cmap/name" in paths
     assert "colors/cmap/packages" not in paths
+    assert "io/workspace/compression" in paths
     assert "io/workspace/compress" not in paths
     assert "figure/dpi" in paths
     assert normalize_workspace_option_overrides(
         {
             "colors/cmap/name": "bwr",
+            "io/workspace/compression": "none",
             "io/workspace/compress": False,
             "figure/dpi": 180.0,
         }
-    ) == {"colors/cmap/name": "bwr", "figure/dpi": 180.0}
+    ) == {
+        "colors/cmap/name": "bwr",
+        "io/workspace/compression": "none",
+        "figure/dpi": 180.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" false ", "none"),
+        ("OFF", "none"),
+        ("1", "zstd1"),
+        ("yes", "zstd1"),
+        (" BloscLz3 ", "blosclz3"),
+        (None, None),
+    ],
+)
+def test_workspace_compression_mode_normalizes_legacy_values(
+    value: object, expected: object
+) -> None:
+    assert normalize_workspace_compression_mode(value) == expected
+
+    migrated = WorkspaceOptions.model_validate({"compress": False})
+    assert migrated.compression == "none"
+
+    with pytest.raises(pydantic.ValidationError):
+        WorkspaceOptions.model_validate("not-a-workspace-options")
+
+
+def test_option_path_helpers_support_legacy_workspace_compress() -> None:
+    from erlab.interactive._options.core import option_model_with_value, option_value
+
+    model = AppOptions()
+
+    assert option_value(model, "io/workspace/compress") is True
+
+    disabled = option_model_with_value(model, "io/workspace/compress", False)
+    assert disabled.io.workspace.compression == "none"
 
 
 def test_options_get_set():
     options.restore()
 
     assert options["colors/cmap/name"] == AppOptions().colors.cmap.name
+    assert options["io/workspace/compression"] == "zstd1"
     assert options["io/workspace/compress"] is True
     assert options["io/workspace/use_incremental"] is True
     assert options["io/workspace/incremental_save_on_remote"] is False
     assert options["figure/dpi"] is None
 
     options["colors/cmap/name"] = "viridis"
-    options["io/workspace/compress"] = False
+    options["io/workspace/compression"] = "blosclz3"
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
     options["figure/stylesheets"] = ["classic", "missing-style"]
     options["figure/dpi"] = 150.0
 
     assert options["colors/cmap/name"] == "viridis"
-    assert options["io/workspace/compress"] is False
+    assert options["io/workspace/compression"] == "blosclz3"
+    assert options["io/workspace/compress"] is True
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert options["figure/dpi"] == pytest.approx(150.0)
-    assert not options.model.io.workspace.compress
+    assert options.model.io.workspace.compression == "blosclz3"
     assert not options.model.io.workspace.use_incremental
     assert options.model.io.workspace.incremental_save_on_remote
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
     assert options.model.figure.dpi == pytest.approx(150.0)
+
+    options["io/workspace/compress"] = False
+    assert options["io/workspace/compression"] == "none"
+    assert options["io/workspace/compress"] is False
+
+    options["io/workspace/compress"] = True
+    assert options["io/workspace/compression"] == "zstd1"
+    assert options["io/workspace/compress"] is True
+
+    options["io/workspace/compress"] = None
+    assert options["io/workspace/compression"] == "zstd1"
 
     options["figure/dpi"] = None
     assert options["figure/dpi"] is None
 
     options.restore()
     assert options["figure/dpi"] is None
+
+
+@pytest.mark.parametrize(
+    ("legacy_value", "expected"),
+    [(False, "none"), (True, "zstd1")],
+)
+def test_legacy_workspace_compress_setting_migrates(
+    legacy_value: bool, expected: str
+) -> None:
+    qsettings = options.qsettings
+    qsettings.clear()
+    qsettings.setValue("io/workspace/compress", legacy_value)
+    qsettings.sync()
+
+    assert options.model.io.workspace.compression == expected
+
+    options.model = options.model
+    assert not qsettings.contains("io/workspace/compress")
+    assert qsettings.value("io/workspace/compression") == expected
 
 
 @pytest.mark.parametrize("value", [0.0, -1.0, "not-a-number"])

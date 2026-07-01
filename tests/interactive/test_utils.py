@@ -85,6 +85,88 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         self._data = new_data
 
 
+class _DeferredRestoreToolState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _DeferredRestoreTool(
+    erlab.interactive.utils.ToolWindow[_DeferredRestoreToolState]
+):
+    StateModel = _DeferredRestoreToolState
+    tool_name = "deferred-dummy"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current deferred dummy input data",
+            label="Compute deferred dummy output",
+            expression_method="_copy_expression",
+            assign="result",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        RESULT = "deferred-dummy.result"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.RESULT: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_result_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current deferred dummy input data",
+                label="Compute deferred dummy output",
+                expression_method="_copy_expression",
+                assign="result",
+            ),
+        )
+    }
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _DeferredRestoreToolState()
+        self.construct_restoring = self._dataset_restore_in_progress
+        self.construct_deferred = self._should_defer_restore_work
+        self.deferred_runs = 0
+        self.fail_next_deferred_restore = False
+        if self._dataset_restore_in_progress:
+            self._run_or_defer_restore_work(
+                self._run_deferred_restore_task,
+                key="dummy-restore-task",
+                run_on_show=True,
+            )
+
+    @property
+    def tool_status(self) -> _DeferredRestoreToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _DeferredRestoreToolState) -> None:
+        self._status = status
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        self._data = new_data
+
+    def _run_deferred_restore_task(self) -> None:
+        if self.fail_next_deferred_restore:
+            self.fail_next_deferred_restore = False
+            raise RuntimeError("deferred restore failed")
+        self.deferred_runs += 1
+
+    def _copy_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        del input_name, data
+        return f"data + {self.deferred_runs}"
+
+    def _result_output_data(self) -> xr.DataArray:
+        return self._data + self.deferred_runs
+
+
 def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)
@@ -247,6 +329,145 @@ def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     assert duplicated.tool_status == _PersistentToolState(value=1)
     assert not duplicated.undoable
     assert not duplicated.redoable
+
+
+def test_tool_window_direct_restore_runs_deferred_task_eagerly(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _DeferredRestoreTool)
+    assert restored.construct_restoring is True
+    assert restored.construct_deferred is False
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_private_deferred_restore_queues_constructor_task(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _DeferredRestoreTool)
+    assert restored.construct_restoring is True
+    assert restored.construct_deferred is True
+    assert restored.deferred_runs == 0
+
+    assert restored._flush_restore_work(key="dummy-restore-task")
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_deferred_restore_flushes_before_save(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+
+    restored.to_dataset()
+
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_deferred_restore_flushes_on_show(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+
+    restored.show()
+    qtbot.waitUntil(lambda: restored.deferred_runs == 1, timeout=1000)
+
+
+def test_tool_window_deferred_restore_flushes_before_output(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+
+    xr.testing.assert_identical(
+        restored.output_imagetool_data(_DeferredRestoreTool.Output.RESULT),
+        data + 1,
+    )
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_deferred_restore_flushes_before_copy(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", lambda code: code)
+
+    restored.copy_code()
+
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_failed_deferred_restore_can_retry(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+    restored.fail_next_deferred_restore = True
+
+    with pytest.raises(RuntimeError, match="deferred restore failed"):
+        restored._flush_restore_work(key="dummy-restore-task")
+
+    assert restored.deferred_runs == 0
+    assert restored._flush_restore_work(key="dummy-restore-task")
+    assert restored.deferred_runs == 1
+
+
+def test_tool_window_deferred_restore_helper_edges(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _DeferredRestoreTool(data)
+    qtbot.addWidget(win)
+    win._restoring_from_dataset = True
+    win._defer_restored_tool_work = True
+
+    with pytest.raises(TypeError, match="requires a callback or key"):
+        win._defer_restore_work(typing.cast("typing.Callable[[], None]", None))
+
+    calls: list[None] = []
+    win._defer_restore_work(lambda: calls.append(None), key="manual")
+    assert not win._flush_restore_work(run_on_show_only=True)
+    assert calls == []
+    assert win._flush_restore_work(key="manual")
+    assert calls == [None]
+
+    win._discard_restore_work()
+
+    win._flushing_restore_work = True
+    try:
+        assert not win._flush_restore_work()
+    finally:
+        win._flushing_restore_work = False
 
 
 @pytest.fixture

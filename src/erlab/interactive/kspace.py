@@ -1701,6 +1701,12 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def update(self) -> None:
+        self._run_or_defer_restore_work(
+            self._update_now,
+            run_on_show=True,
+        )
+
+    def _update_now(self) -> None:
         try:
             ang, k = self.get_data()
         except _kspace_conversion.KspaceConversionMemoryError:

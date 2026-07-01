@@ -66,6 +66,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -1486,6 +1487,8 @@ class ImageToolManager(_ImageToolManagerBase):
                     if event:
                         event.ignore()
                     return
+
+            self._compact_workspace_before_shutdown()
 
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
@@ -3882,11 +3885,22 @@ class ImageToolManager(_ImageToolManagerBase):
         return _WorkspaceIOController._tree_item_child_by_key(item, key)
 
     def _workspace_root_attrs_payload(
-        self, *, delta_save_count: int | None = None
+        self,
+        *,
+        delta_save_count: int | None = None,
+        estimated_obsolete_bytes: int | None = None,
+        replacement_delta_count: int | None = None,
+        repack_estimate_known: bool | None = None,
     ) -> dict[str, typing.Any]:
         return self._workspace_controller._workspace_root_attrs_payload(
-            delta_save_count=delta_save_count
+            delta_save_count=delta_save_count,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
         )
+
+    def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
+        return self._workspace_controller._workspace_compression_mode()
 
     def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
         return self._workspace_controller._workspace_layout_snapshot()
@@ -3896,8 +3910,18 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> None:
         self._workspace_controller._restore_workspace_layout(manifest)
 
-    def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
-        self._workspace_controller._write_full_workspace_file(fname)
+    def _write_full_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
+    ) -> None:
+        self._workspace_controller._write_full_workspace_file(
+            fname,
+            reuse_unchanged_groups=reuse_unchanged_groups,
+            require_matching_compression=require_matching_compression,
+        )
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
         return self._workspace_controller._workspace_highest_dirty_data_roots()
@@ -3911,9 +3935,15 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
+        reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = False,
     ) -> None:
         self._workspace_controller._save_workspace_document(
-            fname, force_full=force_full, document_access=document_access
+            fname,
+            force_full=force_full,
+            document_access=document_access,
+            reuse_unchanged_groups=reuse_unchanged_groups,
+            require_matching_compression=require_matching_compression,
         )
 
     def _workspace_save_dialog(
@@ -3953,6 +3983,9 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         native: bool = True,
         delta_save_count: int = 0,
+        estimated_obsolete_bytes: int = 0,
+        replacement_delta_count: int = 0,
+        repack_estimate_known: bool = True,
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
@@ -3961,6 +3994,9 @@ class ImageToolManager(_ImageToolManagerBase):
             schema_version,
             native=native,
             delta_save_count=delta_save_count,
+            estimated_obsolete_bytes=estimated_obsolete_bytes,
+            replacement_delta_count=replacement_delta_count,
+            repack_estimate_known=repack_estimate_known,
             workspace_access=workspace_access,
             rebind_data=rebind_data,
         )
@@ -4033,9 +4069,17 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._workspace_full_save_snapshot(generation)
 
     def _workspace_full_save_copy_groups(
-        self, tree: xr.DataTree
+        self,
+        tree: xr.DataTree,
+        *,
+        compression_mode: WorkspaceCompressionMode | None = None,
+        require_matching_compression: bool = False,
     ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
-        return self._workspace_controller._workspace_full_save_copy_groups(tree)
+        return self._workspace_controller._workspace_full_save_copy_groups(
+            tree,
+            compression_mode=compression_mode,
+            require_matching_compression=require_matching_compression,
+        )
 
     def _open_workspace_save_wait_dialog(
         self,

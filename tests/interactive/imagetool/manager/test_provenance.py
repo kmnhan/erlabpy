@@ -6881,8 +6881,9 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
             return True
 
         def current_provenance_spec(
-            self,
+            self, *, flush_deferred_restore: bool = True
         ) -> provenance.ToolProvenanceSpec | None:
+            del flush_deferred_restore
             return self._provenance_spec
 
     data = xr.DataArray(np.arange(4.0), dims=("x",))

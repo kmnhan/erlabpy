@@ -72,6 +72,8 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive._options.schema import WorkspaceCompressionMode
+
 _WORKSPACE_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
@@ -84,6 +86,9 @@ _WORKSPACE_ENCODED_ATTRS_VERSION = 1
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
 _SAVED_TOOL_DATA_BLOB_DIM_PREFIX = _serialization.SAVED_TOOL_DATA_BLOB_DIM_PREFIX
+_WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
+    {"CLASS", "NAME", "DIMENSION_LIST", "REFERENCE_LIST"}
+)
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):
@@ -129,6 +134,11 @@ class _WorkspaceSaveSnapshot:
     generation: int
     root_attrs: dict[str, typing.Any]
     delta_save_count: int
+    estimated_obsolete_bytes: int = 0
+    replacement_delta_count: int = 0
+    repack_estimate_known: bool = True
+    compression_mode: WorkspaceCompressionMode = "zstd1"
+    file_repack: bool = False
     full_tree: xr.DataTree | None = None
     copy_source: str | None = None
     copy_groups: tuple[tuple[str, str, dict[str, typing.Any] | None], ...] = ()
@@ -201,12 +211,22 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         error_text = ""
         ok = False
         try:
-            if self._snapshot.full_tree is None:
+            if self._snapshot.file_repack:
+                _write_full_workspace_tree_file(
+                    self._fname,
+                    None,
+                    self._snapshot.root_attrs,
+                    copy_source=self._snapshot.copy_source,
+                    copy_groups=self._snapshot.copy_groups,
+                    compression_mode=self._snapshot.compression_mode,
+                )
+            elif self._snapshot.full_tree is None:
                 _write_workspace_transaction_file(
                     self._fname,
                     self._snapshot.rewrite_groups,
                     self._snapshot.attr_updates,
                     self._snapshot.root_attrs,
+                    compression_mode=self._snapshot.compression_mode,
                 )
             else:
                 _write_full_workspace_tree_file(
@@ -215,6 +235,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    compression_mode=self._snapshot.compression_mode,
                 )
             ok = True
         except Exception:
@@ -342,7 +363,7 @@ def _acquire_workspace_document_lock(
 
 
 def _workspace_manifest_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> dict[str, typing.Any]:
     raw_manifest = attrs.get(_WORKSPACE_MANIFEST_ATTR)
     if isinstance(raw_manifest, bytes):
@@ -356,7 +377,7 @@ def _workspace_manifest_from_attrs(
 
 
 def _workspace_delta_save_count_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> int:
     value = _workspace_manifest_from_attrs(attrs).get("delta_save_count", 0)
     with contextlib.suppress(TypeError, ValueError):
@@ -364,14 +385,96 @@ def _workspace_delta_save_count_from_attrs(
     return 0
 
 
+def _workspace_manifest_nonnegative_int(
+    manifest: Mapping[str, typing.Any], key: str
+) -> int:
+    value = manifest.get(key, 0)
+    with contextlib.suppress(TypeError, ValueError):
+        return max(0, int(value))
+    return 0
+
+
+def _workspace_manifest_repack_estimate(
+    manifest: Mapping[str, typing.Any] | None,
+    *,
+    delta_save_count: int,
+) -> tuple[int, int, bool]:
+    if delta_save_count <= 0:
+        return 0, 0, True
+    if manifest is None:
+        return 0, 0, False
+    has_estimate = (
+        "estimated_obsolete_bytes" in manifest and "replacement_delta_count" in manifest
+    )
+    return (
+        _workspace_manifest_nonnegative_int(manifest, "estimated_obsolete_bytes"),
+        _workspace_manifest_nonnegative_int(manifest, "replacement_delta_count"),
+        has_estimate,
+    )
+
+
 def _workspace_file_metadata_from_attrs(
-    attrs: Mapping[typing.Hashable, typing.Any],
+    attrs: Mapping[typing.Any, typing.Any],
 ) -> tuple[int, int, dict[str, typing.Any] | None]:
     schema_version = int(attrs.get("imagetool_workspace_schema_version", 1))
     manifest = None
     if schema_version >= _WORKSPACE_SCHEMA_VERSION:
         manifest = _workspace_manifest_from_attrs(attrs) or None
     return schema_version, _workspace_delta_save_count_from_attrs(attrs), manifest
+
+
+def _compacted_workspace_root_attrs(
+    attrs: Mapping[typing.Any, typing.Any],
+) -> dict[str, typing.Any]:
+    schema_version, _delta_save_count, manifest = _workspace_file_metadata_from_attrs(
+        attrs
+    )
+    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
+        raise ValueError(
+            "File-level workspace repack requires current workspace schema"
+        )
+    compacted_manifest = dict(manifest)
+    compacted_manifest["schema_version"] = _WORKSPACE_SCHEMA_VERSION
+    compacted_manifest["erlab_version"] = erlab.__version__
+    compacted_manifest.pop("delta_save_count", None)
+    compacted_manifest.pop("transaction_protocol", None)
+    compacted_manifest.pop("estimated_obsolete_bytes", None)
+    compacted_manifest.pop("replacement_delta_count", None)
+
+    root_attrs = {str(key): value for key, value in attrs.items()}
+    root_attrs["imagetool_workspace_schema_version"] = _WORKSPACE_SCHEMA_VERSION
+    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(compacted_manifest)
+    root_attrs["erlab_version"] = erlab.__version__
+    return root_attrs
+
+
+def _workspace_root_attrs_with_repack_estimate(
+    attrs: Mapping[typing.Any, typing.Any],
+    *,
+    estimated_obsolete_bytes: int,
+    replacement_delta_count: int,
+    repack_estimate_known: bool = True,
+) -> dict[str, typing.Any]:
+    schema_version, delta_save_count, manifest = _workspace_file_metadata_from_attrs(
+        attrs
+    )
+    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
+        return {str(key): value for key, value in attrs.items()}
+    updated_manifest = dict(manifest)
+    if delta_save_count > 0 and repack_estimate_known:
+        updated_manifest["estimated_obsolete_bytes"] = max(
+            0, int(estimated_obsolete_bytes)
+        )
+        updated_manifest["replacement_delta_count"] = max(
+            0, int(replacement_delta_count)
+        )
+    else:
+        updated_manifest.pop("estimated_obsolete_bytes", None)
+        updated_manifest.pop("replacement_delta_count", None)
+
+    root_attrs = {str(key): value for key, value in attrs.items()}
+    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(updated_manifest)
+    return root_attrs
 
 
 def _current_workspace_schema_version() -> int:
@@ -411,6 +514,9 @@ def _workspace_root_attrs_payload(
     loader_state: Mapping[str, typing.Any] | None = None,
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
+    estimated_obsolete_bytes: int = 0,
+    replacement_delta_count: int = 0,
+    repack_estimate_known: bool = True,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -439,6 +545,9 @@ def _workspace_root_attrs_payload(
         # Marks files written through the recoverable in-place delta-save protocol.
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
         manifest["delta_save_count"] = int(delta_save_count)
+        if repack_estimate_known:
+            manifest["estimated_obsolete_bytes"] = max(0, int(estimated_obsolete_bytes))
+            manifest["replacement_delta_count"] = max(0, int(replacement_delta_count))
     return {
         "imagetool_workspace_schema_version": _WORKSPACE_SCHEMA_VERSION,
         _WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
@@ -1138,6 +1247,94 @@ def _read_workspace_root_attrs_h5py(
         return _h5py_attrs_to_dict(h5_file.attrs)
 
 
+def _workspace_live_root_group_copy_groups(
+    fname: str | os.PathLike[str],
+) -> tuple[tuple[str, str, dict[str, typing.Any] | None], ...]:
+    import h5py
+
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        return tuple(
+            (name, name, None)
+            for name, item in h5_file.items()
+            if isinstance(item, h5py.Group)
+            and not _is_workspace_internal_group_name(name)
+        )
+
+
+def _workspace_h5_object_storage_size(obj: typing.Any) -> int:
+    import h5py
+
+    if isinstance(obj, h5py.Dataset):
+        return max(0, int(obj.id.get_storage_size()))
+    if isinstance(obj, h5py.Group):
+        return sum(_workspace_h5_object_storage_size(child) for child in obj.values())
+    return 0
+
+
+def _workspace_h5_paths_storage_size(
+    fname: str | os.PathLike[str],
+    paths: Iterable[str],
+) -> tuple[int, int]:
+    import h5py
+
+    total = 0
+    existing_count = 0
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        for path in paths:
+            path = path.strip("/")
+            if path not in h5_file:
+                continue
+            existing_count += 1
+            total += _workspace_h5_object_storage_size(h5_file[path])
+    return total, existing_count
+
+
+def _workspace_live_h5_storage_size(fname: str | os.PathLike[str]) -> int:
+    import h5py
+
+    total = 0
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        if not _workspace_file_is_workspace(h5_file):
+            raise ValueError("Not a valid workspace file")
+        for name, item in h5_file.items():
+            if isinstance(item, h5py.Group) and not _is_workspace_internal_group_name(
+                name
+            ):
+                total += _workspace_h5_object_storage_size(item)
+    return total
+
+
+def _workspace_obsolete_estimate(
+    fname: str | os.PathLike[str],
+) -> int:
+    try:
+        file_size = pathlib.Path(fname).stat().st_size
+    except OSError:
+        return 0
+    live_storage_size = _workspace_live_h5_storage_size(fname)
+    return max(0, int(file_size) - live_storage_size)
+
+
+def _workspace_file_repack_payload(
+    fname: str | os.PathLike[str],
+) -> tuple[
+    dict[str, typing.Any], tuple[tuple[str, str, dict[str, typing.Any] | None], ...]
+]:
+    _recover_workspace_transactions(fname)
+    root_attrs = _read_workspace_root_attrs_h5py(fname)
+    return (
+        _compacted_workspace_root_attrs(root_attrs),
+        _workspace_live_root_group_copy_groups(fname),
+    )
+
+
 def _workspace_h5py_dataset_storage_supported(dataset: typing.Any) -> bool:
     import h5py
 
@@ -1244,14 +1441,226 @@ def _workspace_h5py_dataset_variable(
     return _workspace_h5py_decode_coord_variable(variable, name)
 
 
+def _workspace_h5py_create_kwargs(
+    encoding: Mapping[str, typing.Any] | None,
+) -> dict[str, typing.Any]:
+    if encoding is None:
+        return {}
+    kwargs: dict[str, typing.Any] = {}
+    if "chunksizes" in encoding:
+        kwargs["chunks"] = encoding["chunksizes"]
+    for key in ("compression", "compression_opts", "shuffle", "fletcher32"):
+        if key in encoding:
+            kwargs[key] = encoding[key]
+    return kwargs
+
+
+def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, ...]]:
+    create_plist = dataset.id.get_create_plist()
+    return {
+        create_plist.get_filter(index)[0]: tuple(create_plist.get_filter(index)[2])
+        for index in range(create_plist.get_nfilters())
+    }
+
+
+def _workspace_h5py_dataset_matches_encoding(
+    dataset: typing.Any,
+    encoding: Mapping[typing.Any, typing.Any],
+) -> bool:
+    filters = _workspace_h5py_filter_options(dataset)
+    expected_filter = encoding.get("compression")
+    if expected_filter is None:
+        return not filters
+    actual_options = filters.get(int(expected_filter))
+    if actual_options is None:
+        return False
+    expected_options = encoding.get("compression_opts")
+    return expected_options is None or actual_options == tuple(expected_options)
+
+
+def _workspace_h5_group_matches_compression_mode(
+    h5_file: typing.Any,
+    group_path: str,
+    ds: xr.Dataset,
+    compression_mode: WorkspaceCompressionMode,
+) -> bool:
+    group_path = group_path.strip("/")
+    if group_path not in h5_file:
+        return False
+    group = h5_file[group_path]
+    encoding = _xarray.workspace_dataset_encoding(ds, compression_mode=compression_mode)
+    for name in ds.data_vars:
+        dataset_name = str(name)
+        if dataset_name not in group:
+            return False
+        dataset = group[dataset_name]
+        if not _workspace_h5py_dataset_matches_encoding(
+            dataset, encoding.get(name, {})
+        ):
+            return False
+    return True
+
+
+def _workspace_h5py_attr_text(value: typing.Any) -> str | None:
+    if isinstance(value, bytes):
+        return value.decode()
+    if hasattr(value, "decode"):
+        decoded = value.decode()
+        return str(decoded)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
+    return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
+
+
+def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
+    import h5py
+
+    type_class = type_id.get_class()
+    if type_class == h5py.h5t.REFERENCE:
+        return True
+    if type_class in {h5py.h5t.ARRAY, h5py.h5t.VLEN}:
+        super_type = type_id.get_super()
+        try:
+            return _workspace_h5py_type_contains_reference(super_type)
+        finally:
+            super_type.close()
+    if type_class == h5py.h5t.COMPOUND:
+        for index in range(type_id.get_nmembers()):
+            member_type = type_id.get_member_type(index)
+            try:
+                if _workspace_h5py_type_contains_reference(member_type):
+                    return True
+            finally:
+                member_type.close()
+    return False
+
+
+def _workspace_h5py_attr_contains_reference(
+    source_attrs: typing.Any, key: typing.Hashable
+) -> bool:
+    attr_id = source_attrs.get_id(key)
+    type_id = attr_id.get_type()
+    try:
+        return _workspace_h5py_type_contains_reference(type_id)
+    finally:
+        type_id.close()
+        attr_id.close()
+
+
+def _workspace_h5py_copy_regular_attrs(
+    source_attrs: typing.Any,
+    target_attrs: typing.Any,
+    *,
+    skip_dimension_scale_attrs: bool,
+) -> None:
+    for key, value in source_attrs.items():
+        if skip_dimension_scale_attrs and key in _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS:
+            continue
+        if _workspace_h5py_attr_contains_reference(source_attrs, key):
+            continue
+        target_attrs[key] = value
+
+
+def _workspace_h5py_rebuild_dimension_scales(
+    source_group: typing.Any,
+    target_group: typing.Any,
+) -> None:
+    import h5py
+    import numpy as np
+
+    _workspace_h5py_copy_regular_attrs(
+        source_group.attrs,
+        target_group.attrs,
+        skip_dimension_scale_attrs=False,
+    )
+    scales_by_id: dict[int, typing.Any] = {}
+    for name, source_obj in source_group.items():
+        target_obj = target_group[name]
+        if isinstance(source_obj, h5py.Group):
+            _workspace_h5py_rebuild_dimension_scales(source_obj, target_obj)
+            continue
+        if not isinstance(source_obj, h5py.Dataset):
+            continue
+        _workspace_h5py_copy_regular_attrs(
+            source_obj.attrs,
+            target_obj.attrs,
+            skip_dimension_scale_attrs=True,
+        )
+        if not _workspace_h5py_dataset_is_dimension_scale(source_obj):
+            continue
+        dim_id = source_obj.attrs.get("_Netcdf4Dimid")
+        if dim_id is None:
+            continue
+        scale_name = _workspace_h5py_attr_text(source_obj.attrs.get("NAME")) or name
+        target_obj.make_scale(scale_name)
+        target_obj.attrs["_Netcdf4Dimid"] = np.int32(dim_id)
+        if "_Netcdf4Coordinates" in source_obj.attrs:
+            target_obj.attrs["_Netcdf4Coordinates"] = source_obj.attrs[
+                "_Netcdf4Coordinates"
+            ]
+        scales_by_id[int(dim_id)] = target_obj
+
+    for name, source_obj in source_group.items():
+        if not isinstance(source_obj, h5py.Dataset):
+            continue
+        if _workspace_h5py_dataset_is_dimension_scale(source_obj):
+            continue
+        if "_Netcdf4Coordinates" not in source_obj.attrs:
+            continue
+        target_obj = target_group[name]
+        coordinate_ids = np.asarray(source_obj.attrs["_Netcdf4Coordinates"]).reshape(-1)
+        if len(coordinate_ids) != target_obj.ndim:
+            continue
+        for axis, dim_id in enumerate(coordinate_ids):
+            scale = scales_by_id.get(int(dim_id))
+            if scale is not None:
+                target_obj.dims[axis].attach_scale(scale)
+
+
+def _copy_workspace_h5_group_to_open_file(
+    source_file: typing.Any,
+    target_file: typing.Any,
+    source_path: str,
+    target_path: str,
+    attrs: Mapping[str, typing.Any] | None,
+) -> bool:
+    import h5py
+
+    source_path = source_path.strip("/")
+    target_path = target_path.strip("/")
+    if source_path not in source_file:
+        return False
+    source_group = source_file[source_path]
+    if not isinstance(source_group, h5py.Group):
+        return False
+    parent = _ensure_h5_parent_group(target_file, target_path)
+    target_name = target_path.rsplit("/", maxsplit=1)[-1]
+    if target_name in parent:
+        del parent[target_name]
+    source_file.copy(source_path, parent, name=target_name, without_attrs=True)
+    target_group = parent[target_name]
+    _workspace_h5py_rebuild_dimension_scales(source_group, target_group)
+    if attrs is not None:
+        _replace_h5_attrs(target_group.attrs, attrs)
+    return True
+
+
 def _workspace_h5py_create_dataset(
-    group: typing.Any, name: str, variable: xr.Variable
+    group: typing.Any,
+    name: str,
+    variable: xr.Variable,
+    *,
+    encoding: Mapping[str, typing.Any] | None = None,
 ) -> typing.Any | None:
     payload = _workspace_h5py_variable_payload(variable, name)
     if payload is None:
         return None
     data, attrs, dtype = payload
-    kwargs: dict[str, typing.Any] = {}
+    kwargs = _workspace_h5py_create_kwargs(encoding)
     if dtype is not None:
         kwargs["dtype"] = dtype
     dataset = group.create_dataset(name, data=data, **kwargs)
@@ -1620,10 +2029,15 @@ def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
 def _write_workspace_independent_tool_items_h5py(
     group: typing.Any,
     ds: xr.Dataset,
+    *,
+    encoding: Mapping[typing.Hashable, Mapping[str, typing.Any]] | None = None,
 ) -> bool:
     for variable_name, data_array in ds.data_vars.items():
         dataset = _workspace_h5py_create_dataset(
-            group, str(variable_name), data_array.variable
+            group,
+            str(variable_name),
+            data_array.variable,
+            encoding=None if encoding is None else encoding.get(variable_name),
         )
         if dataset is None:
             return False
@@ -1659,8 +2073,12 @@ def _write_workspace_dataset_group_h5py(
         try:
             for key, value in ds.attrs.items():
                 group.attrs[key] = value
+            if encoding is None:
+                encoding = _xarray.workspace_dataset_encoding(ds)
             if _workspace_h5py_dataset_has_only_independent_tool_items(ds, data_name):
-                if not _write_workspace_independent_tool_items_h5py(group, ds):
+                if not _write_workspace_independent_tool_items_h5py(
+                    group, ds, encoding=encoding
+                ):
                     del parent[group_name]
                     return False
                 return True
@@ -1683,19 +2101,11 @@ def _write_workspace_dataset_group_h5py(
                 dim_scales.append(coord_dataset)
                 dim_scales_by_name[dim] = coord_dataset
 
-            if encoding is None:
-                encoding = _xarray.workspace_dataset_encoding(ds)
             data_encoding = encoding.get(data_name, {})
-            create_kwargs: dict[str, typing.Any] = {}
-            if "chunksizes" in data_encoding:
-                create_kwargs["chunks"] = data_encoding["chunksizes"]
-            for key in ("compression", "compression_opts", "shuffle", "fletcher32"):
-                if key in data_encoding:
-                    create_kwargs[key] = data_encoding[key]
             data_dataset = group.create_dataset(
                 str(data_name),
                 data=np.asarray(data_array.data),
-                **create_kwargs,
+                **_workspace_h5py_create_kwargs(data_encoding),
             )
             for dim_index, scale in enumerate(dim_scales):
                 data_dataset.dims[dim_index].attach_scale(scale)
@@ -1758,7 +2168,10 @@ def _write_workspace_dataset_group_h5py(
             for extra_name in _workspace_h5py_extra_tool_data_names(ds, data_name):
                 extra_data = ds[extra_name]
                 extra_dataset = _workspace_h5py_create_dataset(
-                    group, str(extra_name), extra_data.variable
+                    group,
+                    str(extra_name),
+                    extra_data.variable,
+                    encoding=encoding.get(extra_name),
                 )
                 if extra_dataset is None:
                     del parent[group_name]
@@ -1775,8 +2188,9 @@ def _write_workspace_dataset_group_to_file(
     ds: xr.Dataset,
     *,
     lock_path: str | os.PathLike[str] | None = None,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
-    encoding = _xarray.workspace_dataset_encoding(ds)
+    encoding = _xarray.workspace_dataset_encoding(ds, compression_mode=compression_mode)
     if lock_path is not None:
         normalized_lock_path = _xarray._normalized_file_path(lock_path)
         if normalized_lock_path is not None and any(
@@ -1829,6 +2243,8 @@ def _write_workspace_constructor_groups_to_pending(
     constructor: Mapping[str, xr.Dataset],
     group_path: str,
     pending_path: str,
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     target_group_path = group_path.strip("/")
     pending_path = pending_path.strip("/")
@@ -1845,7 +2261,11 @@ def _write_workspace_constructor_groups_to_pending(
             pending_path if not relative_path else f"{pending_path}/{relative_path}"
         )
         _write_workspace_dataset_group_to_file(
-            fname, pending_group_path, ds, lock_path=fname
+            fname,
+            pending_group_path,
+            ds,
+            lock_path=fname,
+            compression_mode=compression_mode,
         )
 
 
@@ -1939,6 +2359,8 @@ def _write_workspace_transaction_pending_groups(
     fname: str | os.PathLike[str],
     rewrite_map: Mapping[str, tuple[str, dict[str, xr.Dataset]]],
     pending_root: str,
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     try:
         for group_path, (rewrite_group_path, constructor) in sorted(
@@ -1950,6 +2372,7 @@ def _write_workspace_transaction_pending_groups(
                 constructor,
                 rewrite_group_path,
                 pending_group_path,
+                compression_mode=compression_mode,
             )
     except Exception:
         with _open_workspace_h5_file_for_update(fname) as h5_file:
@@ -1997,6 +2420,8 @@ def _write_workspace_transaction_file(
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
     ],
     root_attrs: Mapping[str, typing.Any],
+    *,
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     _recover_workspace_transactions(fname)
     rewrite_map = {
@@ -2018,7 +2443,12 @@ def _write_workspace_transaction_file(
         root_attrs,
     )
     try:
-        _write_workspace_transaction_pending_groups(fname, rewrite_map, pending_root)
+        _write_workspace_transaction_pending_groups(
+            fname,
+            rewrite_map,
+            pending_root,
+            compression_mode=compression_mode,
+        )
         _commit_workspace_transaction(
             fname,
             txn_path,
@@ -2034,11 +2464,12 @@ def _write_workspace_transaction_file(
 
 def _write_full_workspace_tree_file(
     fname: str | os.PathLike[str],
-    tree: xr.DataTree,
+    tree: xr.DataTree | None,
     root_attrs: Mapping[str, typing.Any],
     *,
     copy_source: str | os.PathLike[str] | None = None,
     copy_groups: Iterable[tuple[str, str, dict[str, typing.Any] | None]] = (),
+    compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     import shutil
 
@@ -2058,60 +2489,51 @@ def _write_full_workspace_tree_file(
         _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
         if use_scratch and _workspace_path_is_likely_network_path(fname):
+            if tree is None and copy_source is not None and copy_groups_tuple:
+                raise ValueError(
+                    "File-level workspace repack cannot run when HDF5 group "
+                    "copy reuse is disabled"
+                )
             copy_source = None
             copy_groups_tuple = ()
         if copy_source is not None and copy_groups_tuple:
-            with _xarray._workspace_file_lock(copy_source):
-                shutil.copyfile(copy_source, tmp_fname)
-            staging_root = f"__itws_copy_{uuid.uuid4().hex}"
-            staged_groups: list[
-                tuple[str, tuple[str, str, dict[str, typing.Any] | None]]
-            ] = []
-            with h5py.File(tmp_fname, "a") as tmp_file:
-                tmp_file.create_group(staging_root)
-                for index, (source_path, destination_path, attrs) in enumerate(
-                    copy_groups_tuple
-                ):
-                    source_path = source_path.strip("/")
-                    if source_path not in tmp_file:
-                        continue
-                    stage_path = f"{staging_root}/{index}"
-                    _move_h5_path(tmp_file, source_path, stage_path)
-                    staged_groups.append(
-                        (stage_path, (source_path, destination_path, attrs))
-                    )
-
-                for name in list(tmp_file):
-                    if name != staging_root:
-                        del tmp_file[name]
+            with (
+                _xarray._workspace_file_lock(copy_source),
+                h5py.File(copy_source, "r") as source_file,
+                h5py.File(tmp_fname, "w") as tmp_file,
+            ):
                 _write_root_attrs_to_open_workspace_file(
                     tmp_file, root_attrs, replace=True
                 )
-
-                for stage_path, (
-                    _source_path,
-                    destination_path,
-                    attrs,
-                ) in staged_groups:
+                for source_path, destination_path, attrs in copy_groups_tuple:
                     destination_path = destination_path.strip("/")
-                    _move_h5_path(tmp_file, stage_path, destination_path)
-                    if attrs is not None:
-                        _replace_h5_attrs(tmp_file[destination_path].attrs, attrs)
-                    copied_paths.add(destination_path)
-                del tmp_file[staging_root]
+                    if _copy_workspace_h5_group_to_open_file(
+                        source_file,
+                        tmp_file,
+                        source_path,
+                        destination_path,
+                        attrs,
+                    ):
+                        copied_paths.add(destination_path)
         else:
             with h5py.File(tmp_fname, "w") as tmp_file:
                 _write_root_attrs_to_open_workspace_file(
                     tmp_file, root_attrs, replace=True
                 )
 
-        for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
-            group_path = node.path.strip("/")
-            if not group_path or group_path in copied_paths:
-                continue
-            ds = node.to_dataset(inherit=False)
-            if ds.variables or ds.attrs:
-                _write_workspace_dataset_group_to_file(tmp_fname, group_path, ds)
+        if tree is not None:
+            for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
+                group_path = node.path.strip("/")
+                if not group_path or group_path in copied_paths:
+                    continue
+                ds = node.to_dataset(inherit=False)
+                if ds.variables or ds.attrs:
+                    _write_workspace_dataset_group_to_file(
+                        tmp_fname,
+                        group_path,
+                        ds,
+                        compression_mode=compression_mode,
+                    )
 
         _validate_workspace_h5_file(tmp_fname)
         _fsync_file(tmp_fname)

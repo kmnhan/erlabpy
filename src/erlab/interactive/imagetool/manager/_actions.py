@@ -33,6 +33,8 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ManagedWindowNode,
 )
 
+_workspace_repack_estimate = _manager_workspace._workspace_manifest_repack_estimate
+
 if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import Callable, Iterable, Mapping
@@ -1220,7 +1222,7 @@ class _ActionsController:
                                     (
                                         schema_version,
                                         delta_save_count,
-                                        _manifest,
+                                        manifest,
                                     ) = metadata_from_attrs(workspace_dt.attrs)
                                     if not self._manager._confirm_save_dirty_workspace(
                                         "Opening a workspace replaces the windows "
@@ -1241,10 +1243,25 @@ class _ActionsController:
                                         )
                                     )
                                     if loaded_workspace:
+                                        (
+                                            estimated_obsolete_bytes,
+                                            replacement_delta_count,
+                                            repack_estimate_known,
+                                        ) = _workspace_repack_estimate(
+                                            manifest,
+                                            delta_save_count=delta_save_count,
+                                        )
                                         self._manager._associate_loaded_workspace_file(
                                             access.path,
                                             schema_version,
                                             delta_save_count=delta_save_count,
+                                            estimated_obsolete_bytes=(
+                                                estimated_obsolete_bytes
+                                            ),
+                                            replacement_delta_count=(
+                                                replacement_delta_count
+                                            ),
+                                            repack_estimate_known=repack_estimate_known,
                                             workspace_access=access,
                                             rebind_data=False,
                                         )

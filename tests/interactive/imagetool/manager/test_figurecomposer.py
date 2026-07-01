@@ -16100,7 +16100,9 @@ def test_figure_composer_method_docs_button_opens_current_url(
     ]
 
 
-def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
+def test_figure_composer_method_helper_edge_contracts(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("kx", "ky"),
@@ -16129,6 +16131,15 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
+
+    render_calls: list[FigureComposerTool] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda tool: render_calls.append(tool),
+    )
+    tool.tool_status = tool.tool_status
+    assert render_calls == [tool]
 
     with pytest.raises(ValueError, match="Unsupported axes method"):
         figurecomposer_method._method_spec(
@@ -16223,10 +16234,16 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(grid_tool)
-    grid_tool.show_figure_window(activate=False)
-    grid_axes = figurecomposer_method._live_layout_axes(grid_tool)
+    live_layout_axes = figurecomposer_method._live_layout_axes
+    assert live_layout_axes(grid_tool) is None
+    grid_axes = live_layout_axes(grid_tool, render_if_missing=True)
     assert isinstance(grid_axes, dict)
     assert set(grid_axes) == {"axis-a"}
+    monkeypatch.setattr(
+        figurecomposer_method,
+        "_live_layout_axes",
+        lambda _tool, *, render_if_missing=False: grid_axes,
+    )
     assert (
         figurecomposer_method._first_live_axis(
             grid_tool,
@@ -16234,8 +16251,7 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         )
         is grid_axes["axis-a"]
     )
-    grid_tool.figure.clear()
-    assert figurecomposer_method._live_layout_axes(grid_tool) is None
+    assert live_layout_axes(grid_tool) is None
     assert (
         figurecomposer_method._limit_method_default_args(
             grid_tool,
@@ -16244,6 +16260,20 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
         )
         == ()
     )
+
+    scheduled_calls: list[tuple[QtCore.QObject, int, Callable[[], None]]] = []
+    monkeypatch.setattr(grid_tool, "_saved_tool_window_visible", lambda _ds: True)
+    monkeypatch.setattr(grid_tool, "_auto_redraw_enabled", lambda: True)
+    monkeypatch.setattr(
+        grid_tool, "_defer_restore_work", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda *args: scheduled_calls.append(args),
+    )
+    grid_tool._queue_post_restore_redraw_if_needed(xr.Dataset())
+    assert len(scheduled_calls) == 1
 
     int_control = figurecomposer_method.MethodControlSpec(
         kind=figurecomposer_method.MethodControlKind.INT_ARG,
@@ -27597,6 +27627,100 @@ def test_figure_composer_visible_restore_queues_auto_redraw(
 
     qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
     assert render_calls == [((restored,), {"show_window": True})]
+
+
+def test_figure_composer_deferred_restore_delays_visible_redraw(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"line": data},
+        sources=(FigureSourceState(name="line", label="line"),),
+        operations=(FigureOperationState.line(label="line", source="line"),),
+        primary_source="line",
+    )
+    qtbot.addWidget(tool)
+    ds = tool.to_dataset()
+    window_state = json.loads(ds.attrs["tool_window_state"])
+    window_state["visible"] = True
+    ds.attrs["tool_window_state"] = json.dumps(window_state)
+
+    render_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def record_render(*args, **kwargs) -> None:
+        render_calls.append((args, kwargs))
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", record_render)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert render_calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
+    assert render_calls == [((restored,), {"show_window": True})]
+
+
+def test_figure_composer_flushes_restore_work_before_user_outputs(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    calls: list[str] = []
+
+    monkeypatch.setattr(tool, "_flush_restore_work", lambda: calls.append("flush"))
+    monkeypatch.setattr(
+        tool, "_flush_pending_editor_commits", lambda: calls.append("commit")
+    )
+    monkeypatch.setattr(tool, "_warn_invalid_operation_targets", lambda: False)
+    monkeypatch.setattr(
+        erlab.interactive._figurecomposer._codegen,
+        "generated_code",
+        lambda _tool: "figure_code",
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda code: calls.append(f"copy:{code}"),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+
+    assert tool.generated_code() == "figure_code"
+    tool.copy_code()
+    tool.export_figure()
+    tool.current_provenance_spec(flush_deferred_restore=False)
+
+    assert calls == [
+        "flush",
+        "commit",
+        "flush",
+        "flush",
+        "commit",
+        "copy:figure_code",
+        "flush",
+        "commit",
+    ]
 
 
 def test_figure_composer_skips_preview_cache_when_unrendered(

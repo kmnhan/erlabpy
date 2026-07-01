@@ -1551,6 +1551,74 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     assert win_restored.current_provenance_spec() is None
 
 
+def test_fit2d_deferred_restore_preserves_raw_fit_blob_until_needed(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    _seed_fit2d_full_results(win, exp_decay_model, params)
+    expected_results = [
+        None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
+    ]
+    saved = win.to_dataset()
+    calls = []
+    fail_next_deserialize = {"value": False}
+    original = erlab.interactive.utils._deserialize_fit_dataset_blob
+
+    def _tracked_deserialize(blob):
+        calls.append(np.asarray(blob).size)
+        if fail_next_deserialize["value"]:
+            fail_next_deserialize["value"] = False
+            raise RuntimeError("fit deserialize failed")
+        return original(blob)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_deserialize_fit_dataset_blob",
+        _tracked_deserialize,
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    assert calls == []
+
+    resaved = restored.to_dataset()
+    assert calls == []
+    np.testing.assert_array_equal(
+        resaved[Fit2DTool._PERSISTED_FIT_RESULT_VAR].values,
+        saved[Fit2DTool._PERSISTED_FIT_RESULT_VAR].values,
+    )
+
+    fail_next_deserialize["value"] = True
+    with pytest.raises(RuntimeError, match="fit deserialize failed"):
+        restored._flush_restore_work()
+    assert len(calls) == 1
+
+    resaved_after_failure = restored.to_dataset()
+    assert len(calls) == 1
+    np.testing.assert_array_equal(
+        resaved_after_failure[Fit2DTool._PERSISTED_FIT_RESULT_VAR].values,
+        saved[Fit2DTool._PERSISTED_FIT_RESULT_VAR].values,
+    )
+
+    restored._flush_restore_work()
+
+    assert len(calls) == 2
+    _assert_fit_result_list_equivalent(restored._result_ds_full, expected_results)
+
+
 def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)

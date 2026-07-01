@@ -65,3 +65,19 @@ def test_make_parameter_round_trips_figure_options() -> None:
     opts = parameter_to_options(param)
     assert opts.figure.stylesheets == ["classic", "missing-style"]
     assert opts.figure.dpi == 150.0
+
+
+def test_make_parameter_workspace_compression_uses_display_labels() -> None:
+    param = make_parameter()
+    compression_param = param.child("io").child("workspace").child("compression")
+
+    assert compression_param.opts["type"] == "list"
+    assert set(compression_param.opts["limits"].values()) == {
+        "none",
+        "blosclz3",
+        "zstd1",
+    }
+
+    compression_param.setValue("blosclz3")
+
+    assert parameter_to_options(param).io.workspace.compression == "blosclz3"

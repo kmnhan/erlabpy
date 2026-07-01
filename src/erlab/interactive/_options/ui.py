@@ -125,6 +125,201 @@ def _stylesheet_names(value: typing.Any) -> list[str]:
     return out
 
 
+class _ChoiceSliderLabelRow(QtWidgets.QWidget):
+    def __init__(
+        self,
+        slider: QtWidgets.QSlider,
+        labels: typing.Sequence[str],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._slider = slider
+        self._labels: tuple[QtWidgets.QLabel, ...] = tuple(
+            self._make_label(index, label) for index, label in enumerate(labels)
+        )
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+    def _make_label(self, index: int, text: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(text, self)
+        label.setObjectName(f"choiceSliderLabel_{index}")
+        label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        return label
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(
+            sum(label.sizeHint().width() for label in self._labels),
+            self._label_height(),
+        )
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return self.sizeHint()
+
+    def edge_margins(self) -> tuple[int, int]:
+        if not self._labels:
+            return 0, 0
+        left_inset = self._slider_handle_center(0).x()
+        right_inset = (
+            self._slider.width()
+            - 1
+            - self._slider_handle_center(len(self._labels) - 1).x()
+        )
+        return (
+            max(0, self._half_label_width(self._labels[0]) - left_inset),
+            max(0, self._half_label_width(self._labels[-1]) - right_inset),
+        )
+
+    def update_label_positions(self) -> None:
+        row_height = self.height()
+        for index, label in enumerate(self._labels):
+            label_size = label.sizeHint()
+            tick_x = self._tick_x(index)
+            label.setGeometry(
+                tick_x - label_size.width() // 2,
+                0,
+                label_size.width(),
+                row_height,
+            )
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self.update_label_positions()
+
+    @staticmethod
+    def _half_label_width(label: QtWidgets.QLabel) -> int:
+        return (label.sizeHint().width() + 1) // 2
+
+    def _label_height(self) -> int:
+        return max((label.sizeHint().height() for label in self._labels), default=0)
+
+    def _slider_handle_center(self, index: int) -> QtCore.QPoint:
+        option = QtWidgets.QStyleOptionSlider()
+        self._slider.initStyleOption(option)
+        option.sliderPosition = index
+        option.sliderValue = index
+        style = self._slider.style()
+        if style is None:
+            raise RuntimeError("Workspace compression slider has no Qt style")
+        handle_rect = style.subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_Slider,
+            option,
+            QtWidgets.QStyle.SubControl.SC_SliderHandle,
+            self._slider,
+        )
+        return handle_rect.center()
+
+    def _tick_x(self, index: int) -> int:
+        return self.mapFromGlobal(
+            self._slider.mapToGlobal(self._slider_handle_center(index))
+        ).x()
+
+
+class _ChoiceSlider(QtWidgets.QWidget):
+    sigValueChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        choices: typing.Sequence[typing.Mapping[str, typing.Any]],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        if not choices:
+            raise ValueError("Choice slider requires at least one choice")
+        self._choices = tuple(
+            (str(choice.get("label", choice.get("value"))), choice.get("value"))
+            for choice in choices
+        )
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.slider.setRange(0, len(self._choices) - 1)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(1)
+        self.slider.setTickInterval(1)
+        self.slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        self.slider.valueChanged.connect(self._slider_value_changed)
+        self.setFocusProxy(self.slider)
+
+        slider_row = QtWidgets.QWidget(self)
+        self._slider_layout = QtWidgets.QHBoxLayout(slider_row)
+        self._slider_layout.setContentsMargins(0, 0, 0, 0)
+        self._slider_layout.setSpacing(0)
+        self._slider_layout.addWidget(self.slider)
+
+        self._label_row = _ChoiceSliderLabelRow(
+            self.slider, [label for label, _value in self._choices], self
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(slider_row)
+        layout.addWidget(self._label_row)
+        self._sync_label_geometry()
+
+    def count(self) -> int:
+        return len(self._choices)
+
+    def itemText(self, index: int) -> str:
+        return self._choices[index][0]
+
+    def itemData(self, index: int) -> typing.Any:
+        return self._choices[index][1]
+
+    def findData(self, value: typing.Any) -> int:
+        for index, (_label, choice_value) in enumerate(self._choices):
+            if choice_value == value:
+                return index
+        return -1
+
+    def currentData(self) -> typing.Any:
+        return self.itemData(self.slider.value())
+
+    def setCurrentData(self, value: typing.Any) -> None:
+        index = self.findData(value)
+        if index < 0:
+            raise ValueError(f"Unknown choice slider value: {value!r}")
+        self.slider.setValue(index)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._sync_label_geometry()
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._sync_label_geometry()
+
+    def event(self, event: QtCore.QEvent | None) -> bool:
+        handled = super().event(event)
+        if (
+            event is not None
+            and hasattr(self, "_label_row")
+            and event.type()
+            in {
+                QtCore.QEvent.Type.FontChange,
+                QtCore.QEvent.Type.StyleChange,
+            }
+        ):
+            self._sync_label_geometry()
+        return handled
+
+    def _sync_label_geometry(self) -> None:
+        left_margin, right_margin = self._label_row.edge_margins()
+        margins = self._slider_layout.contentsMargins()
+        if margins.left() != left_margin or margins.right() != right_margin:
+            self._slider_layout.setContentsMargins(left_margin, 0, right_margin, 0)
+            layout = self.layout()
+            if layout is not None:  # pragma: no branch
+                layout.activate()
+        self._label_row.update_label_positions()
+
+    def _slider_value_changed(self, _value: int) -> None:
+        self.sigValueChanged.emit(self.currentData())
+
+
 class _SettingsRow(QtWidgets.QFrame):
     def __init__(
         self,
@@ -408,6 +603,8 @@ class OptionDialog(QtWidgets.QDialog):
             return StylesheetListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
+        if ui_type == "choice_slider":
+            return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
             combo = QtWidgets.QComboBox(self)
             for choice in extra.get("ui_limits", ()):
@@ -481,6 +678,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigDpiChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
+        elif isinstance(control, _ChoiceSlider):
+            control.sigValueChanged.connect(
+                lambda _value, row=row: self._control_changed(row)
+            )
         elif isinstance(control, QtWidgets.QComboBox):
             control.currentIndexChanged.connect(
                 lambda _index, row=row: self._control_changed(row)
@@ -546,6 +747,8 @@ class OptionDialog(QtWidgets.QDialog):
             return True
         if isinstance(control, FigureDpiOverrideWidget):
             return False
+        if isinstance(control, _ChoiceSlider):
+            return False
         return isinstance(control, QtWidgets.QComboBox) and not isinstance(
             control, erlab.interactive.colors.ColorMapComboBox
         )
@@ -573,6 +776,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.value()
         if isinstance(control, erlab.interactive.colors.ColorMapComboBox):
             return control.currentText()
+        if isinstance(control, _ChoiceSlider):
+            return control.currentData()
         if isinstance(control, QtWidgets.QComboBox):
             value = control.currentData()
             return control.currentText() if value is None else value
@@ -605,6 +810,9 @@ class OptionDialog(QtWidgets.QDialog):
         if isinstance(control, erlab.interactive.colors.ColorMapComboBox):
             control.ensure_populated()
             control.setCurrentText(str(value))
+            return
+        if isinstance(control, _ChoiceSlider):
+            control.setCurrentData(value)
             return
         if isinstance(control, QtWidgets.QComboBox):
             index = control.findData(value)

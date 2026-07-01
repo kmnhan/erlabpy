@@ -1679,6 +1679,16 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot()
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        if self._pending_persisted_fit_result_blob is not None:
+            ds = ds.copy()
+            ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+                np.array(self._pending_persisted_fit_result_blob, copy=True),
+                dims=(self._PERSISTED_FIT_RESULT_DIM,),
+            )
+            ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(
+                self._pending_persisted_fit_is_current
+            )
+            return ds
         saved_results = [
             result_ds.expand_dims({self._PERSISTED_FIT_INDEX_DIM: [idx]})
             for idx, result_ds in enumerate(self._result_ds_full)
@@ -1703,13 +1713,11 @@ class Fit2DTool(Fit1DTool):
         ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
         return ds
 
-    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
-        if self._PERSISTED_FIT_RESULT_VAR not in ds:
-            return
+    def _restore_persisted_fit_result_blob(
+        self, blob: np.ndarray, *, fit_is_current: bool
+    ) -> None:
         sparse = _load_lmfit_for_ftool_restore(
-            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(
-                ds[self._PERSISTED_FIT_RESULT_VAR].values
-            )
+            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
         )
         y_size = int(self._data_full.sizes[self._y_dim_name])
         self._result_ds_full = [None] * y_size
@@ -1728,13 +1736,30 @@ class Fit2DTool(Fit1DTool):
                         }
                     )
                 self._result_ds_full[idx] = result_ds
-        self._refresh_contents_from_index(
-            mark_fit_stale=not bool(
-                ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)
-            )
-        )
+        self._refresh_contents_from_index(mark_fit_stale=not fit_is_current)
         self._update_param_plot_options()
         self._update_param_plot()
+        self._pending_persisted_fit_result_blob = None
+        self._pending_persisted_fit_is_current = False
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return
+        blob = np.array(
+            ds[self._PERSISTED_FIT_RESULT_VAR].values,
+            copy=True,
+        )
+        fit_is_current = bool(ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False))
+        self._pending_persisted_fit_result_blob = blob
+        self._pending_persisted_fit_is_current = fit_is_current
+        self._run_or_defer_restore_work(
+            lambda: self._restore_persisted_fit_result_blob(
+                blob,
+                fit_is_current=fit_is_current,
+            ),
+            key=self._PERSISTED_FIT_RESULT_VAR,
+            run_on_show=True,
+        )
 
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
@@ -2141,6 +2166,7 @@ class Fit2DTool(Fit1DTool):
 
     @QtCore.Slot()
     def _save_fit_full(self) -> None:
+        self._flush_restore_work()
         results = []
         for i, ds in enumerate(self._result_ds_full[self._y_range_slice()]):
             if ds is None:
@@ -2407,11 +2433,14 @@ class Fit2DTool(Fit1DTool):
         return prelude or None
 
     def current_provenance_spec(
-        self,
+        self, *, flush_deferred_restore: bool = True
     ) -> provenance.ToolProvenanceSpec | None:
         # Manager metadata and other passive provenance consumers should not trigger
         # interactive warnings for incomplete fit ranges.
-        return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+        return self._resolve_script_provenance(
+            self._DETACHED_COPY_PROVENANCE,
+            flush_deferred_restore=flush_deferred_restore,
+        )
 
     @QtCore.Slot()
     def copy_code(self) -> str:
@@ -2463,6 +2492,7 @@ class Fit2DTool(Fit1DTool):
         return param_name, stderr
 
     def output_imagetool_data(self, output_id: str | enum.Enum) -> xr.DataArray | None:
+        self._flush_restore_work()
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_data(output_id)
@@ -2479,6 +2509,7 @@ class Fit2DTool(Fit1DTool):
     def output_imagetool_provenance(
         self, output_id: str | enum.Enum, data: xr.DataArray
     ) -> provenance.ToolProvenanceSpec | None:
+        self._flush_restore_work()
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_provenance(output_id, data)

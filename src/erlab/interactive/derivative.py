@@ -351,6 +351,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
     @property
     def result(self) -> xr.DataArray:
+        self._flush_restore_work(self._update_result_now)
         return self._result
 
     @result.setter
@@ -393,7 +394,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def update_image(self) -> None:
         if not self._pause_update:
             self.images[1].setDataArray(
-                self.result, levels=self.get_levels(self.result.values)
+                self._result,
+                levels=self.get_levels(self._result.values),
             )
             self._write_state()
 
@@ -460,9 +462,15 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def update_result(self) -> None:
         if not self._pause_update:
-            self.result = self.process_func(self.processed_data, **self.process_kwargs)
-            self._notify_data_changed()
-            self._write_state()
+            self._run_or_defer_restore_work(
+                self._update_result_now,
+                run_on_show=True,
+            )
+
+    def _update_result_now(self) -> None:
+        self.result = self.process_func(self.processed_data, **self.process_kwargs)
+        self._notify_data_changed()
+        self._write_state()
 
     @QtCore.Slot()
     def open_itool(self) -> None:
