@@ -907,8 +907,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     ) -> None:
         self._validate_fit_snapshot(snapshot)
         self._pending_persisted_fit_snapshot = snapshot
+
+        def restore_snapshot() -> None:
+            self._restore_fit_snapshot(snapshot)
+
         self._run_or_defer_restore_work(
-            lambda snapshot=snapshot: self._restore_fit_snapshot(snapshot),
+            restore_snapshot,
             key=key,
             run_on_show=True,
         )
