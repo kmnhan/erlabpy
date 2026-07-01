@@ -1,6 +1,10 @@
-## Unreleased
+## v3.24.0 (2026-07-01)
 
 ### ✨ Features
+
+- **ktool:** add the ability to scale angles (#442) ([6b31ec9](https://github.com/kmnhan/erlabpy/commit/6b31ec9089a62da4bcb7e31a25fe61130bfb9853))
+
+  On some rare cases, badly calibrated spectrometers and/or stray fields may cause warping of the angle coordinates. This adds the ability to scale the recorded angles linearly in `ktool` before converting to momentum space.
 
 - **interactive:** make momentum conversion easy to apply to multiple tools (#427) ([0ab2f4f](https://github.com/kmnhan/erlabpy/commit/0ab2f4fdf99da713285d1c9518dbf7049e9103c8))
 
@@ -121,6 +125,22 @@
   ImageTool Manager workspaces now save and restore rich data attributes such as dictionaries, lists, tuples, NumPy scalars/arrays, bytes, complex values, booleans, numbers, strings, and None. Unsupported attribute objects are skipped with a warning instead of crashing the save.
 
 - **imagetool:** fixes an issue where loading a saved ImageTool with multiple cursors restored the cursors internally but left the cursor selection combo box showing only one cursor (#388) ([38c05cc](https://github.com/kmnhan/erlabpy/commit/38c05cc78179e55ccc2924ad44fcb5aa6686d7d1))
+
+### ⚡️ Performance
+
+- **manager:** various improvements to workspace saving (#449) ([86c60ce](https://github.com/kmnhan/erlabpy/commit/86c60ce7a8783a3d64902b3ba77ddd7c2cc17e44))
+
+  ImageTool Manager now uses a more efficient algorithm to compress the file size of `.itws` files. The behavior can also be tweaked in the settings window.
+
+  Also tweaks various parts of the loading process to speed up workspace opening.
+
+- **manager:** speed up loading large workspace files (#439) ([fc56948](https://github.com/kmnhan/erlabpy/commit/fc56948079794f45f46bfe8e1539af41a1477085))
+
+### ♻️ Code Refactor
+
+- **manager:** drop support for workspace files saved with .h5 extension (#448) ([b0ba70a](https://github.com/kmnhan/erlabpy/commit/b0ba70a09b5e6d06cacf07b1ed7759a012f0ecef))
+
+  On early versions, manager workspaces were saved to .h5 instead of .itws files. This commit drops compatibility for those files; manually rename the extension to .itws to load them in the manager.
 
 ## v3.23.2 (2026-05-31)
 
