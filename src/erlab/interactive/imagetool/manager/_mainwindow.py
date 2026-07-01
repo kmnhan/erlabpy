@@ -7,6 +7,7 @@ import logging
 import re
 import sys
 import typing
+from collections.abc import Callable
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -910,14 +911,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self.reindex_action.setToolTip("Reset indices of all windows")
 
         self.link_action = QtWidgets.QAction("Link", self)
-        self.link_action.triggered.connect(lambda _checked=False: self.link_selected())
+        self.link_action.triggered.connect(self._link_selected_from_action)
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
         self.link_action.setToolTip("Link selected windows")
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
-        self.unlink_action.triggered.connect(
-            lambda _checked=False: self.unlink_selected()
-        )
+        self.unlink_action.triggered.connect(self._unlink_selected_from_action)
         self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
         self.unlink_action.setToolTip("Unlink selected windows")
 
@@ -1142,9 +1141,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         # Initialize GUI
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        self.main_splitter.splitterMoved.connect(
-            lambda _pos, _index: self._mark_workspace_layout_dirty()
-        )
+        self.main_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
         self.setCentralWidget(self.main_splitter)
 
         # Construct left side of splitter
@@ -1195,9 +1192,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.right_splitter.setChildrenCollapsible(False)
-        self.right_splitter.splitterMoved.connect(
-            lambda _pos, _index: self._mark_workspace_layout_dirty()
-        )
+        self.right_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
         right_layout.addWidget(self.right_splitter, 1)
 
         self.text_box = QtWidgets.QTextEdit(self)
@@ -1304,7 +1299,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._show_metadata_derivation_menu
         )
         self.metadata_derivation_list.itemActivated.connect(
-            lambda _item, _column: self._activate_selected_derivation_step()
+            self._activate_selected_derivation_step
         )
         self.metadata_derivation_list.setVisible(False)
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
@@ -1461,15 +1456,33 @@ class ImageToolManager(_ImageToolManagerBase):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         logger.debug("Closing ImageTool Manager...")
+        if self._workspace_state.save_in_progress:
+            self._status_bar.showMessage(
+                "Workspace save in progress; close after it finishes", 3000
+            )
+            if event is not None:
+                event.ignore()
+            return
         self._commit_note_editor()
         previous_closing_workspace_document = self._workspace_state.closing_document
         self._workspace_state.closing_document = True
         try:
-            if not self._confirm_save_dirty_workspace(
+            save_choice = self._workspace_controller._dirty_workspace_save_choice(
                 "Closing this manager will discard unsaved workspace changes."
-            ):
+            )
+            if save_choice == "cancel":
                 if event:
                     event.ignore()
+                return
+            if save_choice == "save":
+                if event:
+                    event.ignore()
+
+                def _close_after_save(save_succeeded: bool) -> None:
+                    if save_succeeded and not self.is_workspace_modified:
+                        self.close()
+
+                self._workspace_controller.save(on_finished=_close_after_save)
                 return
 
             logger.debug("Waiting for file handlers to finish...")
@@ -1488,7 +1501,12 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     return
 
-            self._compact_workspace_before_shutdown()
+            if self._workspace_controller._compact_workspace_before_shutdown(
+                on_finished=self.close
+            ):
+                if event:
+                    event.ignore()
+                return
 
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
@@ -3335,7 +3353,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._edit_selected_derivation_step()
 
     def _activate_selected_derivation_step(
-        self, _item: QtWidgets.QTreeWidgetItem | None = None
+        self, _item: QtWidgets.QTreeWidgetItem | None = None, _column: int = 0
     ) -> None:
         self._details_panel._activate_selected_derivation_step()
 
@@ -3915,7 +3933,7 @@ class ImageToolManager(_ImageToolManagerBase):
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
+        require_matching_compression: bool = True,
     ) -> None:
         self._workspace_controller._write_full_workspace_file(
             fname,
@@ -3936,7 +3954,7 @@ class ImageToolManager(_ImageToolManagerBase):
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
+        require_matching_compression: bool = True,
     ) -> None:
         self._workspace_controller._save_workspace_document(
             fname,
@@ -3956,9 +3974,6 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._workspace_save_dialog(
             native=native, caption=caption, selected_file=selected_file
         )
-
-    def _confirm_save_dirty_workspace(self, action_text: str) -> bool:
-        return self._workspace_controller._confirm_save_dirty_workspace(action_text)
 
     def _show_legacy_workspace_upgrade_message(
         self, fname: str | os.PathLike[str]
@@ -4063,72 +4078,15 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
         return self._workspace_controller._workspace_save_snapshot(fname)
 
-    def _workspace_full_save_snapshot(
-        self, generation: int
-    ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        return self._workspace_controller._workspace_full_save_snapshot(generation)
-
-    def _workspace_full_save_copy_groups(
-        self,
-        tree: xr.DataTree,
-        *,
-        compression_mode: WorkspaceCompressionMode | None = None,
-        require_matching_compression: bool = False,
-    ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
-        return self._workspace_controller._workspace_full_save_copy_groups(
-            tree,
-            compression_mode=compression_mode,
-            require_matching_compression=require_matching_compression,
-        )
-
-    def _open_workspace_save_wait_dialog(
-        self,
-        parent: QtWidgets.QWidget,
-        *,
-        title: str = "Saving Workspace",
-        label_text: str = "Saving workspace...",
-    ) -> QtWidgets.QDialog:
-        return self._workspace_controller._open_workspace_save_wait_dialog(
-            parent, title=title, label_text=label_text
-        )
-
-    def _set_workspace_save_actions_enabled(
-        self, enabled: bool
-    ) -> tuple[bool, bool, bool]:
-        return self._workspace_controller._set_workspace_save_actions_enabled(enabled)
-
-    def _restore_workspace_save_actions_enabled(
-        self, previous: tuple[bool, bool, bool]
-    ) -> None:
-        self._workspace_controller._restore_workspace_save_actions_enabled(previous)
-
-    def _run_workspace_save_worker(
-        self,
-        fname: str | os.PathLike[str],
-        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
-        origin: QtWidgets.QWidget | None,
-        *,
-        wait_dialog_title: str = "Saving Workspace",
-        wait_dialog_text: str = "Saving workspace...",
-    ) -> tuple[bool, float, str]:
-        return self._workspace_controller._run_workspace_save_worker(
-            fname,
-            snapshot,
-            origin,
-            wait_dialog_title=wait_dialog_title,
-            wait_dialog_text=wait_dialog_text,
-        )
-
-    def save(self, *, native: bool = True) -> bool:
+    @QtCore.Slot()
+    def save(self, *, native: bool = True) -> None:
         self._commit_note_editor()
-        return self._workspace_controller.save(native=native)
+        self._workspace_controller.save(native=native)
 
-    def save_as(self, *, native: bool = True) -> bool:
+    @QtCore.Slot()
+    def save_as(self, *, native: bool = True) -> None:
         self._commit_note_editor()
-        return self._workspace_controller.save_as(native=native)
-
-    def _compact_workspace_before_shutdown(self) -> None:
-        self._workspace_controller._compact_workspace_before_shutdown()
+        self._workspace_controller.save_as(native=native)
 
     def compact_workspace(self) -> bool:
         self._commit_note_editor()
@@ -4525,8 +4483,16 @@ class ImageToolManager(_ImageToolManagerBase):
             link_colors=link_colors, deselect=deselect
         )
 
+    @QtCore.Slot()
+    def _link_selected_from_action(self) -> None:
+        self.link_selected()
+
     def unlink_selected(self, deselect: bool = True) -> None:
         self._actions_controller.unlink_selected(deselect=deselect)
+
+    @QtCore.Slot()
+    def _unlink_selected_from_action(self) -> None:
+        self.unlink_selected()
 
     def offload_selected_to_workspace(self) -> None:
         self._actions_controller.offload_selected_to_workspace()

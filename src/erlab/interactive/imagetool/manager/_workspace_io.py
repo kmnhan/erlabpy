@@ -11,7 +11,6 @@ import time
 import traceback
 import typing
 import uuid
-from collections.abc import Mapping
 
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
@@ -236,6 +235,14 @@ class _WorkspaceIOController:
             str, tuple[tuple[tuple[int, str], ...], bool]
         ] = {}
         self._pending_node_window_modified: dict[str, bool] = {}
+        self._background_save_worker: _manager_workspace._WorkspaceSaveWorker | None = (
+            None
+        )
+        self._background_save_receiver: (
+            _manager_workspace._WorkspaceSaveResultReceiver | None
+        ) = None
+        self._background_save_requested = False
+        self._shutdown_compaction_attempted = False
 
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
@@ -455,6 +462,50 @@ class _WorkspaceIOController:
         clear_action.triggered.connect(self._manager._clear_recent_workspaces)
         self._manager.open_recent_menu.addAction(clear_action)
 
+    def _load_workspace_path(self, path: pathlib.Path, *, native: bool = True) -> bool:
+        self._manager._recent_directory = str(path.parent)
+        try:
+            loaded = self._manager._load_workspace_file(
+                path,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+                native=native,
+            )
+        except Exception as exc:
+            if _manager_workspace._is_workspace_file_lock_error(exc):
+                logger.info(
+                    "Workspace file is already open or locked: %s",
+                    path,
+                    extra={"suppress_ui_alert": True},
+                )
+                _show_workspace_file_lock_error(self._manager, path)
+            else:
+                logger.exception(
+                    "Error while loading workspace",
+                    extra={"suppress_ui_alert": True},
+                )
+                erlab.interactive.utils.MessageDialog.critical(
+                    self._manager,
+                    "Error",
+                    "An error occurred while loading the workspace file.",
+                )
+            return False
+        if loaded:
+            self._manager._record_recent_workspace(path)
+        return loaded
+
+    def _open_workspace_after_dirty_prompt(
+        self, fname: str | os.PathLike[str], *, native: bool = True
+    ) -> bool:
+        path = pathlib.Path(fname).expanduser().resolve()
+        return self._run_after_dirty_workspace_saved_or_discarded(
+            "Opening a workspace replaces the windows currently in this manager.",
+            lambda: self._load_workspace_path(path, native=native),
+            native=native,
+        )
+
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         """Open a recently used workspace file."""
         path = pathlib.Path(fname).expanduser().resolve()
@@ -485,41 +536,7 @@ class _WorkspaceIOController:
                 "ImageTool Manager opens workspace files with the .itws extension.",
             )
             return False
-        if not self._manager._confirm_save_dirty_workspace(
-            "Opening a workspace replaces the windows currently in this manager."
-        ):
-            return False
-        self._manager._recent_directory = str(path.parent)
-        try:
-            loaded = self._manager._load_workspace_file(
-                path,
-                replace=True,
-                associate=True,
-                mark_dirty=False,
-                select=False,
-            )
-        except Exception as exc:
-            if _manager_workspace._is_workspace_file_lock_error(exc):
-                logger.info(
-                    "Workspace file is already open or locked: %s",
-                    path,
-                    extra={"suppress_ui_alert": True},
-                )
-                _show_workspace_file_lock_error(self._manager, path)
-            else:
-                logger.exception(
-                    "Error while loading workspace",
-                    extra={"suppress_ui_alert": True},
-                )
-                erlab.interactive.utils.MessageDialog.critical(
-                    self._manager,
-                    "Error",
-                    "An error occurred while loading the workspace file.",
-                )
-            return False
-        if loaded:
-            self._manager._record_recent_workspace(path)
-        return loaded
+        return self._open_workspace_after_dirty_prompt(path)
 
     @property
     def workspace_path(self) -> str | None:
@@ -2480,33 +2497,206 @@ class _WorkspaceIOController:
                 else:
                     self._manager._standalone_app_pending_states[key] = app_state
 
+    def _workspace_datatree_for_payload_uids(self, uids: Iterable[str]) -> xr.DataTree:
+        constructor: dict[str, xr.Dataset] = {}
+        for uid in sorted(set(uids), key=self._manager._workspace_node_path):
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None:
+                continue
+            self._manager._serialize_workspace_node(
+                constructor,
+                node,
+                self._manager._workspace_node_path(uid),
+                include_children=False,
+            )
+        tree = xr.DataTree.from_dict(constructor)
+        _manager_workspace._set_legacy_workspace_schema(tree.attrs)
+        return tree
+
+    def _workspace_full_save_source_identities(
+        self,
+    ) -> tuple[pathlib.Path, dict[tuple[str, str], str]] | None:
+        workspace_path = self._manager._workspace_state.path
+        if workspace_path is None:
+            return None
+        workspace_path = pathlib.Path(workspace_path)
+        if (
+            self._manager._workspace_state.schema_version
+            != _manager_workspace._current_workspace_schema_version()
+            or not workspace_path.exists()
+        ):
+            return None
+
+        try:
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
+                workspace_path
+            )
+        except Exception:
+            return None
+        schema_version, _delta_save_count, manifest = (
+            _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+        )
+        if (
+            schema_version != _manager_workspace._current_workspace_schema_version()
+            or manifest is None
+        ):
+            return None
+
+        identities: dict[tuple[str, str], str] = {}
+        nodes = manifest.get("nodes", ())
+        if isinstance(nodes, list):
+            for entry in nodes:
+                if not isinstance(entry, dict):
+                    continue
+                uid = entry.get("uid")
+                kind = entry.get("kind")
+                path = entry.get("path")
+                if (
+                    isinstance(uid, str)
+                    and isinstance(kind, str)
+                    and kind in {"imagetool", "tool"}
+                    and isinstance(path, str)
+                ):
+                    identities[(uid, kind)] = f"{path}/{kind}"
+        if not identities:
+            return None
+        return workspace_path, identities
+
+    def _workspace_full_save_manifest_entries(
+        self, root_attrs: Mapping[str, typing.Any]
+    ) -> list[tuple[str, str, str]]:
+        manifest = _manager_workspace._workspace_manifest_from_attrs(
+            typing.cast("Mapping[Hashable, typing.Any]", root_attrs)
+        )
+        nodes = manifest.get("nodes", ())
+        if not isinstance(nodes, list):
+            return []
+        entries: list[tuple[str, str, str]] = []
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            uid = entry.get("uid")
+            kind = entry.get("kind")
+            path = entry.get("path")
+            if (
+                isinstance(uid, str)
+                and isinstance(kind, str)
+                and kind in {"imagetool", "tool"}
+                and isinstance(path, str)
+            ):
+                entries.append((uid, kind, f"{path}/{kind}"))
+        return entries
+
+    def _workspace_full_save_dirty_payload_uids(self) -> set[str]:
+        state = self._manager._workspace_state
+        serialize_uids: set[str] = set()
+        for uid in state.dirty_added | state.dirty_data:
+            if uid not in self._manager._tool_graph.nodes:
+                continue
+            serialize_uids.add(uid)
+            serialize_uids.update(self._manager._iter_descendant_uids(uid))
+        serialize_uids.update(
+            uid for uid in state.dirty_state if uid in self._manager._tool_graph.nodes
+        )
+        return serialize_uids
+
+    def _workspace_full_save_manifest_first_snapshot(
+        self,
+        generation: int,
+        fname: str | os.PathLike[str],
+        root_attrs: dict[str, typing.Any],
+        *,
+        compression_mode: WorkspaceCompressionMode,
+    ) -> _manager_workspace._WorkspaceSaveSnapshot | None:
+        if _manager_workspace._workspace_path_is_likely_network_path(fname):
+            return None
+        source = self._workspace_full_save_source_identities()
+        if source is None:
+            return None
+        workspace_path, identities = source
+
+        copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
+        serialize_uids = self._workspace_full_save_dirty_payload_uids()
+        try:
+            import h5py
+
+            _manager_xarray.ensure_workspace_hdf5_filters_registered()
+            with (
+                _manager_xarray._workspace_file_lock(workspace_path),
+                h5py.File(workspace_path, "r") as h5_file,
+            ):
+                group_matches_compression = (
+                    _manager_workspace._workspace_h5_group_matches_current_compression
+                )
+                for (
+                    uid,
+                    kind,
+                    payload_path,
+                ) in self._workspace_full_save_manifest_entries(root_attrs):
+                    node = self._manager._tool_graph.nodes.get(uid)
+                    if node is None:
+                        continue
+                    if not node.is_imagetool:
+                        tool = node.tool_window
+                        if tool is None or not tool.can_save_and_load():
+                            continue
+                    source_path = identities.get((uid, kind))
+                    if source_path is None or source_path != payload_path:
+                        serialize_uids.add(uid)
+                        continue
+                    if uid in serialize_uids:
+                        continue
+                    compression_matches = group_matches_compression(
+                        h5_file,
+                        source_path,
+                        compression_mode,
+                    )
+                    if not compression_matches:
+                        serialize_uids.add(uid)
+                        continue
+                    copy_groups.append((source_path, payload_path, None))
+        except Exception:
+            logger.debug(
+                "Falling back to DataTree full-save snapshot",
+                exc_info=True,
+            )
+            return None
+
+        tree = self._workspace_datatree_for_payload_uids(serialize_uids)
+        return _manager_workspace._WorkspaceSaveSnapshot(
+            generation=generation,
+            root_attrs=root_attrs,
+            delta_save_count=0,
+            compression_mode=compression_mode,
+            full_tree=tree,
+            copy_source=str(workspace_path),
+            copy_groups=tuple(copy_groups),
+        )
+
     def _write_full_workspace_file(
         self,
         fname: str | os.PathLike[str],
         *,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
+        require_matching_compression: bool = True,
     ) -> None:
-        tree: xr.DataTree = self._manager._to_datatree()
-        if reuse_unchanged_groups:
-            copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(
-                tree,
-                compression_mode=self._workspace_compression_mode(),
-                require_matching_compression=require_matching_compression,
-            )
-        else:
-            copy_source, copy_groups = None, ()
+        snapshot = self._workspace_full_save_snapshot(
+            self._manager._workspace_state.dirty_generation,
+            fname=fname,
+            reuse_unchanged_groups=reuse_unchanged_groups,
+            require_matching_compression=require_matching_compression,
+        )
         try:
             _manager_workspace._write_full_workspace_tree_file(
                 fname,
-                tree,
-                self._manager._workspace_root_attrs_payload(delta_save_count=0),
-                copy_source=copy_source,
-                copy_groups=copy_groups,
-                compression_mode=self._workspace_compression_mode(),
+                snapshot.full_tree,
+                snapshot.root_attrs,
+                copy_source=snapshot.copy_source,
+                copy_groups=snapshot.copy_groups,
+                compression_mode=snapshot.compression_mode,
             )
         finally:
-            tree.close()
+            snapshot.close()
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
         dirty_existing = [
@@ -2597,7 +2787,7 @@ class _WorkspaceIOController:
         force_full: bool = False,
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
+        require_matching_compression: bool = True,
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
@@ -2662,9 +2852,9 @@ class _WorkspaceIOController:
             return None
         return dialog.selectedFiles()[0]
 
-    def _confirm_save_dirty_workspace(self, action_text: str) -> bool:
+    def _dirty_workspace_save_choice(self, action_text: str) -> str:
         if not self._manager.is_workspace_modified:
-            return True
+            return "clean"
 
         msg_box = QtWidgets.QMessageBox(self._manager)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -2681,8 +2871,29 @@ class _WorkspaceIOController:
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Save)
         result = msg_box.exec()
         if result == QtWidgets.QMessageBox.StandardButton.Save:
-            return self._manager.save()
-        return result == QtWidgets.QMessageBox.StandardButton.Discard
+            return "save"
+        if result == QtWidgets.QMessageBox.StandardButton.Discard:
+            return "discard"
+        return "cancel"
+
+    def _run_after_dirty_workspace_saved_or_discarded(
+        self,
+        action_text: str,
+        continuation: Callable[[], bool | None],
+        *,
+        native: bool = True,
+    ) -> bool:
+        choice = self._dirty_workspace_save_choice(action_text)
+        if choice == "cancel":
+            return False
+        if choice in {"clean", "discard"}:
+            return bool(continuation())
+
+        def _continue_after_save(save_succeeded: bool) -> None:
+            if save_succeeded and not self._manager.is_workspace_modified:
+                continuation()
+
+        return self.save(native=native, on_finished=_continue_after_save)
 
     def _show_legacy_workspace_upgrade_message(
         self, fname: str | os.PathLike[str]
@@ -2926,14 +3137,36 @@ class _WorkspaceIOController:
             return False
 
         if self._manager._workspace_state.path is None:
-            if not self._manager.save_as(native=native):
-                return False
-        elif (
+            return self.save_as(
+                native=native,
+                on_finished=lambda save_succeeded: (
+                    self._offload_targets_to_current_workspace(offload_targets)
+                    if save_succeeded
+                    and not self._manager.is_workspace_modified
+                    and self._manager._workspace_state.path is not None
+                    else None
+                ),
+            )
+        if (
             self._manager.is_workspace_modified
             or self._manager._workspace_state.needs_full_save
-        ) and not self._manager.save(native=native):
-            return False
+        ):
+            return self.save(
+                native=native,
+                on_finished=lambda save_succeeded: (
+                    self._offload_targets_to_current_workspace(offload_targets)
+                    if save_succeeded
+                    and not self._manager.is_workspace_modified
+                    and self._manager._workspace_state.path is not None
+                    else None
+                ),
+            )
 
+        return self._offload_targets_to_current_workspace(offload_targets)
+
+    def _offload_targets_to_current_workspace(
+        self, offload_targets: Iterable[int | str]
+    ) -> bool:
         if self._manager._workspace_state.path is None:
             return False
 
@@ -3090,8 +3323,8 @@ class _WorkspaceIOController:
         generation = self._manager._workspace_state.dirty_generation
         self._manager._workspace_state.saving_depth += 1
         try:
-            if self._manager._workspace_requires_full_save(fname):
-                return self._manager._workspace_full_save_snapshot(generation)
+            if self._workspace_requires_full_save(fname):
+                return self._workspace_full_save_snapshot(generation)
             if self._workspace_layout_only_modified():
                 delta_save_count = self._manager._workspace_state.delta_save_count
                 root_attrs = self._manager._workspace_root_attrs_payload(
@@ -3111,18 +3344,49 @@ class _WorkspaceIOController:
             self._manager._workspace_state.saving_depth -= 1
 
     def _workspace_full_save_snapshot(
-        self, generation: int
+        self,
+        generation: int,
+        *,
+        fname: str | os.PathLike[str] | None = None,
+        reuse_unchanged_groups: bool = True,
+        require_matching_compression: bool = True,
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        tree = self._manager._to_datatree()
-        copy_source, copy_groups = self._manager._workspace_full_save_copy_groups(
-            tree,
-            compression_mode=self._workspace_compression_mode(),
+        compression_mode = self._workspace_compression_mode()
+        root_attrs = self._manager._workspace_root_attrs_payload(delta_save_count=0)
+        if fname is None:
+            fname = self._manager._workspace_state.path
+        target_drops_copy_groups = (
+            fname is not None
+            and _manager_workspace._workspace_path_is_likely_network_path(fname)
         )
+        if (
+            reuse_unchanged_groups
+            and fname is not None
+            and not target_drops_copy_groups
+        ):
+            snapshot = self._workspace_full_save_manifest_first_snapshot(
+                generation,
+                fname,
+                root_attrs,
+                compression_mode=compression_mode,
+            )
+            if snapshot is not None:
+                return snapshot
+
+        tree = self._manager._to_datatree()
+        if reuse_unchanged_groups and not target_drops_copy_groups:
+            copy_source, copy_groups = self._workspace_full_save_copy_groups(
+                tree,
+                compression_mode=compression_mode,
+                require_matching_compression=require_matching_compression,
+            )
+        else:
+            copy_source, copy_groups = None, ()
         return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
-            root_attrs=self._manager._workspace_root_attrs_payload(delta_save_count=0),
+            root_attrs=root_attrs,
             delta_save_count=0,
-            compression_mode=self._workspace_compression_mode(),
+            compression_mode=compression_mode,
             full_tree=tree,
             copy_source=copy_source,
             copy_groups=copy_groups,
@@ -3191,7 +3455,7 @@ class _WorkspaceIOController:
         tree: xr.DataTree,
         *,
         compression_mode: WorkspaceCompressionMode | None = None,
-        require_matching_compression: bool = False,
+        require_matching_compression: bool = True,
     ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
         if self._manager._workspace_state.path is None:
             return None, ()
@@ -3286,24 +3550,6 @@ class _WorkspaceIOController:
                 copy_groups.append((source_path, payload_path, attrs))
         return str(workspace_path), tuple(copy_groups)
 
-    def _open_workspace_save_wait_dialog(
-        self,
-        parent: QtWidgets.QWidget,
-        *,
-        title: str = "Saving Workspace",
-        label_text: str = "Saving workspace...",
-    ) -> QtWidgets.QDialog:
-        dialog = QtWidgets.QProgressDialog(label_text, "", 0, 0, parent)
-        dialog.setCancelButton(None)
-        dialog.setWindowTitle(title)
-        dialog.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.setValue(0)
-        dialog.show()
-        return dialog
-
     def _set_workspace_save_actions_enabled(
         self, enabled: bool
     ) -> tuple[bool, bool, bool]:
@@ -3324,108 +3570,94 @@ class _WorkspaceIOController:
         self._manager.save_as_action.setEnabled(previous[1])
         self._manager.compact_workspace_action.setEnabled(previous[2])
 
-    def _run_workspace_save_worker(
+    def _start_workspace_save_worker(
         self,
         fname: str | os.PathLike[str],
         snapshot: _manager_workspace._WorkspaceSaveSnapshot,
-        origin: QtWidgets.QWidget | None,
         *,
-        wait_dialog_title: str = "Saving Workspace",
-        wait_dialog_text: str = "Saving workspace...",
-    ) -> tuple[bool, float, str]:
-        loop = QtCore.QEventLoop(self._manager)
-        result: dict[str, typing.Any] = {"ok": False, "elapsed": 0.0, "error": ""}
-        receiver = _manager_workspace._WorkspaceSaveResultReceiver(
-            loop, result, self._manager
-        )
-        worker = _manager_workspace._WorkspaceSaveWorker(fname, snapshot)
-        wait_dialog: QtWidgets.QDialog | None = None
-        wait_timer = QtCore.QTimer(self._manager)
-        wait_timer.setSingleShot(True)
+        on_finished: Callable[[bool, float, str], None],
+        on_start_error: Callable[[], None] | None = None,
+    ) -> bool:
+        thread_pool = QtCore.QThreadPool.globalInstance()
+        if thread_pool is None:
+            snapshot.close()
+            if on_start_error is not None:
+                on_start_error()
+            return False
 
-        def _show_wait_dialog() -> None:
-            nonlocal wait_dialog
-            if wait_dialog is None and self._manager._workspace_state.save_in_progress:
-                wait_dialog = self._manager._open_workspace_save_wait_dialog(
-                    origin or self._manager,
-                    title=wait_dialog_title,
-                    label_text=wait_dialog_text,
+        worker = _manager_workspace._WorkspaceSaveWorker(fname, snapshot)
+        previous_action_states = self._set_workspace_save_actions_enabled(False)
+
+        def _finish(ok: bool, elapsed: float, error_text: str) -> None:
+            self._manager._workspace_state.save_in_progress = False
+            self._restore_workspace_save_actions_enabled(previous_action_states)
+            receiver = self._background_save_receiver
+            self._background_save_receiver = None
+            self._background_save_worker = None
+            if receiver is not None:
+                receiver.deleteLater()
+            try:
+                on_finished(ok, elapsed, error_text)
+            except Exception:
+                logger.exception(
+                    "Error while finishing workspace save",
+                    extra={"suppress_ui_alert": True},
+                )
+                self._manager._status_bar.clearMessage()
+                self._manager._show_operation_error(
+                    "Error while saving workspace",
+                    "An error occurred while saving the workspace file.",
                 )
 
-        wait_timer.timeout.connect(_show_wait_dialog)
+        receiver = _manager_workspace._WorkspaceSaveResultReceiver(
+            callback=_finish,
+            parent=self._manager,
+        )
         worker.signals.finished.connect(receiver.finish)
         self._manager._workspace_state.save_in_progress = True
-        previous_action_states = self._manager._set_workspace_save_actions_enabled(
-            False
-        )
+        self._background_save_worker = worker
+        self._background_save_receiver = receiver
         try:
-            wait_timer.start(
-                max(0, int(_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS * 1000))
-            )
-            thread_pool = QtCore.QThreadPool.globalInstance()
-            if thread_pool is None:
-                raise RuntimeError("Qt thread pool is unavailable")
             thread_pool.start(worker)
-            loop.exec()
-        finally:
-            self._manager._workspace_state.save_in_progress = False
-            wait_timer.stop()
-            wait_timer.deleteLater()
-            if wait_dialog is not None:
-                wait_dialog.close()
-                wait_dialog.deleteLater()
-            receiver.deleteLater()
-            self._manager._restore_workspace_save_actions_enabled(
-                previous_action_states
-            )
-        return (
-            typing.cast("bool", result["ok"]),
-            typing.cast("float", result["elapsed"]),
-            typing.cast("str", result["error"]),
-        )
-
-    def save(self, *, native: bool = True) -> bool:
-        """Save the current workspace document.
-
-        Parameters
-        ----------
-        native
-            Whether to use the native file dialog, by default `True`. This option is
-            used when testing the application to ensure reproducibility.
-        """
-        workspace_path = self._current_workspace_document_path()
-        if workspace_path is None:
-            return self._manager.save_as(native=native)
-        if self._manager._workspace_state.save_in_progress:
-            self._manager._status_bar.showMessage(
-                "Workspace save already in progress", 3000
-            )
-            return False
-        origin = self._manager._active_managed_window()
-        old_workspace_path = workspace_path
-        backing_snapshot = self._manager._workspace_data_backing_snapshot()
-        self._manager._status_bar.showMessage("Saving workspace...")
-        try:
-            snapshot = self._manager._workspace_save_snapshot(workspace_path)
-            try:
-                ok, elapsed, error_text = self._manager._run_workspace_save_worker(
-                    workspace_path, snapshot, origin
-                )
-            except Exception:
-                snapshot.close()
-                raise
         except Exception:
-            self._manager._status_bar.clearMessage()
-            self._manager._show_operation_error(
-                "Error while saving workspace",
-                "An error occurred while saving the workspace file.",
-            )
-            self._manager._restore_focus_after_workspace_save(origin)
+            self._manager._workspace_state.save_in_progress = False
+            self._restore_workspace_save_actions_enabled(previous_action_states)
+            self._background_save_worker = None
+            self._background_save_receiver = None
+            receiver.deleteLater()
+            snapshot.close()
+            if on_start_error is not None:
+                on_start_error()
             return False
+        return True
+
+    def _finish_workspace_save_result(
+        self,
+        *,
+        workspace_path: pathlib.Path,
+        old_workspace_path: pathlib.Path | None,
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
+        ok: bool,
+        worker_elapsed: float,
+        error_text: str,
+        origin: QtWidgets.QWidget | None,
+        snapshot_elapsed: float,
+        started_at: float,
+        restore_focus: bool,
+    ) -> bool:
+        total_elapsed = time.perf_counter() - started_at
+        logger.debug(
+            "Workspace save timing: snapshot %.3f s, write %.3f s, total %.3f s",
+            snapshot_elapsed,
+            worker_elapsed,
+            total_elapsed,
+        )
         if not ok:
             self._manager._status_bar.clearMessage()
             self._manager._show_workspace_save_worker_error(error_text)
-            self._manager._restore_focus_after_workspace_save(origin)
+            if restore_focus:
+                self._manager._restore_focus_after_workspace_save(origin)
             return False
 
         self._manager._workspace_state.needs_full_save = False
@@ -3450,133 +3682,406 @@ class _WorkspaceIOController:
             for event in self._manager._workspace_state.dirty_events
             if event.generation > snapshot.generation
         )
+        has_new_dirty_generation = (
+            self._manager._workspace_state.dirty_generation > snapshot.generation
+            and self._manager.is_workspace_modified
+        )
         if post_save_events:
             self._manager._restore_workspace_dirty_events(post_save_events)
+            message = "Workspace saved; new changes remain unsaved"
+        elif has_new_dirty_generation:
             message = "Workspace saved; new changes remain unsaved"
         else:
             self._manager._mark_workspace_clean()
             message = (
-                f"Workspace saved in {elapsed:.1f} s"
-                if elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
+                f"Workspace saved in {total_elapsed:.1f} s"
+                if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
                 else "Workspace saved"
             )
         self._manager._status_bar.showMessage(message, 5000)
-        self._manager._restore_focus_after_workspace_save(origin)
+        if restore_focus:
+            self._manager._restore_focus_after_workspace_save(origin)
         self._manager._record_recent_workspace(workspace_path)
         return True
 
-    def save_as(self, *, native: bool = True) -> bool:
+    def _finish_background_workspace_save(
+        self,
+        *,
+        workspace_path: pathlib.Path,
+        old_workspace_path: pathlib.Path | None,
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
+        ok: bool,
+        worker_elapsed: float,
+        error_text: str,
+        origin: QtWidgets.QWidget | None,
+        snapshot_elapsed: float,
+        started_at: float,
+        restore_focus: bool,
+        on_finished: Callable[[bool], None] | None = None,
+    ) -> None:
+        try:
+            save_succeeded = self._finish_workspace_save_result(
+                workspace_path=workspace_path,
+                old_workspace_path=old_workspace_path,
+                backing_snapshot=backing_snapshot,
+                snapshot=snapshot,
+                ok=ok,
+                worker_elapsed=worker_elapsed,
+                error_text=error_text,
+                origin=origin,
+                snapshot_elapsed=snapshot_elapsed,
+                started_at=started_at,
+                restore_focus=restore_focus,
+            )
+            queued = self._background_save_requested
+            if (
+                save_succeeded
+                and queued
+                and self._manager.is_workspace_modified
+                and self._current_workspace_document_path() == workspace_path
+            ):
+                QtCore.QTimer.singleShot(0, self.save)
+            if on_finished is not None:
+                on_finished(save_succeeded)
+        except Exception:
+            logger.exception(
+                "Error while finishing background workspace save",
+                extra={"suppress_ui_alert": True},
+            )
+            self._manager._status_bar.clearMessage()
+            self._manager._show_operation_error(
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+            if on_finished is not None:
+                on_finished(False)
+        finally:
+            self._background_save_requested = False
+
+    def save(
+        self,
+        *,
+        native: bool = True,
+        on_finished: Callable[[bool], None] | None = None,
+        restore_focus: bool = True,
+    ) -> bool:
+        """Start a non-blocking save for the current workspace document."""
+        workspace_path = self._current_workspace_document_path()
+        if workspace_path is None:
+            return self.save_as(native=native, on_finished=on_finished)
+        if self._manager._workspace_state.save_in_progress:
+            self._background_save_requested = True
+            self._manager._status_bar.showMessage("Workspace save queued", 3000)
+            return False
+
+        origin = self._manager._active_managed_window()
+        old_workspace_path = workspace_path
+        backing_snapshot = self._manager._workspace_data_backing_snapshot()
+        self._manager._status_bar.showMessage("Saving workspace...")
+        started_at = time.perf_counter()
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot | None = None
+        try:
+            snapshot_started_at = time.perf_counter()
+            snapshot = self._workspace_save_snapshot(workspace_path)
+            snapshot_elapsed = time.perf_counter() - snapshot_started_at
+        except Exception:
+            if snapshot is not None:
+                snapshot.close()
+            self._manager._status_bar.clearMessage()
+            self._manager._show_operation_error(
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+            if restore_focus:
+                self._manager._restore_focus_after_workspace_save(origin)
+            if on_finished is not None:
+                on_finished(False)
+            return False
+        if snapshot is None:  # pragma: no cover
+            raise RuntimeError("Workspace save snapshot was not created")
+
+        def _start_error() -> None:
+            self._manager._status_bar.clearMessage()
+            self._manager._show_operation_error(
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+            if restore_focus:
+                self._manager._restore_focus_after_workspace_save(origin)
+            if on_finished is not None:
+                on_finished(False)
+
+        self._background_save_requested = False
+        return self._start_workspace_save_worker(
+            workspace_path,
+            snapshot,
+            on_finished=lambda ok, elapsed, error_text: (
+                self._finish_background_workspace_save(
+                    workspace_path=workspace_path,
+                    old_workspace_path=old_workspace_path,
+                    backing_snapshot=backing_snapshot,
+                    snapshot=snapshot,
+                    ok=ok,
+                    worker_elapsed=elapsed,
+                    error_text=error_text,
+                    origin=origin,
+                    snapshot_elapsed=snapshot_elapsed,
+                    started_at=started_at,
+                    restore_focus=restore_focus,
+                    on_finished=on_finished,
+                )
+            ),
+            on_start_error=_start_error,
+        )
+
+    def save_as(
+        self,
+        *,
+        native: bool = True,
+        on_finished: Callable[[bool], None] | None = None,
+    ) -> bool:
         """Save the current workspace under a new path and bind to that path."""
+        if self._manager._workspace_state.save_in_progress:
+            self._manager._status_bar.showMessage(
+                "Workspace save already in progress", 3000
+            )
+            if on_finished is not None:
+                on_finished(False)
+            return False
         origin = self._manager._active_managed_window()
         fname = self._manager._workspace_save_dialog(
             native=native, caption="Save Workspace As"
         )
         if fname is None:
+            if on_finished is not None:
+                on_finished(False)
             return False
         if not _manager_workspace._workspace_path_is_itws(fname):
             _show_itws_workspace_warning(self._manager)
+            if on_finished is not None:
+                on_finished(False)
             return False
         old_workspace_path = self._manager._workspace_state.path
         backing_snapshot = self._manager._workspace_data_backing_snapshot()
+        access: _WorkspaceDocumentAccess | None = None
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot | None = None
+        self._manager._status_bar.showMessage("Saving workspace...")
+        started_at = time.perf_counter()
         try:
-            dialog_parent = origin or self._manager
-            with self._manager._workspace_document_access_context(fname) as access:
-                with erlab.interactive.utils.wait_dialog(
-                    dialog_parent, "Saving workspace..."
-                ):
-                    self._manager._save_workspace_document(
-                        access.path,
-                        force_full=True,
-                        document_access=access,
-                    )
-                    self._manager._rebind_workspace_backed_imagetools(
-                        access.path,
-                        backing_snapshot=backing_snapshot,
-                        old_workspace_path=old_workspace_path,
-                    )
-                self._manager._set_workspace_path(
-                    access.path, workspace_lock=access.take_lock()
-                )
-            self._manager._workspace_state.needs_full_save = False
+            access = self._manager._workspace_document_access(fname)
             self._manager._drain_workspace_deferred_events()
-            self._manager._mark_workspace_clean()
-            self._manager._record_recent_workspace(access.path)
+            generation = self._manager._workspace_state.dirty_generation
+            self._manager._workspace_state.saving_depth += 1
+            try:
+                snapshot_started_at = time.perf_counter()
+                snapshot = self._workspace_full_save_snapshot(
+                    generation, fname=access.path
+                )
+                snapshot_elapsed = time.perf_counter() - snapshot_started_at
+            finally:
+                self._manager._workspace_state.saving_depth -= 1
         except Exception:
+            if snapshot is not None:
+                snapshot.close()
+            if access is not None:
+                access.release()
+            logger.exception(
+                "Error while preparing workspace Save As snapshot",
+                extra={"suppress_ui_alert": True},
+            )
+            self._manager._status_bar.clearMessage()
             self._manager._show_operation_error(
                 "Error while saving workspace",
                 "An error occurred while saving the workspace file.",
             )
+            self._manager._restore_focus_after_workspace_save(origin)
+            if on_finished is not None:
+                on_finished(False)
             return False
-        self._manager._restore_focus_after_workspace_save(origin)
-        return True
+        if snapshot is None:  # pragma: no cover
+            if access is not None:
+                access.release()
+            raise RuntimeError("Workspace save snapshot was not created")
 
-    def _compact_workspace_before_shutdown(self) -> None:
+        def _finish_save_as(ok: bool, worker_elapsed: float, error_text: str) -> None:
+            nonlocal access
+            total_elapsed = time.perf_counter() - started_at
+            logger.debug(
+                "Workspace save timing: snapshot %.3f s, write %.3f s, total %.3f s",
+                snapshot_elapsed,
+                worker_elapsed,
+                total_elapsed,
+            )
+            if access is None:  # pragma: no cover
+                if on_finished is not None:
+                    on_finished(False)
+                return
+            if not ok:
+                self._manager._status_bar.clearMessage()
+                self._manager._show_workspace_save_worker_error(error_text)
+                access.release()
+                self._manager._restore_focus_after_workspace_save(origin)
+                if on_finished is not None:
+                    on_finished(False)
+                return
+
+            post_save_events = tuple(
+                event
+                for event in self._manager._workspace_state.dirty_events
+                if event.generation > snapshot.generation
+            )
+            has_new_dirty_generation = (
+                self._manager._workspace_state.dirty_generation > snapshot.generation
+                and self._manager.is_workspace_modified
+            )
+            if post_save_events or has_new_dirty_generation:
+                access.release()
+                self._manager._status_bar.showMessage(
+                    "Workspace saved; new changes remain unsaved", 5000
+                )
+                self._manager._restore_focus_after_workspace_save(origin)
+                if on_finished is not None:
+                    on_finished(False)
+                return
+
+            self._manager._workspace_state.needs_full_save = False
+            self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
+            self._manager._workspace_state.set_repack_estimate(
+                estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
+                replacement_delta_count=snapshot.replacement_delta_count,
+                known=snapshot.repack_estimate_known,
+            )
+            self._manager._workspace_state.schema_version = (
+                _manager_workspace._current_workspace_schema_version()
+            )
+            if snapshot.full_tree is not None:
+                self._manager._rebind_workspace_backed_imagetools(
+                    access.path,
+                    backing_snapshot=backing_snapshot,
+                    old_workspace_path=old_workspace_path,
+                )
+            saved_path = access.path
+            self._manager._set_workspace_path(
+                saved_path, workspace_lock=access.take_lock()
+            )
+            access = None
+            self._manager._drain_workspace_deferred_events()
+            self._manager._mark_workspace_clean()
+            self._manager._record_recent_workspace(saved_path)
+            message = (
+                f"Workspace saved in {total_elapsed:.1f} s"
+                if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
+                else "Workspace saved"
+            )
+            self._manager._status_bar.showMessage(message, 5000)
+            self._manager._restore_focus_after_workspace_save(origin)
+            if on_finished is not None:
+                on_finished(True)
+
+        def _start_error() -> None:
+            if access is not None:
+                access.release()
+            self._manager._status_bar.clearMessage()
+            self._manager._show_operation_error(
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+            self._manager._restore_focus_after_workspace_save(origin)
+            if on_finished is not None:
+                on_finished(False)
+
+        return self._start_workspace_save_worker(
+            access.path,
+            snapshot,
+            on_finished=_finish_save_as,
+            on_start_error=_start_error,
+        )
+
+    def _compact_workspace_before_shutdown(
+        self, on_finished: Callable[[], None] | None = None
+    ) -> bool:
         if (
             self._manager._workspace_state.path is None
             or self._manager._workspace_state.delta_save_count <= 0
             or self._manager.is_workspace_modified
             or self._manager._workspace_state.save_in_progress
             or self._manager._workspace_state.loading_depth > 0
+            or self._shutdown_compaction_attempted
         ):
-            return
+            return False
         if not self._workspace_should_repack_before_shutdown():
-            return
+            return False
         try:
             logger.debug("Compacting workspace before shutdown...")
+            self._shutdown_compaction_attempted = True
             self._manager._drain_workspace_deferred_events()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
             try:
                 snapshot = self._workspace_file_repack_snapshot(generation)
                 if snapshot is None:
-                    return
+                    return False
             finally:
                 self._manager._workspace_state.saving_depth -= 1
-            try:
-                ok, _, error_text = self._manager._run_workspace_save_worker(
-                    self._manager._workspace_state.path,
-                    snapshot,
-                    self._manager,
-                    wait_dialog_title="Optimizing Workspace",
-                    wait_dialog_text="Optimizing workspace file…",
-                )
-            except Exception:
-                snapshot.close()
-                raise
+        except Exception:
+            logger.exception(
+                "Failed to compact workspace before shutdown",
+                extra={"suppress_ui_alert": True},
+            )
+            return False
+
+        def _finish_compaction(ok: bool, _elapsed: float, error_text: str) -> None:
             if not ok:
                 logger.error(
                     "Failed to compact workspace before shutdown%s",
                     f":\n{error_text}" if error_text else "",
                     extra={"suppress_ui_alert": True},
                 )
-                return
-            self._manager._workspace_state.needs_full_save = False
-            self._manager._workspace_state.delta_save_count = 0
-            self._manager._workspace_state.reset_repack_estimate()
-            self._manager._workspace_state.schema_version = (
-                _manager_workspace._current_workspace_schema_version()
-            )
-            self._manager._drain_workspace_deferred_events()
-            post_save_events = tuple(
-                event
-                for event in self._manager._workspace_state.dirty_events
-                if event.generation > snapshot.generation
-            )
-            if post_save_events:
-                self._manager._restore_workspace_dirty_events(post_save_events)
             else:
-                self._manager._mark_workspace_clean()
-        except Exception:
-            logger.exception(
-                "Failed to compact workspace before shutdown",
+                self._manager._workspace_state.needs_full_save = False
+                self._manager._workspace_state.delta_save_count = 0
+                self._manager._workspace_state.reset_repack_estimate()
+                self._manager._workspace_state.schema_version = (
+                    _manager_workspace._current_workspace_schema_version()
+                )
+                self._manager._drain_workspace_deferred_events()
+                post_save_events = tuple(
+                    event
+                    for event in self._manager._workspace_state.dirty_events
+                    if event.generation > snapshot.generation
+                )
+                if post_save_events:
+                    self._manager._restore_workspace_dirty_events(post_save_events)
+                else:
+                    self._manager._mark_workspace_clean()
+            if on_finished is not None:
+                on_finished()
+
+        def _start_error() -> None:
+            logger.error(
+                "Failed to start workspace compaction before shutdown",
                 extra={"suppress_ui_alert": True},
             )
+            if on_finished is not None:
+                on_finished()
+
+        workspace_path = self._manager._workspace_state.path
+        if workspace_path is None:
+            snapshot.close()
+            return False
+        return self._start_workspace_save_worker(
+            workspace_path,
+            snapshot,
+            on_finished=_finish_compaction,
+            on_start_error=_start_error,
+        )
 
     def compact_workspace(self) -> bool:
         """Rewrite the current workspace file to remove unused space."""
         workspace_path = self._current_workspace_document_path()
         if workspace_path is None:
-            return self._manager.save_as()
+            return self.save_as()
         if self._manager._workspace_state.save_in_progress:
             self._manager._status_bar.showMessage(
                 "Workspace save already in progress", 3000
@@ -3820,39 +4325,7 @@ class _WorkspaceIOController:
             return False
 
         fname = dialog.selectedFiles()[0]
-        if not self._manager._confirm_save_dirty_workspace(
-            "Opening a workspace replaces the windows currently in this manager."
-        ):
-            return False
-        self._manager._recent_directory = os.path.dirname(fname)
-        try:
-            return self._manager._load_workspace_file(
-                fname,
-                replace=True,
-                associate=True,
-                mark_dirty=False,
-                select=False,
-                native=native,
-            )
-        except Exception as exc:
-            if _manager_workspace._is_workspace_file_lock_error(exc):
-                logger.info(
-                    "Workspace file is already open or locked: %s",
-                    fname,
-                    extra={"suppress_ui_alert": True},
-                )
-                _show_workspace_file_lock_error(self._manager, fname)
-            else:
-                logger.exception(
-                    "Error while loading workspace",
-                    extra={"suppress_ui_alert": True},
-                )
-                erlab.interactive.utils.MessageDialog.critical(
-                    self._manager,
-                    "Error",
-                    "An error occurred while loading the workspace file.",
-                )
-            return False
+        return self._open_workspace_after_dirty_prompt(fname, native=native)
 
     def import_workspace(self, *, native: bool = True) -> bool:
         """Import selected windows from another workspace file."""

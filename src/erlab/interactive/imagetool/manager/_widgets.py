@@ -928,7 +928,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
                 ),
             )
             self.copy_path_button.setObjectName("manager_copy_workspace_path_button")
-            self.copy_path_button.clicked.connect(lambda: self._copy_path())
+            self.copy_path_button.clicked.connect(self._copy_path)
 
             self.reveal_button = typing.cast(
                 "QtWidgets.QAbstractButton",
@@ -938,7 +938,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
                 ),
             )
             self.reveal_button.setObjectName("manager_reveal_workspace_path_button")
-            self.reveal_button.clicked.connect(lambda: self._reveal_path())
+            self.reveal_button.clicked.connect(self._reveal_path)
 
         close_button = typing.cast(
             "QtWidgets.QAbstractButton",
@@ -994,11 +994,13 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.value_labels[key] = value_label
         return row + 1
 
+    @QtCore.Slot()
     def _copy_path(self) -> None:
         if self._workspace_path is None:
             return
         erlab.interactive.utils.copy_to_clipboard(str(self._workspace_path))
 
+    @QtCore.Slot()
     def _reveal_path(self) -> None:
         if self._workspace_path is None:
             return
