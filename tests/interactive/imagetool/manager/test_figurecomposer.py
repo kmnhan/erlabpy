@@ -27872,6 +27872,114 @@ def test_figure_composer_deferred_restore_delays_visible_redraw(
     assert render_calls == [((restored,), {"show_window": True})]
 
 
+def _line_figure_composer_restore_dataset(
+    qtbot,
+) -> tuple[xr.Dataset, xr.DataArray, FigureRecipeState]:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"line": data},
+        sources=(FigureSourceState(name="line", label="line"),),
+        operations=(FigureOperationState.line(label="line", source="line"),),
+        primary_source="line",
+    )
+    qtbot.addWidget(tool)
+    return tool.to_dataset(), data, tool.tool_status
+
+
+def _record_figure_composer_editor_updates(monkeypatch) -> list[FigureComposerTool]:
+    editor_calls: list[FigureComposerTool] = []
+    original = FigureComposerTool._update_operation_editor
+
+    def record_editor_update(self: FigureComposerTool) -> None:
+        editor_calls.append(self)
+        original(self)
+
+    monkeypatch.setattr(
+        FigureComposerTool, "_update_operation_editor", record_editor_update
+    )
+    return editor_calls
+
+
+def test_figure_composer_deferred_restore_delays_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, _data, _status = _line_figure_composer_restore_dataset(qtbot)
+    editor_calls = _record_figure_composer_editor_updates(monkeypatch)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert editor_calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: editor_calls == [restored], timeout=5000)
+
+
+def test_figure_composer_generated_code_flushes_deferred_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, _data, _status = _line_figure_composer_restore_dataset(qtbot)
+    editor_calls = _record_figure_composer_editor_updates(monkeypatch)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert editor_calls == []
+
+    code = restored.generated_code()
+
+    assert "line" in code
+    assert editor_calls == [restored]
+
+
+def test_figure_composer_save_skips_deferred_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, data, status = _line_figure_composer_restore_dataset(qtbot)
+
+    with monkeypatch.context() as patch:
+
+        def fail_editor_update(_self: FigureComposerTool) -> None:
+            pytest.fail(
+                "saving hidden deferred Figure Composer should not build editor"
+            )
+
+        patch.setattr(
+            FigureComposerTool, "_update_operation_editor", fail_editor_update
+        )
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(
+            ds,
+            _defer_restore_work=True,
+        )
+        qtbot.addWidget(restored)
+        assert isinstance(restored, FigureComposerTool)
+        saved = restored.to_dataset()
+        restored._discard_restore_work(
+            key=figurecomposer_tool_module._RESTORE_OPERATION_EDITOR_KEY
+        )
+
+    loaded = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(loaded)
+    assert isinstance(loaded, FigureComposerTool)
+    assert loaded.tool_status.model_dump(mode="json") == status.model_dump(mode="json")
+    xr.testing.assert_identical(loaded.source_data()["line"], data)
+
+
 def test_figure_composer_flushes_restore_work_before_user_outputs(
     qtbot, monkeypatch
 ) -> None:

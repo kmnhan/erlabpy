@@ -764,7 +764,9 @@ class KspaceTool(KspaceToolGUI):
         self._output_memory_estimate = None
         self._pending_output_memory_preview_unavailable = False
 
-        if data_name is None:
+        if data_name is None and self._dataset_restore_in_progress:
+            self._argnames["data"] = "data"
+        elif data_name is None:
             try:
                 self._argnames["data"] = typing.cast(
                     "str",
@@ -1011,8 +1013,9 @@ class KspaceTool(KspaceToolGUI):
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.resolution_group.layout().addRow(self._memory_estimate_label)
-        self.calculate_bounds()
-        self.calculate_resolution()
+        if not self._should_defer_restore_work:
+            self.calculate_bounds()
+            self.calculate_resolution()
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
