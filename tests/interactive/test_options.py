@@ -110,6 +110,16 @@ def _override(dialog: OptionDialog, path: str) -> QtWidgets.QCheckBox:
     return widget
 
 
+def _description(dialog: OptionDialog, scope: str, path: str) -> QtWidgets.QLabel:
+    widget = dialog.findChild(
+        QtWidgets.QLabel,
+        f"settingsDescription_{scope}_{path.replace('/', '__')}",
+    )
+    if widget is None:
+        raise AssertionError(f"Missing description for {scope}:{path}")
+    return widget
+
+
 def test_dialog_initial_settings(dialog: OptionDialog):
     assert dialog.current_options.model_dump() == options.model.model_dump()
     assert not dialog.modified
@@ -129,6 +139,37 @@ def test_dialog_native_structure(dialog: OptionDialog):
     if container is None or container.layout() is None:
         raise AssertionError("Missing settings page container")
     assert container.layout().contentsMargins().right() > 0
+
+
+def test_dialog_setting_descriptions_are_visible_not_duplicate_tooltips(
+    dialog: OptionDialog,
+):
+    path = "colors/cmap/gamma"
+    control = _control(dialog, "user", path, QtWidgets.QDoubleSpinBox)
+    description = _description(dialog, "user", path).text()
+
+    assert description
+    assert control.toolTip() == ""
+    assert control.accessibleDescription() == description
+
+
+def test_dialog_multiline_setting_keeps_child_tooltips(dialog: OptionDialog):
+    path = "figure/stylesheets"
+    control = typing.cast(
+        "StylesheetListWidget",
+        _control(dialog, "user", path, StylesheetListWidget),
+    )
+    description = _description(dialog, "user", path).text()
+    add_button = control.findChild(
+        QtWidgets.QToolButton, "matplotlibStylesheetAddButton"
+    )
+    if add_button is None:
+        raise AssertionError("Missing stylesheet add button")
+
+    assert description
+    assert control.toolTip() == ""
+    assert control.accessibleDescription() == description
+    assert add_button.toolTip()
 
 
 def test_dialog_rebuild_pages_replaces_existing_pages(dialog: OptionDialog):
@@ -553,6 +594,23 @@ def test_workspace_scope_shows_only_overridable_settings(qtbot):
         row.path for (scope, _path), row in dlg._rows.items() if scope == "workspace"
     }
     assert workspace_paths == set(workspace_overridable_option_paths())
+
+
+def test_workspace_setting_actions_keep_supplemental_tooltips(qtbot):
+    path = "colors/cmap/gamma"
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+
+    control = _control(dlg, "workspace", path, QtWidgets.QDoubleSpinBox)
+    description = _description(dlg, "workspace", path).text()
+
+    assert description
+    assert control.toolTip() == ""
+    assert control.accessibleDescription() == description
+    assert _override(dlg, path).toolTip()
+    assert _button(dlg, "workspace", path).toolTip()
 
 
 def test_workspace_stylesheet_override_keeps_raw_saved_names(qtbot):
