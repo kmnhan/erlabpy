@@ -6,6 +6,7 @@ import xarray as xr
 from qtpy import QtWidgets
 
 import erlab
+import erlab.interactive._mesh as mesh_module
 from erlab.interactive._mesh import MeshTool, meshtool
 
 
@@ -185,7 +186,7 @@ def test_meshtool_autofind_and_persistence(
 def test_meshtool_deferred_restore_queues_initial_preview(
     qtbot, meshy_data, monkeypatch
 ) -> None:
-    win: MeshTool = meshtool(meshy_data, execute=False)
+    win: MeshTool = meshtool(meshy_data, data_name="mesh_input", execute=False)
     qtbot.addWidget(win)
     saved = win.to_dataset()
     calls: list[tuple[MeshTool, bool]] = []
@@ -199,6 +200,13 @@ def test_meshtool_deferred_restore_queues_initial_preview(
         MeshTool,
         "set_data_beforecalc",
         _tracked_set_data_beforecalc,
+    )
+    monkeypatch.setattr(
+        mesh_module.varname,
+        "argname",
+        lambda *_args, **_kwargs: pytest.fail(
+            "deferred meshtool restore should not inspect the caller frame"
+        ),
     )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
