@@ -37,6 +37,7 @@ import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
@@ -7779,6 +7780,21 @@ def test_manager_workspace_save_dialog_paths(
         assert ("select", str(tmp_path / "bound.itws")) in calls
 
         manager._workspace_state.path = None
+        manager._recent_directory = None
+        default_dir = tmp_path / "default"
+        default_dir.mkdir()
+        erlab.interactive.options.model = AppOptions().model_copy(
+            update={
+                "io": AppOptions().io.model_copy(
+                    update={"default_directory": str(default_dir)}
+                )
+            }
+        )
+        assert manager._workspace_save_dialog(native=True) == str(
+            tmp_path / "selected.itws"
+        )
+        assert ("directory", str(default_dir)) in calls
+
         manager._recent_directory = str(tmp_path)
         assert manager._workspace_save_dialog(native=True) == str(
             tmp_path / "selected.itws"

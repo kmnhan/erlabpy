@@ -266,6 +266,108 @@ class FigureDpiOverrideParameter(
         super().__init__(**opts)
 
 
+class DirectoryPathWidget(QtWidgets.QWidget):
+    """Widget for editing an optional directory path."""
+
+    sigPathChanged = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        path: str | None = "",
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self.line_edit = QtWidgets.QLineEdit(self)
+        self.line_edit.setObjectName("directoryPathLineEdit")
+        self.line_edit.editingFinished.connect(self._editing_finished)
+
+        self.browse_button = QtWidgets.QToolButton(self)
+        self.browse_button.setObjectName("directoryPathBrowseButton")
+        self.browse_button.setText("Browse")
+        self.browse_button.setIcon(QtGui.QIcon.fromTheme("folder-open"))
+        self.browse_button.setToolTip("Choose a folder.")
+        self.browse_button.clicked.connect(self.browse_directory)
+
+        self.clear_button = QtWidgets.QToolButton(self)
+        self.clear_button.setObjectName("directoryPathClearButton")
+        self.clear_button.setText("Clear")
+        self.clear_button.setIcon(QtGui.QIcon.fromTheme("edit-clear"))
+        self.clear_button.setToolTip("Clear the selected folder.")
+        self.clear_button.clicked.connect(self.clear_path)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.line_edit, 1)
+        layout.addWidget(self.browse_button)
+        layout.addWidget(self.clear_button)
+
+        self.set_path(path)
+
+    def get_path(self) -> str:
+        return self.line_edit.text().strip()
+
+    def set_path(self, path: str | None) -> None:
+        text = "" if path is None else str(path).strip()
+        was_blocked = self.line_edit.blockSignals(True)
+        try:
+            self.line_edit.setText(text)
+        finally:
+            self.line_edit.blockSignals(was_blocked)
+        self._update_clear_button()
+
+    @QtCore.Slot()
+    def browse_directory(self) -> None:
+        current_path = self.get_path()
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select Default Folder",
+            QtCore.QDir.toNativeSeparators(current_path) if current_path else "",
+        )
+        if not directory:
+            return
+        self.set_path(directory)
+        self.sigPathChanged.emit(self.get_path())
+
+    @QtCore.Slot()
+    def clear_path(self) -> None:
+        if not self.get_path():
+            return
+        self.set_path("")
+        self.sigPathChanged.emit("")
+
+    @QtCore.Slot()
+    def _editing_finished(self) -> None:
+        path = self.get_path()
+        if self.line_edit.text() != path:
+            self.set_path(path)
+        self.sigPathChanged.emit(path)
+
+    def _update_clear_button(self) -> None:
+        self.clear_button.setEnabled(bool(self.get_path()))
+
+
+class DirectoryPathParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> DirectoryPathWidget:
+        w = DirectoryPathWidget()
+        w.sigChanged = w.sigPathChanged  # type: ignore[attr-defined]
+        w.value = w.get_path  # type: ignore[attr-defined]
+        w.setValue = w.set_path  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return w
+
+
+class DirectoryPathParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = DirectoryPathParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "directory_path")
+        super().__init__(**opts)
+
+
 class StylesheetListWidget(QtWidgets.QWidget):
     """Widget for editing an ordered list of Matplotlib stylesheets."""
 

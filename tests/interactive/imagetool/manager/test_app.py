@@ -27,6 +27,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool.manager import load_in_manager
 from erlab.interactive.imagetool.manager._server import (
@@ -1220,6 +1221,68 @@ def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
         qtbot.wait_until(lambda: explorer.tab_widget.count() == 2)
         assert explorer.current_explorer is not None
         assert explorer.current_explorer.current_directory == pathlib.Path(dropped_dir)
+
+
+def test_manager_explorer_uses_default_directory_before_recent(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    tmp_path: pathlib.Path,
+) -> None:
+    default_dir = tmp_path / "default"
+    recent_dir = tmp_path / "recent"
+    default_dir.mkdir()
+    recent_dir.mkdir()
+    erlab.interactive.options.model = AppOptions().model_copy(
+        update={
+            "io": AppOptions().io.model_copy(
+                update={"default_directory": str(default_dir)}
+            )
+        }
+    )
+
+    with manager_context() as manager:
+        manager.ensure_explorer_initialized()
+        explorer = manager.explorer.current_explorer
+        if explorer is None:
+            raise AssertionError("Data Explorer tab was not initialized")
+        assert explorer.current_directory == default_dir
+
+    with manager_context() as manager:
+        manager._recent_directory = str(recent_dir)
+        manager.ensure_explorer_initialized()
+        explorer = manager.explorer.current_explorer
+        if explorer is None:
+            raise AssertionError("Data Explorer tab was not initialized")
+        assert explorer.current_directory == recent_dir
+
+
+def test_get_recent_directory_uses_default_directory_before_recent(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    tmp_path: pathlib.Path,
+) -> None:
+    default_dir = tmp_path / "default"
+    recent_dir = tmp_path / "recent"
+    default_dir.mkdir()
+    recent_dir.mkdir()
+    erlab.interactive.options.model = AppOptions().model_copy(
+        update={
+            "io": AppOptions().io.model_copy(
+                update={"default_directory": str(default_dir)}
+            )
+        }
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(manager_package.is_running)
+        assert manager_package._get_recent_directory() == str(default_dir)
+
+        manager._recent_directory = str(recent_dir)
+
+        assert manager_package._get_recent_directory() == str(recent_dir)
 
 
 def test_manager_ptable_launcher_reuses_instance_without_affecting_tree(

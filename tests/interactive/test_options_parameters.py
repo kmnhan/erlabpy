@@ -9,6 +9,8 @@ from erlab.interactive._options.parameters import (
     _STYLESHEET_NAME_ROLE,
     ColorListParameter,
     ColorListWidget,
+    DirectoryPathParameter,
+    DirectoryPathWidget,
     FigureDpiOverrideParameter,
     FigureDpiOverrideWidget,
     StylesheetListParameter,
@@ -87,6 +89,84 @@ def test_figure_dpi_override_parameter_item_widget(qtbot) -> None:
 
     widget.override_check.setChecked(False)
     assert param.value() is None
+
+
+def test_directory_path_widget_initialization(qtbot) -> None:
+    widget = DirectoryPathWidget("  ~/data  ")
+    qtbot.addWidget(widget)
+
+    assert widget.get_path() == "~/data"
+    assert widget.clear_button.isEnabled()
+
+
+def test_directory_path_widget_editing_trims_and_emits(qtbot) -> None:
+    widget = DirectoryPathWidget()
+    qtbot.addWidget(widget)
+    widget.line_edit.setText("  ~/data  ")
+
+    with qtbot.waitSignal(widget.sigPathChanged, timeout=1000) as blocker:
+        widget.line_edit.editingFinished.emit()
+
+    assert blocker.args == ["~/data"]
+    assert widget.get_path() == "~/data"
+
+
+def test_directory_path_widget_browse_accepts(qtbot, monkeypatch, tmp_path) -> None:
+    widget = DirectoryPathWidget()
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(tmp_path),
+    )
+
+    with qtbot.waitSignal(widget.sigPathChanged, timeout=1000) as blocker:
+        widget.browse_directory()
+
+    assert blocker.args == [str(tmp_path)]
+    assert widget.get_path() == str(tmp_path)
+
+
+def test_directory_path_widget_browse_cancel_keeps_value(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    widget = DirectoryPathWidget(str(tmp_path))
+    qtbot.addWidget(widget)
+    changed: list[str] = []
+    widget.sigPathChanged.connect(changed.append)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: "",
+    )
+
+    widget.browse_directory()
+
+    assert widget.get_path() == str(tmp_path)
+    assert changed == []
+
+
+def test_directory_path_widget_clear_emits(qtbot, tmp_path) -> None:
+    widget = DirectoryPathWidget(str(tmp_path))
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.sigPathChanged, timeout=1000) as blocker:
+        widget.clear_path()
+
+    assert blocker.args == [""]
+    assert widget.get_path() == ""
+    assert not widget.clear_button.isEnabled()
+
+
+def test_directory_path_parameter_item_widget(qtbot) -> None:
+    param = DirectoryPathParameter(name="folder", value="~/data")
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(widget)
+
+    assert isinstance(widget, DirectoryPathWidget)
+    assert not item.hideWidget
+    assert widget.value() == "~/data"
 
 
 def test_style_library_paths_falls_back_to_matplotlib_core(monkeypatch) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["_ImageToolManagerBase"]
 
+import os
 import threading
 import typing
 import weakref
@@ -278,6 +279,14 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             self._workspace_state.option_overrides,
         )
 
+    def _recent_or_default_directory(self) -> str | None:
+        if self._recent_directory is not None:
+            return self._recent_directory
+        default_directory = self.effective_interactive_options.io.default_directory
+        if default_directory:
+            return os.path.expanduser(default_directory)
+        return None
+
     def _node_for_target(
         self, target: int | str
     ) -> _ImageToolWrapper | _ManagedWindowNode:
@@ -413,7 +422,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if loader_name is None:
             loader_name = self.effective_interactive_options.io.default_loader
         explorer = _TabbedExplorer(
-            root_path=self._recent_directory,
+            root_path=self._recent_or_default_directory(),
             loader_name=loader_name,
         )
         loader_kwargs, loader_extensions = (

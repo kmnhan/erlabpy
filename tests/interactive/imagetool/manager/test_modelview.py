@@ -1211,6 +1211,8 @@ def test_manager_open_preselects_default_loader_filter(
 ) -> None:
     _set_default_loader_option(monkeypatch, "example")
     example_filter = "Example Raw Data (*.h5)"
+    default_directory = "/example/default"
+    directories: list[str] = []
     selected_filters: list[str] = []
     real_file_dialog = QtWidgets.QFileDialog
 
@@ -1238,7 +1240,7 @@ def test_manager_open_preselects_default_loader_filter(
             selected_filters.append(selected_filter)
 
         def setDirectory(self, directory: str) -> None:
-            pass
+            directories.append(directory)
 
         def exec(self) -> bool:
             return False
@@ -1249,6 +1251,9 @@ def test_manager_open_preselects_default_loader_filter(
             self._recent_name_filter = None
             self._recent_directory = None
             self.effective_interactive_options = erlab.interactive.options.model
+
+        def _recent_or_default_directory(self) -> str | None:
+            return self._recent_directory or default_directory
 
     manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
@@ -1272,6 +1277,7 @@ def test_manager_open_preselects_default_loader_filter(
     _WorkspaceIOController(manager).open(native=False)
 
     assert selected_filters == [example_filter]
+    assert directories == [default_directory]
 
 
 @pytest.mark.parametrize("mode", ["dragdrop", "ask"])
@@ -1588,6 +1594,9 @@ def test_manager_open_loader_selection_branches(
             self._add_from_multiple_files = lambda *args, **kwargs: add_calls.append(
                 (args, kwargs)
             )
+
+        def _recent_or_default_directory(self) -> str | None:
+            return self._recent_directory
 
     manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(

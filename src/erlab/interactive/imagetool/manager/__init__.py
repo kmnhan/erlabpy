@@ -465,16 +465,16 @@ def main(execute: bool = True) -> None:
 
 
 def _get_recent_directory() -> str:
-    """Return the most recent directory used by the ImageToolManager.
+    """Return the active directory used by the ImageToolManager.
 
     Used internally to set the default directory for various file dialogs in tools
-    launched inside the manager. Returns an empty string if no directory has been set
-    yet, or if the manager is running in a different process.
+    launched inside the manager. Returns the most recent directory when available, then
+    the configured default directory. Returns an empty string if neither is available,
+    or if the manager is running in a different process.
 
     """
-    if (
-        _manager_instance is not None
-        and _manager_instance._recent_directory is not None
-    ):
-        return str(_manager_instance._recent_directory)
+    if _manager_instance is not None:
+        directory = _manager_instance._recent_or_default_directory()
+        if directory is not None:
+            return str(directory)
     return ""
