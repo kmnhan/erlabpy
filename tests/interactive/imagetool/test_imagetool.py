@@ -5058,11 +5058,15 @@ def test_manual_limits_ignore_dimensions_missing_from_data(qtbot) -> None:
 
 
 class _SceneDragEvent:
-    def __init__(self, scene_pos: QtCore.QPointF) -> None:
+    def __init__(self, scene_pos: QtCore.QPointF, *, finish: bool = False) -> None:
         self._scene_pos = scene_pos
+        self._finish = finish
 
     def scenePos(self) -> QtCore.QPointF:
         return self._scene_pos
+
+    def isFinish(self) -> bool:
+        return self._finish
 
 
 def _cursor_line_values(image, cursor: int) -> tuple[float, ...]:
@@ -5242,6 +5246,66 @@ def test_linked_command_option_image_drag_refreshes_linked_cursors(qtbot) -> Non
     win0.slicer_area.unlink()
     win0.close()
     win1.close()
+
+
+def test_dask_command_drag_defers_point_readout_until_finish(
+    qtbot, monkeypatch
+) -> None:
+    da = pytest.importorskip("dask.array")
+
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape((4, 5, 6))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5, 3)),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    profile = area.get_axes(3)
+    image_item = area.main_image.slicer_data_items[0]
+    image_updates = []
+    original_update_data = image_item.update_data
+
+    def _record_image_update(*args) -> None:
+        image_updates.append(args)
+        original_update_data(*args)
+
+    monkeypatch.setattr(image_item, "update_data", _record_image_update)
+    emissions: list[float] = []
+    area.sigPointValueChanged.connect(emissions.append)
+
+    scene_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(3.0, 0.0))
+    profile.process_drag(
+        (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+    )
+
+    assert emissions == []
+    assert image_updates
+    assert area.get_current_index(2) == 3
+
+    finish_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(4.0, 0.0))
+    profile.process_drag(
+        (
+            _SceneDragEvent(finish_pos, finish=True),
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+
+    assert emissions == [
+        pytest.approx(
+            values[
+                area.get_current_index(0),
+                area.get_current_index(1),
+                area.get_current_index(2),
+            ]
+        )
+    ]
+    win.close()
 
 
 def test_linked_option_cursor_line_drag_refreshes_linked_cursors(

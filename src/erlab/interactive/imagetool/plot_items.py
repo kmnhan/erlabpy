@@ -2989,26 +2989,37 @@ class ItoolPlotItem(pg.PlotItem):
 
         ev, modifiers = sig
         data_pos = self.getViewBox().mapSceneToView(ev.scenePos())
+        is_finish = getattr(ev, "isFinish", None)
+        defer_point_value = (
+            callable(is_finish)
+            and not is_finish()
+            and self.slicer_area.array_slicer._obj.chunks is not None
+        )
 
         if (not self.is_image) and self.slicer_data_items[-1].is_vertical:
             data_pos_coords = (data_pos.y(), data_pos.x())
         else:
             data_pos_coords = (data_pos.x(), data_pos.y())
 
-        if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
-            cursors = tuple(range(self.slicer_area.n_cursors))
-            for c in range(self.slicer_area.n_cursors):
+        with self.slicer_area._defer_dask_point_value_updates(defer_point_value):
+            if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
+                cursors = tuple(range(self.slicer_area.n_cursors))
+                for c in range(self.slicer_area.n_cursors):
+                    for i, ax in enumerate(self.display_axis):
+                        self.slicer_area.set_value(
+                            ax,
+                            data_pos_coords[i],
+                            update=False,
+                            uniform=True,
+                            cursor=c,
+                        )
+                self.slicer_area.refresh(cursors, self.display_axis)
+            else:
                 for i, ax in enumerate(self.display_axis):
                     self.slicer_area.set_value(
-                        ax, data_pos_coords[i], update=False, uniform=True, cursor=c
+                        ax, data_pos_coords[i], update=False, uniform=True
                     )
-            self.slicer_area.refresh(cursors, self.display_axis)
-        else:
-            for i, ax in enumerate(self.display_axis):
-                self.slicer_area.set_value(
-                    ax, data_pos_coords[i], update=False, uniform=True
-                )
-            self.slicer_area.refresh_current(self.display_axis)
+                self.slicer_area.refresh_current(self.display_axis)
 
         if self.slicer_area.bench:
             self._time_end = time.perf_counter()

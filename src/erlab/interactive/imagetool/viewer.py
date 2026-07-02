@@ -270,6 +270,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
         self._update_delayed: bool = _in_manager  #: Internal flag for delayed updates
+        self._defer_dask_point_value_readout: bool = False
         self._defer_state_refresh = _defer_state_refresh
         self._defer_secondary_plots = _defer_secondary_plots
         self._secondary_plots_materialized = False
@@ -1781,6 +1782,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         logger.debug("Connected signals")
 
+    @contextlib.contextmanager
+    def _defer_dask_point_value_updates(self, defer: bool) -> Iterator[None]:
+        previous = self._defer_dask_point_value_readout
+        self._defer_dask_point_value_readout = previous or defer
+        try:
+            yield
+        finally:
+            self._defer_dask_point_value_readout = previous
+
     @QtCore.Slot(int, object)
     @QtCore.Slot(object, object)
     def _refresh_cursor_colors(
@@ -1874,10 +1884,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 coord_or_rect_list.append(coord_or_rects)
                 arrays_list_flat.extend(arrays)
 
-        # Also get the point value at the current cursor
-        arrays_list_flat.append(
-            self.array_slicer.point_value(self.current_cursor, binned=True)
-        )
+        compute_point_value = not self._defer_dask_point_value_readout
+        if compute_point_value:
+            # Also get the point value at the current cursor.
+            arrays_list_flat.append(
+                self.array_slicer.point_value(self.current_cursor, binned=True)
+            )
 
         if arrays_list_flat:
             arrays_list_flat = dask.compute(*arrays_list_flat)
@@ -1898,9 +1910,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 obj.update_data(coord_or_rect, next(arrays_it))
             ax.vb.blockSignals(False)
 
-        self.sigPointValueChanged.emit(
-            self.array_slicer.display_safe_float(next(arrays_it))
-        )
+        if compute_point_value:
+            self.sigPointValueChanged.emit(
+                self.array_slicer.display_safe_float(next(arrays_it))
+            )
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)
