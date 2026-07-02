@@ -1,4 +1,9 @@
+import contextlib
 import logging
+from collections.abc import Iterator
+
+import pytest
+from qtpy import QtCore, QtWidgets
 
 from erlab.interactive.imagetool.manager._mainwindow import (
     _WarningEmitter,
@@ -6,8 +11,24 @@ from erlab.interactive.imagetool.manager._mainwindow import (
 )
 
 
-def test_warning_handler_formats_message(qtbot) -> None:
+@pytest.fixture
+def warning_emitter(qapp: QtWidgets.QApplication) -> Iterator[_WarningEmitter]:
     emitter = _WarningEmitter()
+    try:
+        yield emitter
+    finally:
+        with contextlib.suppress(RuntimeError, TypeError):
+            emitter.warning_received.disconnect()
+        with contextlib.suppress(RuntimeError):
+            emitter.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            emitter, QtCore.QEvent.Type.DeferredDelete
+        )
+        qapp.processEvents()
+
+
+def test_warning_handler_formats_message(warning_emitter: _WarningEmitter) -> None:
+    emitter = warning_emitter
     handler = _WarningNotificationHandler(emitter)
 
     received: list[tuple[str, int, str, str]] = []
@@ -33,8 +54,8 @@ def test_warning_handler_formats_message(qtbot) -> None:
     assert received[0][2] == "hello world"
 
 
-def test_warning_handler_formats_exc_info(qtbot) -> None:
-    emitter = _WarningEmitter()
+def test_warning_handler_formats_exc_info(warning_emitter: _WarningEmitter) -> None:
+    emitter = warning_emitter
     handler = _WarningNotificationHandler(emitter)
 
     received: list[tuple[str, int, str, str]] = []

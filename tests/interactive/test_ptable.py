@@ -692,8 +692,10 @@ def test_ptable_launcher_and_search_highlight(
     assert root_layout.contentsMargins().left() <= 8
     assert root_layout.contentsMargins().top() <= 8
     assert root_layout.spacing() <= 8
+    reference_list = QtWidgets.QListWidget()
+    qtbot.addWidget(reference_list)
     assert _effective_point_size(win.search_popup.font()) == pytest.approx(
-        _effective_point_size(QtWidgets.QListWidget().font())
+        _effective_point_size(reference_list.font())
     )
     empty_summary_height = win.inspector.summary_frame.height()
     table_container_layout = win.inspector.table_container.layout()
@@ -1725,7 +1727,9 @@ def test_ptable_category_legend_click_opens_and_retargets_reference_dialog(
     assert dialog._background_color.alpha() == 255
     assert dialog._background_color != QtCore.Qt.GlobalColor.transparent
     base_point_size = dialog.font().pointSizeF()
-    standard_dialog_font = QtWidgets.QDialog().font().pointSizeF()
+    standard_dialog = QtWidgets.QDialog()
+    qtbot.addWidget(standard_dialog)
+    standard_dialog_font = standard_dialog.font().pointSizeF()
     assert base_point_size > 0.0
     assert base_point_size == pytest.approx(standard_dialog_font)
     assert dialog.title_label.font().pointSizeF() == pytest.approx(base_point_size)
@@ -3503,8 +3507,10 @@ def test_ptable_search_popup_completion_helpers_respect_focus_state(
 def test_ptable_search_popup_widget_helpers_emit_indexes(qtbot) -> None:
     popup = erlab.interactive.ptable._window._SearchPopup()
     qtbot.addWidget(popup)
+    reference_list = QtWidgets.QListWidget()
+    qtbot.addWidget(reference_list)
     assert _effective_point_size(popup.font()) == pytest.approx(
-        _effective_point_size(QtWidgets.QListWidget().font())
+        _effective_point_size(reference_list.font())
     )
     popup.addItem(QtWidgets.QListWidgetItem("Au - Gold"))
     popup.addItem(QtWidgets.QListWidgetItem("Cu - Copper"))
