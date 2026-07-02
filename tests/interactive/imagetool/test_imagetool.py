@@ -4958,6 +4958,25 @@ def _linked_pair(qtbot):
     return typing.cast("list[ImageTool]", wins)
 
 
+def _linked_pair_with_different_x_grids(qtbot):
+    source = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    target = xr.DataArray(
+        np.arange(45).reshape((9, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.linspace(0.0, 4.0, 9), "y": np.arange(5, dtype=float)},
+    )
+    wins = itool([source, target], execute=False, link=True)
+    assert isinstance(wins, list)
+    assert len(wins) == 2
+    for win in wins:
+        qtbot.addWidget(win)
+    return typing.cast("list[ImageTool]", wins)
+
+
 def test_linked_swap_axes_skips_targets_without_swapped_dimensions(qtbot) -> None:
     data2d = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
@@ -5058,11 +5077,15 @@ def test_manual_limits_ignore_dimensions_missing_from_data(qtbot) -> None:
 
 
 class _SceneDragEvent:
-    def __init__(self, scene_pos: QtCore.QPointF) -> None:
+    def __init__(self, scene_pos: QtCore.QPointF, *, finish: bool = False) -> None:
         self._scene_pos = scene_pos
+        self._finish = finish
 
     def scenePos(self) -> QtCore.QPointF:
         return self._scene_pos
+
+    def isFinish(self) -> bool:
+        return self._finish
 
 
 def _cursor_line_values(image, cursor: int) -> tuple[float, ...]:
@@ -5244,6 +5267,208 @@ def test_linked_command_option_image_drag_refreshes_linked_cursors(qtbot) -> Non
     win1.close()
 
 
+def test_linked_snap_command_drag_syncs_only_source_updates(qtbot) -> None:
+    win0, win1 = _linked_pair_with_different_x_grids(qtbot)
+    win0.array_slicer.snap_to_data = True
+
+    with qtbot.waitExposed(win0):
+        win0.show()
+    with qtbot.waitExposed(win1):
+        win1.show()
+
+    source_image = win0.slicer_area.main_image
+    target_image = win1.slicer_area.main_image
+    target_emissions = []
+    win1.slicer_area.sigIndexChanged.connect(
+        lambda cursor, axes: target_emissions.append((cursor, axes))
+    )
+
+    scene_pos = source_image.getViewBox().mapViewToScene(QtCore.QPointF(2.2, 2.0))
+    source_image.process_drag(
+        (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+    )
+
+    assert win0.array_slicer.get_value(0, 0) == pytest.approx(2.0)
+    assert win1.array_slicer.get_value(0, 0) == pytest.approx(2.0)
+    assert _cursor_line_values(target_image, 0) == (2.0, 2.0)
+    assert target_emissions == []
+
+    scene_pos = source_image.getViewBox().mapViewToScene(QtCore.QPointF(2.6, 2.0))
+    source_image.process_drag(
+        (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+    )
+
+    qtbot.waitUntil(
+        lambda: np.allclose(_cursor_line_values(target_image, 0), (3.0, 2.0))
+    )
+    assert win0.array_slicer.get_value(0, 0) == pytest.approx(3.0)
+    assert win1.array_slicer.get_value(0, 0) == pytest.approx(3.0)
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_dask_command_drag_defers_point_readout_until_finish(
+    qtbot, monkeypatch
+) -> None:
+    da = pytest.importorskip("dask.array")
+
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape((4, 5, 6))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5, 3)),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    profile = area.get_axes(3)
+    image_item = area.main_image.slicer_data_items[0]
+    image_updates = []
+    original_update_data = image_item.update_data
+
+    def _record_image_update(*args) -> None:
+        image_updates.append(args)
+        original_update_data(*args)
+
+    monkeypatch.setattr(image_item, "update_data", _record_image_update)
+    emissions: list[float] = []
+    area.sigPointValueChanged.connect(emissions.append)
+
+    scene_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(3.0, 0.0))
+    profile.process_drag(
+        (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+    )
+
+    assert emissions == []
+    assert image_updates
+    assert area.get_current_index(2) == 3
+
+    finish_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(4.0, 0.0))
+    profile.process_drag(
+        (
+            _SceneDragEvent(finish_pos, finish=True),
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+
+    assert emissions == [
+        pytest.approx(
+            values[
+                area.get_current_index(0),
+                area.get_current_index(1),
+                area.get_current_index(2),
+            ]
+        )
+    ]
+    win.close()
+
+
+def test_dask_command_drag_same_index_skips_data_refresh(qtbot, monkeypatch) -> None:
+    da = pytest.importorskip("dask.array")
+    from dask.callbacks import Callback
+
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape((4, 5, 6))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5, 3)),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    profile = area.get_axes(3)
+    image_item = area.main_image.slicer_data_items[0]
+    area.array_slicer.set_index(0, 2, 3, update=False)
+
+    image_updates = []
+    monkeypatch.setattr(
+        image_item,
+        "update_data",
+        lambda *args: image_updates.append(args),
+    )
+    computed_keys: list[object] = []
+
+    scene_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(3.1, 0.0))
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        profile.process_drag(
+            (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+        )
+
+    assert computed_keys == []
+    assert image_updates == []
+    assert area.get_current_index(2) == 3
+    assert area.array_slicer.get_value(0, 2, uniform=True) == pytest.approx(3.1)
+    assert _cursor_line_values(profile, 0) == (pytest.approx(3.1),)
+    win.close()
+
+
+def test_dask_command_drag_same_binned_window_skips_data_refresh(
+    qtbot, monkeypatch
+) -> None:
+    da = pytest.importorskip("dask.array")
+    from dask.callbacks import Callback
+
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape((4, 5, 6))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5, 3)),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    profile = area.get_axes(3)
+    image_item = area.main_image.slicer_data_items[0]
+    area.array_slicer.set_bin(0, 2, 5, update=False)
+    area.array_slicer.set_index(0, 2, 0, update=False)
+
+    image_updates = []
+    original_update_data = image_item.update_data
+
+    def _record_image_update(*args) -> None:
+        image_updates.append(args)
+        original_update_data(*args)
+
+    monkeypatch.setattr(image_item, "update_data", _record_image_update)
+
+    scene_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(1.0, 0.0))
+    computed_keys: list[object] = []
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        profile.process_drag(
+            (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+        )
+
+    assert computed_keys == []
+    assert image_updates == []
+    assert area.get_current_index(2) == 1
+
+    scene_pos = profile.getViewBox().mapViewToScene(QtCore.QPointF(3.0, 0.0))
+    computed_keys.clear()
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        profile.process_drag(
+            (_SceneDragEvent(scene_pos), QtCore.Qt.KeyboardModifier.ControlModifier)
+        )
+
+    assert computed_keys
+    assert image_updates
+    assert area.get_current_index(2) == 3
+    win.close()
+
+
 def test_linked_option_cursor_line_drag_refreshes_linked_cursors(
     qtbot, monkeypatch
 ) -> None:
@@ -5276,6 +5501,52 @@ def test_linked_option_cursor_line_drag_refreshes_linked_cursors(
         )
         assert win0.array_slicer.get_indices(cursor) == [4, 2]
         assert win1.array_slicer.get_indices(cursor) == [4, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_snap_cursor_line_drag_syncs_only_source_updates(
+    qtbot, monkeypatch
+) -> None:
+    win0, win1 = _linked_pair_with_different_x_grids(qtbot)
+    win0.array_slicer.snap_to_data = True
+
+    with qtbot.waitExposed(win0):
+        win0.show()
+    with qtbot.waitExposed(win1):
+        win1.show()
+
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "keyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.NoModifier),
+    )
+
+    source_image = win0.slicer_area.main_image
+    target_image = win1.slicer_area.main_image
+    axis = source_image.display_axis[0]
+    line = source_image.cursor_lines[0][axis]
+    target_emissions = []
+    win1.slicer_area.sigIndexChanged.connect(
+        lambda cursor, axes: target_emissions.append((cursor, axes))
+    )
+
+    source_image.line_drag(line, 2.2, axis)
+
+    assert win0.array_slicer.get_value(0, axis) == pytest.approx(2.0)
+    assert win1.array_slicer.get_value(0, axis) == pytest.approx(2.0)
+    assert _cursor_line_values(target_image, 0) == (2.0, 2.0)
+    assert target_emissions == []
+
+    source_image.line_drag(line, 2.6, axis)
+
+    qtbot.waitUntil(
+        lambda: np.allclose(_cursor_line_values(target_image, 0), (3.0, 2.0))
+    )
+    assert win0.array_slicer.get_value(0, axis) == pytest.approx(3.0)
+    assert win1.array_slicer.get_value(0, axis) == pytest.approx(3.0)
 
     win0.slicer_area.unlink()
     win0.close()

@@ -1442,6 +1442,17 @@ class ArraySlicer(QtCore.QObject):
             return center
         return slice(center, center + 1)
 
+    def _axis_selection_key(
+        self, cursor: int, axis: int
+    ) -> int | tuple[int | None, int | None, int | None]:
+        """Return the source selection identity for a cursor and axis."""
+        if self._binned[cursor][axis]:
+            selection = self._bin_slice(cursor, axis)
+            if isinstance(selection, slice):
+                return (selection.start, selection.stop, selection.step)
+            return selection
+        return self._indices[cursor][axis]
+
     def _bin_along_axis(
         self, cursor: int, axis: int
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:

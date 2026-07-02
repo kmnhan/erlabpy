@@ -16,6 +16,21 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 
+class LinkSyncResult(list):
+    """List return value with private link-sync metadata."""
+
+    def __init__(
+        self,
+        values: typing.Iterable[typing.Any] = (),
+        *,
+        sync: bool = True,
+        arguments: dict[str, typing.Any] | None = None,
+    ) -> None:
+        super().__init__(values)
+        self.sync = sync
+        self.arguments = arguments
+
+
 def _link_splitters(
     s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter, reverse: bool = False
 ) -> None:
@@ -147,15 +162,21 @@ def link_slicer(
                 call_kwargs["__slicer_transaction_id"] = transaction_id
                 call_kwargs["__slicer_keep_pending"] = keep_pending
             out = func(*args, **call_kwargs)
+            if sync_enabled and isinstance(out, LinkSyncResult) and not out.sync:
+                sync_enabled = False
             if sync_enabled:
                 all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
                 all_args.apply_defaults()
                 obj = all_args.arguments.pop("self")
+                sync_arguments = all_args.arguments
+                if isinstance(out, LinkSyncResult) and out.arguments is not None:
+                    sync_arguments = dict(sync_arguments)
+                    sync_arguments.update(out.arguments)
                 if obj._linking_proxy is not None:  # pragma: no branch
                     obj._linking_proxy.sync(
                         obj,
                         func.__name__,
-                        all_args.arguments,
+                        sync_arguments,
                         source_dims,
                         indices,
                         steps,
