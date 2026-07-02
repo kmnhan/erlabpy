@@ -1280,6 +1280,76 @@ def test_manager_open_preselects_default_loader_filter(
     assert directories == [default_directory]
 
 
+def test_managed_imagetool_open_uses_default_directory_before_recent(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    default_dir = tmp_path / "default"
+    default_dir.mkdir()
+    options = erlab.interactive.options.model
+    monkeypatch.setattr(
+        erlab.interactive.options,
+        "model",
+        options.model_copy(
+            update={
+                "io": options.io.model_copy(
+                    update={"default_directory": str(default_dir)}
+                )
+            }
+        ),
+    )
+    directories: list[str] = []
+    real_file_dialog = QtWidgets.QFileDialog
+
+    class _FakeFileDialog:
+        AcceptMode = real_file_dialog.AcceptMode
+        FileMode = real_file_dialog.FileMode
+        Option = real_file_dialog.Option
+
+        def __init__(self, parent) -> None:
+            pass
+
+        def setAcceptMode(self, mode) -> None:
+            pass
+
+        def setFileMode(self, mode) -> None:
+            pass
+
+        def setNameFilters(self, filters) -> None:
+            pass
+
+        def setOption(self, option) -> None:
+            pass
+
+        def selectNameFilter(self, selected_filter: str) -> None:
+            pass
+
+        def setDirectory(self, directory: str) -> None:
+            directories.append(directory)
+
+        def exec(self) -> bool:
+            return False
+
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _FakeFileDialog)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {"xarray HDF5 Files (*.h5)": (xr.load_dataarray, {})},
+    )
+
+    with manager_context() as manager:
+        itool(xr.DataArray(np.arange(4).reshape((2, 2)), dims=["x", "y"]), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        manager.get_imagetool(0)._open_file(native=False)
+
+    assert directories == [str(default_dir)]
+
+
 @pytest.mark.parametrize("mode", ["dragdrop", "ask"])
 def test_manager_open_files(
     qtbot,

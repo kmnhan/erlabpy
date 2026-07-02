@@ -434,8 +434,9 @@ class ImageTool(BaseImageTool):
 
     @property
     def _recent_directory(self) -> str | None:
-        if self.slicer_area._manager_instance is not None:
-            return self.slicer_area._manager_instance._recent_directory
+        manager = self.slicer_area._manager_instance
+        if manager is not None:
+            return manager._recent_or_default_directory()
         return self.__recent_directory
 
     @_recent_directory.setter
