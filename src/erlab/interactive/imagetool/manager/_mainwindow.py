@@ -653,6 +653,7 @@ class ImageToolManager(_ImageToolManagerBase):
     # Signal emitted to notify ipython watchers of data changes.
 
     def __init__(self) -> None:
+        self._manager_layout_tracking_enabled = False
         super().__init__()
 
         # Initialize warning notifications
@@ -778,7 +779,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
 
         self._bulk_remove_depth: int = 0
-        self._manager_layout_tracking_enabled = False
 
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
@@ -1450,10 +1450,15 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def event(self, event: QtCore.QEvent | None) -> bool:
         handled = super().event(event)
-        if event is not None and event.type() in (
-            QtCore.QEvent.Type.Move,
-            QtCore.QEvent.Type.Resize,
-            QtCore.QEvent.Type.WindowStateChange,
+        if (
+            self._manager_layout_tracking_enabled
+            and event is not None
+            and event.type()
+            in (
+                QtCore.QEvent.Type.Move,
+                QtCore.QEvent.Type.Resize,
+                QtCore.QEvent.Type.WindowStateChange,
+            )
         ):
             self._mark_workspace_layout_dirty()
         return handled
