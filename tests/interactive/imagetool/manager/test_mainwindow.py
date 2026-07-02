@@ -166,6 +166,45 @@ def test_manager_open_settings_reuses_live_dialog(
         qtbot.wait_until(lambda: "settings" not in manager._additional_windows)
 
 
+def test_manager_layout_events_wait_for_tracking_enabled(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        workspace_controller = manager._workspace_controller
+        manager._manager_layout_tracking_enabled = False
+        del manager._workspace_controller
+        try:
+            manager.event(QtCore.QEvent(QtCore.QEvent.Type.WindowStateChange))
+        finally:
+            manager._workspace_controller = workspace_controller
+            manager._manager_layout_tracking_enabled = True
+
+        dirty_calls = 0
+
+        def _record_workspace_layout_dirty() -> None:
+            nonlocal dirty_calls
+            dirty_calls += 1
+
+        monkeypatch.setattr(
+            manager,
+            "_mark_workspace_layout_dirty",
+            _record_workspace_layout_dirty,
+        )
+        manager._manager_layout_tracking_enabled = False
+        manager.event(QtCore.QEvent(QtCore.QEvent.Type.WindowStateChange))
+        assert dirty_calls == 0
+
+        manager._manager_layout_tracking_enabled = True
+        manager.event(QtCore.QEvent(QtCore.QEvent.Type.WindowStateChange))
+        assert dirty_calls == 1
+
+
 @pytest.mark.parametrize(
     ("platform", "rename_shortcut", "show_shortcut", "expected_shortcuts"),
     [
