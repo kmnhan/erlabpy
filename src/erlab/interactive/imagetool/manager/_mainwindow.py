@@ -1501,8 +1501,11 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     return
 
+            def _close_after_compaction() -> None:
+                self.close()
+
             if self._workspace_controller._compact_workspace_before_shutdown(
-                on_finished=self.close
+                on_finished=_close_after_compaction
             ):
                 if event:
                     event.ignore()
