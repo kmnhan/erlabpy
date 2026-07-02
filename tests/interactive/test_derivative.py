@@ -9,7 +9,6 @@ from pydantic import BaseModel, ValidationError
 from qtpy import QtCore, QtWidgets
 
 import erlab
-import erlab.interactive.derivative as derivative_module
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.imagetool import _replay_graph, provenance
 
@@ -157,7 +156,7 @@ def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> N
         DerivativeTool, "_update_result_now", _tracked_update_result_now
     )
     monkeypatch.setattr(
-        derivative_module.varname,
+        erlab.interactive.utils.varname,
         "argname",
         lambda *_args, **_kwargs: pytest.fail(
             "deferred dtool restore should not inspect the caller frame"

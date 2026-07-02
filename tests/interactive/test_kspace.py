@@ -8,7 +8,6 @@ import scipy.optimize
 import xarray as xr
 
 import erlab
-import erlab.interactive.kspace as kspace_module
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
 from erlab.interactive.imagetool import _kspace_conversion, provenance
@@ -2096,7 +2095,7 @@ def test_ktool_deferred_restore_skips_default_calculations(
     def fail_calculate_resolution(_self: KspaceTool) -> None:
         pytest.fail("deferred ktool restore should not calculate default resolution")
 
-    monkeypatch.setattr(kspace_module.varname, "argname", fail_argname)
+    monkeypatch.setattr(erlab.interactive.utils.varname, "argname", fail_argname)
     monkeypatch.setattr(KspaceTool, "calculate_bounds", fail_calculate_bounds)
     monkeypatch.setattr(KspaceTool, "calculate_resolution", fail_calculate_resolution)
 

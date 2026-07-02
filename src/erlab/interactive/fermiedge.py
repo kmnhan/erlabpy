@@ -370,35 +370,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
         self._argnames = {}
-        if (
-            data_name is None
-            and erlab.interactive.utils._tool_window_restore_in_progress()
-        ):
-            self._argnames["data"] = "gold"
-        elif data_name is None:
-            try:
-                self._argnames["data"] = varname.argname(
-                    "data",
-                    func=self.__init__,  # type: ignore[misc]
-                    vars_only=False,
-                )
-            except varname.VarnameRetrievingError:
-                self._argnames["data"] = "gold"
-        else:
-            self._argnames["data"] = data_name
+        self._argnames["data"] = erlab.interactive.utils._tool_window_argname(
+            data_name, "data", func=self.__init__, fallback="gold"
+        )
 
         if data_corr is not None:
-            if erlab.interactive.utils._tool_window_restore_in_progress():
-                self._argnames["data_corr"] = "data_corr"
-            else:
-                try:
-                    self._argnames["data_corr"] = varname.argname(
-                        "data_corr",
-                        func=self.__init__,  # type: ignore[misc]
-                        vars_only=False,
-                    )
-                except varname.VarnameRetrievingError:
-                    self._argnames["data_corr"] = "data_corr"
+            self._argnames["data_corr"] = erlab.interactive.utils._tool_window_argname(
+                None, "data_corr", func=self.__init__, fallback="data_corr"
+            )
 
         self.data_corr = data_corr
         self.hists: pg.HistogramLUTItem
@@ -1901,21 +1880,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.center_spin.setDecimals(self._x_decimals + 1)
         self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
 
-        if (
-            data_name is None
-            and erlab.interactive.utils._tool_window_restore_in_progress()
-        ):
-            data_name = "data"
-        elif data_name is None:
-            try:
-                data_name = typing.cast(
-                    "str",
-                    varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
-                )
-            except varname.VarnameRetrievingError:
-                data_name = "data"
-
-        self.data_name = data_name
+        self.data_name = erlab.interactive.utils._tool_window_argname(
+            data_name, "data", func=self.__init__, fallback="data"
+        )
 
         self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
         self.plot1 = self.graphics_layout.addPlot(row=1, col=0)

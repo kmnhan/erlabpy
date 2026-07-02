@@ -6,7 +6,6 @@ import xarray as xr
 from qtpy import QtWidgets
 
 import erlab
-import erlab.interactive._mesh as mesh_module
 from erlab.interactive._mesh import MeshTool, meshtool
 
 
@@ -202,7 +201,7 @@ def test_meshtool_deferred_restore_queues_initial_preview(
         _tracked_set_data_beforecalc,
     )
     monkeypatch.setattr(
-        mesh_module.varname,
+        erlab.interactive.utils.varname,
         "argname",
         lambda *_args, **_kwargs: pytest.fail(
             "deferred meshtool restore should not inspect the caller frame"
