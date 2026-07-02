@@ -358,7 +358,7 @@ class _SettingsRow(QtWidgets.QFrame):
         layout.addWidget(description_label, 1, 0, 1, 4 if multiline_control else 2)
 
         control.setObjectName(f"settingsControl_{scope}_{object_path}")
-        control.setToolTip(description)
+        control.setAccessibleDescription(description)
         label.setBuddy(control)
         if multiline_control:
             layout.addWidget(control, 2, 0, 1, 4)
