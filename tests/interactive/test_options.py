@@ -17,6 +17,7 @@ from erlab.interactive._options.core import (
 )
 from erlab.interactive._options.parameters import (
     ColorListWidget,
+    DirectoryPathWidget,
     FigureDpiOverrideWidget,
     StylesheetListWidget,
 )
@@ -170,6 +171,18 @@ def test_dialog_multiline_setting_keeps_child_tooltips(dialog: OptionDialog):
     assert control.toolTip() == ""
     assert control.accessibleDescription() == description
     assert add_button.toolTip()
+
+
+def test_dialog_default_directory_control_has_accessible_description(
+    dialog: OptionDialog,
+):
+    path = "io/default_directory"
+    control = _control(dialog, "user", path, DirectoryPathWidget)
+    description = _description(dialog, "user", path).text()
+
+    assert description
+    assert control.toolTip() == ""
+    assert control.accessibleDescription() == description
 
 
 def test_dialog_rebuild_pages_replaces_existing_pages(dialog: OptionDialog):
@@ -401,6 +414,10 @@ def test_dialog_control_value_helpers(dialog: OptionDialog, qtbot):
     figure_dpi.dpi_spin.setValue(180.0)
     assert dialog._control_value(figure_dpi, "figure/dpi") == pytest.approx(180.0)
 
+    directory_path = DirectoryPathWidget("~/data")
+    qtbot.addWidget(directory_path)
+    assert dialog._control_value(directory_path, "io/default_directory") == "~/data"
+
     list_line = QtWidgets.QLineEdit("one, two,, ")
     qtbot.addWidget(list_line)
     assert dialog._control_value(list_line, "colors/cmap/exclude") == ["one", "two"]
@@ -456,6 +473,13 @@ def test_dialog_set_control_value_helpers(dialog: OptionDialog, qtbot):
     assert not figure_dpi.override_check.isChecked()
     assert not figure_dpi.dpi_spin.isEnabled()
     assert figure_dpi.get_dpi() is None
+
+    directory_path = DirectoryPathWidget()
+    qtbot.addWidget(directory_path)
+    dialog._set_control_value(directory_path, "io/default_directory", "~/data")
+    assert directory_path.get_path() == "~/data"
+    dialog._set_control_value(directory_path, "io/default_directory", None)
+    assert directory_path.get_path() == ""
 
 
 def test_choice_slider_labels_align_with_ticks(qtbot):
@@ -933,6 +957,7 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
 
     assert "colors/cmap/name" in paths
     assert "colors/cmap/packages" not in paths
+    assert "io/default_directory" not in paths
     assert "io/workspace/compression" in paths
     assert "io/workspace/compress" not in paths
     assert "figure/dpi" in paths
@@ -992,12 +1017,14 @@ def test_options_get_set():
     assert options["io/workspace/compress"] is True
     assert options["io/workspace/use_incremental"] is True
     assert options["io/workspace/incremental_save_on_remote"] is False
+    assert options["io/default_directory"] == ""
     assert options["figure/dpi"] is None
 
     options["colors/cmap/name"] = "viridis"
     options["io/workspace/compression"] = "blosclz3"
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
+    options["io/default_directory"] = "~/data"
     options["figure/stylesheets"] = ["classic", "missing-style"]
     options["figure/dpi"] = 150.0
 
@@ -1006,6 +1033,7 @@ def test_options_get_set():
     assert options["io/workspace/compress"] is True
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
+    assert options["io/default_directory"] == "~/data"
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert options["figure/dpi"] == pytest.approx(150.0)
     assert options.model.io.workspace.compression == "blosclz3"

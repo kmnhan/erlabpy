@@ -269,6 +269,15 @@ class IOOptions(BaseModel):
             )
         },
     )
+    default_directory: str = Field(
+        default="",
+        title="Default folder",
+        description=(
+            "Folder ImageTool Manager uses for file dialogs and new Data Explorer "
+            "windows before another folder has been used."
+        ),
+        json_schema_extra={"ui_type": "directory_path"},
+    )
 
     dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
     workspace: WorkspaceOptions = Field(
@@ -287,6 +296,13 @@ class IOOptions(BaseModel):
                 "Loader '" + v + "' not registered; available: " + str(available)
             )
         return v
+
+    @field_validator("default_directory", mode="before")
+    @classmethod
+    def normalize_default_directory(cls, v: typing.Any) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
 
 
 class ColorMapOptions(BaseModel):

@@ -17,6 +17,7 @@ from erlab.interactive._options.core import (
 )
 from erlab.interactive._options.parameters import (
     ColorListWidget,
+    DirectoryPathWidget,
     FigureDpiOverrideWidget,
     StylesheetListWidget,
 )
@@ -603,6 +604,8 @@ class OptionDialog(QtWidgets.QDialog):
             return StylesheetListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
+        if ui_type == "directory_path":
+            return DirectoryPathWidget(parent=self)
         if ui_type == "choice_slider":
             return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
@@ -693,6 +696,10 @@ class OptionDialog(QtWidgets.QDialog):
         elif isinstance(control, StylesheetListWidget):
             control.sigStylesheetsChanged.connect(
                 lambda _stylesheets, row=row: self._control_changed(row)
+            )
+        elif isinstance(control, DirectoryPathWidget):
+            control.sigPathChanged.connect(
+                lambda _path, row=row: self._control_changed(row)
             )
         elif isinstance(control, QtWidgets.QLineEdit):
             control.editingFinished.connect(lambda row=row: self._control_changed(row))
@@ -787,6 +794,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_stylesheets()
         if isinstance(control, FigureDpiOverrideWidget):
             return control.get_dpi()
+        if isinstance(control, DirectoryPathWidget):
+            return control.get_path()
         if isinstance(control, QtWidgets.QLineEdit):
             text = control.text()
             default_value = option_value(AppOptions(), path)
@@ -831,6 +840,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, FigureDpiOverrideWidget):
             control.set_dpi(value)
+            return
+        if isinstance(control, DirectoryPathWidget):
+            control.set_path(None if value is None else str(value))
             return
         if isinstance(control, QtWidgets.QLineEdit):
             if isinstance(value, list):

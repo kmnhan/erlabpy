@@ -11,6 +11,7 @@ import pyqtgraph.parametertree
 
 from erlab.interactive._options.parameters import (
     ColorListParameter,
+    DirectoryPathParameter,
     FigureDpiOverrideParameter,
     StylesheetListParameter,
     _CustomColorMapParameter,
@@ -30,6 +31,10 @@ pyqtgraph.parametertree.registerParameterType(
 
 pyqtgraph.parametertree.registerParameterType(
     "figure_dpi_override", FigureDpiOverrideParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "directory_path", DirectoryPathParameter, override=True
 )
 
 __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)

@@ -67,6 +67,19 @@ def test_make_parameter_round_trips_figure_options() -> None:
     assert opts.figure.dpi == 150.0
 
 
+def test_make_parameter_round_trips_default_directory() -> None:
+    options = AppOptions.model_validate({"io": {"default_directory": "~/data"}})
+    param = make_parameter(options)
+
+    directory_param = param.child("io").child("default_directory")
+    assert directory_param.opts["type"] == "directory_path"
+    assert directory_param.value() == "~/data"
+
+    directory_param.setValue("~/other-data")
+
+    assert parameter_to_options(param).io.default_directory == "~/other-data"
+
+
 def test_make_parameter_workspace_compression_uses_display_labels() -> None:
     param = make_parameter()
     compression_param = param.child("io").child("workspace").child("compression")

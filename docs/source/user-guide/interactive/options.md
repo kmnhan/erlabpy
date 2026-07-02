@@ -21,10 +21,16 @@ Use the sidebar to switch between setting groups:
 
 - {guilabel}`Visualization` controls default colormap, gamma, cursor colors, and
   related display defaults.
-- {guilabel}`I/O` controls default loader behavior.
+- {guilabel}`I/O` controls the default loader and the default folder used by
+  manager file dialogs and new Data Explorer windows.
 - {guilabel}`ktool` controls defaults for newly opened momentum-conversion tools.
 - {guilabel}`Figure Composer` controls default Matplotlib stylesheets and optional
   default DPI for newly created figures.
+
+```{versionadded} 3.25.0
+The I/O settings include a default folder for ImageTool Manager file dialogs and
+new Data Explorer windows.
+```
 
 Rows in the {guilabel}`User` scope include a reset action that restores the application
 default for that setting. Broadly resetting all user settings still asks for

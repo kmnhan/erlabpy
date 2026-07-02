@@ -2653,8 +2653,8 @@ class _WorkspaceIOController:
             dialog.selectFile(str(selected_file))
         elif self._manager._workspace_state.path is not None:
             dialog.selectFile(str(self._manager._workspace_state.path))
-        elif self._manager._recent_directory is not None:
-            dialog.setDirectory(self._manager._recent_directory)
+        elif (directory := self._manager._recent_or_default_directory()) is not None:
+            dialog.setDirectory(directory)
         if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
@@ -3811,8 +3811,8 @@ class _WorkspaceIOController:
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
-        if self._manager._recent_directory is not None:
-            dialog.setDirectory(self._manager._recent_directory)
+        if (directory := self._manager._recent_or_default_directory()) is not None:
+            dialog.setDirectory(directory)
         if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
@@ -3860,8 +3860,8 @@ class _WorkspaceIOController:
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
-        if self._manager._recent_directory is not None:
-            dialog.setDirectory(self._manager._recent_directory)
+        if (directory := self._manager._recent_or_default_directory()) is not None:
+            dialog.setDirectory(directory)
         if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
@@ -3923,8 +3923,8 @@ class _WorkspaceIOController:
         preferred_name_filter = self._manager._preferred_name_filter(valid_loaders)
         if preferred_name_filter is not None:
             dialog.selectNameFilter(preferred_name_filter)
-        if self._manager._recent_directory is not None:
-            dialog.setDirectory(self._manager._recent_directory)
+        if (directory := self._manager._recent_or_default_directory()) is not None:
+            dialog.setDirectory(directory)
 
         if dialog.exec():
             file_names = dialog.selectedFiles()
