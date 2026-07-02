@@ -3002,27 +3002,75 @@ class ItoolPlotItem(pg.PlotItem):
             data_pos_coords = (data_pos.x(), data_pos.y())
 
         with self.slicer_area._defer_dask_point_value_updates(defer_point_value):
+            value_changed_axes: set[int] = set()
+            selection_changed_axes: set[int] = set()
             if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
                 cursors = tuple(range(self.slicer_area.n_cursors))
                 for c in range(self.slicer_area.n_cursors):
                     for i, ax in enumerate(self.display_axis):
-                        self.slicer_area.set_value(
-                            ax,
-                            data_pos_coords[i],
-                            update=False,
-                            uniform=True,
-                            cursor=c,
+                        value_changed, selection_changed = self._set_drag_value(
+                            c, ax, data_pos_coords[i]
                         )
-                self.slicer_area.refresh(cursors, self.display_axis)
+                        if value_changed:
+                            value_changed_axes.add(ax)
+                        if selection_changed:
+                            selection_changed_axes.add(ax)
+                self._refresh_dragged_cursors(
+                    cursors,
+                    self._drag_refresh_axes(
+                        value_changed_axes
+                        if self.slicer_area.is_linked
+                        else selection_changed_axes
+                    ),
+                )
             else:
                 for i, ax in enumerate(self.display_axis):
-                    self.slicer_area.set_value(
-                        ax, data_pos_coords[i], update=False, uniform=True
+                    value_changed, selection_changed = self._set_drag_value(
+                        self.slicer_area.current_cursor, ax, data_pos_coords[i]
                     )
-                self.slicer_area.refresh_current(self.display_axis)
+                    if value_changed:
+                        value_changed_axes.add(ax)
+                    if selection_changed:
+                        selection_changed_axes.add(ax)
+                self._refresh_dragged_current(
+                    self._drag_refresh_axes(
+                        value_changed_axes
+                        if self.slicer_area.is_linked
+                        else selection_changed_axes
+                    )
+                )
 
         if self.slicer_area.bench:
             self._time_end = time.perf_counter()
+
+    def _set_drag_value(
+        self, cursor: int, axis: int, value: float
+    ) -> tuple[bool, bool]:
+        before = self.array_slicer._axis_selection_key(cursor, axis)
+        changed_axes = self.slicer_area.set_value(
+            axis, value, update=False, uniform=True, cursor=cursor
+        )
+        after = self.array_slicer._axis_selection_key(cursor, axis)
+        return bool(changed_axes), before != after
+
+    def _drag_refresh_axes(self, changed_axes: set[int]) -> tuple[int, ...]:
+        return tuple(axis for axis in self.display_axis if axis in changed_axes)
+
+    def _refresh_dragged_current(self, axes: tuple[int, ...]) -> None:
+        refresh_current = typing.cast("typing.Any", self.slicer_area.refresh_current)
+        if self.slicer_area.is_linked and not axes:
+            refresh_current(axes, __slicer_skip_sync=True)
+            return
+        refresh_current(axes)
+
+    def _refresh_dragged_cursors(
+        self, cursors: tuple[int, ...], axes: tuple[int, ...]
+    ) -> None:
+        refresh = typing.cast("typing.Any", self.slicer_area.refresh)
+        if self.slicer_area.is_linked and not axes:
+            refresh(cursors, axes, __slicer_skip_sync=True)
+            return
+        refresh(cursors, axes)
 
     def set_cursor_colors(self, colors: Iterable[QtGui.QColor]) -> None:
         """Set the colors of the cursors and spans."""
@@ -3159,11 +3207,16 @@ class ItoolPlotItem(pg.PlotItem):
             )
         else:
             cursors = tuple(c for c in range(self.slicer_area.n_cursors))
+            changed_axes: set[int] = set()
             for c in cursors:
-                self.slicer_area.set_value(
+                if self.slicer_area.set_value(
                     axis, value, update=False, uniform=True, cursor=c
-                )
-            self.slicer_area.refresh(cursors, (axis,))
+                ):
+                    changed_axes.add(axis)
+            self._refresh_dragged_cursors(
+                cursors,
+                self._drag_refresh_axes(changed_axes),
+            )
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)

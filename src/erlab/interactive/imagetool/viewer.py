@@ -51,6 +51,7 @@ else:
     qtawesome = _lazy.load("qtawesome")
 
 from erlab.interactive.imagetool.viewer_linking import (
+    LinkSyncResult,
     SlicerLinkProxy,
     _sync_splitters,
     link_slicer,
@@ -3009,10 +3010,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         update: bool = True,
         uniform: bool = False,
         cursor: int | None = None,
-    ) -> None:
+    ) -> list[int | None]:
         if cursor is None:  # pragma: no branch
             cursor = self.current_cursor
-        self.array_slicer.set_value(cursor, axis, value, update, uniform)
+        axes = self.array_slicer.set_value(
+            cursor, axis, value, update=False, uniform=uniform
+        )
+        if axes and update:
+            self.sigIndexChanged.emit(cursor, tuple(axes))
+        sync_arguments = None
+        if axes:
+            sync_arguments = {
+                "value": self.array_slicer.get_value(cursor, axis, uniform=uniform)
+            }
+        return LinkSyncResult(axes, sync=bool(axes), arguments=sync_arguments)
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True, steps=True)
