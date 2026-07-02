@@ -765,7 +765,7 @@ class KspaceTool(KspaceToolGUI):
         self._pending_output_memory_preview_unavailable = False
 
         self._argnames["data"] = erlab.interactive.utils._tool_window_argname(
-            data_name, "data", func=self.__init__, fallback="data"
+            data_name, "data", func=KspaceTool.__init__, fallback="data"
         )
 
         self._source_configuration = int(data.kspace.configuration)

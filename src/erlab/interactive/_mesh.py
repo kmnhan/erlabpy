@@ -155,7 +155,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         self.data_name = erlab.interactive.utils._tool_window_argname(
-            data_name, "data", func=self.__init__, fallback="data"
+            data_name, "data", func=MeshTool.__init__, fallback="data"
         )
 
         # Initialize UI

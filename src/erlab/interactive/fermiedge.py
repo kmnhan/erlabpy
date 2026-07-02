@@ -371,12 +371,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self._argnames = {}
         self._argnames["data"] = erlab.interactive.utils._tool_window_argname(
-            data_name, "data", func=self.__init__, fallback="gold"
+            data_name, "data", func=GoldTool.__init__, fallback="gold"
         )
 
         if data_corr is not None:
             self._argnames["data_corr"] = erlab.interactive.utils._tool_window_argname(
-                None, "data_corr", func=self.__init__, fallback="data_corr"
+                None, "data_corr", func=GoldTool.__init__, fallback="data_corr"
             )
 
         self.data_corr = data_corr
@@ -621,7 +621,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @property
     def data_name(self) -> str:
-        return typing.cast("str", self._argnames["data"])
+        return self._argnames["data"]
 
     @data_name.setter
     def data_name(self, value: str) -> None:
@@ -1881,7 +1881,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
 
         self.data_name = erlab.interactive.utils._tool_window_argname(
-            data_name, "data", func=self.__init__, fallback="data"
+            data_name, "data", func=ResolutionTool.__init__, fallback="data"
         )
 
         self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
