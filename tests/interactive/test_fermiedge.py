@@ -12,7 +12,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._fit1d as fit1d_module
-import erlab.interactive.fermiedge as fermiedge_module
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive.fermiedge import (
     EdgeFitSignals,
@@ -352,7 +351,7 @@ def test_goldtool_deferred_restore_fit_payload(qtbot, gold, monkeypatch) -> None
 
     post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
     monkeypatch.setattr(
-        fermiedge_module.varname,
+        erlab.interactive.utils.varname,
         "argname",
         lambda *_args, **_kwargs: pytest.fail(
             "deferred goldtool restore should not inspect the caller frame"
@@ -1356,7 +1355,7 @@ def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypat
         _tracked_start_fit_worker,
     )
     monkeypatch.setattr(
-        fermiedge_module.varname,
+        erlab.interactive.utils.varname,
         "argname",
         lambda *_args, **_kwargs: pytest.fail(
             "deferred restool restore should not inspect the caller frame"

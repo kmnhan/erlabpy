@@ -764,25 +764,9 @@ class KspaceTool(KspaceToolGUI):
         self._output_memory_estimate = None
         self._pending_output_memory_preview_unavailable = False
 
-        if (
-            data_name is None
-            and erlab.interactive.utils._tool_window_restore_in_progress()
-        ):
-            self._argnames["data"] = "data"
-        elif data_name is None:
-            try:
-                self._argnames["data"] = typing.cast(
-                    "str",
-                    varname.argname(
-                        "data",
-                        func=self.__init__,  # type: ignore[misc]
-                        vars_only=False,
-                    ),
-                )
-            except varname.VarnameRetrievingError:
-                self._argnames["data"] = "data"
-        else:
-            self._argnames["data"] = data_name
+        self._argnames["data"] = erlab.interactive.utils._tool_window_argname(
+            data_name, "data", func=self.__init__, fallback="data"
+        )
 
         self._source_configuration = int(data.kspace.configuration)
         self.data = data.copy(deep=True)

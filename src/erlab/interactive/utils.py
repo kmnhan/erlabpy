@@ -49,6 +49,7 @@ if typing.TYPE_CHECKING:
     import pydantic
     import pyperclip
     import qtawesome
+    import varname
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
     from erlab.interactive.imagetool import provenance
@@ -57,6 +58,7 @@ else:
 
     pyperclip = _lazy.load("pyperclip")
     qtawesome = _lazy.load("qtawesome")
+    varname = _lazy.load("varname")
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -110,6 +112,31 @@ _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
 
 def _tool_window_restore_in_progress() -> bool:
     return _TOOL_WINDOW_RESTORE_DEFER.get() is not None
+
+
+def _tool_window_argname(
+    value: str | None,
+    argument: str,
+    *,
+    func: Callable[..., object],
+    fallback: str,
+) -> str:
+    """Return a deterministic ToolWindow argument name.
+
+    ToolWindow constructors call this directly for optional display/source names
+    that historically used :mod:`varname`. Saved workspace restore uses the stable
+    fallback without inspecting Python caller frames. Normal live construction still
+    infers the caller's argument expression, falling back to the same stable default
+    when inference fails.
+    """
+    if value is not None:
+        return value
+    if _tool_window_restore_in_progress():
+        return fallback
+    try:
+        return str(varname.argname(argument, func=func, frame=2, vars_only=False))
+    except (varname.ImproperUseError, varname.VarnameRetrievingError):
+        return fallback
 
 
 def _manager_perf_timing_enabled() -> bool:
