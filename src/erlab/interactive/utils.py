@@ -108,6 +108,10 @@ _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
 )
 
 
+def _tool_window_restore_in_progress() -> bool:
+    return _TOOL_WINDOW_RESTORE_DEFER.get() is not None
+
+
 def _manager_perf_timing_enabled() -> bool:
     return os.environ.get("ERLAB_MANAGER_PERF_TIMING") == "1"
 

@@ -154,7 +154,12 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         )
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
-        if data_name is None:
+        if (
+            data_name is None
+            and erlab.interactive.utils._tool_window_restore_in_progress()
+        ):
+            data_name = "data"
+        elif data_name is None:
             try:
                 data_name = typing.cast(
                     "str",

@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._fit1d as fit1d_module
+import erlab.interactive.fermiedge as fermiedge_module
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive.fermiedge import (
     EdgeFitSignals,
@@ -350,6 +351,13 @@ def test_goldtool_deferred_restore_fit_payload(qtbot, gold, monkeypatch) -> None
     saved = win.to_dataset()
 
     post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    monkeypatch.setattr(
+        fermiedge_module.varname,
+        "argname",
+        lambda *_args, **_kwargs: pytest.fail(
+            "deferred goldtool restore should not inspect the caller frame"
+        ),
+    )
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
         saved, _defer_restore_work=True
     )
@@ -357,6 +365,7 @@ def test_goldtool_deferred_restore_fit_payload(qtbot, gold, monkeypatch) -> None
     assert isinstance(restored, GoldTool)
 
     assert post_fit_calls == []
+    assert restored.data_name == "gold_input"
     assert not hasattr(restored, "edge_center")
     assert restored.result is None
     assert restored._pending_persisted_fit_snapshot is not None
@@ -1331,7 +1340,7 @@ def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypat
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
     )
-    win = restool(gold, execute=False)
+    win = restool(gold, data_name="resolution_input", execute=False)
     qtbot.addWidget(win)
     win.live_check.setChecked(True)
     saved = win.to_dataset()
@@ -1346,6 +1355,13 @@ def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypat
         "_start_fit_worker",
         _tracked_start_fit_worker,
     )
+    monkeypatch.setattr(
+        fermiedge_module.varname,
+        "argname",
+        lambda *_args, **_kwargs: pytest.fail(
+            "deferred restool restore should not inspect the caller frame"
+        ),
+    )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
         saved,
@@ -1353,6 +1369,7 @@ def test_restool_deferred_restore_live_fit_does_not_trigger_fit(qtbot, monkeypat
     )
     qtbot.addWidget(restored)
     assert isinstance(restored, ResolutionTool)
+    assert restored.data_name == "resolution_input"
     assert restored.live_check.isChecked()
     assert calls == []
 

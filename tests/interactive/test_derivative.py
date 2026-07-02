@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.derivative as derivative_module
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.imagetool import _replay_graph, provenance
 
@@ -140,7 +141,7 @@ def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> N
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
     ).astype(np.float64)
-    win: DerivativeTool = dtool(data, execute=False)
+    win: DerivativeTool = dtool(data, data_name="derivative_input", execute=False)
     qtbot.addWidget(win)
     win.tab_widget.setCurrentIndex(1)
     expected = win.result.copy(deep=True)
@@ -155,6 +156,13 @@ def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> N
     monkeypatch.setattr(
         DerivativeTool, "_update_result_now", _tracked_update_result_now
     )
+    monkeypatch.setattr(
+        derivative_module.varname,
+        "argname",
+        lambda *_args, **_kwargs: pytest.fail(
+            "deferred dtool restore should not inspect the caller frame"
+        ),
+    )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
         saved,
@@ -163,6 +171,7 @@ def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> N
     qtbot.addWidget(restored)
     assert isinstance(restored, DerivativeTool)
     assert calls == []
+    assert restored.data_name == "derivative_input"
 
     xr.testing.assert_identical(restored.result, expected)
 

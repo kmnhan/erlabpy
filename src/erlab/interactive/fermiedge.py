@@ -370,7 +370,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
         self._argnames = {}
-        if data_name is None:
+        if (
+            data_name is None
+            and erlab.interactive.utils._tool_window_restore_in_progress()
+        ):
+            self._argnames["data"] = "gold"
+        elif data_name is None:
             try:
                 self._argnames["data"] = varname.argname(
                     "data",
@@ -383,14 +388,17 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._argnames["data"] = data_name
 
         if data_corr is not None:
-            try:
-                self._argnames["data_corr"] = varname.argname(
-                    "data_corr",
-                    func=self.__init__,  # type: ignore[misc]
-                    vars_only=False,
-                )
-            except varname.VarnameRetrievingError:
+            if erlab.interactive.utils._tool_window_restore_in_progress():
                 self._argnames["data_corr"] = "data_corr"
+            else:
+                try:
+                    self._argnames["data_corr"] = varname.argname(
+                        "data_corr",
+                        func=self.__init__,  # type: ignore[misc]
+                        vars_only=False,
+                    )
+                except varname.VarnameRetrievingError:
+                    self._argnames["data_corr"] = "data_corr"
 
         self.data_corr = data_corr
         self.hists: pg.HistogramLUTItem
@@ -1893,7 +1901,12 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.center_spin.setDecimals(self._x_decimals + 1)
         self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
 
-        if data_name is None:
+        if (
+            data_name is None
+            and erlab.interactive.utils._tool_window_restore_in_progress()
+        ):
+            data_name = "data"
+        elif data_name is None:
             try:
                 data_name = typing.cast(
                     "str",
