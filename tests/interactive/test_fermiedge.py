@@ -475,7 +475,7 @@ def test_goldtool_deferred_restore_update_data_refits_pending_fit(
 
 @pytest.mark.parametrize("defer_restore_work", [False, True])
 def test_goldtool_legacy_bad_fit_snapshot_lengths_raise(
-    qtbot, gold, defer_restore_work
+    qtbot, gold, defer_restore_work, monkeypatch
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
     qtbot.addWidget(win)
@@ -489,10 +489,20 @@ def test_goldtool_legacy_bad_fit_snapshot_lengths_raise(
     }
     saved.attrs["tool_state"] = json.dumps(legacy_state)
 
+    deleted_tools: list[GoldTool] = []
+    original_delete_later = GoldTool.deleteLater
+
+    def tracked_delete_later(self: GoldTool) -> None:
+        deleted_tools.append(self)
+        original_delete_later(self)
+
+    monkeypatch.setattr(GoldTool, "deleteLater", tracked_delete_later)
+
     with pytest.raises(ValueError, match="mismatched array lengths"):
         erlab.interactive.utils.ToolWindow.from_dataset(
             saved, _defer_restore_work=defer_restore_work
         )
+    assert len(deleted_tools) == 1
 
 
 def test_goldtool_handles_missing_cpu_count(qtbot, gold, monkeypatch) -> None:

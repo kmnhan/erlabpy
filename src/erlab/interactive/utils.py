@@ -5310,6 +5310,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         previous_defer_restore = False
         tool._restoring_from_dataset = True
         tool._defer_restored_tool_work = defer_restore_work
+        restore_succeeded = False
         try:
             with tool._history_suppressed():
                 tool.tool_status = cls_obj.StateModel.model_validate_json(
@@ -5387,11 +5388,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             ):
                 tool.setGeometry(*ds.attrs["tool_rect"])
             tool._reset_history_stack()
+            if not defer_restore_work:
+                tool._flush_restore_work()
+            restore_succeeded = True
         finally:
             tool._restoring_from_dataset = previous_restoring
             tool._defer_restored_tool_work = previous_defer_restore
-        if not defer_restore_work:
-            tool._flush_restore_work()
+            if not restore_succeeded:
+                tool._deferred_restore_work.clear()
+                with contextlib.suppress(Exception):
+                    tool._cancel_background_work(timeout_ms=0)
+                if qt_is_valid(tool):
+                    tool.hide()
+                    tool.deleteLater()
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:
