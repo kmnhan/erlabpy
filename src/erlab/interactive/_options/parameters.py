@@ -10,6 +10,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._stylesheets
+from erlab.interactive._widgets import _CenteredIconToolButton
 
 _STYLESHEET_AVAILABLE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 _STYLESHEET_NAME_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
@@ -289,7 +290,7 @@ class DirectoryPathWidget(QtWidgets.QWidget):
         self.browse_button.setToolTip("Choose a folder.")
         self.browse_button.clicked.connect(self.browse_directory)
 
-        self.clear_button = QtWidgets.QToolButton(self)
+        self.clear_button = _CenteredIconToolButton(self)
         self.clear_button.setObjectName("directoryPathClearButton")
         self.clear_button.setText("Clear")
         self.clear_button.setIcon(QtGui.QIcon.fromTheme("edit-clear"))

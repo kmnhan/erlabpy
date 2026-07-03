@@ -22,6 +22,7 @@ import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer import FigureComposerTool
+from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
@@ -1794,7 +1795,7 @@ def test_details_panel_file_field_info_button_passes_metadata_node_uid(
     assert not details_button.icon().isNull()
     assert isinstance(
         details_button,
-        manager_widgets._CenteredIconToolButton,
+        _CenteredIconToolButton,
     )
     key_label = typing.cast(
         "QtWidgets.QLabel",
@@ -1946,7 +1947,7 @@ def test_centered_icon_tool_button_centers_visible_icon_with_stylesheet(
     painter.fillRect(QtCore.QRect(0, 0, 4, 6), QtGui.QColor(255, 0, 0))
     painter.end()
 
-    button = manager_widgets._CenteredIconToolButton()
+    button = _CenteredIconToolButton()
     qtbot.addWidget(button)
     button.setIcon(QtGui.QIcon(pixmap))
     button.setIconSize(QtCore.QSize(10, 6))
@@ -1979,13 +1980,13 @@ def test_centered_icon_tool_button_visible_rect_fallbacks() -> None:
     transparent.fill(QtCore.Qt.GlobalColor.transparent)
     transparent.setDevicePixelRatio(0.0)
 
-    rect = manager_widgets._CenteredIconToolButton._visible_pixmap_rect(transparent)
+    rect = _CenteredIconToolButton._visible_pixmap_rect(transparent)
 
     assert rect == QtCore.QRectF(0.0, 0.0, 8.0, 6.0)
 
 
 def test_centered_icon_tool_button_paint_skips_missing_icon(qtbot) -> None:
-    button = manager_widgets._CenteredIconToolButton()
+    button = _CenteredIconToolButton()
     qtbot.addWidget(button)
     button.resize(24, 24)
     button.show()

@@ -57,7 +57,7 @@ def find_libomp_dylib():
 
 
 if sys.platform.startswith("win"):
-    # win32com is required for numba cache directory resolution on Windows
+    # win32com is required for Numba's user-wide cache directory lookup on Windows.
     # Used in numba.misc.appdirs._get_win_folder_with_pywin32
     # Others are required for right-click menu on taskbar icon
     hiddenimports += [

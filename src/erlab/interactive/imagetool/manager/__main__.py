@@ -28,10 +28,6 @@ def _mpl_cache_directory() -> pathlib.Path:
     return _cache_subdirectory("matplotlib")
 
 
-def _numba_cache_directory() -> pathlib.Path:
-    return _cache_subdirectory("numba")
-
-
 def _pycache_directory() -> pathlib.Path:
     return _cache_subdirectory("python-pycache")
 
@@ -40,10 +36,6 @@ def _configure_packaged_runtime_caches() -> None:
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
     os.environ["MPLCONFIGDIR"] = str(_mpl_cache_directory())
-    numba_cache_dir = _numba_cache_directory()
-    os.environ["NUMBA_CACHE_DIR"] = str(numba_cache_dir)
-    if numba_config := sys.modules.get("numba.core.config"):
-        numba_config.__dict__["CACHE_DIR"] = str(numba_cache_dir)
     pycache_dir = _pycache_directory()
     os.environ["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
     sys.pycache_prefix = str(pycache_dir)

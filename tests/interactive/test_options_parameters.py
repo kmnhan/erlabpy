@@ -17,6 +17,7 @@ from erlab.interactive._options.parameters import (
     StylesheetListWidget,
     _stylesheet_names,
 )
+from erlab.interactive._widgets import _CenteredIconToolButton
 
 
 def test_colorlistwidget_initialization(qtbot):
@@ -97,6 +98,34 @@ def test_directory_path_widget_initialization(qtbot) -> None:
 
     assert widget.get_path() == "~/data"
     assert widget.clear_button.isEnabled()
+
+
+def test_directory_path_clear_button_centers_icon(qtbot) -> None:
+    widget = DirectoryPathWidget("  ~/data  ")
+    qtbot.addWidget(widget)
+
+    assert isinstance(widget.clear_button, _CenteredIconToolButton)
+    assert (
+        widget.clear_button.toolButtonStyle()
+        == QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+    )
+    assert (
+        widget.clear_button.sizeHint().width()
+        == widget.clear_button.sizeHint().height()
+    )
+
+    pixmap = QtGui.QPixmap(12, 10)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.fillRect(QtCore.QRect(7, 2, 3, 4), QtCore.Qt.GlobalColor.black)
+    painter.end()
+
+    rect = _CenteredIconToolButton._visible_pixmap_rect(pixmap)
+
+    assert rect.x() == pytest.approx(7.0)
+    assert rect.y() == pytest.approx(2.0)
+    assert rect.width() == pytest.approx(3.0)
+    assert rect.height() == pytest.approx(4.0)
 
 
 def test_directory_path_widget_editing_trims_and_emits(qtbot) -> None:
