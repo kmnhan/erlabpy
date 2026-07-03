@@ -7627,6 +7627,52 @@ def test_manager_close_save_path_updates_file_path(
         assert not manager._workspace_state.closing_document
 
 
+def test_manager_close_ignores_active_save_and_async_compaction(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_state.save_in_progress = True
+        saving_event = QtGui.QCloseEvent()
+        manager.closeEvent(saving_event)
+
+        assert not saving_event.isAccepted()
+
+        manager._workspace_state.save_in_progress = False
+        manager._workspace_state.path = tmp_path / "close-compact.itws"
+        close_calls: list[str] = []
+        compaction_callbacks: list[Callable[[], None]] = []
+
+        def _compact_workspace_before_shutdown(
+            *, on_finished: Callable[[], None]
+        ) -> bool:
+            compaction_callbacks.append(on_finished)
+            return True
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager._workspace_controller,
+                "_dirty_workspace_save_choice",
+                lambda _message: "discard",
+            )
+            patch.setattr(
+                manager._workspace_controller,
+                "_compact_workspace_before_shutdown",
+                _compact_workspace_before_shutdown,
+            )
+            patch.setattr(manager, "close", lambda: close_calls.append("close") or True)
+            compacting_event = QtGui.QCloseEvent()
+            manager.closeEvent(compacting_event)
+            assert not compacting_event.isAccepted()
+            assert len(compaction_callbacks) == 1
+            compaction_callbacks[0]()
+
+        assert close_calls == ["close"]
+
+
 def test_manager_close_compacts_clean_delta_workspace(
     monkeypatch,
     tmp_path,
@@ -12577,6 +12623,263 @@ def test_wrapper_pending_workspace_branch_helpers(
         finally:
             manager._workspace_state.loading_depth = 0
         assert wrapper.pending_workspace_memory_payload is not None
+
+        assert wrapper.load_source_code() is None
+        assert wrapper.persistence_data_backing() == ("memory", ())
+        wrapper._handle_source_data_replaced(data)
+        assert wrapper.pending_workspace_memory_payload is None
+
+        empty_node = manager_wrapper._ManagedWindowNode(
+            manager,
+            "empty-node",
+            None,
+            None,
+            window_kind="imagetool",
+            created_time="2026-01-02T03:04:05+00:00",
+        )
+        try:
+            assert "Added" in empty_node.info_text
+            assert empty_node.persistence_data_backing() == (None, ())
+        finally:
+            empty_node.deleteLater()
+
+
+def test_pending_workspace_actions_and_color_branches(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for offset in (0, 100):
+            data = xr.DataArray(
+                np.arange(offset, offset + 16, dtype=float).reshape(4, 4),
+                dims=("x", "y"),
+            )
+            tool = itool(data, manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+
+        manager.link_imagetools(0, 1, link_colors=True)
+        link_key = manager._tool_graph.root_wrappers[0].workspace_link_key
+        assert link_key is not None
+        linked_color = manager.color_for_linker(manager._link_registry.linkers[0])
+        assert manager.color_for_workspace_link_key(link_key) == linked_color
+        assert (
+            manager.color_for_workspace_link_key("unknown-link-key")
+            == (manager_mainwindow._LINKER_COLORS[0])
+        )
+
+        select_tools(manager, [0, 1])
+        manager._unlink_selected_from_action()
+        assert not manager._tool_graph.root_wrappers[0].workspace_linked
+        assert not manager._tool_graph.root_wrappers[1].workspace_linked
+
+        fake_node = types.SimpleNamespace(is_imagetool=False)
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_node_for_target", lambda _target: fake_node)
+            patch.setattr(manager, "_selected_imagetool_targets", lambda: ("bad",))
+            patch.setattr(manager, "_child_node", lambda _uid: fake_node)
+            with pytest.raises(KeyError, match="not an ImageTool"):
+                manager.link_imagetools("bad", "also_bad")
+            with pytest.raises(KeyError, match="not an ImageTool"):
+                manager.unlink_selected(deselect=False)
+            with pytest.raises(KeyError, match="not an ImageTool"):
+                manager.promote_child_imagetool("bad")
+            with pytest.raises(KeyError, match="not an ImageTool"):
+                manager.get_imagetool("bad")
+
+        fake_pending_node = types.SimpleNamespace(
+            is_imagetool=True,
+            materialize_pending_workspace_memory_payload=lambda: False,
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_child_node", lambda _uid: fake_pending_node)
+            with pytest.raises(RuntimeError, match="saved data"):
+                manager.promote_child_imagetool("pending")
+            patch.setattr(
+                manager, "_node_for_target", lambda _target: fake_pending_node
+            )
+            with pytest.raises(ValueError, match="saved data"):
+                manager.get_imagetool("pending")
+
+
+def test_pending_workspace_reload_reason_branches(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._lineage_controller
+        monkeypatch.setattr(provenance, "can_reload_without_trust", lambda _spec: False)
+        monkeypatch.setattr(provenance, "has_file_load_source", lambda _spec: False)
+
+        file_spec = types.SimpleNamespace(kind="file")
+        monkeypatch.setattr(
+            controller,
+            "_file_load_source_unavailable_reason",
+            lambda _spec, _label: "missing file",
+        )
+        assert (
+            controller._pending_imagetool_reload_unavailable_reason(
+                types.SimpleNamespace(
+                    provenance_spec=file_spec,
+                    _load_source_details=lambda: None,
+                )
+            )
+            == "missing file"
+        )
+
+        script_spec = types.SimpleNamespace(kind="script")
+        monkeypatch.setattr(
+            provenance, "script_provenance_requires_trust", lambda _spec: True
+        )
+        trust_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                provenance_spec=script_spec,
+                _load_source_details=lambda: None,
+            )
+        )
+        assert trust_reason is not None
+        assert "trust confirmation" in trust_reason
+
+        monkeypatch.setattr(
+            provenance, "script_provenance_requires_trust", lambda _spec: False
+        )
+        replay_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                provenance_spec=script_spec,
+                _load_source_details=lambda: None,
+            )
+        )
+        assert replay_reason is not None
+        assert "cannot be reloaded automatically" in replay_reason
+
+        missing_path = tmp_path / "missing.h5"
+        missing_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                provenance_spec=None,
+                _load_source_details=lambda: types.SimpleNamespace(
+                    path=missing_path,
+                    load_code=None,
+                ),
+            )
+        )
+        assert missing_reason is not None
+        assert str(missing_path) in missing_reason
+
+        existing_path = tmp_path / "scan.h5"
+        existing_path.write_bytes(b"")
+        assert (
+            controller._pending_imagetool_reload_unavailable_reason(
+                types.SimpleNamespace(
+                    provenance_spec=None,
+                    _load_source_details=lambda: types.SimpleNamespace(
+                        path=existing_path,
+                        load_code="data = load()",
+                    ),
+                )
+            )
+            is None
+        )
+        missing_loader_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                provenance_spec=None,
+                _load_source_details=lambda: types.SimpleNamespace(
+                    path=existing_path,
+                    load_code=None,
+                ),
+            )
+        )
+        assert missing_loader_reason is not None
+        assert "loader information" in missing_loader_reason
+
+
+def test_pending_workspace_details_preview_and_viewer_restore_branches(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False)
+
+        updates: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_selected_imagetool_targets", lambda: (0,))
+            patch.setattr(manager, "_selected_tool_uids", lambda: ())
+            patch.setattr(
+                manager, "_update_info", lambda *, uid=None: updates.append(uid)
+            )
+            manager._details_panel._load_selected_preview_data()
+            assert updates == []
+
+            wrapper = manager._tool_graph.root_wrappers[0]
+            wrapper.set_pending_workspace_memory_payload(tmp_path / "source.itws", "0")
+            patch.setattr(
+                wrapper,
+                "materialize_pending_workspace_memory_payload",
+                lambda: True,
+            )
+            manager._details_panel._load_selected_preview_data()
+            assert updates == [wrapper.uid]
+
+            patch.setattr(manager, "_selected_imagetool_targets", lambda: (0, 1))
+            manager._details_panel._load_selected_preview_data()
+            assert updates == [wrapper.uid]
+
+        slicer_area = tool.slicer_area
+        fallback_sizes = [splitter.sizes() for splitter in slicer_area._splitters]
+        assert slicer_area._normalize_splitter_sizes([]) == fallback_sizes
+        slicer_area._pending_splitter_sizes = None
+        slicer_area._pending_splitter_restore_queued = True
+        slicer_area._apply_pending_splitter_restore()
+        assert not slicer_area._pending_splitter_restore_queued
+        slicer_area._deferred_show_restore_queued = True
+        tool.hide()
+        slicer_area._flush_deferred_show_restore()
+        assert not slicer_area._deferred_show_restore_queued
+
+
+def test_pending_workspace_provenance_edit_materialization_failures(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        node = types.SimpleNamespace(
+            materialize_pending_workspace_memory_payload=lambda: False
+        )
+        operation = typing.cast(
+            "provenance.ToolProvenanceOperation", types.SimpleNamespace()
+        )
+        spec = provenance.full_data()
+        data = xr.DataArray(np.arange(4), dims=("x",))
+
+        with pytest.raises(RuntimeError, match="saved data"):
+            manager._provenance_edit_controller._edit_active_filter(
+                typing.cast("manager_wrapper._ManagedWindowNode", node),
+                operation,
+                manager_provenance_edit.dialogs.DataFilterDialog,
+            )
+        with pytest.raises(RuntimeError, match="saved data"):
+            manager._provenance_edit_controller._replace_node_data(
+                typing.cast("manager_wrapper._ManagedWindowNode", node),
+                "display",
+                data,
+                spec,
+                None,
+            )
 
 
 def test_workspace_save_worker_start_and_finish_error_branches(
