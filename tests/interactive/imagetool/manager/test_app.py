@@ -197,11 +197,6 @@ def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
     )
     monkeypatch.setattr(manager_main.sys, "pycache_prefix", None)
     monkeypatch.setattr(manager_main.sys, "dont_write_bytecode", True)
-    fake_numba_config = types.ModuleType("numba.core.config")
-    fake_numba_config.CACHE_DIR = ""
-    monkeypatch.setitem(
-        manager_main.sys.modules, "numba.core.config", fake_numba_config
-    )
     monkeypatch.setattr(
         manager_main.QtCore.QStandardPaths,
         "writableLocation",
@@ -212,16 +207,13 @@ def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
 
     cache_dir = cache_root / "dev.kmnhan.erlabpy.imagetoolmanager"
     mpl_cache_dir = cache_dir / "matplotlib"
-    numba_cache_dir = cache_dir / "numba"
     pycache_dir = cache_dir / "python-pycache"
     assert os.environ["MPLCONFIGDIR"] == str(mpl_cache_dir)
-    assert os.environ["NUMBA_CACHE_DIR"] == str(numba_cache_dir)
+    assert "NUMBA_CACHE_DIR" not in os.environ
     assert os.environ["PYTHONPYCACHEPREFIX"] == str(pycache_dir)
     assert manager_main.sys.pycache_prefix == str(pycache_dir)
     assert manager_main.sys.dont_write_bytecode is False
-    assert str(numba_cache_dir) == fake_numba_config.CACHE_DIR
     assert mpl_cache_dir.is_dir()
-    assert numba_cache_dir.is_dir()
     assert pycache_dir.is_dir()
 
 
