@@ -57,7 +57,7 @@ jobs:
             timeout-minutes: 30
             use-xdist: true
           - group: "cov-qt-manager-figurecomposer"
-            timeout-minutes: 25
+            timeout-minutes: 20
             use-xdist: true
           - group: "cov-qt-manager-mainwindow"
             timeout-minutes: 25
