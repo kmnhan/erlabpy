@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.imagetool import _replay_graph, provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
@@ -19,7 +20,6 @@ from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
     _QWIDGETSIZE_MAX,
-    _CenteredIconToolButton,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
     _MetadataDerivationTreeItem,
