@@ -21,6 +21,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._xarray as _manager_xarray
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
@@ -815,6 +816,23 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
 
+    def persistence_data_backing(
+        self,
+    ) -> tuple[typing.Literal["dask", "file_lazy", "memory"] | None, tuple[str, ...]]:
+        """Return lightweight data backing metadata without capturing UI state."""
+        if self.imagetool is None:
+            return None, ()
+
+        slicer_area = self.slicer_area
+        data = slicer_area._data
+        if slicer_area.data_chunked:
+            data_backing: typing.Literal["dask", "file_lazy", "memory"] = "dask"
+        elif slicer_area.data_file_backed:
+            data_backing = "file_lazy"
+        else:
+            data_backing = "memory"
+        return data_backing, _manager_xarray.dataarray_source_paths(data)
+
     def persistence_view(self) -> _NodePersistenceView:
         """Return the only manager persistence/clone view for this node."""
         if self.imagetool is None:
@@ -831,15 +849,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
 
         data, state = self.slicer_area.persistence_data_and_state()
-        from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
-
-        data_backing: typing.Literal["dask", "file_lazy", "memory"]
-        if data.chunks is not None:
-            data_backing = "dask"
-        elif _manager_xarray.dataarray_is_file_backed(data):
-            data_backing = "file_lazy"
-        else:
-            data_backing = "memory"
+        data_backing, source_paths = self.persistence_data_backing()
         return _NodePersistenceView(
             data=data,
             state=state,
@@ -850,7 +860,7 @@ class _ManagedWindowNode(QtCore.QObject):
             source_state=self.source_state,
             source_auto_update=self.source_auto_update,
             data_backing=data_backing,
-            source_paths=_manager_xarray.dataarray_source_paths(data),
+            source_paths=source_paths,
         )
 
     @property

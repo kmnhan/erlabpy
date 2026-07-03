@@ -2054,6 +2054,102 @@ def test_ktool_deferred_restore_queues_preview_update(
     qtbot.wait_until(lambda: calls == [restored], timeout=5000)
 
 
+def test_ktool_deferred_restore_skips_default_calculations(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    win = ktool(data, avec=np.eye(2), data_name="scan", execute=False)
+    _add_hidden_tool(qtbot, win)
+    status = win.tool_status
+    win.tool_status = status.model_copy(
+        update={
+            "offsets": {
+                **status.offsets,
+                "delta": status.offsets.get("delta", 0.0) + 0.25,
+                "wf": 4.75,
+            },
+            "angle_scales": {"alpha": 1.25, "beta": 0.75},
+            "bounds_enabled": True,
+            "bounds": {
+                key: -0.35 + 0.1 * index for index, key in enumerate(status.bounds)
+            },
+            "resolution_enabled": True,
+            "resolution": {
+                key: 0.031 + 0.002 * index
+                for index, key in enumerate(status.resolution)
+            },
+            "bz_enabled": True,
+            "cmap_name": "plasma",
+            "cmap_gamma": 1.4,
+        }
+    )
+    expected = win.tool_status
+    saved = win.to_dataset()
+
+    def fail_argname(*_args, **_kwargs) -> str:
+        pytest.fail("deferred ktool restore should not inspect the caller frame")
+
+    def fail_calculate_bounds(_self: KspaceTool) -> None:
+        pytest.fail("deferred ktool restore should not calculate default bounds")
+
+    def fail_calculate_resolution(_self: KspaceTool) -> None:
+        pytest.fail("deferred ktool restore should not calculate default resolution")
+
+    monkeypatch.setattr(erlab.interactive.utils.varname, "argname", fail_argname)
+    monkeypatch.setattr(KspaceTool, "calculate_bounds", fail_calculate_bounds)
+    monkeypatch.setattr(KspaceTool, "calculate_resolution", fail_calculate_resolution)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    _add_hidden_tool(qtbot, restored)
+    assert isinstance(restored, KspaceTool)
+
+    restored_status = restored.tool_status
+    assert restored_status.data_name == "scan"
+    assert restored._argnames["data"] == "scan"
+    assert restored_status.offsets == pytest.approx(expected.offsets)
+    assert restored_status.angle_scales == pytest.approx(expected.angle_scales)
+    assert restored_status.bounds_enabled is True
+    assert restored_status.bounds == pytest.approx(expected.bounds)
+    assert restored_status.resolution_enabled is True
+    assert restored_status.resolution == pytest.approx(expected.resolution)
+    assert restored_status.bz_enabled is True
+    assert restored_status.cmap_name == "plasma"
+    assert restored_status.cmap_gamma == pytest.approx(1.4)
+
+
+def test_ktool_standalone_and_update_data_calculate_defaults_eager(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    data = _make_da_ktool_data(anglemap)
+    calls: list[tuple[str, KspaceTool]] = []
+    original_bounds = KspaceTool.calculate_bounds
+    original_resolution = KspaceTool.calculate_resolution
+
+    def record_calculate_bounds(self: KspaceTool) -> None:
+        calls.append(("bounds", self))
+        original_bounds(self)
+
+    def record_calculate_resolution(self: KspaceTool) -> None:
+        calls.append(("resolution", self))
+        original_resolution(self)
+
+    monkeypatch.setattr(KspaceTool, "calculate_bounds", record_calculate_bounds)
+    monkeypatch.setattr(KspaceTool, "calculate_resolution", record_calculate_resolution)
+
+    win = ktool(data, data_name="scan", execute=False)
+    _add_hidden_tool(qtbot, win)
+    assert calls == [("bounds", win), ("resolution", win)]
+
+    calls.clear()
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) + 1.0
+    win.update_data(updated)
+    assert calls == [("bounds", win), ("resolution", win)]
+
+
 def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
     data = anglemap.copy().assign_coords(hv=6.2)
     data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)

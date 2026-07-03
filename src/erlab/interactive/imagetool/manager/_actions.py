@@ -1224,10 +1224,33 @@ class _ActionsController:
                                         delta_save_count,
                                         manifest,
                                     ) = metadata_from_attrs(workspace_dt.attrs)
-                                    if not self._manager._confirm_save_dirty_workspace(
+                                    controller = self._manager._workspace_controller
+                                    dirty_choice = (
+                                        controller._dirty_workspace_save_choice
+                                    )
+                                    save_choice = dirty_choice(
                                         "Opening a workspace replaces the windows "
                                         "currently in this manager."
-                                    ):
+                                    )
+                                    if save_choice == "cancel":
+                                        return
+                                    if save_choice == "save":
+                                        workspace_path = access.path
+
+                                        def _load_after_save(
+                                            save_succeeded: bool,
+                                            *,
+                                            path: pathlib.Path = workspace_path,
+                                            controller=controller,
+                                        ) -> None:
+                                            if save_succeeded and (
+                                                not self._manager.is_workspace_modified
+                                            ):
+                                                controller._open_workspace_after_dirty_prompt(
+                                                    path
+                                                )
+
+                                        controller.save(on_finished=_load_after_save)
                                         return
                                     loaded_workspace = self._manager._from_datatree(
                                         workspace_dt,

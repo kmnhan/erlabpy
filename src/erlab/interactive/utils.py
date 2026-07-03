@@ -49,6 +49,7 @@ if typing.TYPE_CHECKING:
     import pydantic
     import pyperclip
     import qtawesome
+    import varname
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
     from erlab.interactive.imagetool import provenance
@@ -57,6 +58,7 @@ else:
 
     pyperclip = _lazy.load("pyperclip")
     qtawesome = _lazy.load("qtawesome")
+    varname = _lazy.load("varname")
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -106,6 +108,35 @@ _TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
     contextvars.ContextVar("_TOOL_WINDOW_RESTORE_DEFER", default=None)
 )
+
+
+def _tool_window_restore_in_progress() -> bool:
+    return _TOOL_WINDOW_RESTORE_DEFER.get() is not None
+
+
+def _tool_window_argname(
+    value: str | None,
+    argument: str,
+    *,
+    func: Callable[..., object],
+    fallback: str,
+) -> str:
+    """Return a deterministic ToolWindow argument name.
+
+    ToolWindow constructors call this directly for optional display/source names
+    that historically used :mod:`varname`. Saved workspace restore uses the stable
+    fallback without inspecting Python caller frames. Normal live construction still
+    infers the caller's argument expression, falling back to the same stable default
+    when inference fails.
+    """
+    if value is not None:
+        return value
+    if _tool_window_restore_in_progress():
+        return fallback
+    try:
+        return str(varname.argname(argument, func=func, frame=2, vars_only=False))
+    except (varname.ImproperUseError, varname.VarnameRetrievingError):
+        return fallback
 
 
 def _manager_perf_timing_enabled() -> bool:
@@ -5279,6 +5310,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         previous_defer_restore = False
         tool._restoring_from_dataset = True
         tool._defer_restored_tool_work = defer_restore_work
+        restore_succeeded = False
         try:
             with tool._history_suppressed():
                 tool.tool_status = cls_obj.StateModel.model_validate_json(
@@ -5356,11 +5388,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             ):
                 tool.setGeometry(*ds.attrs["tool_rect"])
             tool._reset_history_stack()
+            if not defer_restore_work:
+                tool._flush_restore_work()
+            restore_succeeded = True
         finally:
             tool._restoring_from_dataset = previous_restoring
             tool._defer_restored_tool_work = previous_defer_restore
-        if not defer_restore_work:
-            tool._flush_restore_work()
+            if not restore_succeeded:
+                tool._deferred_restore_work.clear()
+                with contextlib.suppress(Exception):
+                    tool._cancel_background_work(timeout_ms=0)
+                if qt_is_valid(tool):
+                    tool.hide()
+                    tool.deleteLater()
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:
