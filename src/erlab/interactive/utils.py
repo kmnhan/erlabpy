@@ -603,12 +603,17 @@ class _WaitDialog(QtWidgets.QDialog):
         self.setModal(True)
         self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(QtWidgets.QLabel(message))
+        self._label = QtWidgets.QLabel(message)
+        layout.addWidget(self._label)
         self.setLayout(layout)
         self.setWindowFlags(
             QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+
+    def set_message(self, message: str) -> None:
+        self._label.setText(message)
+        self.adjustSize()
 
 
 @contextlib.contextmanager
@@ -3888,7 +3893,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the callback used to resolve provenance for future source refreshes."""
         self._input_provenance_parent_fetcher = fetcher
-        if fetcher is not None and self._source_state == "fresh":
+        if (
+            fetcher is not None
+            and self.has_source_binding
+            and self._source_state == "fresh"
+        ):
             self._sync_input_provenance_snapshot()
 
     def _parent_input_provenance(
@@ -4563,10 +4572,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
-        if fetcher is not None and self._source_spec is None:
+        if fetcher is not None and self._source_binding is not None:
             with contextlib.suppress(Exception):
                 self._materialized_source_spec(fetcher())
-        if fetcher is not None and self._source_state == "fresh":
+        if (
+            fetcher is not None
+            and self.has_source_binding
+            and self._source_state == "fresh"
+        ):
             self._sync_input_provenance_snapshot()
 
     def _set_managed_source_update_dialog(

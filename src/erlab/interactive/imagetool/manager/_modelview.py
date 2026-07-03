@@ -241,13 +241,15 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         QtCore.QRect | None,
     ]:
         # Determine which icons should be visible
-        is_linked: bool = (
-            isinstance(node, _ImageToolWrapper) and node.slicer_area.is_linked
-        )
+        is_linked = isinstance(node, _ImageToolWrapper) and node.workspace_linked
         is_watched: bool = (
             isinstance(node, _ImageToolWrapper) and node._watched_varname is not None
         )
-        is_lazy: bool = node.imagetool is not None and node.slicer_area.data_loadable
+        is_lazy: bool = (
+            node.imagetool is not None
+            and node.pending_workspace_memory_payload is None
+            and node.slicer_area.data_loadable
+        )
 
         # Precompute geometry constants
         icon_size = self.icon_size
@@ -435,13 +437,21 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             self._paint_icon(painter, option, dask_rect, self._dask_icon)
 
         if link_rect:
-            proxy = typing.cast(
-                "erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy",
-                tool_wrapper.slicer_area._linking_proxy,
+            link_color: QtGui.QColor | None = None
+            proxy = (
+                None
+                if tool_wrapper.imagetool is None
+                else tool_wrapper.slicer_area._linking_proxy
             )
-            link_color = self.manager.color_for_linker(proxy)
-            link_icon = qta.icon("mdi6.link-variant", color=link_color)
-            self._paint_icon(painter, option, link_rect, link_icon)
+            if proxy is not None:
+                link_color = self.manager.color_for_linker(proxy)
+            elif tool_wrapper.workspace_link_key is not None:
+                link_color = self.manager.color_for_workspace_link_key(
+                    tool_wrapper.workspace_link_key
+                )
+            if link_color is not None:
+                link_icon = qta.icon("mdi6.link-variant", color=link_color)
+                self._paint_icon(painter, option, link_rect, link_icon)
 
         if watched_rect:
             palette = option.palette
@@ -840,8 +850,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     dask_rect,
                     tooltip,
                 )
-            if link_rect is not None and link_rect.contains(pos):
-                proxy = node.slicer_area._linking_proxy
+            if (
+                link_rect is not None
+                and node.workspace_linked
+                and link_rect.contains(pos)
+            ):
+                proxy = (
+                    None if node.imagetool is None else node.slicer_area._linking_proxy
+                )
                 if proxy is not None:
                     linker_index = self.manager.linker_index(proxy)
                     return _RowBadge(
@@ -849,6 +865,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         link_rect,
                         f"Linked (#{linker_index}). Click to unlink this window.",
                     )
+                return _RowBadge(
+                    "link",
+                    link_rect,
+                    "Linked. Click to unlink this window.",
+                )
             if watched_rect is not None and watched_rect.contains(pos):
                 varname = str(node._watched_varname)
                 if node._watched_connected:
@@ -1864,7 +1885,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         ):
             return
 
-        wrapper.slicer_area.unlink()
+        if wrapper.imagetool is not None:
+            wrapper.slicer_area.unlink()
+        wrapper.clear_workspace_link_state()
         manager = self._model.manager
         manager._mark_node_state_dirty(wrapper.uid)
         manager._sigReloadLinkers.emit()

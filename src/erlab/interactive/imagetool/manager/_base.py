@@ -392,10 +392,18 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return self.__reindex_lock
 
     def get_imagetool(self, index: int | str) -> ImageTool:
-        """Get the ImageTool object corresponding to the given target."""
+        """Get a usable ImageTool object, materializing pending workspace data.
+
+        Cheap UI or structural state paths that do not need array values should use
+        node-level access instead of this method.
+        """
         node = self._node_for_target(index)
         if not node.is_imagetool:
             raise KeyError(f"Target {index!r} is not an ImageTool")
+        if not node.materialize_pending_workspace_memory_payload():
+            raise ValueError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
 
         tool = node.imagetool
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):

@@ -279,6 +279,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._plot_widgets_constructed = 0
         self._pending_plotitem_states: list[PlotItemState] | None = None
         self._pending_splitter_sizes: list[list[int]] | None = None
+        self._pending_splitter_restore_queued = False
+        self._deferred_show_restore_queued = False
         self._axes_signals_connected = False
         self._axes_signal_connected_indices: set[int] = set()
         self._workspace_load_profiler = _workspace_load_profiler
@@ -506,16 +508,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _secondary_plot_construction_order() -> tuple[int, ...]:
         return (1, 4, 6, 3, 7, 5, 2)
 
-    def _secondary_plot_indices(self) -> tuple[int, ...]:
-        if not hasattr(self, "_data"):
-            return self._secondary_plot_construction_order()
-        valid_indices = set(self._axes_indices())
-        return tuple(
-            index
-            for index in self._secondary_plot_construction_order()
-            if index in valid_indices
-        )
-
     def _axes_index_valid(self, index: int) -> bool:
         return not hasattr(self, "_data") or index in self._axes_indices()
 
@@ -611,17 +603,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self.link_sync_suppressed(),
                 self._workspace_load_stage("imagetool secondary plot materialize"),
             ):
-                for index in self._secondary_plot_indices():
+                # Restore the historical splitter topology; adjust_layout hides
+                # inactive axes after their placeholder widgets exist.
+                for index in self._secondary_plot_construction_order():
                     self._build_axes_widget(index)
                 if hasattr(self, "_array_slicer"):
+                    cached_cursor_colors = [
+                        QtGui.QColor(color) for color in self.cursor_colors
+                    ]
+                    cached_levels: tuple[float, float] | None = None
+                    if self.levels_locked:
+                        cached_levels = copy.deepcopy(self.levels)
                     self.adjust_layout()
                     self._apply_pending_plotitem_states_to_materialized_axes()
                     if self._pending_splitter_sizes is not None:
-                        self._apply_splitter_sizes(self._pending_splitter_sizes)
-                        self._pending_splitter_sizes = None
+                        self._queue_pending_splitter_restore()
                     self.refresh_all(only_plots=True)
                     self.set_colormap(**self.colormap_properties, update=False)
                     self.lock_levels(self.levels_locked)
+                    if cached_levels is not None:
+                        self.levels = cached_levels
+                    self.cursor_colors = cached_cursor_colors
+                    for ax in self._materialized_axes():
+                        ax.set_cursor_colors(self.cursor_colors)
+                    self.sigCursorColorsChanged.emit()
         except Exception:
             self._secondary_plots_materialized = False
             raise
@@ -889,14 +894,67 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @splitter_sizes.setter
     def splitter_sizes(self, sizes: list[list[int]]) -> None:
         if self._secondary_plots_materialized:
-            self._apply_splitter_sizes(sizes)
+            self._apply_splitter_sizes(self._normalize_splitter_sizes(sizes))
             self._pending_splitter_sizes = None
+            self._pending_splitter_restore_queued = False
         else:
             self._pending_splitter_sizes = copy.deepcopy(sizes)
 
     def _apply_splitter_sizes(self, sizes: list[list[int]]) -> None:
         for s, size in zip(self._splitters, sizes, strict=True):
             s.setSizes(size)
+
+    def _normalize_splitter_sizes(self, sizes: list[list[int]]) -> list[list[int]]:
+        fallback = [s.sizes() for s in self._splitters]
+        if len(sizes) != len(self._splitters):
+            return fallback
+        return [
+            [int(value) for value in size]
+            if len(size) == splitter.count()
+            else fallback
+            for splitter, size, fallback in zip(
+                self._splitters, sizes, fallback, strict=True
+            )
+        ]
+
+    def _queue_pending_splitter_restore(self) -> None:
+        if (
+            self._pending_splitter_sizes is None
+            or self._pending_splitter_restore_queued
+            or not self.isVisible()
+        ):
+            return
+        self._pending_splitter_restore_queued = True
+        erlab.interactive.utils.single_shot(
+            self, 0, self._apply_pending_splitter_restore
+        )
+
+    def _apply_pending_splitter_restore(self) -> None:
+        sizes = self._pending_splitter_sizes
+        if sizes is None:
+            self._pending_splitter_restore_queued = False
+            return
+        sizes = self._normalize_splitter_sizes(sizes)
+        self._pending_splitter_sizes = copy.deepcopy(sizes)
+        self._apply_splitter_sizes(sizes)
+        # QSplitter may not report the restored sizes until the next layout pass.
+        # Keep the serialized sizes pending for state reads until then.
+        erlab.interactive.utils.single_shot(
+            self, 0, self._finish_pending_splitter_restore
+        )
+
+    def _finish_pending_splitter_restore(self) -> None:
+        self._pending_splitter_sizes = None
+        self._pending_splitter_restore_queued = False
+        self.refresh_all(only_plots=True)
+
+    @QtCore.Slot()
+    def _flush_deferred_show_restore(self) -> None:
+        self._deferred_show_restore_queued = False
+        if not self.isVisible():
+            return
+        self._ensure_secondary_plots()
+        self._queue_pending_splitter_restore()
 
     @property
     def is_linked(self) -> bool:
@@ -2847,6 +2905,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self._materialized_axes():
             if ax is not axes:
                 ax.update_manual_range()
+        self._sync_managed_workspace_manual_limits()
 
     def make_slice_dict(self) -> dict[Hashable, slice]:
         """Create a dictionary of slices for current manual limits.
@@ -3281,6 +3340,44 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
         return erlab.interactive.imagetool.manager._manager_instance
 
+    def _managed_link_sync_enabled(self, color: bool) -> bool:
+        manager = self._manager_instance if self._in_manager else None
+        return manager is not None and manager._has_pending_workspace_linked_slicers(
+            self, color=color
+        )
+
+    def _sync_managed_workspace_link(
+        self,
+        funcname: str,
+        arguments: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
+        indices: bool,
+        steps: bool,
+        color: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
+    ) -> None:
+        manager = self._manager_instance if self._in_manager else None
+        if manager is not None:
+            manager._sync_pending_workspace_linked_slicers(
+                self,
+                funcname,
+                arguments,
+                source_dims,
+                indices,
+                steps,
+                color,
+                transaction_id,
+                keep_pending,
+            )
+
+    def _sync_managed_workspace_manual_limits(self) -> None:
+        manager = self._manager_instance if self._in_manager else None
+        if manager is not None and self._link_sync_suppressed == 0:
+            manager._sync_pending_workspace_linked_manual_limits(
+                self, self.manual_limits
+            )
+
     def remove_from_manager(self) -> None:
         """Remove this ImageTool from the manager, if it is in one."""
         if self._in_manager:
@@ -3551,5 +3648,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         super().changeEvent(evt)
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
-        self._ensure_secondary_plots()
         super().showEvent(event)
+        has_deferred_show_work = (
+            not self._secondary_plots_materialized
+            or self._pending_splitter_sizes is not None
+        )
+        if has_deferred_show_work and not self._deferred_show_restore_queued:
+            self._deferred_show_restore_queued = True
+            erlab.interactive.utils.single_shot(
+                self, 0, self._flush_deferred_show_restore
+            )

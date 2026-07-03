@@ -1180,7 +1180,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
     @property
     def tool(self) -> ImageTool:
         """The underlying ImageTool object."""
-        return typing.cast("ImageTool", self._wrapper.imagetool)
+        return self._wrapper.manager.get_imagetool(self.uid)
 
     @property
     def window(self) -> ImageTool:

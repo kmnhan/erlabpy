@@ -83,6 +83,11 @@ else:
 
     h5py = _lazy.load("h5py")
 
+_WorkspaceCopyGroup: typing.TypeAlias = tuple[str, str, dict[str, typing.Any] | None]
+_WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
+    str, str, str, dict[str, typing.Any] | None
+]
+
 _WORKSPACE_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
@@ -150,7 +155,8 @@ class _WorkspaceSaveSnapshot:
     file_repack: bool = False
     full_tree: xr.DataTree | None = None
     copy_source: str | None = None
-    copy_groups: tuple[tuple[str, str, dict[str, typing.Any] | None], ...] = ()
+    copy_groups: tuple[_WorkspaceCopyGroup, ...] = ()
+    copy_group_sources: tuple[_WorkspaceCopyGroupWithSource, ...] = ()
     rewrite_groups: tuple[tuple[str, dict[str, xr.Dataset]], ...] = ()
     attr_updates: tuple[
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]], ...
@@ -224,6 +230,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
                 )
             elif self._snapshot.full_tree is None:
@@ -241,6 +248,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
                 )
             ok = True
@@ -1883,10 +1891,11 @@ def _read_workspace_dataset_group_h5py(
                 coords[coord_name] = coord_variable
 
         data_attrs = _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs)
+        data_values = np.asarray(data_dataset[()])
         data_vars: dict[typing.Hashable, typing.Any] = {
             data_name: (
                 tuple(dims),
-                np.asarray(data_dataset[()]),
+                data_values,
                 data_attrs,
             )
         }
@@ -2460,7 +2469,8 @@ def _write_full_workspace_tree_file(
     root_attrs: Mapping[str, typing.Any],
     *,
     copy_source: str | os.PathLike[str] | None = None,
-    copy_groups: Iterable[tuple[str, str, dict[str, typing.Any] | None]] = (),
+    copy_groups: Iterable[_WorkspaceCopyGroup] = (),
+    copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     fname = os.fsdecode(fname)
@@ -2476,6 +2486,10 @@ def _write_full_workspace_tree_file(
         copied_paths: set[str] = set()
         _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
+        copy_group_sources_tuple = tuple(
+            (os.fsdecode(source_file), source_path, destination_path, attrs)
+            for source_file, source_path, destination_path, attrs in copy_group_sources
+        )
         if use_scratch and _workspace_path_is_likely_network_path(fname):
             if tree is None and copy_source is not None and copy_groups_tuple:
                 raise ValueError(
@@ -2484,16 +2498,35 @@ def _write_full_workspace_tree_file(
                 )
             copy_source = None
             copy_groups_tuple = ()
+
+        copy_jobs_by_source: dict[
+            str, list[tuple[str, str, dict[str, typing.Any] | None, bool]]
+        ] = {}
         if copy_source is not None and copy_groups_tuple:
+            copy_jobs_by_source[os.fsdecode(copy_source)] = [
+                (source_path, destination_path, attrs, False)
+                for source_path, destination_path, attrs in copy_groups_tuple
+            ]
+        for (
+            source_file,
+            source_path,
+            destination_path,
+            attrs,
+        ) in copy_group_sources_tuple:
+            copy_jobs_by_source.setdefault(source_file, []).append(
+                (source_path, destination_path, attrs, True)
+            )
+
+        with h5py.File(tmp_fname, "w") as tmp_file:
+            _write_root_attrs_to_open_workspace_file(tmp_file, root_attrs, replace=True)
+
+        for source_fname, copy_jobs in copy_jobs_by_source.items():
             with (
-                _xarray._workspace_file_lock(copy_source),
-                h5py.File(copy_source, "r") as source_file,
-                h5py.File(tmp_fname, "w") as tmp_file,
+                _xarray._workspace_file_lock(source_fname),
+                h5py.File(source_fname, "r") as source_file,
+                h5py.File(tmp_fname, "a") as tmp_file,
             ):
-                _write_root_attrs_to_open_workspace_file(
-                    tmp_file, root_attrs, replace=True
-                )
-                for source_path, destination_path, attrs in copy_groups_tuple:
+                for source_path, destination_path, attrs, required in copy_jobs:
                     destination_path = destination_path.strip("/")
                     if _copy_workspace_h5_group_to_open_file(
                         source_file,
@@ -2503,11 +2536,11 @@ def _write_full_workspace_tree_file(
                         attrs,
                     ):
                         copied_paths.add(destination_path)
-        else:
-            with h5py.File(tmp_fname, "w") as tmp_file:
-                _write_root_attrs_to_open_workspace_file(
-                    tmp_file, root_attrs, replace=True
-                )
+                    elif required:
+                        raise ValueError(
+                            "Required workspace payload group "
+                            f"{source_path!r} was not found in {source_fname!r}"
+                        )
 
         if tree is not None:
             for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):

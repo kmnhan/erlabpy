@@ -2118,22 +2118,38 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
 
     assert len(area.axes) == 3
     assert area._secondary_plots_materialized
-    assert area._plot_widgets_constructed == 3
+    assert area._plot_widgets_constructed == 8
     assert [index for index, plot in enumerate(area._plots) if plot is not None] == [
         0,
         1,
         2,
+        3,
+        4,
+        5,
+        6,
+        7,
     ]
+    assert {tuple(ax.display_axis) for ax in area.axes} == {
+        (0, 1),
+        (0,),
+        (1,),
+    }
+    for index in (4, 5, 6, 7):
+        assert area._plots[index] is not None
+        assert area._plots[index].isHidden()
+    assert area._plots[3] is not None
+    assert not area._plots[3].isHidden()
+    assert not area._plots[3].plotItem.isVisible()
 
     data_3d = xr.DataArray(np.arange(8.0).reshape(2, 2, 2), dims=("x", "y", "z"))
     area.set_data(data_3d)
     assert area._secondary_plots_materialized
-    assert area._plot_widgets_constructed == 6
+    assert area._plot_widgets_constructed == 8
 
     axes = area.axes
     assert len(axes) == 6
     assert area._secondary_plots_materialized
-    assert area._plot_widgets_constructed == 6
+    assert area._plot_widgets_constructed == 8
     assert {tuple(ax.display_axis) for ax in axes} == {
         (0, 1),
         (0, 2),
@@ -2143,6 +2159,103 @@ def test_lazy_secondary_plots_reset_after_dimensionality_change(qtbot) -> None:
         (2,),
     }
     win.close()
+
+
+def test_lazy_secondary_restore_applies_2d_splitter_sizes_after_show(qtbot) -> None:
+    data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("y", "x"))
+    source = ImageTool(data, _in_manager=True)
+    qtbot.addWidget(source)
+    source.resize(900, 600)
+    source.show()
+    qtbot.waitExposed(source)
+
+    area = source.slicer_area
+    area.splitter_sizes = [
+        [372, 88],
+        [660, 236],
+        [372, 0],
+        [0, 372, 0],
+        [676, 220],
+        [88],
+        [0, 220],
+    ]
+    qtbot.wait(0)
+    saved_state = copy.deepcopy(area.state)
+    source.close()
+
+    restored = ImageTool(
+        data,
+        _in_manager=True,
+        _defer_secondary_plots=True,
+        state=saved_state,
+    )
+    qtbot.addWidget(restored)
+    restored.resize(900, 600)
+    restored_area = restored.slicer_area
+
+    assert restored_area._pending_splitter_sizes == saved_state["splitter_sizes"]
+    assert restored_area._plot_widgets_constructed == 1
+
+    restored.show()
+    qtbot.waitExposed(restored)
+    qtbot.wait_until(
+        lambda: (
+            restored_area._pending_splitter_sizes is None
+            and restored_area.splitter_sizes == saved_state["splitter_sizes"]
+        ),
+        timeout=5000,
+    )
+
+    assert restored_area._plot_widgets_constructed == 8
+    assert len(restored_area.axes) == 3
+    assert restored_area.splitter_sizes == saved_state["splitter_sizes"]
+    vertical_profile = restored_area.get_axes(2)
+    assert vertical_profile.isVisible()
+    assert restored_area._plots[2].width() > 0
+    profile_x, profile_y = vertical_profile.slicer_data_items[0].getData()
+    assert len(profile_x) > 0
+    assert len(profile_y) > 0
+    restored.close()
+
+
+def test_lazy_secondary_restore_repairs_malformed_2d_profile_splitter(qtbot) -> None:
+    data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("y", "x"))
+    source = ImageTool(data, _in_manager=True)
+    qtbot.addWidget(source)
+    source.resize(900, 600)
+    source.show()
+    qtbot.waitExposed(source)
+
+    saved_state = copy.deepcopy(source.slicer_area.state)
+    source.close()
+    saved_state["splitter_sizes"][6] = [0]
+
+    restored = ImageTool(
+        data,
+        _in_manager=True,
+        _defer_secondary_plots=True,
+        state=saved_state,
+    )
+    qtbot.addWidget(restored)
+    restored.resize(900, 600)
+    restored.show()
+    qtbot.waitExposed(restored)
+
+    restored_area = restored.slicer_area
+    qtbot.wait_until(
+        lambda: (
+            restored_area._pending_splitter_sizes is None
+            and restored_area._splitters[6].sizes()[-1] > 0
+        ),
+        timeout=5000,
+    )
+    vertical_profile = restored_area.get_axes(2)
+    assert vertical_profile.isVisible()
+    assert restored_area._plots[2].width() > 0
+    profile_x, profile_y = vertical_profile.slicer_data_items[0].getData()
+    assert len(profile_x) > 0
+    assert len(profile_y) > 0
+    restored.close()
 
 
 def test_initial_four_dimensional_layout_sets_splitter_sizes(qtbot) -> None:
@@ -2223,12 +2336,16 @@ def test_lazy_secondary_plot_fixed_index_access_allows_hidden_invalid_plot(
     plot = area.get_axes(7)
     assert tuple(plot.display_axis) == (3, 2)
     assert not plot.isVisible()
-    assert area._plot_widgets_constructed == 4
+    assert area._plot_widgets_constructed == 8
     assert area._secondary_plots_materialized
     assert [index for index, item in enumerate(area._plots) if item is not None] == [
         0,
         1,
         2,
+        3,
+        4,
+        5,
+        6,
         7,
     ]
     assert 7 not in area._axes_signal_connected_indices

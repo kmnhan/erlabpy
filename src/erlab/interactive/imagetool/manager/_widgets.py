@@ -1177,6 +1177,8 @@ class _StandaloneAppSpec:
 
 
 class _SingleImagePreview(QtWidgets.QGraphicsView):
+    load_requested = QtCore.Signal()
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         _scene = QtWidgets.QGraphicsScene(self)
@@ -1192,6 +1194,13 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.setToolTip("Main image preview")
+        self._load_button = QtWidgets.QPushButton("Load Data for Preview", self)
+        self._load_button.setObjectName("manager_pending_preview_load_button")
+        self._load_button.setToolTip(
+            "Load this ImageTool's saved data and build its preview."
+        )
+        self._load_button.clicked.connect(self.load_requested)
+        self._load_button.hide()
         self.hide()
 
     def setPixmap(
@@ -1203,6 +1212,7 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         ),
     ) -> None:
         self._aspect_ratio_mode = aspect_ratio_mode
+        self._load_button.hide()
         if pixmap.isNull():
             self._pixmapitem.setPixmap(QtGui.QPixmap())
             self.hide()
@@ -1211,28 +1221,50 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self._pixmapitem.setPixmap(pixmap)
         self._fit_pixmap_in_view()
 
+    def setLoadPrompt(self) -> None:
+        self._pixmapitem.setPixmap(QtGui.QPixmap())
+        self._load_button.adjustSize()
+        self._load_button.show()
+        self._position_load_button()
+        super().setVisible(True)
+        self.updateGeometry()
+
+    def clearLoadPrompt(self) -> None:
+        self._load_button.hide()
+
     def setVisible(self, visible: bool) -> None:
-        if visible and self._pixmapitem.pixmap().isNull():
+        if not visible:
+            self.clearLoadPrompt()
+        if (
+            visible
+            and self._pixmapitem.pixmap().isNull()
+            and self._load_button.isHidden()
+        ):
             visible = False
         super().setVisible(visible)
 
     def show(self) -> None:
-        if self._pixmapitem.pixmap().isNull():
+        if self._pixmapitem.pixmap().isNull() and self._load_button.isHidden():
             return
         super().show()
 
     def minimumSizeHint(self) -> QtCore.QSize:
+        if not self._load_button.isHidden():
+            return self._load_prompt_size_hint()
         if self._pixmapitem.pixmap().isNull():
             return QtCore.QSize(0, 0)
         return super().minimumSizeHint()
 
     def sizeHint(self) -> QtCore.QSize:
+        if not self._load_button.isHidden():
+            return self._load_prompt_size_hint()
         if self._pixmapitem.pixmap().isNull():
             return QtCore.QSize(0, 0)
         return super().sizeHint()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)
+        self._position_load_button()
         self._fit_pixmap_in_view()
 
     def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
@@ -1244,6 +1276,24 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         if self._pixmapitem.pixmap().isNull():
             return
         self.fitInView(self._pixmapitem, self._aspect_ratio_mode)
+
+    def _load_prompt_size_hint(self) -> QtCore.QSize:
+        button_hint = self._load_button.sizeHint()
+        return QtCore.QSize(button_hint.width() + 24, button_hint.height() + 24)
+
+    def _position_load_button(self) -> None:
+        if self._load_button.isHidden():
+            return
+        viewport = self.viewport()
+        viewport_rect = self.rect() if viewport is None else viewport.geometry()
+        button_size = self._load_button.sizeHint()
+        x = viewport_rect.x() + max(
+            0, (viewport_rect.width() - button_size.width()) // 2
+        )
+        y = viewport_rect.y() + max(
+            0, (viewport_rect.height() - button_size.height()) // 2
+        )
+        self._load_button.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), button_size))
 
 
 class _WidgetsController:

@@ -166,6 +166,10 @@ class _ActionsController:
         node = self._manager._child_node(uid)
         if not node.is_imagetool:
             raise KeyError(f"Target {uid!r} is not an ImageTool")
+        if not node.materialize_pending_workspace_memory_payload():
+            raise RuntimeError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -240,10 +244,13 @@ class _ActionsController:
         dirty_uids: list[str] = []
         for index in self._manager._selected_imagetool_targets():
             node = self._manager._node_for_target(index)
-            slicer_area = self._manager.get_imagetool(index).slicer_area
-            if slicer_area.is_linked:
+            if not node.is_imagetool:
+                raise KeyError(f"Target {index!r} is not an ImageTool")
+            if node.workspace_linked:
                 dirty_uids.append(node.uid)
-            slicer_area.unlink()
+            if node.imagetool is not None:
+                node.slicer_area.unlink()
+            node.clear_workspace_link_state()
         for uid in dirty_uids:
             self._manager._mark_node_state_dirty(uid)
         self._manager._sigReloadLinkers.emit()
@@ -276,9 +283,7 @@ class _ActionsController:
 
     def batch_target_count(self) -> int:
         return sum(
-            1
-            for node in self._manager._tool_graph.nodes.values()
-            if node.is_imagetool and node.imagetool is not None
+            1 for node in self._manager._tool_graph.nodes.values() if node.is_imagetool
         )
 
     def show_batch_operations(self) -> None:
@@ -786,15 +791,25 @@ class _ActionsController:
         """Link the ImageTool windows corresponding to the given indices."""
         if len(indices) <= 1:
             return
-        linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
-            *[self._manager.get_imagetool(t).slicer_area for t in indices],
-            link_colors=link_colors,
-        )
-        self._manager._link_registry.append(linker)
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+        slicers: list[ImageSlicerArea] = []
         for index in indices:
-            self._manager._mark_node_state_dirty(
-                self._manager._node_for_target(index).uid
+            node = self._manager._node_for_target(index)
+            if not node.is_imagetool:
+                raise KeyError(f"Target {index!r} is not an ImageTool")
+            nodes.append(node)
+            if node.imagetool is not None:
+                slicers.append(node.slicer_area)
+        if len(slicers) > 1:
+            linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
+                *slicers,
+                link_colors=link_colors,
             )
+            self._manager._link_registry.append(linker)
+        link_key = uuid.uuid4().hex
+        for node in nodes:
+            node.set_workspace_link_state(link_key, link_colors=link_colors)
+            self._manager._mark_node_state_dirty(node.uid)
         self._manager._sigReloadLinkers.emit()
 
     def name_of_imagetool(self, index: int) -> str:

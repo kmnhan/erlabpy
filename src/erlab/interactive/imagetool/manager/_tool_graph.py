@@ -93,9 +93,7 @@ class _ManagerToolGraph:
 
     def register_child(self, node: _ManagedWindowNode) -> None:
         self.nodes[node.uid] = node
-        self.parent(node).add_child_reference(
-            node.uid, typing.cast("QtWidgets.QWidget", node.window)
-        )
+        self.parent(node).add_child_reference(node.uid, node.window)
 
     def register_figure(self, node: _ManagedWindowNode) -> None:
         self.nodes[node.uid] = node

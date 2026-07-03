@@ -755,7 +755,9 @@ def test_figure_composer_save_skips_deferred_operation_editor(
     with monkeypatch.context() as patch:
 
         def fail_editor_update(_self: FigureComposerTool) -> None:
-            pytest.fail("saving hidden deferred Figure Composer should not build editor")
+            pytest.fail(
+                "saving hidden deferred Figure Composer should not build editor"
+            )
 
         patch.setattr(
             FigureComposerTool, "_update_operation_editor", fail_editor_update
@@ -1994,7 +1996,10 @@ def test_manager_figure_image_target_helpers_cover_plot_slices_edges() -> None:
     }
     manager = typing.cast(
         "manager_mainwindow.ImageToolManager",
-        types.SimpleNamespace(_node_for_target=lambda target: nodes[target]),
+        types.SimpleNamespace(
+            _node_for_target=lambda target: nodes[target],
+            get_imagetool=lambda target: nodes[target].imagetool,
+        ),
     )
 
     assert (

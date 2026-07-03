@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import collections.abc
 import contextlib
 import copy
 import functools
@@ -12,15 +13,18 @@ import time
 import traceback
 import typing
 import uuid
+import warnings
 
+import numpy as np
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._options.core
 import erlab.interactive.imagetool.slicer
+import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _qt_state
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _serialization, provenance
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -66,6 +70,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._workspace_state import (
         _WorkspaceStateSnapshot,
     )
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
 
@@ -78,6 +83,8 @@ _WORKSPACE_LOAD_SUFFIX_ERROR = "ImageTool workspace files must use the .itws ext
 _WORKSPACE_SAVE_SUFFIX_WARNING = "ImageTool Manager saves workspaces as .itws files."
 _WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES = 128 * 1024 * 1024
 _WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO = 0.10
+_PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES = 128 * 1024 * 1024
+_PENDING_WORKSPACE_PREVIEW_DISPLAY_AXES = (0, 1)
 _workspace_obsolete_estimate = _manager_workspace._workspace_obsolete_estimate
 _workspace_repack_estimate = _manager_workspace._workspace_manifest_repack_estimate
 
@@ -171,6 +178,45 @@ def _workspace_dataset_window_visible(
     if state is not None:
         return state.visible
     return bool(ds.attrs.get(f"{prefix}_visible", default))
+
+
+def _workspace_payload_window_visible_h5py(
+    fname: str | os.PathLike[str],
+    payload_path: str,
+    prefix: str,
+    *,
+    default: bool = True,
+) -> bool | None:
+    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        obj = h5_file.get(payload_path.strip("/"))
+        if not isinstance(obj, h5py.Group):
+            return None
+        state = _qt_state.parse_qt_window_state(obj.attrs.get(f"{prefix}_window_state"))
+        if state is not None:
+            return state.visible
+        return bool(obj.attrs.get(f"{prefix}_visible", default))
+
+
+def _workspace_payload_attrs_h5py(
+    fname: str | os.PathLike[str],
+    payload_path: str,
+) -> dict[typing.Hashable, typing.Any] | None:
+    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+        obj = h5_file.get(payload_path.strip("/"))
+        if not isinstance(obj, h5py.Group):
+            return None
+        return _manager_workspace._h5py_attrs_to_dict(obj.attrs)
+
+
+class _PendingWorkspaceLinkTarget:
+    def __init__(
+        self, array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer
+    ) -> None:
+        self.array_slicer = array_slicer
+
+    @property
+    def data(self) -> xr.DataArray:
+        return self.array_slicer._obj
 
 
 def _workspace_provenance_file_stems(
@@ -288,6 +334,504 @@ class _WorkspaceIOController:
             ds.attrs["itool_state"] = json.dumps(state)
             self._record_missing_workspace_colormap(cmap, node_path)
         return ds
+
+    def _read_workspace_imagetool_payload_dataset(
+        self,
+        workspace_path: str | os.PathLike[str],
+        payload_path: str,
+        *,
+        load_data: bool,
+    ) -> xr.Dataset:
+        if not load_data:
+            opened = _manager_xarray.open_workspace_dataset(
+                workspace_path, payload_path, chunks={}
+            )
+            try:
+                return _manager_workspace._restore_workspace_dataset_attrs(
+                    opened.copy(deep=False)
+                )
+            finally:
+                opened.close()
+
+        ds = _manager_workspace._read_workspace_dataset_group_h5py(
+            workspace_path,
+            payload_path,
+            preferred_data_name=_ITOOL_DATA_NAME,
+        )
+        if ds is not None:
+            return ds
+
+        opened = _manager_xarray.open_workspace_dataset(
+            workspace_path, payload_path, chunks=None
+        )
+        try:
+            return _manager_workspace._restore_workspace_dataset_attrs(opened.load())
+        finally:
+            opened.close()
+
+    def _pending_workspace_imagetool_info_text(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        pending = node.pending_workspace_memory_payload
+        if pending is None:
+            return None
+        workspace_path, payload_path = pending
+        try:
+            ds = self._read_workspace_imagetool_payload_dataset(
+                workspace_path, payload_path, load_data=False
+            )
+            try:
+                ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+                if _ITOOL_DATA_NAME not in ds:
+                    return None
+                name = None if node.name == "" else node.name
+                data = ds[_ITOOL_DATA_NAME].rename(name)
+                text = erlab.utils.formatting.format_darr_html(
+                    data,
+                    show_size=True,
+                    load_values=False,
+                    additional_info=[f"Added {node.added_time_display}"],
+                )
+                return erlab.interactive.utils._apply_qt_accent_color(text)
+            finally:
+                ds.close()
+        except Exception:
+            logger.debug(
+                "Failed to read metadata for pending workspace payload %s from %s",
+                payload_path,
+                workspace_path,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _pending_preview_axis_state(
+        shape: tuple[int, ...],
+        state: Mapping[str, typing.Any],
+    ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[bool, ...]] | None:
+        slice_state = state.get("slice")
+        if not isinstance(slice_state, collections.abc.Mapping):
+            return None
+        state_bins = slice_state.get("bins")
+        state_indices = slice_state.get("indices")
+        if not isinstance(state_bins, list) or not state_bins:
+            return None
+        if not isinstance(state_indices, list):
+            state_indices = []
+
+        cursor = int(state.get("current_cursor", 0))
+        cursor = min(max(cursor, 0), len(state_bins) - 1)
+        bins_for_cursor = state_bins[cursor]
+        indices_for_cursor = (
+            state_indices[cursor] if cursor < len(state_indices) else []
+        )
+        if not isinstance(bins_for_cursor, list):
+            return None
+        if not isinstance(indices_for_cursor, list):
+            indices_for_cursor = []
+
+        center_indices = erlab.interactive.imagetool.slicer._center_indices_for_shape(
+            shape
+        )
+        bins: list[int] = []
+        indices: list[int] = []
+        for axis, size in enumerate(shape):
+            try:
+                axis_bin = int(bins_for_cursor[axis])
+            except (IndexError, TypeError, ValueError):
+                axis_bin = 1
+            try:
+                axis_index = int(indices_for_cursor[axis])
+            except (IndexError, TypeError, ValueError):
+                axis_index = center_indices[axis]
+            indices.append(
+                erlab.interactive.imagetool.slicer._normalized_axis_index(
+                    axis_index, size
+                )
+            )
+            bins.append(axis_bin)
+        return tuple(indices), tuple(bins), tuple(axis_bin != 1 for axis_bin in bins)
+
+    def _pending_workspace_imagetool_preview_image(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        pending = node.pending_workspace_memory_payload
+        if pending is None:
+            return None
+        attrs = node.pending_workspace_payload_attrs
+        workspace_path, payload_path = pending
+        try:
+            with (
+                _manager_xarray._workspace_file_lock(workspace_path),
+                h5py.File(workspace_path, "r") as h5_file,
+            ):
+                group = h5_file.get(payload_path.strip("/"))
+                if not isinstance(group, h5py.Group):
+                    return None
+                dataset = group.get(_ITOOL_DATA_NAME)
+                if not isinstance(dataset, h5py.Dataset):
+                    return None
+                if dataset.ndim < 2 or dataset.dtype.kind not in "biuf":
+                    return None
+
+                group_attrs = (
+                    _manager_workspace._h5py_attrs_to_dict(group.attrs)
+                    if attrs is None
+                    else attrs
+                )
+                state = group_attrs.get("itool_state")
+                if isinstance(state, bytes):
+                    state = state.decode()
+                if isinstance(state, str):
+                    state = json.loads(state)
+                if not isinstance(state, collections.abc.Mapping):
+                    return None
+
+                dataset_dims: list[str] = []
+                for dim in dataset.dims:
+                    dim_keys = list(dim.keys())
+                    if len(dim_keys) != 1:
+                        return None
+                    dataset_dims.append(str(dim_keys[0]))
+                stored_dims = tuple(dataset_dims)
+
+                slice_state = state.get("slice")
+                if not isinstance(slice_state, collections.abc.Mapping):
+                    return None
+                raw_state_dims = slice_state.get("dims")
+                if not isinstance(raw_state_dims, (list, tuple)):
+                    return None
+                state_dims = tuple(str(dim) for dim in raw_state_dims)
+                if len(state_dims) != len(stored_dims) or set(state_dims) != set(
+                    stored_dims
+                ):
+                    return None
+
+                stored_shape = tuple(int(size) for size in dataset.shape)
+                slicer_shape = tuple(
+                    stored_shape[stored_dims.index(dim)] for dim in state_dims
+                )
+                axis_state = self._pending_preview_axis_state(slicer_shape, state)
+                if axis_state is None:
+                    return None
+                indices, bins, binned = axis_state
+                hidden_axes = (
+                    erlab.interactive.imagetool.slicer._hidden_axes_for_display(
+                        len(slicer_shape), _PENDING_WORKSPACE_PREVIEW_DISPLAY_AXES
+                    )
+                )
+                slicer_selection, reduction_axes, _any_binned, _all_binned = (
+                    erlab.interactive.imagetool.slicer._reduced_axes_selection(
+                        slicer_shape,
+                        hidden_axes,
+                        indices,
+                        bins,
+                        binned,
+                    )
+                )
+                final_ndim = sum(
+                    isinstance(item, slice) for item in slicer_selection
+                ) - len(reduction_axes)
+                if final_ndim != 2:
+                    return None
+
+                stored_selection: list[slice | int] = [slice(None)] * dataset.ndim
+                for slicer_axis, item in enumerate(slicer_selection):
+                    stored_axis = stored_dims.index(state_dims[slicer_axis])
+                    stored_selection[stored_axis] = item
+
+                read_nbytes = int(np.dtype(dataset.dtype).itemsize)
+                for size, item in zip(stored_shape, stored_selection, strict=True):
+                    if isinstance(item, slice):
+                        start = 0 if item.start is None else item.start
+                        stop = size if item.stop is None else item.stop
+                        read_nbytes *= max(0, stop - start)
+                if read_nbytes > _PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES:
+                    return None
+
+                data = np.asarray(dataset[tuple(stored_selection)])
+
+            stored_remaining_dims = tuple(
+                dim
+                for dim, item in zip(stored_dims, stored_selection, strict=True)
+                if isinstance(item, slice)
+            )
+            slicer_remaining_dims = tuple(
+                dim
+                for dim, item in zip(state_dims, slicer_selection, strict=True)
+                if isinstance(item, slice)
+            )
+            if stored_remaining_dims != slicer_remaining_dims:
+                axis_order = tuple(
+                    stored_remaining_dims.index(dim) for dim in slicer_remaining_dims
+                )
+                data = data.transpose(axis_order)
+            if reduction_axes:
+                with warnings.catch_warnings(), np.errstate(all="ignore"):
+                    warnings.filterwarnings(
+                        "ignore", r"Mean of empty slice", RuntimeWarning
+                    )
+                    data = np.nanmean(data, axis=reduction_axes)
+            if data.ndim != 2 or data.size == 0:
+                return None
+            if 0 in _PENDING_WORKSPACE_PREVIEW_DISPLAY_AXES:
+                data = data.T
+            data = erlab.interactive.imagetool.slicer._display_safe_values(data)
+
+            pixmap = self._workspace_pending_preview_pixmap(data, state)
+            if pixmap is None or pixmap.isNull():
+                return None
+            pixmap = pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
+            if pixmap.width() <= 0:
+                return None
+            return pixmap.height() / pixmap.width(), pixmap
+        except Exception:
+            logger.debug(
+                "Failed to render preview for pending workspace payload %s from %s",
+                payload_path,
+                workspace_path,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _workspace_pending_preview_pixmap(
+        data: np.ndarray, state: Mapping[str, typing.Any]
+    ) -> QtGui.QPixmap | None:
+        color = state.get("color", {})
+        if not isinstance(color, collections.abc.Mapping):
+            color = {}
+        image_item = erlab.interactive.colors.BetterImageItem()
+        image_item.set_colormap(
+            color.get("cmap", "viridis"),
+            float(color.get("gamma", 1.0)),
+            bool(color.get("reverse", False)),
+            high_contrast=bool(color.get("high_contrast", False)),
+            zero_centered=bool(color.get("zero_centered", False)),
+            update=False,
+        )
+        levels_locked = bool(color.get("levels_locked", False))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", r"All-NaN (slice|axis) encountered", RuntimeWarning
+            )
+            image_item.setImage(data, autoLevels=not levels_locked)
+        levels = color.get("levels")
+        if levels_locked and isinstance(levels, (list, tuple)) and len(levels) == 2:
+            image_item.setLevels((float(levels[0]), float(levels[1])), update=True)
+        return image_item.getPixmap()
+
+    @staticmethod
+    def _workspace_imagetool_name_from_attrs(
+        attrs: Mapping[typing.Any, typing.Any],
+    ) -> str:
+        name = attrs.get("itool_name", "")
+        if isinstance(name, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                name = name.decode()
+        return "" if name is None else str(name)
+
+    def _root_workspace_imagetool_kwargs(
+        self, ds: xr.Dataset, kwargs: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        root_kwargs = dict(kwargs)
+        root_kwargs.pop("output_id", None)
+        root_kwargs["source_input_ndim"] = typing.cast(
+            "int | None",
+            ds.attrs.get("manager_node_source_input_ndim"),
+        )
+        watched_varname = ds.attrs.get("manager_node_watched_varname")
+        watched_uid = ds.attrs.get("manager_node_watched_uid")
+        if watched_varname is not None and watched_uid is not None:
+            root_kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
+            root_kwargs["watched_workspace_link_id"] = (
+                None
+                if ds.attrs.get("manager_node_watched_workspace_link_id") is None
+                else str(ds.attrs["manager_node_watched_workspace_link_id"])
+            )
+            root_kwargs["watched_source_label"] = (
+                None
+                if ds.attrs.get("manager_node_watched_source_label") is None
+                else str(ds.attrs["manager_node_watched_source_label"])
+            )
+            root_kwargs["watched_source_uid"] = (
+                None
+                if ds.attrs.get("manager_node_watched_source_uid") is None
+                else str(ds.attrs["manager_node_watched_source_uid"])
+            )
+            # Loaded watched rows stay watched, but are disconnected until
+            # a notebook explicitly reconnects them.
+            root_kwargs["watched_connected"] = False
+        return root_kwargs
+
+    def _register_pending_workspace_imagetool(
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+        node_path: str | None,
+        kwargs: dict[str, typing.Any],
+        pending_workspace_memory_payload: tuple[str | os.PathLike[str], str],
+        loaded_targets_by_uid: dict[str, int | str] | None,
+    ) -> int | str:
+        name = self._workspace_imagetool_name_from_attrs(ds.attrs)
+        if parent_target is not None:
+            parent_node = self._manager._node_for_target(parent_target)
+            node = _ManagedWindowNode(
+                self._manager,
+                self._manager._next_node_uid(kwargs.get("uid")),
+                parent_node.uid,
+                None,
+                window_kind="imagetool",
+                name=name,
+                provenance_spec=kwargs.get("provenance_spec"),
+                source_spec=kwargs.get("source_spec"),
+                source_binding=kwargs.get("source_binding"),
+                source_auto_update=bool(kwargs.get("source_auto_update", False)),
+                source_state=typing.cast(
+                    "_ManagedWindowNode._source_state_type",
+                    kwargs.get("source_state", "fresh"),
+                ),
+                output_id=kwargs.get("output_id"),
+                snapshot_token=kwargs.get("snapshot_token"),
+                created_time=kwargs.get("created_time"),
+                note=kwargs.get("note"),
+            )
+            node.set_pending_workspace_memory_payload(
+                *pending_workspace_memory_payload,
+                payload_attrs=ds.attrs,
+            )
+            self._manager._register_child_node(node)
+            if node.output_id is not None and parent_node.tool_window is not None:
+                parent_node.tool_window._register_output_imagetool_target(
+                    node.output_id, node.uid
+                )
+            self._manager.tree_view.childtool_added(node.uid, parent_target)
+            self._manager._mark_node_added(node.uid)
+            self._manager._record_workspace_loaded_imagetool_target(
+                ds, node.uid, loaded_targets_by_uid
+            )
+            return node.uid
+
+        root_kwargs = self._root_workspace_imagetool_kwargs(ds, kwargs)
+        preferred_index: int | None = None
+        if node_path is not None and "/" not in node_path:
+            with contextlib.suppress(ValueError):
+                preferred_index = int(node_path)
+            if preferred_index is not None and preferred_index < 0:
+                preferred_index = None
+        if (
+            preferred_index is None
+            or preferred_index in self._manager._tool_graph.root_wrappers
+        ):
+            preferred_index = int(self._manager.next_idx)
+
+        wrapper = _ImageToolWrapper(
+            self._manager,
+            preferred_index,
+            self._manager._next_node_uid(root_kwargs.get("uid")),
+            None,
+            watched_var=root_kwargs.get("watched_var"),
+            watched_workspace_link_id=root_kwargs.get("watched_workspace_link_id"),
+            watched_source_label=root_kwargs.get("watched_source_label"),
+            watched_source_uid=root_kwargs.get("watched_source_uid"),
+            watched_connected=bool(root_kwargs.get("watched_connected", True)),
+            source_input_ndim=typing.cast(
+                "int | None", root_kwargs.get("source_input_ndim")
+            ),
+            provenance_spec=root_kwargs.get("provenance_spec"),
+            source_spec=root_kwargs.get("source_spec"),
+            source_binding=root_kwargs.get("source_binding"),
+            source_auto_update=bool(root_kwargs.get("source_auto_update", False)),
+            source_state=typing.cast(
+                "_ManagedWindowNode._source_state_type",
+                root_kwargs.get("source_state", "fresh"),
+            ),
+            snapshot_token=root_kwargs.get("snapshot_token"),
+            created_time=root_kwargs.get("created_time"),
+            note=root_kwargs.get("note"),
+            name=name,
+        )
+        wrapper.set_pending_workspace_memory_payload(
+            *pending_workspace_memory_payload,
+            payload_attrs=ds.attrs,
+        )
+        self._manager._register_root_wrapper(wrapper)
+        self._manager.tree_view.imagetool_added(preferred_index)
+        self._manager._mark_node_added(wrapper.uid)
+        self._manager._record_workspace_loaded_imagetool_target(
+            ds, preferred_index, loaded_targets_by_uid
+        )
+        return preferred_index
+
+    def _materialize_pending_workspace_memory_payload(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> bool:
+        pending = node.pending_workspace_memory_payload
+        if pending is None:
+            return True
+
+        workspace_path, payload_path = pending
+        origin = self._manager._active_managed_window() or self._manager
+        try:
+            name = node.name
+            wait_context = (
+                contextlib.nullcontext()
+                if self._manager._workspace_state.loading_depth > 0
+                else erlab.interactive.utils.wait_dialog(
+                    origin, "Loading ImageTool data..."
+                )
+            )
+            with wait_context:
+                ds = self._read_workspace_imagetool_payload_dataset(
+                    workspace_path, payload_path, load_data=True
+                )
+                name = None if name == "" else name
+                ds = ds.copy(deep=False)
+                pending_attrs = node.pending_workspace_payload_attrs
+                if pending_attrs is not None:
+                    ds.attrs.update(pending_attrs)
+                ds.attrs["itool_name"] = "" if name is None else name
+                ds = self._dataset_without_missing_workspace_colormap(ds, payload_path)
+                with self._manager._workspace_load_context():
+                    if node.imagetool is None:
+                        tool = ImageTool.from_dataset(
+                            ds,
+                            _in_manager=True,
+                            _defer_state_refresh=True,
+                            _defer_secondary_plots=True,
+                            options_model=(self._manager.effective_interactive_options),
+                        )
+                        node.window = tool
+                        if node.parent_uid is not None:
+                            self._manager._parent_node(node).add_child_reference(
+                                node.uid, tool
+                            )
+                    else:
+                        state = copy.deepcopy(node.slicer_area.state)
+                        data = ds[_ITOOL_DATA_NAME].rename(name)
+                        node.slicer_area.set_data(data, auto_compute=False)
+                        node.slicer_area.state = state
+                    node.clear_pending_workspace_memory_payload()
+                    node.update_title()
+                    self._sync_materialized_workspace_link_group(node)
+                self._manager.tree_view.refresh(node.uid)
+                self._manager._update_info(uid=node.uid)
+                return True
+        except Exception:
+            logger.exception(
+                "Error while loading pending workspace payload %s from %s",
+                payload_path,
+                workspace_path,
+                extra={"suppress_ui_alert": True},
+            )
+            self._manager._show_operation_error(
+                "Could Not Load ImageTool Data",
+                "The saved data for this ImageTool could not be read from the "
+                "workspace file. The file may have moved, been deleted, or changed "
+                "on disk.",
+            )
+            return False
 
     def _show_missing_workspace_colormap_warning(self) -> None:
         if not self._missing_workspace_colormaps:
@@ -667,17 +1211,43 @@ class _WorkspaceIOController:
             raise RuntimeError(
                 "Changing the workspace path requires a pre-acquired document lock"
             )
+        old_workspace_path = self._manager._workspace_state.path
         self._manager._release_workspace_lock()
         self._manager._workspace_state.lock = workspace_lock
         self._manager._workspace_state.path = workspace_path
         self._manager._workspace_state.delta_save_count = 0
         self._manager._workspace_state.reset_repack_estimate()
+        if old_workspace_path is not None and workspace_path is not None:
+            self._repoint_pending_workspace_memory_payloads(
+                old_workspace_path, workspace_path
+            )
         if self._manager._workspace_state.path is not None:
             self._manager._recent_directory = str(
                 self._manager._workspace_state.path.parent
             )
         self._manager._update_workspace_window_title()
         self._manager._refresh_manager_record()
+
+    def _repoint_pending_workspace_memory_payloads(
+        self,
+        old_workspace_path: str | os.PathLike[str],
+        new_workspace_path: str | os.PathLike[str],
+    ) -> None:
+        old_normalized = _manager_xarray._normalized_file_path(old_workspace_path)
+        for node in self._manager._tool_graph.nodes.values():
+            pending = node.pending_workspace_memory_payload
+            if pending is None:
+                continue
+            pending_workspace_path, payload_path = pending
+            if (
+                _manager_xarray._normalized_file_path(pending_workspace_path)
+                == old_normalized
+            ):
+                node.set_pending_workspace_memory_payload(
+                    new_workspace_path,
+                    payload_path,
+                    payload_attrs=node.pending_workspace_payload_attrs,
+                )
 
     def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
         with self._manager._workspace_document_access_context(fname) as access:
@@ -892,6 +1462,455 @@ class _WorkspaceIOController:
     def _mark_node_state_dirty(self, uid: str) -> bool:
         return self._manager._mark_workspace_dirty(uid=uid, state=True)
 
+    def _has_pending_workspace_linked_slicers(
+        self, source: ImageSlicerArea, *, color: bool
+    ) -> bool:
+        if (
+            self._manager._workspace_state.loading_depth > 0
+            or self._manager._workspace_state.saving_depth > 0
+            or self._manager._workspace_state.closing_document
+        ):
+            return False
+        node = self._manager.node_from_slicer_area(source)
+        if (
+            node is None
+            or not node.is_imagetool
+            or node.workspace_link_key is None
+            or (color and not node.workspace_link_colors)
+        ):
+            return False
+        return any(
+            linked_node.uid != node.uid
+            and linked_node.is_imagetool
+            and linked_node.workspace_link_key == node.workspace_link_key
+            and linked_node.pending_workspace_memory_payload is not None
+            for linked_node in self._manager._tool_graph.nodes.values()
+        )
+
+    def _sync_pending_workspace_linked_slicers(
+        self,
+        source: ImageSlicerArea,
+        funcname: str,
+        arguments: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
+        indices: bool,
+        steps: bool,
+        color: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
+    ) -> None:
+        if not self._has_pending_workspace_linked_slicers(source, color=color):
+            return
+        node = self._manager.node_from_slicer_area(source)
+        if node is None or node.workspace_link_key is None:
+            return
+
+        for linked_node in self._manager._tool_graph.nodes.values():
+            if (
+                linked_node.uid == node.uid
+                or not linked_node.is_imagetool
+                or linked_node.workspace_link_key != node.workspace_link_key
+                or linked_node.pending_workspace_memory_payload is None
+            ):
+                continue
+            if self._apply_pending_workspace_link_operation(
+                source,
+                linked_node,
+                funcname,
+                arguments,
+                source_dims,
+                indices,
+                steps,
+                transaction_id,
+                keep_pending,
+            ):
+                self._manager._mark_workspace_dirty(uid=linked_node.uid, state=True)
+
+    def _sync_pending_workspace_linked_manual_limits(
+        self,
+        source: ImageSlicerArea,
+        manual_limits: Mapping[str, Sequence[typing.Any]],
+    ) -> None:
+        if not self._has_pending_workspace_linked_slicers(source, color=False):
+            return
+        node = self._manager.node_from_slicer_area(source)
+        if node is None or node.workspace_link_key is None:
+            return
+
+        normalized_limits = self._normalized_pending_workspace_manual_limits(
+            manual_limits
+        )
+        for linked_node in self._manager._tool_graph.nodes.values():
+            if (
+                linked_node.uid == node.uid
+                or not linked_node.is_imagetool
+                or linked_node.workspace_link_key != node.workspace_link_key
+                or linked_node.pending_workspace_memory_payload is None
+            ):
+                continue
+            if self._update_pending_workspace_manual_limits(
+                linked_node, normalized_limits
+            ):
+                self._manager._mark_workspace_dirty(uid=linked_node.uid, state=True)
+
+    @staticmethod
+    def _normalized_pending_workspace_manual_limits(
+        manual_limits: Mapping[str, Sequence[typing.Any]],
+    ) -> dict[str, list[float]]:
+        normalized: dict[str, list[float]] = {}
+        for dim, limits in manual_limits.items():
+            try:
+                normalized[str(dim)] = [float(limits[0]), float(limits[1])]
+            except (IndexError, TypeError, ValueError):
+                continue
+        return normalized
+
+    def _update_pending_workspace_manual_limits(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        manual_limits: Mapping[str, list[float]],
+    ) -> bool:
+        attrs = node.pending_workspace_payload_attrs
+        if attrs is None:
+            return False
+        raw_state = attrs.get("itool_state")
+        if isinstance(raw_state, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
+        if not isinstance(raw_state, str):
+            return False
+        try:
+            state = typing.cast("dict[str, typing.Any]", json.loads(raw_state))
+        except Exception:
+            logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            return False
+        slice_state = state.get("slice")
+        valid_dims: tuple[str, ...] = ()
+        if isinstance(slice_state, collections.abc.Mapping):
+            raw_dims = slice_state.get("dims")
+            if isinstance(raw_dims, (list, tuple)):
+                valid_dims = tuple(str(dim) for dim in raw_dims)
+        if not valid_dims:
+            pending = node.pending_workspace_memory_payload
+            if pending is None:
+                return False
+            workspace_path, payload_path = pending
+            try:
+                ds = self._read_workspace_imagetool_payload_dataset(
+                    workspace_path, payload_path, load_data=False
+                )
+                try:
+                    ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+                    if _ITOOL_DATA_NAME not in ds:
+                        return False
+                    valid_dims = tuple(str(dim) for dim in ds[_ITOOL_DATA_NAME].dims)
+                finally:
+                    ds.close()
+            except Exception:
+                logger.debug(
+                    "Could not update manual limits for pending workspace payload "
+                    "%s from %s",
+                    payload_path,
+                    workspace_path,
+                    exc_info=True,
+                )
+                return False
+
+        valid_dim_set = set(valid_dims)
+        updated_limits = {
+            dim: limits for dim, limits in manual_limits.items() if dim in valid_dim_set
+        }
+        if state.get("manual_limits", {}) == updated_limits:
+            return False
+        state["manual_limits"] = updated_limits
+        updated_attrs = dict(attrs)
+        updated_attrs["itool_state"] = json.dumps(state)
+        node.update_pending_workspace_payload_attrs(updated_attrs)
+        return True
+
+    def _apply_pending_workspace_link_operation(
+        self,
+        source: ImageSlicerArea,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        funcname: str,
+        arguments: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
+        indices: bool,
+        steps: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
+    ) -> bool:
+        attrs = node.pending_workspace_payload_attrs
+        if attrs is None:
+            return False
+        raw_state = attrs.get("itool_state")
+        if isinstance(raw_state, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
+        if not isinstance(raw_state, str):
+            return False
+        try:
+            state = typing.cast("dict[str, typing.Any]", json.loads(raw_state))
+        except Exception:
+            logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            return False
+
+        pending = node.pending_workspace_memory_payload
+        if pending is None:
+            return False
+        workspace_path, payload_path = pending
+        array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer | None = None
+        try:
+            ds = self._read_workspace_imagetool_payload_dataset(
+                workspace_path, payload_path, load_data=False
+            )
+            try:
+                ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+                if _ITOOL_DATA_NAME not in ds:
+                    return False
+                target_data = ds[_ITOOL_DATA_NAME]
+                array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
+                    target_data,
+                    self._manager,
+                    display_value_abs_limit=source.array_slicer.display_value_abs_limit,
+                )
+                array_slicer.state = copy.deepcopy(state["slice"])
+                target = _PendingWorkspaceLinkTarget(array_slicer)
+                converter = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy()
+                converted_args = converter.convert_args(
+                    source,
+                    typing.cast("typing.Any", target),
+                    dict(arguments),
+                    source_dims,
+                    indices,
+                    steps,
+                    transaction_id,
+                    keep_pending,
+                )
+                if converted_args is None:
+                    return False
+                for key in (
+                    "__slicer_skip_sync",
+                    "__slicer_transaction_id",
+                    "__slicer_keep_pending",
+                ):
+                    converted_args.pop(key, None)
+                original_state_json = json.dumps(state)
+                if not self._update_pending_link_state_for_operation(
+                    state, array_slicer, source, funcname, converted_args
+                ):
+                    return False
+                state_json = json.dumps(state)
+                if state_json == original_state_json:
+                    return False
+                updated_attrs = dict(attrs)
+                updated_attrs["itool_state"] = state_json
+                node.update_pending_workspace_payload_attrs(updated_attrs)
+                return True
+            finally:
+                ds.close()
+        except Exception:
+            logger.debug(
+                "Could not apply linked operation %s to pending workspace payload %s "
+                "from %s",
+                funcname,
+                payload_path,
+                workspace_path,
+                exc_info=True,
+            )
+            return False
+        finally:
+            if array_slicer is not None:
+                array_slicer.deleteLater()
+
+    def _update_pending_link_state_for_operation(
+        self,
+        state: dict[str, typing.Any],
+        array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer,
+        source: ImageSlicerArea,
+        funcname: str,
+        arguments: dict[str, typing.Any],
+    ) -> bool:
+        if funcname in {"refresh", "refresh_current"}:
+            return False
+        if funcname == "view_all":
+            state["manual_limits"] = {}
+            return True
+        if funcname == "center_all_cursors":
+            for cursor in range(array_slicer.n_cursors):
+                array_slicer.center_cursor(cursor, update=False)
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "center_cursor":
+            cursor = int(state.get("current_cursor", 0)) % array_slicer.n_cursors
+            array_slicer.center_cursor(cursor, update=False)
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_current_cursor":
+            state["current_cursor"] = int(arguments["cursor"]) % array_slicer.n_cursors
+            return True
+        if funcname == "set_axis_inverted":
+            dim = str(arguments["dim"])
+            if dim not in {str(dim_name) for dim_name in array_slicer._obj.dims}:
+                return False
+            axis_inversions = dict(state.get("axis_inversions", {}))
+            if bool(arguments["inverted"]):
+                axis_inversions[dim] = True
+            else:
+                axis_inversions.pop(dim, None)
+            state["axis_inversions"] = axis_inversions
+            return True
+        if funcname == "swap_axes":
+            array_slicer.swap_axes(int(arguments["ax1"]), int(arguments["ax2"]))
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_index":
+            cursor = self._pending_link_cursor_argument(state, arguments)
+            array_slicer.set_index(
+                cursor,
+                int(arguments["axis"]),
+                int(arguments["value"]),
+                update=False,
+            )
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "step_index":
+            cursor = self._pending_link_cursor_argument(state, arguments)
+            array_slicer.step_index(
+                cursor,
+                int(arguments["axis"]),
+                int(arguments["value"]),
+                update=False,
+            )
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "step_index_all":
+            for cursor in range(array_slicer.n_cursors):
+                array_slicer.step_index(
+                    cursor,
+                    int(arguments["axis"]),
+                    int(arguments["value"]),
+                    update=False,
+                )
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_value":
+            cursor = self._pending_link_cursor_argument(state, arguments)
+            array_slicer.set_value(
+                cursor,
+                int(arguments["axis"]),
+                float(arguments["value"]),
+                update=False,
+                uniform=bool(arguments.get("uniform", False)),
+            )
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_bin":
+            cursor = self._pending_link_cursor_argument(state, arguments)
+            bins: list[int | None] = [None] * array_slicer._obj.ndim
+            bins[int(arguments["axis"])] = int(arguments["value"])
+            array_slicer.set_bins(cursor, bins, update=False)
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_bin_all":
+            bins = [None] * array_slicer._obj.ndim
+            bins[int(arguments["axis"])] = int(arguments["value"])
+            for cursor in range(array_slicer.n_cursors):
+                array_slicer.set_bins(cursor, bins, update=False)
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "add_cursor":
+            current_cursor = (
+                int(state.get("current_cursor", 0)) % array_slicer.n_cursors
+            )
+            array_slicer.add_cursor(current_cursor, update=False)
+            cursor_colors = list(state.get("cursor_colors", ()))
+            color = arguments.get("color")
+            if color is None:
+                cursor_colors.append(
+                    self._pending_link_default_cursor_color(
+                        source, array_slicer.n_cursors - 1, cursor_colors
+                    )
+                )
+            else:
+                cursor_colors.append(QtGui.QColor(color).name())
+            state["cursor_colors"] = cursor_colors
+            state["current_cursor"] = array_slicer.n_cursors - 1
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "remove_cursor":
+            if array_slicer.n_cursors == 1:
+                return False
+            index = int(arguments["index"]) % array_slicer.n_cursors
+            array_slicer.remove_cursor(index, update=False)
+            cursor_colors = list(state.get("cursor_colors", ()))
+            if index < len(cursor_colors):
+                cursor_colors.pop(index)
+            current_cursor = int(state.get("current_cursor", 0))
+            if current_cursor == index:
+                if index == 0:
+                    current_cursor = 1
+                current_cursor -= 1
+            elif current_cursor > index:
+                current_cursor -= 1
+            state["cursor_colors"] = cursor_colors
+            state["current_cursor"] = max(0, current_cursor)
+            state["slice"] = array_slicer.state
+            return True
+        if funcname == "set_colormap":
+            self._update_pending_link_colormap_state(state, arguments)
+            return True
+        if funcname == "toggle_snap":
+            slice_state = dict(state["slice"])
+            value = arguments.get("value")
+            slice_state["snap_to_data"] = (
+                not bool(slice_state.get("snap_to_data", False))
+                if value is None
+                else bool(value)
+            )
+            state["slice"] = slice_state
+            return True
+        return False
+
+    @staticmethod
+    def _pending_link_cursor_argument(
+        state: Mapping[str, typing.Any], arguments: Mapping[str, typing.Any]
+    ) -> int:
+        cursor = arguments.get("cursor")
+        if cursor is None:
+            cursor = state.get("current_cursor", 0)
+        return int(cursor)
+
+    @staticmethod
+    def _pending_link_default_cursor_color(
+        source: ImageSlicerArea, index: int, cursor_colors: list[str]
+    ) -> str:
+        colors = [QtGui.QColor(color).name() for color in source.COLORS]
+        color = colors[index % len(colors)]
+        while color in cursor_colors:
+            color = colors[index % len(colors)]
+            if len(cursor_colors) + 1 > len(colors):
+                break
+            index += 1
+        return color
+
+    @staticmethod
+    def _update_pending_link_colormap_state(
+        state: dict[str, typing.Any], arguments: Mapping[str, typing.Any]
+    ) -> None:
+        color_state = dict(state.get("color", {}))
+        for key in ("cmap", "gamma", "reverse", "high_contrast", "zero_centered"):
+            value = arguments.get(key)
+            if value is not None:
+                color_state[key] = value
+        levels_locked = arguments.get("levels_locked")
+        if levels_locked is not None:
+            color_state["levels_locked"] = bool(levels_locked)
+        levels = arguments.get("levels")
+        if levels is not None:
+            color_state["levels"] = [float(levels[0]), float(levels[1])]
+        state["color"] = color_state
+
     def _mark_tool_info_dirty(self, uid: str) -> bool:
         if uid not in self._manager._workspace_state.dirty_state:
             return self._manager._mark_node_state_dirty(uid)
@@ -1099,10 +2118,15 @@ class _WorkspaceIOController:
             target: int | str = (
                 node.index if isinstance(node, _ImageToolWrapper) else node.uid
             )
-            ds = self._manager.get_imagetool(target).to_dataset()
+            tool = self._manager.get_imagetool(target)
+            ds = tool.to_dataset()
             ds.attrs["itool_title"] = node.name
             constructor[f"{path}/imagetool"] = (
-                self._manager._annotate_workspace_dataset(ds, node, kind="imagetool")
+                self._manager._annotate_workspace_dataset(
+                    ds,
+                    node,
+                    kind="imagetool",
+                )
             )
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
@@ -1168,6 +2192,8 @@ class _WorkspaceIOController:
         node_path: str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         profiler: _WorkspaceLoadProfiler | None = None,
+        pending_workspace_memory_payload: tuple[str | os.PathLike[str], str]
+        | None = None,
     ) -> int | str:
         with _workspace_load_stage(profiler, "imagetool metadata restore"):
             uid = ds.attrs.get("manager_node_uid")
@@ -1258,6 +2284,16 @@ class _WorkspaceIOController:
                 ds.attrs["itool_name"] = ""
             ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
 
+            if pending_workspace_memory_payload is not None:
+                return self._register_pending_workspace_imagetool(
+                    ds,
+                    parent_target=parent_target,
+                    node_path=node_path,
+                    kwargs=kwargs,
+                    pending_workspace_memory_payload=pending_workspace_memory_payload,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
+                )
+
         with _workspace_load_stage(profiler, "imagetool widget restore"):
             tool = ImageTool.from_dataset(ds, **tool_kwargs)
 
@@ -1269,38 +2305,18 @@ class _WorkspaceIOController:
                     show=window_visible,
                     **kwargs,
                 )
+                if pending_workspace_memory_payload is not None:
+                    self._manager._child_node(
+                        target
+                    ).set_pending_workspace_memory_payload(
+                        *pending_workspace_memory_payload
+                    )
                 self._manager._record_workspace_loaded_imagetool_target(
                     ds, target, loaded_targets_by_uid
                 )
                 return target
 
-            kwargs.pop("output_id", None)
-            kwargs["source_input_ndim"] = typing.cast(
-                "int | None",
-                ds.attrs.get("manager_node_source_input_ndim"),
-            )
-            watched_varname = ds.attrs.get("manager_node_watched_varname")
-            watched_uid = ds.attrs.get("manager_node_watched_uid")
-            if watched_varname is not None and watched_uid is not None:
-                kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
-                kwargs["watched_workspace_link_id"] = (
-                    None
-                    if ds.attrs.get("manager_node_watched_workspace_link_id") is None
-                    else str(ds.attrs["manager_node_watched_workspace_link_id"])
-                )
-                kwargs["watched_source_label"] = (
-                    None
-                    if ds.attrs.get("manager_node_watched_source_label") is None
-                    else str(ds.attrs["manager_node_watched_source_label"])
-                )
-                kwargs["watched_source_uid"] = (
-                    None
-                    if ds.attrs.get("manager_node_watched_source_uid") is None
-                    else str(ds.attrs["manager_node_watched_source_uid"])
-                )
-                # Loaded watched rows stay watched, but are disconnected until
-                # a notebook explicitly reconnects them.
-                kwargs["watched_connected"] = False
+            kwargs = self._root_workspace_imagetool_kwargs(ds, kwargs)
             preferred_index: int | None = None
             if node_path is not None and "/" not in node_path:
                 with contextlib.suppress(ValueError):
@@ -1313,6 +2329,12 @@ class _WorkspaceIOController:
                 index=preferred_index,
                 **kwargs,
             )
+            if pending_workspace_memory_payload is not None:
+                self._manager._tool_graph.root_wrappers[
+                    target
+                ].set_pending_workspace_memory_payload(
+                    *pending_workspace_memory_payload
+                )
         self._manager._record_workspace_loaded_imagetool_target(
             ds, target, loaded_targets_by_uid
         )
@@ -1327,8 +2349,14 @@ class _WorkspaceIOController:
         profiler: _WorkspaceLoadProfiler | None = None,
     ) -> int | str:
         with _workspace_load_stage(profiler, "tool reference restore"):
+            tool_data_references = (
+                erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+            )
             source_parent_data: xr.DataArray | None = None
-            if parent_target is not None:
+            if parent_target is not None and any(
+                reference.get("kind") == "parent_source"
+                for reference in tool_data_references.values()
+            ):
                 source_parent_data = self._manager._node_for_target(
                     parent_target
                 ).current_source_data()
@@ -1426,7 +2454,7 @@ class _WorkspaceIOController:
         if not isinstance(nodes, list):
             return
 
-        group_targets: dict[int, list[int | str]] = {}
+        group_nodes: dict[int, list[_ImageToolWrapper | _ManagedWindowNode]] = {}
         group_colors: dict[int, bool] = {}
         invalid_groups: set[int] = set()
         for entry in nodes:
@@ -1448,7 +2476,7 @@ class _WorkspaceIOController:
                 node = self._manager._node_for_target(target)
             except KeyError:
                 continue
-            if not node.is_imagetool or node.imagetool is None:
+            if not node.is_imagetool:
                 continue
             current_group_colors = group_colors.get(link_group)
             if current_group_colors is None:
@@ -1456,24 +2484,57 @@ class _WorkspaceIOController:
             elif current_group_colors != link_colors:
                 invalid_groups.add(link_group)
                 continue
-            targets = group_targets.setdefault(link_group, [])
-            if target not in targets:
-                targets.append(target)
+            nodes_for_group = group_nodes.setdefault(link_group, [])
+            if all(existing.uid != node.uid for existing in nodes_for_group):
+                nodes_for_group.append(node)
 
-        for link_group in sorted(group_targets):
+        for link_group in sorted(group_nodes):
             if link_group in invalid_groups:
                 continue
-            targets = [
-                target
-                for target in group_targets[link_group]
-                if not self._manager.get_imagetool(target).slicer_area.is_linked
+            link_key = f"workspace:{link_group}"
+            for node in group_nodes[link_group]:
+                node.set_workspace_link_state(
+                    link_key, link_colors=group_colors.get(link_group, True)
+                )
+            slicers = [
+                node.slicer_area
+                for node in group_nodes[link_group]
+                if node.imagetool is not None and not node.slicer_area.is_linked
             ]
-            if len(targets) <= 1:
+            if len(slicers) <= 1:
                 continue
-            self._manager.link_imagetools(
-                *targets,
+            linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
+                *slicers,
                 link_colors=group_colors.get(link_group, True),
             )
+            self._manager._link_registry.append(linker)
+            self._manager._sigReloadLinkers.emit()
+
+    def _sync_materialized_workspace_link_group(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> None:
+        link_key = node.workspace_link_key
+        if link_key is None or node.imagetool is None:
+            return
+        linked_nodes = [
+            candidate
+            for candidate in self._manager._tool_graph.nodes.values()
+            if (
+                candidate.workspace_link_key == link_key
+                and candidate.imagetool is not None
+            )
+        ]
+        if len(linked_nodes) <= 1:
+            return
+        for linked_node in linked_nodes:
+            if linked_node.slicer_area.is_linked:
+                linked_node.slicer_area.unlink()
+        linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
+            *(linked_node.slicer_area for linked_node in linked_nodes),
+            link_colors=node.workspace_link_colors,
+        )
+        self._manager._link_registry.append(linker)
+        self._manager._sigReloadLinkers.emit()
 
     def _load_workspace_node(
         self,
@@ -1488,6 +2549,7 @@ class _WorkspaceIOController:
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
+            pending_payload: tuple[str | os.PathLike[str], str] | None = None
             if (
                 manifest is not None
                 and node_path is not None
@@ -1517,6 +2579,40 @@ class _WorkspaceIOController:
                             finally:
                                 opened.close()
                             break
+                        if (
+                            isinstance(entry, dict)
+                            and entry.get("path") == node_path
+                            and entry.get("kind") == "imagetool"
+                            and entry.get("data_backing") == "memory"
+                        ):
+                            payload_path = f"{node_path}/imagetool"
+                            if not _workspace_payload_window_visible_h5py(
+                                workspace_file_path, payload_path, "itool"
+                            ):
+                                try:
+                                    attrs = _workspace_payload_attrs_h5py(
+                                        workspace_file_path, payload_path
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "Failed workspace payload attr read for %s",
+                                        payload_path,
+                                        exc_info=True,
+                                    )
+                                else:
+                                    if attrs is None:
+                                        pass
+                                    elif _workspace_dataset_window_visible(
+                                        xr.Dataset(attrs=attrs), "itool"
+                                    ):
+                                        ds = None
+                                    else:
+                                        ds = xr.Dataset(attrs=attrs)
+                                        pending_payload = (
+                                            workspace_file_path,
+                                            payload_path,
+                                        )
+                            break
             if ds is None:
                 ds = _manager_workspace._restore_workspace_dataset_attrs(
                     typing.cast("xr.DataTree", node_tree["imagetool"])
@@ -1528,6 +2624,7 @@ class _WorkspaceIOController:
                 parent_target=parent_target,
                 node_path=node_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
+                pending_workspace_memory_payload=pending_payload,
             )
         elif "tool" in node_tree:
             ds = _manager_workspace._restore_workspace_dataset_attrs(
@@ -1781,9 +2878,29 @@ class _WorkspaceIOController:
 
         def _load_dataset(
             payload_path: str, *, entry: Mapping[str, typing.Any], imagetool: bool
-        ) -> xr.Dataset:
+        ) -> tuple[xr.Dataset, tuple[str | os.PathLike[str], str] | None]:
             if imagetool and entry.get("data_backing") == "dask":
-                return _load_xarray_dataset(payload_path, chunks={}, load=False)
+                return _load_xarray_dataset(payload_path, chunks={}, load=False), None
+            if (
+                imagetool
+                and entry.get("data_backing") == "memory"
+                and not _workspace_payload_window_visible_h5py(
+                    fname, payload_path, "itool"
+                )
+            ):
+                try:
+                    ds = self._read_workspace_imagetool_payload_dataset(
+                        fname, payload_path, load_data=False
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed metadata-only workspace payload read for %s",
+                        payload_path,
+                        exc_info=True,
+                    )
+                else:
+                    if not _workspace_dataset_window_visible(ds, "itool"):
+                        return ds, (fname, payload_path)
             preferred_data_name = (
                 _ITOOL_DATA_NAME
                 if imagetool
@@ -1803,9 +2920,9 @@ class _WorkspaceIOController:
                 )
             else:
                 if ds is not None:
-                    return ds
+                    return ds, None
 
-            return _load_xarray_dataset(payload_path, chunks=None, load=True)
+            return _load_xarray_dataset(payload_path, chunks=None, load=True), None
 
         def _load_path(path: str, parent_target: int | str | None = None) -> int | str:
             entry = entries_by_path[path]
@@ -1813,7 +2930,9 @@ class _WorkspaceIOController:
             is_imagetool = kind == "imagetool"
             payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
             with profiler.stage("payload read"):
-                ds = _load_dataset(payload_path, entry=entry, imagetool=is_imagetool)
+                ds, pending_payload = _load_dataset(
+                    payload_path, entry=entry, imagetool=is_imagetool
+                )
             if is_imagetool:
                 target = self._manager._load_workspace_imagetool_dataset(
                     ds,
@@ -1821,6 +2940,7 @@ class _WorkspaceIOController:
                     node_path=path,
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     profiler=profiler,
+                    pending_workspace_memory_payload=pending_payload,
                 )
             else:
                 target = self._manager._load_workspace_tool_dataset(
@@ -1833,6 +2953,26 @@ class _WorkspaceIOController:
                 _load_path_or_warn(child_path, target)
             return target
 
+        def _load_path_count(path: str) -> int:
+            return 1 + sum(
+                _load_path_count(child_path) for child_path in child_paths[path]
+            )
+
+        load_total = sum(_load_path_count(path) for path in root_paths) + len(
+            figure_paths
+        )
+        load_progress = 0
+        load_dialog_ref: typing.Any | None = None
+
+        def _update_load_progress() -> None:
+            nonlocal load_progress
+            load_progress += 1
+            if load_dialog_ref is None or load_total <= 1:
+                return
+            load_dialog_ref.set_message(
+                f"Loading workspace... ({load_progress}/{load_total})"
+            )
+
         def _load_path_or_warn(
             path: str, parent_target: int | str | None = None
         ) -> int | str | None:
@@ -1841,6 +2981,8 @@ class _WorkspaceIOController:
             except Exception as exc:
                 self._record_skipped_workspace_node(path, exc)
                 return None
+            finally:
+                _update_load_progress()
 
         if replace:
             manifest_workspace_link_id = manifest.get("workspace_link_id")
@@ -1858,8 +3000,11 @@ class _WorkspaceIOController:
         backup: _WorkspaceReplaceBackup | None = None
         with (
             maybe_guard,
-            erlab.interactive.utils.wait_dialog(self._manager, "Loading workspace..."),
+            erlab.interactive.utils.wait_dialog(
+                self._manager, "Loading workspace..."
+            ) as workspace_load_dialog,
         ):
+            load_dialog_ref = workspace_load_dialog
             try:
                 if replace:
                     with profiler.stage("rollback backup"):
@@ -2154,6 +3299,21 @@ class _WorkspaceIOController:
     def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
         metadata: dict[str, tuple[int, bool]] = {}
         group_index = 0
+        structural_groups: dict[str, tuple[list[str], bool]] = {}
+        for uid, node in self._manager._tool_graph.nodes.items():
+            link_key = node.workspace_link_key
+            if link_key is None:
+                continue
+            group_nodes, _link_colors = structural_groups.setdefault(
+                link_key, ([], node.workspace_link_colors)
+            )
+            group_nodes.append(uid)
+        for group_nodes, link_colors in structural_groups.values():
+            if len(group_nodes) <= 1:
+                continue
+            for uid in group_nodes:
+                metadata[uid] = (group_index, link_colors)
+            group_index += 1
         for linker in self._manager._link_registry.linkers:
             linked_nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
             for slicer_area in linker.children:
@@ -2169,6 +3329,8 @@ class _WorkspaceIOController:
             if len(linked_nodes) <= 1:
                 continue
             for node in linked_nodes:
+                if node.uid in metadata:
+                    continue
                 metadata[node.uid] = (group_index, bool(linker.link_colors))
             group_index += 1
         return metadata
@@ -2188,7 +3350,7 @@ class _WorkspaceIOController:
                 "parent_uid": node.parent_uid,
                 "display_name": node.display_text,
             }
-            if node.is_imagetool and node.imagetool is not None:
+            if node.is_imagetool:
                 # Distinguishes embedded data from lazy file-backed/dask payloads.
                 entry["data_backing"] = node.persistence_data_backing()[0]
                 link_info = link_metadata.get(uid)
@@ -2519,6 +3681,85 @@ class _WorkspaceIOController:
         _manager_workspace._set_legacy_workspace_schema(tree.attrs)
         return tree
 
+    def _serialize_workspace_node_for_full_save_fallback(
+        self,
+        constructor: dict[str, xr.Dataset],
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        path: str,
+        copy_group_sources: list[tuple[str, str, str, dict[str, typing.Any] | None]],
+        *,
+        include_children: bool,
+    ) -> None:
+        pending_payload = (
+            node.pending_workspace_memory_payload if node.is_imagetool else None
+        )
+        if (
+            pending_payload is not None
+            and node.uid not in self._manager._workspace_state.dirty_added
+            and node.uid not in self._manager._workspace_state.dirty_data
+        ):
+            source_file, source_path = pending_payload
+            copy_group_sources.append(
+                (
+                    os.fsdecode(source_file),
+                    source_path,
+                    f"{path}/imagetool",
+                    self._pending_workspace_imagetool_attrs(node),
+                )
+            )
+        else:
+            self._manager._serialize_workspace_node(
+                constructor,
+                node,
+                path,
+                include_children=False,
+            )
+
+        if not include_children:
+            return
+        for child_uid in node._childtool_indices:
+            child = self._manager._child_node(child_uid)
+            self._serialize_workspace_node_for_full_save_fallback(
+                constructor,
+                child,
+                f"{path}/childtools/{child_uid}",
+                copy_group_sources,
+                include_children=True,
+            )
+
+    def _workspace_full_save_fallback_tree(
+        self,
+    ) -> tuple[
+        xr.DataTree,
+        tuple[tuple[str, str, str, dict[str, typing.Any] | None], ...],
+    ]:
+        constructor: dict[str, xr.Dataset] = {}
+        copy_group_sources: list[
+            tuple[str, str, str, dict[str, typing.Any] | None]
+        ] = []
+        for index in self._manager._workspace_root_indices():
+            self._serialize_workspace_node_for_full_save_fallback(
+                constructor,
+                self._manager._tool_graph.root_wrappers[index],
+                str(index),
+                copy_group_sources,
+                include_children=True,
+            )
+        for uid in list(self._manager._tool_graph.figure_uids):
+            node = self._manager._tool_graph.nodes.get(uid)
+            if not isinstance(node, _ManagedWindowNode):
+                continue
+            self._serialize_workspace_node_for_full_save_fallback(
+                constructor,
+                node,
+                f"figures/{uid}",
+                copy_group_sources,
+                include_children=False,
+            )
+        tree = xr.DataTree.from_dict(constructor)
+        _manager_workspace._set_legacy_workspace_schema(tree.attrs)
+        return tree, tuple(copy_group_sources)
+
     def _workspace_full_save_source_identities(
         self,
     ) -> tuple[pathlib.Path, dict[tuple[str, str], str]] | None:
@@ -2655,6 +3896,42 @@ class _WorkspaceIOController:
                             "missing_source" if source_path is None else "moved"
                         ] += 1
                         continue
+                    pending_payload = (
+                        node.pending_workspace_memory_payload
+                        if node.is_imagetool
+                        else None
+                    )
+                    pending_source_matches = False
+                    if pending_payload is not None:
+                        pending_workspace_path, pending_payload_path = pending_payload
+                        pending_source_matches = _manager_xarray._normalized_file_path(
+                            pending_workspace_path
+                        ) == _manager_xarray._normalized_file_path(
+                            workspace_path
+                        ) and pending_payload_path == source_path.strip("/")
+                    if (
+                        pending_source_matches
+                        and uid in self._manager._workspace_state.dirty_state
+                        and uid not in self._manager._workspace_state.dirty_data
+                        and uid not in self._manager._workspace_state.dirty_added
+                    ):
+                        serialize_uids.discard(uid)
+                        update = self._manager._workspace_attr_update_snapshot(uid)
+                        copy_groups.append(
+                            (
+                                source_path,
+                                payload_path,
+                                None if update is None else update[1],
+                            )
+                        )
+                        reason_counts["pending_dirty_state"] += 1
+                        if source_path in h5_file:
+                            copied_bytes += (
+                                _manager_workspace._workspace_h5_object_storage_size(
+                                    h5_file[source_path]
+                                )
+                            )
+                        continue
                     if uid in serialize_uids:
                         state = self._manager._workspace_state
                         if uid in state.dirty_added:
@@ -2743,6 +4020,7 @@ class _WorkspaceIOController:
                 snapshot.root_attrs,
                 copy_source=snapshot.copy_source,
                 copy_groups=snapshot.copy_groups,
+                copy_group_sources=snapshot.copy_group_sources,
                 compression_mode=snapshot.compression_mode,
             )
         finally:
@@ -3084,7 +4362,7 @@ class _WorkspaceIOController:
     ) -> dict[str, tuple[str, tuple[str, ...]]]:
         snapshot: dict[str, tuple[str, tuple[str, ...]]] = {}
         for node in self._manager._tool_graph.nodes.values():
-            if not node.is_imagetool or node.imagetool is None:
+            if not node.is_imagetool:
                 continue
             kind, source_paths = node.persistence_data_backing()
             if kind is not None:
@@ -3126,7 +4404,8 @@ class _WorkspaceIOController:
             tool = node.imagetool
             if tool is None:
                 continue
-            persistence = node.persistence_view()
+            if node.pending_workspace_memory_payload is not None:
+                continue
             rebind_chunks: typing.Any
             if backing_snapshot is not None:
                 backing = backing_snapshot.get(node.uid)
@@ -3140,7 +4419,9 @@ class _WorkspaceIOController:
                     if old_path is None or old_path not in source_paths:
                         continue
                 rebind_chunks = {} if kind == "dask" else None
+                persistence = node.persistence_view(materialize_pending=False)
             else:
+                persistence = node.persistence_view(materialize_pending=False)
                 rebind_chunks = chunks
                 if rebind_chunks is _WORKSPACE_REBIND_KEEP_CHUNKS:
                     rebind_chunks = {} if persistence.data_backing == "dask" else None
@@ -3181,6 +4462,7 @@ class _WorkspaceIOController:
                 node.is_imagetool
                 and node.imagetool is not None
                 and not node.slicer_area.data_chunked
+                and node.pending_workspace_memory_payload is None
             ):
                 offload_targets.append(target)
         if not offload_targets:
@@ -3274,16 +4556,112 @@ class _WorkspaceIOController:
         )
         return node_path, constructor
 
+    def _pending_workspace_imagetool_attrs(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> dict[str, typing.Any]:
+        attrs = node.pending_workspace_payload_attrs
+        if attrs is None:
+            attrs = {}
+        attrs = dict(attrs)
+        attrs["itool_name"] = node.name
+        attrs["itool_title"] = node.name
+        attrs["manager_node_uid"] = node.uid
+        attrs["manager_node_kind"] = "imagetool"
+        attrs["manager_node_snapshot_token"] = node.snapshot_token
+        attrs["manager_node_added_at"] = node.added_time_iso
+        if node.note:
+            attrs["manager_node_note"] = node.note
+        else:
+            attrs.pop("manager_node_note", None)
+
+        provenance_spec = node.provenance_spec
+        if provenance_spec is None:
+            attrs.pop("manager_node_provenance_spec", None)
+        else:
+            attrs["manager_node_provenance_spec"] = json.dumps(
+                provenance_spec.model_dump(mode="json")
+            )
+
+        if isinstance(node, _ImageToolWrapper):
+            if node.source_input_ndim is None:
+                attrs.pop("manager_node_source_input_ndim", None)
+            else:
+                attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
+            if node.watched:
+                watched_metadata = node.watched_metadata()
+                attrs["manager_node_watched_varname"] = watched_metadata["varname"]
+                attrs["manager_node_watched_uid"] = watched_metadata["uid"]
+                workspace_link_id = watched_metadata.get("workspace_link_id")
+                if workspace_link_id is None:
+                    attrs.pop("manager_node_watched_workspace_link_id", None)
+                else:
+                    attrs["manager_node_watched_workspace_link_id"] = str(
+                        workspace_link_id
+                    )
+                source_label = watched_metadata.get("source_label")
+                if source_label is None:
+                    attrs.pop("manager_node_watched_source_label", None)
+                else:
+                    attrs["manager_node_watched_source_label"] = str(source_label)
+                source_uid = watched_metadata.get("source_uid")
+                if source_uid is None:
+                    attrs.pop("manager_node_watched_source_uid", None)
+                else:
+                    attrs["manager_node_watched_source_uid"] = str(source_uid)
+                attrs["manager_node_watched_connected"] = bool(
+                    watched_metadata.get("connected", False)
+                )
+            else:
+                for key in (
+                    "manager_node_watched_varname",
+                    "manager_node_watched_uid",
+                    "manager_node_watched_workspace_link_id",
+                    "manager_node_watched_source_label",
+                    "manager_node_watched_source_uid",
+                    "manager_node_watched_connected",
+                ):
+                    attrs.pop(key, None)
+
+        output_id = node.output_id
+        if output_id is None:
+            attrs.pop("manager_node_output_id", None)
+        else:
+            attrs["manager_node_output_id"] = output_id
+
+        source_spec = node.source_spec
+        if source_spec is None:
+            attrs.pop("manager_node_live_source_spec", None)
+        else:
+            attrs["manager_node_live_source_spec"] = json.dumps(
+                source_spec.model_dump(mode="json")
+            )
+        if source_spec is None and output_id is None:
+            attrs.pop("manager_node_source_state", None)
+            attrs.pop("manager_node_source_auto_update", None)
+        else:
+            attrs["manager_node_source_state"] = node.source_state
+            attrs["manager_node_source_auto_update"] = bool(node.source_auto_update)
+        return attrs
+
     def _workspace_attr_update_snapshot(
         self, uid: str
     ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
         constructor: dict[str, xr.Dataset] = {}
         node = self._manager._tool_graph.nodes[uid]
         node_path = self._manager._workspace_node_path(uid)
-        self._manager._serialize_workspace_node(
-            constructor, node, node_path, include_children=False
-        )
         payload_path = self._manager._workspace_payload_path(uid)
+        if node.is_imagetool and node.pending_workspace_memory_payload is not None:
+            return (
+                payload_path,
+                self._pending_workspace_imagetool_attrs(node),
+                (node_path, constructor),
+            )
+        self._manager._serialize_workspace_node(
+            constructor,
+            node,
+            node_path,
+            include_children=False,
+        )
         ds = constructor.get(payload_path)
         if ds is None:
             return None
@@ -3411,7 +4789,7 @@ class _WorkspaceIOController:
             if snapshot is not None:
                 return snapshot
 
-        tree = self._manager._to_datatree()
+        tree, pending_copy_groups = self._workspace_full_save_fallback_tree()
         if reuse_unchanged_groups and not target_drops_copy_groups:
             copy_source, copy_groups = self._workspace_full_save_copy_groups(
                 tree,
@@ -3428,6 +4806,7 @@ class _WorkspaceIOController:
             full_tree=tree,
             copy_source=copy_source,
             copy_groups=copy_groups,
+            copy_group_sources=pending_copy_groups,
         )
 
     def _workspace_file_repack_snapshot(
@@ -4613,7 +5992,9 @@ class _WorkspaceIOController:
                 )
                 if watched_var is not None:
                     # Refresh title to include variable name
-                    self._manager.get_imagetool(indices[-1])._update_title()
+                    node = self._manager._node_for_target(indices[-1])
+                    if node.imagetool is not None:
+                        node.imagetool._update_title()
             except Exception:
                 flags.append(False)
                 logger.exception(
