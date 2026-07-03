@@ -3920,6 +3920,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 "0/imagetool",
             ),
             provenance_spec=provenance.full_data(),
+            _load_source_details=lambda: None,
         )
         assert lineage._node_reload_unavailable_reason(pending_memory_node)
         pending_file_node = types.SimpleNamespace(

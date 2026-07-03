@@ -3489,7 +3489,7 @@ def test_managed_tool_window_node_detached_update_branches(
     node.set_output_binding("out", auto_update=True, state="fresh")
     parent_tool.output_data = None
     assert not node.handle_parent_source_replaced(parent_data)
-    assert node.source_state == "unavailable"
+    assert node.source_state == "stale"
 
     node.set_detached_provenance(None)
     assert not node.handle_parent_source_replaced(parent_data)
@@ -3499,11 +3499,11 @@ def test_managed_tool_window_node_detached_update_branches(
         state="stale",
     )
     assert not node.handle_parent_source_replaced(parent_data)
-    assert node.source_state == "unavailable"
+    assert node.source_state == "stale"
 
     node.set_source_binding(provenance.full_data(), auto_update=True, state="stale")
     assert not node.handle_parent_source_replaced(parent_data)
-    assert node.source_state == "unavailable"
+    assert node.source_state == "stale"
 
     node.set_detached_provenance(None)
     assert node.show_source_update_dialog(parent=manager) == int(
