@@ -3155,6 +3155,335 @@ def test_manager_materializing_pending_linked_partner_uses_pending_state(
         assert materialized_partner.array_slicer.get_index(0, 0) == 3
 
 
+def test_pending_link_state_operation_variants_update_saved_state(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(36, dtype=np.float64).reshape((6, 6)),
+            dims=["x", "y"],
+            coords={"x": np.arange(6.0), "y": np.arange(6.0)},
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        source = root.slicer_area
+        controller = manager._workspace_controller
+
+        def new_state(
+            *, cursors: int = 1
+        ) -> tuple[
+            erlab.interactive.imagetool.slicer.ArraySlicer, dict[str, typing.Any]
+        ]:
+            array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(data, manager)
+            for _ in range(cursors - 1):
+                array_slicer.add_cursor(0, update=False)
+            return array_slicer, {
+                "slice": array_slicer.state,
+                "current_cursor": 0,
+                "cursor_colors": ["#ff0000"] * cursors,
+            }
+
+        array_slicer, state = new_state()
+        try:
+            assert not controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "refresh", {}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "view_all", {}
+            )
+            assert state["manual_limits"] == {}
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "center_all_cursors", {}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "center_cursor", {}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "set_current_cursor", {"cursor": 4}
+            )
+            assert state["current_cursor"] == 0
+            assert not controller._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "set_axis_inverted",
+                {"dim": "missing", "inverted": True},
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "set_axis_inverted",
+                {"dim": "x", "inverted": True},
+            )
+            assert state["axis_inversions"] == {"x": True}
+            assert controller._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "set_axis_inverted",
+                {"dim": "x", "inverted": False},
+            )
+            assert state["axis_inversions"] == {}
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "set_index", {"axis": 0, "value": 4}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "step_index", {"axis": 0, "value": -1}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "step_index_all", {"axis": 1, "value": 1}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "set_value",
+                {"axis": 0, "value": 2.0, "uniform": True},
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "set_bin", {"axis": 0, "value": 3}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "set_bin_all", {"axis": 1, "value": 3}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "swap_axes", {"ax1": 0, "ax2": 1}
+            )
+            assert controller._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "set_colormap",
+                {
+                    "cmap": "magma",
+                    "gamma": 0.5,
+                    "reverse": True,
+                    "high_contrast": True,
+                    "zero_centered": True,
+                    "levels_locked": True,
+                    "levels": (1.0, 5.0),
+                },
+            )
+            assert state["color"]["cmap"] == "magma"
+            assert state["color"]["levels"] == [1.0, 5.0]
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "toggle_snap", {}
+            )
+            assert state["slice"]["snap_to_data"] is True
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "toggle_snap", {"value": False}
+            )
+            assert state["slice"]["snap_to_data"] is False
+            assert not controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "unknown_operation", {}
+            )
+        finally:
+            array_slicer.deleteLater()
+
+        array_slicer, state = new_state(cursors=2)
+        try:
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "add_cursor", {"color": None}
+            )
+            assert len(state["cursor_colors"]) == 3
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "add_cursor", {"color": "#123456"}
+            )
+            assert state["cursor_colors"][-1] == "#123456"
+            state["current_cursor"] = 2
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "remove_cursor", {"index": 1}
+            )
+            assert state["current_cursor"] == 1
+        finally:
+            array_slicer.deleteLater()
+
+        array_slicer, state = new_state()
+        try:
+            assert not controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "remove_cursor", {"index": 0}
+            )
+        finally:
+            array_slicer.deleteLater()
+
+
+def test_pending_workspace_link_payload_helper_fallbacks(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class PendingNode:
+        uid = "pending"
+        is_imagetool = True
+
+        def __init__(self) -> None:
+            self.attrs: dict[str, typing.Any] | None = None
+            self.pending_workspace_memory_payload: tuple[pathlib.Path, str] | None = (
+                tmp_path / "source.itws",
+                "0/imagetool",
+            )
+
+        @property
+        def pending_workspace_payload_attrs(self) -> dict[str, typing.Any] | None:
+            return None if self.attrs is None else dict(self.attrs)
+
+        def update_pending_workspace_payload_attrs(
+            self, attrs: Mapping[str, typing.Any]
+        ) -> None:
+            self.attrs = dict(attrs)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+        data = xr.DataArray(
+            np.arange(36, dtype=np.float64).reshape((6, 6)),
+            dims=["x", "y"],
+            coords={"x": np.arange(6.0), "y": np.arange(6.0)},
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        source = root.slicer_area
+        source.array_slicer.set_index(0, 0, 2, update=False)
+
+        node = PendingNode()
+        assert not controller._update_pending_workspace_manual_limits(
+            node, {"x": [0.0, 1.0]}
+        )
+        assert not controller._apply_pending_workspace_link_operation(
+            source,
+            node,
+            "set_index",
+            {"axis": 0, "value": 1},
+            tuple(data.dims),
+            True,
+            False,
+            None,
+            False,
+        )
+
+        for raw_state in (b"\xff", "{bad-json"):
+            node.attrs = {"itool_state": raw_state}
+            assert not controller._update_pending_workspace_manual_limits(
+                node, {"x": [0.0, 1.0]}
+            )
+            assert not controller._apply_pending_workspace_link_operation(
+                source,
+                node,
+                "set_index",
+                {"axis": 0, "value": 1},
+                tuple(data.dims),
+                True,
+                False,
+                None,
+                False,
+            )
+
+        node.attrs = {"itool_state": json.dumps({})}
+        node.pending_workspace_memory_payload = None
+        assert not controller._update_pending_workspace_manual_limits(
+            node, {"x": [0.0, 1.0]}
+        )
+        assert not controller._apply_pending_workspace_link_operation(
+            source,
+            node,
+            "set_index",
+            {"axis": 0, "value": 1},
+            tuple(data.dims),
+            True,
+            False,
+            None,
+            False,
+        )
+
+        node.pending_workspace_memory_payload = (
+            tmp_path / "source.itws",
+            "0/imagetool",
+        )
+
+        def _raise_payload_read(*_args, **_kwargs):
+            raise OSError("missing payload")
+
+        monkeypatch.setattr(
+            controller,
+            "_read_workspace_imagetool_payload_dataset",
+            _raise_payload_read,
+        )
+        assert not controller._update_pending_workspace_manual_limits(
+            node, {"x": [0.0, 1.0]}
+        )
+        assert not controller._apply_pending_workspace_link_operation(
+            source,
+            node,
+            "set_index",
+            {"axis": 0, "value": 1},
+            tuple(data.dims),
+            True,
+            False,
+            None,
+            False,
+        )
+
+        def _metadata_dataset(*_args, **_kwargs):
+            return xr.Dataset({manager_workspace_io._ITOOL_DATA_NAME: data})
+
+        monkeypatch.setattr(
+            controller,
+            "_read_workspace_imagetool_payload_dataset",
+            _metadata_dataset,
+        )
+        node.attrs = {"itool_state": json.dumps({})}
+        assert controller._update_pending_workspace_manual_limits(
+            node, {"x": [0.0, 1.0], "missing": [2.0, 3.0]}
+        )
+        assert json.loads(node.attrs["itool_state"])["manual_limits"] == {
+            "x": [0.0, 1.0]
+        }
+
+        target_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(data, manager)
+        try:
+            node.attrs = {
+                "itool_state": json.dumps(
+                    {"slice": target_slicer.state, "current_cursor": 0}
+                )
+            }
+            assert not controller._apply_pending_workspace_link_operation(
+                source,
+                node,
+                "unknown_operation",
+                {},
+                tuple(data.dims),
+                True,
+                False,
+                None,
+                False,
+            )
+            assert controller._apply_pending_workspace_link_operation(
+                source,
+                node,
+                "set_index",
+                {"axis": 0, "value": 1},
+                tuple(data.dims),
+                True,
+                False,
+                None,
+                False,
+            )
+            updated_state = json.loads(node.attrs["itool_state"])
+            assert updated_state["slice"]["indices"][0][0] == 1
+        finally:
+            target_slicer.deleteLater()
+
+
 def test_manager_save_updates_pending_linked_partner_manual_limits(
     qtbot,
     monkeypatch,
@@ -3866,8 +4195,12 @@ def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
             ),
         )
         group = h5_file.create_group("payload")
-        group.create_dataset("data", data=np.arange(3), compression="gzip")
+        gzip_data = group.create_dataset("data", data=np.arange(3), compression="gzip")
+        metadata_group = h5_file.create_group("metadata")
+        metadata_group.create_group("nested")
 
+        assert manager_workspace._workspace_h5py_blosc2_options_match((1, 2), (1, 2))
+        assert not manager_workspace._workspace_h5py_blosc2_options_match((1,), (2,))
         assert manager_workspace._workspace_h5py_dataset_matches_encoding(plain, {})
         assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
             plain, {"compression": hdf5plugin.Blosc2.filter_id}
@@ -3880,6 +4213,20 @@ def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
         )
         assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
             compressed, manager_xarray._workspace_blosc2_encoding("blosclz3")
+        )
+        gzip_filter = manager_workspace._workspace_h5py_filter_options(gzip_data)
+        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
+            gzip_data,
+            {"compression": 1, "compression_opts": gzip_filter[1]},
+        )
+        assert not manager_workspace._h5_group_matches_compression(
+            h5_file, "missing", "none"
+        )
+        assert not manager_workspace._h5_group_matches_compression(
+            h5_file, "plain", "none"
+        )
+        assert manager_workspace._h5_group_matches_compression(
+            h5_file, "metadata", "none"
         )
         assert not manager_workspace._workspace_h5_group_matches_compression_mode(
             h5_file,
@@ -11986,6 +12333,563 @@ def test_manager_write_full_workspace_file_can_disable_group_reuse(
         assert writes[0]["copy_groups"] == ()
 
 
+def test_workspace_manifest_first_helper_edge_cases(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+        data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        with monkeypatch.context() as mp:
+            mp.setattr(manager, "_workspace_node_path", lambda uid: uid)
+            assert not controller._workspace_datatree_for_payload_uids(
+                ("missing",)
+            ).children
+        assert (
+            controller._workspace_full_save_manifest_entries(
+                {
+                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                        {"nodes": {"not": "a-list"}}
+                    )
+                }
+            )
+            == []
+        )
+        root_attrs = {
+            manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                {
+                    "nodes": [
+                        None,
+                        {"uid": uid, "kind": "unknown", "path": "0"},
+                        {"uid": uid, "kind": "imagetool", "path": "0"},
+                    ]
+                }
+            )
+        }
+        assert controller._workspace_full_save_manifest_entries(root_attrs) == [
+            (uid, "imagetool", "0/imagetool")
+        ]
+
+        manager._workspace_state.dirty_added.add("missing")
+        manager._workspace_state.dirty_data.add(uid)
+        assert controller._workspace_full_save_dirty_payload_uids() == {uid}
+        manager._workspace_state.dirty_added.clear()
+        manager._workspace_state.dirty_data.clear()
+
+        assert controller._workspace_full_save_source_identities() is None
+        missing_workspace = tmp_path / "missing.itws"
+        manager._workspace_state.path = missing_workspace
+        assert controller._workspace_full_save_source_identities() is None
+
+        workspace = tmp_path / "identity.itws"
+        manifest = {
+            "nodes": [
+                "bad-entry",
+                {"uid": uid, "kind": "tool", "path": 1},
+                {"uid": uid, "kind": "imagetool", "path": "0"},
+            ]
+        }
+        with h5py.File(workspace, "w") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = (
+                manager_workspace._current_workspace_schema_version()
+            )
+            h5_file.attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                manifest
+            )
+        manager._workspace_state.path = workspace
+        source = controller._workspace_full_save_source_identities()
+        assert source is not None
+        assert source[0] == workspace
+        assert source[1] == {(uid, "imagetool"): "0/imagetool"}
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_read_workspace_root_attrs_h5py",
+            lambda _path: (_ for _ in ()).throw(OSError("boom")),
+        )
+        assert controller._workspace_full_save_source_identities() is None
+
+
+def test_pending_workspace_imagetool_attrs_optional_metadata(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root,
+            show=False,
+            watched_var=("watched_data", "watched-uid"),
+            watched_workspace_link_id="workspace-link",
+            watched_source_label="source label",
+            watched_source_uid="source-uid",
+            watched_connected=False,
+            source_input_ndim=2,
+            source_spec=provenance.full_data(),
+            source_auto_update=True,
+            source_state="stale",
+            note="remember this",
+        )
+        wrapper = manager._tool_graph.root_wrappers[0]
+        wrapper.name = "pending-name"
+        wrapper.set_pending_workspace_memory_payload(
+            tmp_path / "source.itws",
+            "0/imagetool",
+            payload_attrs={
+                "manager_node_note": "old note",
+                "manager_node_provenance_spec": "old provenance",
+                "manager_node_watched_workspace_link_id": "old link",
+            },
+        )
+
+        attrs = manager._workspace_controller._pending_workspace_imagetool_attrs(
+            wrapper
+        )
+        assert attrs["itool_name"] == "pending-name"
+        assert attrs["manager_node_note"] == "remember this"
+        assert attrs["manager_node_kind"] == "imagetool"
+        assert attrs["manager_node_source_input_ndim"] == 2
+        assert attrs["manager_node_watched_varname"] == "watched_data"
+        assert attrs["manager_node_watched_uid"] == "watched-uid"
+        assert attrs["manager_node_watched_workspace_link_id"] == "workspace-link"
+        assert attrs["manager_node_watched_source_label"] == "source label"
+        assert attrs["manager_node_watched_source_uid"] == "source-uid"
+        assert attrs["manager_node_watched_connected"] is False
+        assert attrs["manager_node_live_source_spec"]
+        assert attrs["manager_node_source_state"] == "stale"
+        assert attrs["manager_node_source_auto_update"] is True
+
+        wrapper.note = ""
+        wrapper.set_watched_binding("watched_data", "watched-uid")
+        wrapper.set_source_input_ndim(None)
+        wrapper._source_spec = None
+        attrs = manager._workspace_controller._pending_workspace_imagetool_attrs(
+            wrapper
+        )
+        assert "manager_node_note" not in attrs
+        assert "manager_node_source_input_ndim" not in attrs
+        assert "manager_node_watched_workspace_link_id" not in attrs
+        assert "manager_node_watched_source_label" not in attrs
+        assert "manager_node_watched_source_uid" not in attrs
+        assert "manager_node_live_source_spec" not in attrs
+        assert "manager_node_source_state" not in attrs
+        assert "manager_node_source_auto_update" not in attrs
+
+
+def test_wrapper_pending_workspace_branch_helpers(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        wrapper = manager._tool_graph.root_wrappers[0]
+
+        assert wrapper.pending_workspace_payload_attrs is None
+        wrapper.update_pending_workspace_payload_attrs({"itool_state": "{}"})
+        assert wrapper.pending_workspace_payload_attrs is None
+        assert wrapper.pending_workspace_preview_image() is None
+
+        wrapper.set_pending_workspace_memory_payload(
+            tmp_path / "source.itws", "0/imagetool"
+        )
+        assert wrapper._metadata_data() is None
+        assert wrapper._pending_workspace_load_source_details() is None
+
+        for raw_state in (b"\xff", "{not-json", json.dumps({"file_path": 1})):
+            wrapper.update_pending_workspace_payload_attrs({"itool_state": raw_state})
+            assert wrapper._pending_workspace_load_source_details() is None
+
+        assert wrapper._load_func_from_serialized_state("bad") is None
+        assert wrapper._load_func_from_serialized_state(["bad", {}, None]) is None
+        assert (
+            wrapper._load_func_from_serialized_state(["math:missing", {}, None]) is None
+        )
+        assert wrapper._load_func_from_serialized_state(["math:pi", {}, None]) is None
+        assert (
+            wrapper._load_func_from_serialized_state(["math:sqrt", {}, None])[
+                0
+            ].__name__
+            == "sqrt"
+        )
+        assert wrapper._load_func_from_serialized_state(["da30", {}, None]) == (
+            "da30",
+            {},
+            None,
+        )
+
+        original_tool = wrapper._imagetool
+        wrapper._imagetool = None
+        try:
+            monkeypatch.setattr(
+                wrapper,
+                "_load_source_details",
+                lambda: types.SimpleNamespace(load_code="data = 1"),
+            )
+            assert wrapper.load_source_code() == "data = 1"
+            assert wrapper.load_source_code(assign="renamed") == "renamed = 1"
+            with pytest.raises(ValueError, match="valid Python identifier"):
+                wrapper.load_source_code(assign="bad name")
+            monkeypatch.setattr(
+                wrapper,
+                "_load_source_details",
+                lambda: types.SimpleNamespace(load_code="data ="),
+            )
+            assert wrapper.load_source_code(assign="renamed") is None
+        finally:
+            wrapper._imagetool = original_tool
+
+        monkeypatch.setattr(
+            wrapper, "materialize_pending_workspace_memory_payload", lambda: False
+        )
+        with pytest.raises(ValueError, match="saved data"):
+            wrapper.persistence_view()
+        with pytest.raises(ValueError, match="saved data"):
+            wrapper.current_source_data()
+        wrapper.show()
+
+        manager._workspace_state.loading_depth = 1
+        try:
+            wrapper._handle_source_data_replaced(data)
+        finally:
+            manager._workspace_state.loading_depth = 0
+        assert wrapper.pending_workspace_memory_payload is not None
+
+
+def test_workspace_save_worker_start_and_finish_error_branches(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class Snapshot:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        start_errors: list[str] = []
+        snapshot = Snapshot()
+        monkeypatch.setattr(
+            manager_workspace_io.QtCore.QThreadPool,
+            "globalInstance",
+            staticmethod(lambda: None),
+        )
+        assert not controller._start_workspace_save_worker(
+            tmp_path / "none.itws",
+            typing.cast("manager_workspace._WorkspaceSaveSnapshot", snapshot),
+            on_finished=lambda *_args: None,
+            on_start_error=lambda: start_errors.append("none"),
+        )
+        assert snapshot.closed
+        assert start_errors == ["none"]
+
+        class RaisingPool:
+            def start(self, _worker) -> None:
+                raise RuntimeError("cannot start")
+
+        snapshot = Snapshot()
+        monkeypatch.setattr(
+            manager_workspace_io.QtCore.QThreadPool,
+            "globalInstance",
+            staticmethod(lambda: RaisingPool()),
+        )
+        assert not controller._start_workspace_save_worker(
+            tmp_path / "raise.itws",
+            typing.cast("manager_workspace._WorkspaceSaveSnapshot", snapshot),
+            on_finished=lambda *_args: None,
+            on_start_error=lambda: start_errors.append("raise"),
+        )
+        assert snapshot.closed
+        assert start_errors == ["none", "raise"]
+        assert not manager._workspace_state.save_in_progress
+        assert controller._background_save_worker is None
+        assert controller._background_save_receiver is None
+
+        class RecordingPool:
+            def __init__(self) -> None:
+                self.worker = None
+
+            def start(self, worker) -> None:
+                self.worker = worker
+
+        errors: list[tuple[str, str]] = []
+        pool = RecordingPool()
+        monkeypatch.setattr(
+            manager_workspace_io.QtCore.QThreadPool,
+            "globalInstance",
+            staticmethod(lambda: pool),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        assert controller._start_workspace_save_worker(
+            tmp_path / "finish.itws",
+            typing.cast("manager_workspace._WorkspaceSaveSnapshot", Snapshot()),
+            on_finished=lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert pool.worker is not None
+        pool.worker.signals.finished.emit(True, 0.1, "")
+        assert errors == [
+            (
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+        ]
+        assert not manager._workspace_state.save_in_progress
+
+
+def test_background_workspace_save_finish_branches(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+        workspace_path = tmp_path / "queued.itws"
+        manager._workspace_state.path = workspace_path
+        manager._workspace_state.dirty_state.add("uid")
+        controller._background_save_requested = True
+
+        queued_callbacks: list[Callable[[], None]] = []
+        finished: list[bool] = []
+        monkeypatch.setattr(
+            controller,
+            "_finish_workspace_save_result",
+            lambda **_kwargs: True,
+        )
+        monkeypatch.setattr(
+            controller,
+            "_current_workspace_document_path",
+            lambda: workspace_path,
+        )
+        monkeypatch.setattr(
+            manager_workspace_io.QtCore.QTimer,
+            "singleShot",
+            staticmethod(lambda _delay, callback: queued_callbacks.append(callback)),
+        )
+        controller._finish_background_workspace_save(
+            workspace_path=workspace_path,
+            old_workspace_path=None,
+            backing_snapshot={},
+            snapshot=typing.cast(
+                "manager_workspace._WorkspaceSaveSnapshot", types.SimpleNamespace()
+            ),
+            ok=True,
+            worker_elapsed=0.1,
+            error_text="",
+            origin=None,
+            snapshot_elapsed=0.0,
+            started_at=time.perf_counter(),
+            restore_focus=False,
+            on_finished=finished.append,
+        )
+        assert len(queued_callbacks) == 1
+        assert finished == [True]
+        assert not controller._background_save_requested
+
+        errors: list[tuple[str, str]] = []
+        finished.clear()
+        monkeypatch.setattr(
+            controller,
+            "_finish_workspace_save_result",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        controller._finish_background_workspace_save(
+            workspace_path=workspace_path,
+            old_workspace_path=None,
+            backing_snapshot={},
+            snapshot=typing.cast(
+                "manager_workspace._WorkspaceSaveSnapshot", types.SimpleNamespace()
+            ),
+            ok=True,
+            worker_elapsed=0.1,
+            error_text="",
+            origin=None,
+            snapshot_elapsed=0.0,
+            started_at=time.perf_counter(),
+            restore_focus=False,
+            on_finished=finished.append,
+        )
+        assert finished == [False]
+        assert errors == [
+            (
+                "Error while saving workspace",
+                "An error occurred while saving the workspace file.",
+            )
+        ]
+
+
+def test_workspace_save_and_save_as_error_continuation_branches(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    def snapshot(generation: int = 0) -> manager_workspace._WorkspaceSaveSnapshot:
+        return manager_workspace._WorkspaceSaveSnapshot(
+            generation=generation,
+            root_attrs={},
+            delta_save_count=0,
+            estimated_obsolete_bytes=0,
+            replacement_delta_count=0,
+            full_tree=xr.DataTree(),
+        )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+        controller = manager._workspace_controller
+
+        finished: list[bool] = []
+        manager._workspace_state.save_in_progress = True
+        assert not controller.save_as(native=False, on_finished=finished.append)
+        assert finished == [False]
+        manager._workspace_state.save_in_progress = False
+
+        warnings: list[bool] = []
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda **_kwargs: tmp_path / "bad.txt"
+        )
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "_show_itws_workspace_warning",
+            lambda _parent: warnings.append(True),
+        )
+        finished.clear()
+        assert not controller.save_as(native=False, on_finished=finished.append)
+        assert warnings == [True]
+        assert finished == [False]
+
+        errors: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda **_kwargs: tmp_path / "save.itws"
+        )
+        monkeypatch.setattr(
+            controller,
+            "_workspace_full_save_snapshot",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        finished.clear()
+        assert not controller.save_as(native=False, on_finished=finished.append)
+        assert finished == [False]
+        assert errors[-1] == (
+            "Error while saving workspace",
+            "An error occurred while saving the workspace file.",
+        )
+
+        monkeypatch.setattr(
+            controller,
+            "_workspace_full_save_snapshot",
+            lambda generation, **_kwargs: snapshot(generation),
+        )
+        worker_errors: list[str] = []
+        monkeypatch.setattr(
+            manager, "_show_workspace_save_worker_error", worker_errors.append
+        )
+
+        def _fail_worker(_fname, _snapshot, *, on_finished, on_start_error=None):
+            del on_start_error
+            on_finished(False, 0.1, "write failed")
+            return True
+
+        monkeypatch.setattr(controller, "_start_workspace_save_worker", _fail_worker)
+        finished.clear()
+        assert controller.save_as(native=False, on_finished=finished.append)
+        assert worker_errors == ["write failed"]
+        assert finished == [False]
+
+        manager._mark_workspace_clean()
+
+        def _dirty_during_worker(
+            _fname, _snapshot, *, on_finished, on_start_error=None
+        ):
+            del on_start_error
+            manager._mark_node_state_dirty(uid)
+            on_finished(True, 0.1, "")
+            return True
+
+        monkeypatch.setattr(
+            controller, "_start_workspace_save_worker", _dirty_during_worker
+        )
+        finished.clear()
+        assert controller.save_as(native=False, on_finished=finished.append)
+        assert finished == [False]
+
+        def _start_error_worker(_fname, _snapshot, *, on_finished, on_start_error=None):
+            del on_finished
+            if on_start_error is not None:
+                on_start_error()
+            return False
+
+        monkeypatch.setattr(
+            controller, "_start_workspace_save_worker", _start_error_worker
+        )
+        finished.clear()
+        assert not controller.save_as(native=False, on_finished=finished.append)
+        assert finished == [False]
+
+        manager._workspace_state.path = tmp_path / "current.itws"
+        monkeypatch.setattr(
+            controller, "_workspace_save_snapshot", lambda _path: snapshot()
+        )
+        finished.clear()
+        assert not controller.save(on_finished=finished.append, restore_focus=False)
+        assert finished == [False]
+
+
 def test_manager_manifest_first_full_save_copies_clean_payloads(
     qtbot,
     monkeypatch,
@@ -13446,6 +14350,136 @@ def test_manager_pending_memory_partial_preview_read_cap_falls_back_to_load_butt
         )
         assert load_button is not None
         assert load_button.isVisible()
+
+
+def test_pending_workspace_preview_and_metadata_reader_fallbacks(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        assert controller._pending_preview_axis_state((4, 5), {}) is None
+        assert (
+            controller._pending_preview_axis_state(
+                (4, 5), {"slice": {"bins": [], "indices": []}}
+            )
+            is None
+        )
+        assert controller._pending_preview_axis_state(
+            (4, 5),
+            {"slice": {"bins": [["bad", 3]], "indices": [["bad", 99]]}},
+        ) == ((1, 2), (1, 3), (False, True))
+        assert controller._pending_preview_axis_state(
+            (4, 5),
+            {
+                "current_cursor": 1,
+                "slice": {"bins": [[1, 1], [1, 1]], "indices": [[0, 0]]},
+            },
+        ) == ((1, 2), (1, 1), (False, False))
+        assert (
+            controller._pending_preview_axis_state(
+                (4, 5), {"slice": {"bins": ["bad"], "indices": ["bad"]}}
+            )
+            is None
+        )
+
+        fname = tmp_path / "pending-preview-reader-fallbacks.itws"
+        data = xr.DataArray(
+            np.arange(4 * 5 * 6, dtype=np.float64).reshape((4, 5, 6)),
+            dims=["x", "y", "z"],
+            coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+            name=manager_workspace_io._ITOOL_DATA_NAME,
+        )
+        state = {
+            "slice": {
+                "dims": ["x", "y", "z"],
+                "bins": [[1, 1, 3]],
+                "indices": [[2, 3, 4]],
+            },
+            "current_cursor": 0,
+            "color": {
+                "cmap": "viridis",
+                "levels_locked": True,
+                "levels": [10.0, 90.0],
+            },
+        }
+        ds = xr.Dataset(
+            {manager_workspace_io._ITOOL_DATA_NAME: data},
+            attrs={"itool_state": json.dumps(state), "itool_name": "pending"},
+        )
+        assert manager_workspace._write_workspace_dataset_group_h5py(
+            fname, "0/imagetool", ds
+        )
+
+        node = types.SimpleNamespace(
+            pending_workspace_memory_payload=(fname, "0/imagetool"),
+            pending_workspace_payload_attrs=None,
+            name="pending",
+            added_time_display="Today",
+        )
+        info = controller._pending_workspace_imagetool_info_text(node)
+        assert info is not None
+        assert "pending" in info
+        preview = controller._pending_workspace_imagetool_preview_image(node)
+        assert preview is not None
+        assert preview[1].isNull() is False
+
+        missing_node = types.SimpleNamespace(
+            pending_workspace_memory_payload=(tmp_path / "missing.itws", "0/imagetool"),
+            pending_workspace_payload_attrs=None,
+            name="missing",
+            added_time_display="Today",
+        )
+        assert controller._pending_workspace_imagetool_info_text(missing_node) is None
+        assert (
+            controller._pending_workspace_imagetool_preview_image(missing_node) is None
+        )
+
+        no_pending = types.SimpleNamespace(
+            pending_workspace_memory_payload=None,
+            pending_workspace_payload_attrs=None,
+            name="missing",
+            added_time_display="Today",
+        )
+        assert controller._pending_workspace_imagetool_info_text(no_pending) is None
+        assert controller._pending_workspace_imagetool_preview_image(no_pending) is None
+
+        malformed_payload_attrs = [
+            {"itool_state": json.dumps([])},
+            {"itool_state": json.dumps({"slice": None})},
+            {"itool_state": json.dumps({"slice": {"dims": "xy"}})},
+            {
+                "itool_state": json.dumps(
+                    {
+                        "slice": {
+                            "dims": ["missing", "y", "z"],
+                            "bins": [[1, 1, 1]],
+                            "indices": [[0, 0, 0]],
+                        }
+                    }
+                )
+            },
+            {
+                "itool_state": json.dumps(
+                    {"slice": {"dims": ["x", "y", "z"], "bins": [], "indices": []}}
+                ).encode()
+            },
+        ]
+        for attrs in malformed_payload_attrs:
+            node.pending_workspace_payload_attrs = attrs
+            assert controller._pending_workspace_imagetool_preview_image(node) is None
+
+        empty_fname = tmp_path / "pending-preview-empty.itws"
+        with h5py.File(empty_fname, "w") as h5_file:
+            h5_file.create_group("0/imagetool")
+        node.pending_workspace_memory_payload = (empty_fname, "0/imagetool")
+        node.pending_workspace_payload_attrs = None
+        assert controller._pending_workspace_imagetool_preview_image(node) is None
 
 
 def test_pending_preview_slicer_helpers_match_array_slicer(qtbot) -> None:
