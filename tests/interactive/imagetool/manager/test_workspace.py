@@ -3304,6 +3304,19 @@ def test_pending_link_state_operation_variants_update_saved_state(
         finally:
             array_slicer.deleteLater()
 
+        array_slicer, state = new_state(cursors=3)
+        try:
+            state["current_cursor"] = 0
+            assert controller._update_pending_link_state_for_operation(
+                state, array_slicer, source, "remove_cursor", {"index": 0}
+            )
+            assert state["current_cursor"] == 0
+            assert controller._pending_link_default_cursor_color(
+                source, 0, [QtGui.QColor(color).name() for color in source.COLORS]
+            )
+        finally:
+            array_slicer.deleteLater()
+
         array_slicer, state = new_state()
         try:
             assert not controller._update_pending_link_state_for_operation(
@@ -7625,6 +7638,241 @@ def test_manager_close_save_path_updates_file_path(
         assert file_path_calls == [str(manager._workspace_state.path)]
         assert close_calls == ["close"]
         assert not manager._workspace_state.closing_document
+
+
+def test_workspace_controller_helper_branch_edges(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+
+        invalid = xr.Dataset(attrs={"itool_state": b"not text"})
+        assert (
+            controller._dataset_without_missing_workspace_colormap(invalid, None)
+            is invalid
+        )
+        invalid.attrs["itool_state"] = "{not-json"
+        assert (
+            controller._dataset_without_missing_workspace_colormap(invalid, None)
+            is invalid
+        )
+        invalid.attrs["itool_state"] = json.dumps([])
+        assert (
+            controller._dataset_without_missing_workspace_colormap(invalid, None)
+            is invalid
+        )
+
+        assert (
+            controller._workspace_saved_uid_from_dataset(
+                xr.Dataset(attrs={"manager_node_uid": b"node-1"})
+            )
+            == "node-1"
+        )
+        assert (
+            controller._workspace_saved_uid_from_dataset(
+                xr.Dataset(attrs={"manager_node_uid": b"\xff"})
+            )
+            is None
+        )
+
+        try:
+            manager._tool_graph.nodes["parent"] = types.SimpleNamespace(parent_uid=None)
+            manager._tool_graph.nodes["child"] = types.SimpleNamespace(
+                parent_uid="parent"
+            )
+            manager._tool_graph.nodes["sibling"] = types.SimpleNamespace(
+                parent_uid=None
+            )
+            manager._workspace_state.dirty_data.update({"parent", "child", "sibling"})
+            with monkeypatch.context() as patch:
+                patch.setattr(manager, "_workspace_node_path", lambda uid: uid)
+                assert controller._workspace_highest_dirty_data_roots() == [
+                    "parent",
+                    "sibling",
+                ]
+        finally:
+            for uid in ("parent", "child", "sibling"):
+                manager._tool_graph.nodes.pop(uid, None)
+            manager._workspace_state.dirty_data.difference_update(
+                {"parent", "child", "sibling"}
+            )
+
+        calls: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                controller, "_dirty_workspace_save_choice", lambda _message: "cancel"
+            )
+            assert not controller._run_after_dirty_workspace_saved_or_discarded(
+                "action", lambda: calls.append("cancel") or True
+            )
+            patch.setattr(
+                controller, "_dirty_workspace_save_choice", lambda _message: "clean"
+            )
+            assert controller._run_after_dirty_workspace_saved_or_discarded(
+                "action", lambda: calls.append("clean") or True
+            )
+            patch.setattr(
+                controller, "_dirty_workspace_save_choice", lambda _message: "discard"
+            )
+            assert not controller._run_after_dirty_workspace_saved_or_discarded(
+                "action", lambda: calls.append("discard") or False
+            )
+
+        callbacks: list[Callable[[bool], None]] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                controller, "_dirty_workspace_save_choice", lambda _message: "save"
+            )
+            patch.setattr(
+                controller,
+                "save",
+                lambda *, native=True, on_finished=None: (
+                    callbacks.append(typing.cast("Callable[[bool], None]", on_finished))
+                    or True
+                ),
+            )
+            clean_property = property(lambda _m: False)
+            patch.setattr(type(manager), "is_workspace_modified", clean_property)
+            assert controller._run_after_dirty_workspace_saved_or_discarded(
+                "action", lambda: calls.append("saved") or True
+            )
+            callbacks[0](True)
+
+        assert calls == ["clean", "discard", "saved"]
+
+
+def test_manager_action_and_modelview_helper_branch_edges(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _DragEvent:
+        def __init__(self, mime: QtCore.QMimeData | None) -> None:
+            self._mime = mime
+            self.accepted = False
+            self.ignored = False
+
+        def mimeData(self) -> QtCore.QMimeData | None:
+            return self._mime
+
+        def acceptProposedAction(self) -> None:
+            self.accepted = True
+
+        def ignore(self) -> None:
+            self.ignored = True
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._actions_controller
+        model = manager.tree_view._model
+
+        widget = QtWidgets.QWidget()
+        controller.add_widget(widget)
+        assert widget.isVisible()
+        widget.close()
+
+        url_mime = QtCore.QMimeData()
+        url_mime.setUrls([QtCore.QUrl.fromLocalFile(str(tmp_path / "data.itws"))])
+        accept_event = _DragEvent(url_mime)
+        controller.dragEnterEvent(typing.cast("QtGui.QDragEnterEvent", accept_event))
+        assert accept_event.accepted
+
+        reject_event = _DragEvent(QtCore.QMimeData())
+        controller.dragEnterEvent(typing.cast("QtGui.QDragEnterEvent", reject_event))
+        assert reject_event.ignored
+
+        data = xr.DataArray(np.arange(4, dtype=float).reshape(2, 2), dims=("x", "y"))
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False)
+        wrapper = manager._tool_graph.root_wrappers[0]
+
+        removed: list[object] = []
+        shown: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_find_watched_idx", lambda _uid: None)
+            patch.setattr(
+                manager, "remove_imagetool", lambda index: removed.append(index)
+            )
+            patch.setattr(wrapper, "show", lambda: shown.append(wrapper.uid))
+            controller._remove_watched(wrapper.uid)
+            controller._show_watched(wrapper.uid)
+        assert removed == [wrapper.index]
+        assert shown == [wrapper.uid]
+
+        child = _AddedTimeChildTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        removed.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_find_watched_idx", lambda _uid: None)
+            patch.setattr(manager, "_remove_childtool", lambda uid: removed.append(uid))
+            controller._remove_watched(child_uid)
+        assert removed == [child_uid]
+
+        def mime_payload(payload: object) -> QtCore.QMimeData:
+            mime = QtCore.QMimeData()
+            raw = (
+                payload
+                if isinstance(payload, bytes)
+                else json.dumps(payload).encode("utf-8")
+            )
+            mime.setData(manager_modelview._MIME, QtCore.QByteArray(raw))
+            return mime
+
+        assert model._decode_mime(mime_payload(b"\xff")) is None
+        assert model._decode_mime(mime_payload({"parent_id": None})) is None
+        assert model._decode_mime(mime_payload({"parent_id": 1, "rows": [0]})) is None
+        assert (
+            model._decode_mime(mime_payload({"parent_id": None, "rows": "0"})) is None
+        )
+        assert (
+            model._decode_mime(mime_payload({"parent_id": None, "rows": [True]}))
+            is None
+        )
+        assert (
+            model._decode_mime(mime_payload({"parent_id": None, "rows": [1, 1]}))
+            is None
+        )
+        assert model._decode_mime(
+            mime_payload({"parent_id": None, "rows": [2, 0]})
+        ) == {"parent_id": None, "rows": [0, 2]}
+        assert model._contiguous_runs([]) == []
+        assert model._contiguous_runs([2, 3, 4, 7, 8]) == [(2, 3), (7, 2)]
+
+        assert not model.canDropMimeData(
+            None,
+            QtCore.Qt.DropAction.MoveAction,
+            0,
+            0,
+            QtCore.QModelIndex(),
+        )
+        assert not model.canDropMimeData(
+            QtCore.QMimeData(),
+            QtCore.Qt.DropAction.MoveAction,
+            0,
+            0,
+            QtCore.QModelIndex(),
+        )
+        assert not model.canDropMimeData(
+            mime_payload({"parent_id": None, "rows": [0]}),
+            QtCore.Qt.DropAction.CopyAction,
+            0,
+            0,
+            QtCore.QModelIndex(),
+        )
+        assert not model.dropMimeData(
+            mime_payload({"parent_id": None, "rows": [99]}),
+            QtCore.Qt.DropAction.MoveAction,
+            0,
+            0,
+            QtCore.QModelIndex(),
+        )
 
 
 def test_manager_close_ignores_active_save_and_async_compaction(
