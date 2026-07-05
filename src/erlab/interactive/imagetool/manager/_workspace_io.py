@@ -338,8 +338,9 @@ class _WorkspaceIOController:
             self._record_missing_workspace_colormap(cmap, node_path)
         return ds
 
+    @classmethod
     def _read_workspace_imagetool_payload_dataset(
-        self,
+        cls,
         workspace_path: str | os.PathLike[str],
         payload_path: str,
         *,
@@ -458,15 +459,16 @@ class _WorkspaceIOController:
             return self._pending_workspace_source_data(node)
         return node.current_source_data()
 
+    @classmethod
     def _pending_workspace_imagetool_info_text(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
+        cls, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
         pending = node.pending_workspace_memory_payload
         if pending is None:
             return None
         workspace_path, payload_path = pending
         try:
-            ds = self._read_workspace_imagetool_payload_dataset(
+            ds = cls._read_workspace_imagetool_payload_dataset(
                 workspace_path, payload_path, load_data=False
             )
             try:
@@ -547,14 +549,15 @@ class _WorkspaceIOController:
         lines.append(f"<p>Added {html.escape(node.added_time_display)}</p>")
         return erlab.interactive.utils._apply_qt_accent_color("".join(lines))
 
+    @classmethod
     def _pending_workspace_info_text(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
+        cls, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
         match node.pending_workspace_payload_kind:
             case "imagetool":
-                return self._pending_workspace_imagetool_info_text(node)
+                return cls._pending_workspace_imagetool_info_text(node)
             case "tool":
-                return self._pending_workspace_tool_info_text(node)
+                return cls._pending_workspace_tool_info_text(node)
             case _:
                 return None
 
@@ -942,7 +945,7 @@ class _WorkspaceIOController:
                 )
             self._manager.tree_view.childtool_added(node.uid, parent_target)
             self._manager._mark_node_added(node.uid)
-            self._manager._record_workspace_loaded_imagetool_target(
+            self._manager._record_workspace_loaded_node_target(
                 ds, node.uid, loaded_targets_by_uid
             )
             return node.uid
@@ -993,7 +996,7 @@ class _WorkspaceIOController:
         self._manager._register_root_wrapper(wrapper)
         self._manager.tree_view.imagetool_added(preferred_index)
         self._manager._mark_node_added(wrapper.uid)
-        self._manager._record_workspace_loaded_imagetool_target(
+        self._manager._record_workspace_loaded_node_target(
             ds, preferred_index, loaded_targets_by_uid
         )
         return preferred_index
@@ -1054,7 +1057,7 @@ class _WorkspaceIOController:
                         data = ds[_ITOOL_DATA_NAME].rename(name)
                         node.slicer_area.set_data(data, auto_compute=False)
                         node.slicer_area.state = state
-                    node.clear_pending_workspace_memory_payload()
+                    node.clear_pending_workspace_payload()
                     node.update_title()
                     self._sync_materialized_workspace_link_group(node)
                 self._manager.tree_view.refresh(node.uid)
@@ -2687,7 +2690,7 @@ class _WorkspaceIOController:
                     ).set_pending_workspace_memory_payload(
                         *pending_workspace_memory_payload
                     )
-                self._manager._record_workspace_loaded_imagetool_target(
+                self._manager._record_workspace_loaded_node_target(
                     ds, target, loaded_targets_by_uid
                 )
                 return target
@@ -2711,7 +2714,7 @@ class _WorkspaceIOController:
                 ].set_pending_workspace_memory_payload(
                     *pending_workspace_memory_payload
                 )
-        self._manager._record_workspace_loaded_imagetool_target(
+        self._manager._record_workspace_loaded_node_target(
             ds, target, loaded_targets_by_uid
         )
         return target
@@ -2771,7 +2774,7 @@ class _WorkspaceIOController:
             payload_attrs=attrs,
         )
         self._manager._mark_node_added(node.uid)
-        self._manager._record_workspace_loaded_tool_target(
+        self._manager._record_workspace_loaded_node_target(
             ds, node.uid, loaded_targets_by_uid
         )
         return node.uid
@@ -2859,7 +2862,7 @@ class _WorkspaceIOController:
                     created_time=ds.attrs.get("manager_node_added_at"),
                     note=ds.attrs.get("manager_node_note"),
                 )
-        self._manager._record_workspace_loaded_tool_target(
+        self._manager._record_workspace_loaded_node_target(
             ds, target, loaded_targets_by_uid
         )
         return target
@@ -2874,7 +2877,7 @@ class _WorkspaceIOController:
             return uid
         return None
 
-    def _record_workspace_loaded_imagetool_target(
+    def _record_workspace_loaded_node_target(
         self,
         ds: xr.Dataset,
         target: int | str,
@@ -2885,16 +2888,6 @@ class _WorkspaceIOController:
         saved_uid = self._manager._workspace_saved_uid_from_dataset(ds)
         if saved_uid is not None:
             loaded_targets_by_uid[saved_uid] = target
-
-    def _record_workspace_loaded_tool_target(
-        self,
-        ds: xr.Dataset,
-        target: int | str,
-        loaded_targets_by_uid: dict[str, int | str] | None,
-    ) -> None:
-        self._manager._record_workspace_loaded_imagetool_target(
-            ds, target, loaded_targets_by_uid
-        )
 
     def _restore_workspace_link_groups(
         self,

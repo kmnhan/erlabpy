@@ -642,9 +642,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
 
-    def clear_pending_workspace_memory_payload(self) -> None:
-        self.clear_pending_workspace_payload()
-
     def materialize_pending_workspace_payload(self) -> bool:
         if self._pending_workspace_payload is None:
             return True
@@ -1944,7 +1941,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.pending_workspace_memory_payload is not None:
             if self.manager._workspace_state.loading_depth > 0:
                 return
-            self.clear_pending_workspace_memory_payload()
+            self.clear_pending_workspace_payload()
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token()
         if self._suspend_descendant_signal_propagation:

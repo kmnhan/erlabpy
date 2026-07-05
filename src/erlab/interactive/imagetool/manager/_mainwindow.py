@@ -3821,11 +3821,6 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> bool:
         return self._workspace_controller._materialize_pending_workspace_payload(node)
 
-    def _pending_workspace_imagetool_info_text(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> str | None:
-        return self._workspace_controller._pending_workspace_imagetool_info_text(node)
-
     def _pending_workspace_info_text(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
@@ -3905,23 +3900,13 @@ class ImageToolManager(_ImageToolManagerBase):
     def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
         return _WorkspaceIOController._workspace_saved_uid_from_dataset(ds)
 
-    def _record_workspace_loaded_imagetool_target(
+    def _record_workspace_loaded_node_target(
         self,
         ds: xr.Dataset,
         target: int | str,
         loaded_targets_by_uid: dict[str, int | str] | None,
     ) -> None:
-        self._workspace_controller._record_workspace_loaded_imagetool_target(
-            ds, target, loaded_targets_by_uid
-        )
-
-    def _record_workspace_loaded_tool_target(
-        self,
-        ds: xr.Dataset,
-        target: int | str,
-        loaded_targets_by_uid: dict[str, int | str] | None,
-    ) -> None:
-        self._workspace_controller._record_workspace_loaded_tool_target(
+        self._workspace_controller._record_workspace_loaded_node_target(
             ds, target, loaded_targets_by_uid
         )
 
