@@ -459,6 +459,61 @@ class _WorkspaceIOController:
             return self._pending_workspace_source_data(node)
         return node.current_source_data()
 
+    def _workspace_tool_restore_references(
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+        loaded_targets_by_uid: Mapping[str, int | str] | None = None,
+        resolver_error_types: tuple[type[Exception], ...] = (KeyError, ValueError),
+        log_resolver_errors: bool = False,
+    ) -> tuple[
+        xr.DataArray | None,
+        Callable[[Mapping[str, typing.Any]], xr.DataArray | None],
+    ]:
+        reference_cache: dict[int | str, xr.DataArray] = {}
+
+        def _source_data_for_target(target: int | str) -> xr.DataArray:
+            if target in reference_cache:
+                return reference_cache[target]
+            data = self._workspace_tool_reference_source_data(target)
+            reference_cache[target] = data
+            return data
+
+        tool_cls = erlab.interactive.utils.ToolWindow
+        tool_data_references = tool_cls._saved_tool_data_references(ds)
+        source_parent_data: xr.DataArray | None = None
+        if parent_target is not None and any(
+            reference.get("kind") == "parent_source"
+            for reference in tool_data_references.values()
+        ):
+            source_parent_data = _source_data_for_target(parent_target)
+
+        def _tool_data_reference_resolver(
+            payload: Mapping[str, typing.Any],
+        ) -> xr.DataArray | None:
+            node_uid = payload.get("node_uid")
+            if not isinstance(node_uid, str) or not node_uid:
+                return None
+            target: int | str = node_uid
+            if loaded_targets_by_uid is None:
+                if node_uid not in self._manager._tool_graph.nodes:
+                    return None
+            else:
+                target = loaded_targets_by_uid.get(node_uid, node_uid)
+            try:
+                return _source_data_for_target(target)
+            except resolver_error_types:
+                if log_resolver_errors:
+                    logger.debug(
+                        "Could not resolve saved ToolWindow reference %s",
+                        node_uid,
+                        exc_info=True,
+                    )
+                return None
+
+        return source_parent_data, _tool_data_reference_resolver
+
     @classmethod
     def _pending_workspace_imagetool_info_text(
         cls, node: _ImageToolWrapper | _ManagedWindowNode
@@ -1100,43 +1155,21 @@ class _WorkspaceIOController:
                 ds = ds.copy(deep=False)
                 ds.attrs.update(pending_attrs)
 
-            tool_data_references = (
-                erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
-            )
-            source_parent_data: xr.DataArray | None = None
-            if node.parent_uid is not None and any(
-                reference.get("kind") == "parent_source"
-                for reference in tool_data_references.values()
-            ):
-                source_parent_data = self._workspace_tool_reference_source_data(
-                    node.parent_uid
+            source_parent_data, tool_data_reference_resolver = (
+                self._workspace_tool_restore_references(
+                    ds,
+                    parent_target=node.parent_uid,
+                    resolver_error_types=(Exception,),
+                    log_resolver_errors=True,
                 )
-
-            def _tool_data_reference_resolver(
-                payload: Mapping[str, typing.Any],
-            ) -> xr.DataArray | None:
-                node_uid = payload.get("node_uid")
-                if not isinstance(node_uid, str) or not node_uid:
-                    return None
-                referenced_node = self._manager._tool_graph.nodes.get(node_uid)
-                if referenced_node is None:
-                    return None
-                try:
-                    return self._workspace_tool_reference_source_data(node_uid)
-                except Exception:
-                    logger.debug(
-                        "Could not resolve saved ToolWindow reference %s",
-                        node_uid,
-                        exc_info=True,
-                    )
-                    return None
+            )
 
             with self._manager._workspace_load_context():
                 tool: erlab.interactive.utils.ToolWindow = (
                     erlab.interactive.utils.ToolWindow.from_dataset(
                         ds,
                         _source_parent_data=source_parent_data,
-                        _tool_data_reference_resolver=_tool_data_reference_resolver,
+                        _tool_data_reference_resolver=tool_data_reference_resolver,
                         _defer_restore_work=True,
                     )
                 )
@@ -2791,46 +2824,21 @@ class _WorkspaceIOController:
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
 
-        reference_cache: dict[int | str, xr.DataArray] = {}
-
-        def _source_data_for_target(target: int | str) -> xr.DataArray:
-            if target in reference_cache:
-                return reference_cache[target]
-            data = self._workspace_tool_reference_source_data(target)
-            reference_cache[target] = data
-            return data
-
         with _workspace_load_stage(profiler, "tool reference restore"):
-            tool_data_references = (
-                erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+            source_parent_data, tool_data_reference_resolver = (
+                self._workspace_tool_restore_references(
+                    ds,
+                    parent_target=parent_target,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
+                )
             )
-            source_parent_data: xr.DataArray | None = None
-            if parent_target is not None and any(
-                reference.get("kind") == "parent_source"
-                for reference in tool_data_references.values()
-            ):
-                source_parent_data = _source_data_for_target(parent_target)
-
-            def _tool_data_reference_resolver(
-                payload: Mapping[str, typing.Any],
-            ) -> xr.DataArray | None:
-                node_uid = payload.get("node_uid")
-                if not isinstance(node_uid, str) or not node_uid:
-                    return None
-                target: int | str = node_uid
-                if loaded_targets_by_uid is not None:
-                    target = loaded_targets_by_uid.get(node_uid, node_uid)
-                try:
-                    return _source_data_for_target(target)
-                except (KeyError, ValueError):
-                    return None
 
         with _workspace_load_stage(profiler, "tool widget restore"):
             tool: erlab.interactive.utils.ToolWindow = (
                 erlab.interactive.utils.ToolWindow.from_dataset(
                     ds,
                     _source_parent_data=source_parent_data,
-                    _tool_data_reference_resolver=_tool_data_reference_resolver,
+                    _tool_data_reference_resolver=tool_data_reference_resolver,
                     _defer_restore_work=True,
                 )
             )
@@ -2881,22 +2889,75 @@ class _WorkspaceIOController:
         if saved_uid is not None:
             loaded_targets_by_uid[saved_uid] = target
 
-    def _restore_workspace_link_groups(
-        self,
+    @staticmethod
+    def _iter_workspace_manifest_node_entries(
         manifest: Mapping[str, typing.Any] | None,
-        loaded_targets_by_uid: Mapping[str, int | str],
-    ) -> None:
+    ) -> Iterator[Mapping[str, typing.Any]]:
         if manifest is None:
             return
         nodes = manifest.get("nodes", ())
         if not isinstance(nodes, list):
             return
+        for entry in nodes:
+            if isinstance(entry, collections.abc.Mapping):
+                yield entry
 
+    @classmethod
+    def _workspace_manifest_node_entry(
+        cls,
+        manifest: Mapping[str, typing.Any] | None,
+        node_path: str | None,
+        kind: typing.Literal["imagetool", "tool"],
+    ) -> Mapping[str, typing.Any] | None:
+        if node_path is None:
+            return None
+        for entry in cls._iter_workspace_manifest_node_entries(manifest):
+            if entry.get("path") == node_path and entry.get("kind") == kind:
+                return entry
+        return None
+
+    @classmethod
+    def _workspace_manifest_direct_child_keys(
+        cls, manifest: Mapping[str, typing.Any] | None, prefix: str
+    ) -> list[str]:
+        child_keys: list[str] = []
+        for entry in cls._iter_workspace_manifest_node_entries(manifest):
+            path = entry.get("path")
+            if not isinstance(path, str) or not path.startswith(prefix):
+                continue
+            child_key = path.removeprefix(prefix)
+            if "/" not in child_key and child_key not in child_keys:
+                child_keys.append(child_key)
+        return child_keys
+
+    @classmethod
+    def _workspace_manifest_payload_entries(
+        cls, manifest: Mapping[str, typing.Any] | None
+    ) -> list[tuple[str, str, str]]:
+        entries: list[tuple[str, str, str]] = []
+        for entry in cls._iter_workspace_manifest_node_entries(manifest):
+            uid = entry.get("uid")
+            kind = entry.get("kind")
+            path = entry.get("path")
+            if (
+                isinstance(uid, str)
+                and isinstance(kind, str)
+                and kind in {"imagetool", "tool"}
+                and isinstance(path, str)
+            ):
+                entries.append((uid, kind, f"{path}/{kind}"))
+        return entries
+
+    def _restore_workspace_link_groups(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        loaded_targets_by_uid: Mapping[str, int | str],
+    ) -> None:
         group_nodes: dict[int, list[_ImageToolWrapper | _ManagedWindowNode]] = {}
         group_colors: dict[int, bool] = {}
         invalid_groups: set[int] = set()
-        for entry in nodes:
-            if not isinstance(entry, dict) or "link_group" not in entry:
+        for entry in self._iter_workspace_manifest_node_entries(manifest):
+            if "link_group" not in entry:
                 continue
             uid = entry.get("uid")
             link_group = entry.get("link_group")
@@ -2988,69 +3049,48 @@ class _WorkspaceIOController:
         if "imagetool" in node_tree:
             ds = None
             pending_imagetool_payload: tuple[str | os.PathLike[str], str] | None = None
-            if (
-                manifest is not None
-                and node_path is not None
-                and workspace_file_path is not None
-            ):
-                nodes = manifest.get("nodes", ())
-                if isinstance(nodes, list):
-                    for entry in nodes:
-                        if (
-                            isinstance(entry, dict)
-                            and entry.get("path") == node_path
-                            and entry.get("kind") == "imagetool"
-                            and entry.get("data_backing") == "dask"
+            entry = self._workspace_manifest_node_entry(
+                manifest, node_path, "imagetool"
+            )
+            if entry is not None and workspace_file_path is not None:
+                payload_path = f"{node_path}/imagetool"
+                if entry.get("data_backing") == "dask":
+                    opened = _manager_xarray.open_workspace_dataset(
+                        workspace_file_path,
+                        payload_path,
+                        chunks={},
+                    )
+                    try:
+                        opened_ds = opened.copy(deep=False)
+                        ds = _manager_workspace._restore_workspace_dataset_attrs(
+                            opened_ds
+                        )
+                    finally:
+                        opened.close()
+                elif entry.get(
+                    "data_backing"
+                ) == "memory" and not _workspace_payload_window_visible_h5py(
+                    workspace_file_path, payload_path, "itool"
+                ):
+                    try:
+                        attrs = _workspace_payload_attrs_h5py(
+                            workspace_file_path, payload_path
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed workspace payload attr read for %s",
+                            payload_path,
+                            exc_info=True,
+                        )
+                    else:
+                        if attrs is not None and not _workspace_dataset_window_visible(
+                            xr.Dataset(attrs=attrs), "itool"
                         ):
-                            opened = _manager_xarray.open_workspace_dataset(
+                            ds = xr.Dataset(attrs=attrs)
+                            pending_imagetool_payload = (
                                 workspace_file_path,
-                                f"{node_path}/imagetool",
-                                chunks={},
+                                payload_path,
                             )
-                            try:
-                                opened_ds = opened.copy(deep=False)
-                                ds = (
-                                    _manager_workspace._restore_workspace_dataset_attrs(
-                                        opened_ds
-                                    )
-                                )
-                            finally:
-                                opened.close()
-                            break
-                        if (
-                            isinstance(entry, dict)
-                            and entry.get("path") == node_path
-                            and entry.get("kind") == "imagetool"
-                            and entry.get("data_backing") == "memory"
-                        ):
-                            payload_path = f"{node_path}/imagetool"
-                            if not _workspace_payload_window_visible_h5py(
-                                workspace_file_path, payload_path, "itool"
-                            ):
-                                try:
-                                    attrs = _workspace_payload_attrs_h5py(
-                                        workspace_file_path, payload_path
-                                    )
-                                except Exception:
-                                    logger.debug(
-                                        "Failed workspace payload attr read for %s",
-                                        payload_path,
-                                        exc_info=True,
-                                    )
-                                else:
-                                    if attrs is None:
-                                        pass
-                                    elif _workspace_dataset_window_visible(
-                                        xr.Dataset(attrs=attrs), "itool"
-                                    ):
-                                        ds = None
-                                    else:
-                                        ds = xr.Dataset(attrs=attrs)
-                                        pending_imagetool_payload = (
-                                            workspace_file_path,
-                                            payload_path,
-                                        )
-                            break
             if ds is None:
                 ds = _manager_workspace._restore_workspace_dataset_attrs(
                     typing.cast("xr.DataTree", node_tree["imagetool"])
@@ -3067,41 +3107,29 @@ class _WorkspaceIOController:
         elif "tool" in node_tree:
             ds = None
             pending_tool_payload: tuple[str | os.PathLike[str], str] | None = None
-            if (
-                manifest is not None
-                and node_path is not None
-                and workspace_file_path is not None
-            ):
-                nodes = manifest.get("nodes", ())
-                if isinstance(nodes, list):
-                    for entry in nodes:
-                        if (
-                            isinstance(entry, dict)
-                            and entry.get("path") == node_path
-                            and entry.get("kind") == "tool"
-                        ):
-                            payload_path = f"{node_path}/tool"
-                            if not _workspace_payload_window_visible_h5py(
-                                workspace_file_path, payload_path, "tool"
-                            ):
-                                try:
-                                    attrs = _workspace_payload_attrs_h5py(
-                                        workspace_file_path, payload_path
-                                    )
-                                except Exception:
-                                    logger.debug(
-                                        "Failed workspace tool attr read for %s",
-                                        payload_path,
-                                        exc_info=True,
-                                    )
-                                else:
-                                    if attrs is not None:
-                                        ds = xr.Dataset(attrs=attrs)
-                                        pending_tool_payload = (
-                                            workspace_file_path,
-                                            payload_path,
-                                        )
-                            break
+            entry = self._workspace_manifest_node_entry(manifest, node_path, "tool")
+            if entry is not None and workspace_file_path is not None:
+                payload_path = f"{node_path}/tool"
+                if not _workspace_payload_window_visible_h5py(
+                    workspace_file_path, payload_path, "tool"
+                ):
+                    try:
+                        attrs = _workspace_payload_attrs_h5py(
+                            workspace_file_path, payload_path
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed workspace tool attr read for %s",
+                            payload_path,
+                            exc_info=True,
+                        )
+                    else:
+                        if attrs is not None:
+                            ds = xr.Dataset(attrs=attrs)
+                            pending_tool_payload = (
+                                workspace_file_path,
+                                payload_path,
+                            )
             if ds is None:
                 ds = _manager_workspace._restore_workspace_dataset_attrs(
                     typing.cast("xr.DataTree", node_tree["tool"])
@@ -3121,18 +3149,9 @@ class _WorkspaceIOController:
             childtools = typing.cast("xr.DataTree", node_tree["childtools"])
             child_keys: list[str] = []
             if manifest is not None and node_path is not None:
-                nodes = manifest.get("nodes", ())
-                prefix = f"{node_path}/childtools/"
-                if isinstance(nodes, list):
-                    for entry in nodes:
-                        if not isinstance(entry, dict):
-                            continue
-                        path = entry.get("path")
-                        if not isinstance(path, str) or not path.startswith(prefix):
-                            continue
-                        child_key = path.removeprefix(prefix)
-                        if "/" not in child_key and child_key not in child_keys:
-                            child_keys.append(child_key)
+                child_keys = self._workspace_manifest_direct_child_keys(
+                    manifest, f"{node_path}/childtools/"
+                )
             child_keys.extend(
                 str(key) for key in childtools if str(key) not in child_keys
             )
@@ -3176,7 +3195,7 @@ class _WorkspaceIOController:
         loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int | str | None:
         try:
-            return self._manager._load_workspace_node(
+            return self._load_workspace_node(
                 node_tree,
                 parent_target=parent_target,
                 selection_item=selection_item,
@@ -3230,19 +3249,7 @@ class _WorkspaceIOController:
         if "figures" not in tree:
             return 0
         figures = typing.cast("xr.DataTree", tree["figures"])
-        figure_keys: list[str] = []
-        if manifest is not None:
-            nodes = manifest.get("nodes", ())
-            if isinstance(nodes, list):
-                for entry in nodes:
-                    if not isinstance(entry, dict):
-                        continue
-                    path = entry.get("path")
-                    if not isinstance(path, str) or not path.startswith("figures/"):
-                        continue
-                    figure_key = path.removeprefix("figures/")
-                    if "/" not in figure_key and figure_key not in figure_keys:
-                        figure_keys.append(figure_key)
+        figure_keys = self._workspace_manifest_direct_child_keys(manifest, "figures/")
         figure_keys.extend(str(key) for key in figures if str(key) not in figure_keys)
 
         loaded_count = 0
@@ -3287,10 +3294,8 @@ class _WorkspaceIOController:
         if not isinstance(nodes, list) or not isinstance(root_order, list):
             raise TypeError("Workspace manifest is missing node ordering")
 
-        entries_by_path: dict[str, dict[str, typing.Any]] = {}
-        for entry in nodes:
-            if not isinstance(entry, dict):
-                continue
+        entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
+        for entry in self._iter_workspace_manifest_node_entries(manifest):
             path = entry.get("path")
             kind = entry.get("kind")
             if not isinstance(path, str) or kind not in {"imagetool", "tool"}:
@@ -3550,7 +3555,7 @@ class _WorkspaceIOController:
             self._manager.remove_all_tools()
             self._manager._drain_workspace_restore_events()
             self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
-            self._manager._load_workspace_figures(backup_tree)
+            self._load_workspace_figures(backup_tree)
             self._manager._drain_workspace_restore_events()
         self._restore_workspace_state_snapshot(snapshot)
 
@@ -3568,7 +3573,7 @@ class _WorkspaceIOController:
                 schema_version == _manager_workspace._current_workspace_schema_version()
                 and manifest is not None
             ):
-                self._manager._from_h5py_workspace_file(
+                self._from_h5py_workspace_file(
                     path,
                     manifest,
                     replace=False,
@@ -3576,7 +3581,7 @@ class _WorkspaceIOController:
                 )
             else:
                 tree = _manager_xarray.open_workspace_datatree(path, chunks=None)
-                self._manager._from_datatree(
+                self._from_datatree(
                     tree,
                     replace=False,
                     mark_dirty=False,
@@ -3692,7 +3697,7 @@ class _WorkspaceIOController:
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
                         )
-                        loaded_count += self._manager._load_workspace_figures(
+                        loaded_count += self._load_workspace_figures(
                             tree,
                             root_item=root_item,
                             manifest=manifest,
@@ -4329,22 +4334,12 @@ class _WorkspaceIOController:
         ):
             return None
 
-        identities: dict[tuple[str, str], str] = {}
-        nodes = manifest.get("nodes", ())
-        if isinstance(nodes, list):
-            for entry in nodes:
-                if not isinstance(entry, dict):
-                    continue
-                uid = entry.get("uid")
-                kind = entry.get("kind")
-                path = entry.get("path")
-                if (
-                    isinstance(uid, str)
-                    and isinstance(kind, str)
-                    and kind in {"imagetool", "tool"}
-                    and isinstance(path, str)
-                ):
-                    identities[(uid, kind)] = f"{path}/{kind}"
+        identities = {
+            (uid, kind): payload_path
+            for uid, kind, payload_path in self._workspace_manifest_payload_entries(
+                manifest
+            )
+        }
         if not identities:
             return None
         return workspace_path, identities
@@ -4355,24 +4350,7 @@ class _WorkspaceIOController:
         manifest = _manager_workspace._workspace_manifest_from_attrs(
             typing.cast("Mapping[Hashable, typing.Any]", root_attrs)
         )
-        nodes = manifest.get("nodes", ())
-        if not isinstance(nodes, list):
-            return []
-        entries: list[tuple[str, str, str]] = []
-        for entry in nodes:
-            if not isinstance(entry, dict):
-                continue
-            uid = entry.get("uid")
-            kind = entry.get("kind")
-            path = entry.get("path")
-            if (
-                isinstance(uid, str)
-                and isinstance(kind, str)
-                and kind in {"imagetool", "tool"}
-                and isinstance(path, str)
-            ):
-                entries.append((uid, kind, f"{path}/{kind}"))
-        return entries
+        return self._workspace_manifest_payload_entries(manifest)
 
     def _workspace_full_save_dirty_payload_uids(self) -> set[str]:
         state = self._manager._workspace_state
@@ -4583,20 +4561,15 @@ class _WorkspaceIOController:
                 roots.append(uid)
         return roots
 
-    @staticmethod
+    @classmethod
     def _workspace_manifest_node_uids(
-        root_attrs: Mapping[str, typing.Any],
+        cls, root_attrs: Mapping[str, typing.Any]
     ) -> frozenset[str]:
         manifest = _manager_workspace._workspace_manifest_from_attrs(
             typing.cast("Mapping[Hashable, typing.Any]", root_attrs)
         )
-        nodes = manifest.get("nodes", ())
-        if not isinstance(nodes, list):
-            return frozenset()
         uids: set[str] = set()
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
+        for node in cls._iter_workspace_manifest_node_entries(manifest):
             uid = node.get("uid")
             if uid is not None:
                 uids.add(str(uid))
@@ -5097,23 +5070,34 @@ class _WorkspaceIOController:
         )
         return node_path, constructor
 
-    def _pending_workspace_imagetool_attrs(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
+    @staticmethod
+    def _pending_workspace_node_attrs(
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        attrs: Mapping[str, typing.Any] | None,
+        *,
+        kind: typing.Literal["imagetool", "tool"],
     ) -> dict[str, typing.Any]:
-        attrs = node.pending_workspace_payload_attrs
         if attrs is None:
             attrs = {}
         attrs = dict(attrs)
-        attrs["itool_name"] = node.name
-        attrs["itool_title"] = node.name
         attrs["manager_node_uid"] = node.uid
-        attrs["manager_node_kind"] = "imagetool"
+        attrs["manager_node_kind"] = kind
         attrs["manager_node_snapshot_token"] = node.snapshot_token
         attrs["manager_node_added_at"] = node.added_time_iso
         if node.note:
             attrs["manager_node_note"] = node.note
         else:
             attrs.pop("manager_node_note", None)
+        return attrs
+
+    def _pending_workspace_imagetool_attrs(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> dict[str, typing.Any]:
+        attrs = self._pending_workspace_node_attrs(
+            node, node.pending_workspace_payload_attrs, kind="imagetool"
+        )
+        attrs["itool_name"] = node.name
+        attrs["itool_title"] = node.name
 
         provenance_spec = node.provenance_spec
         if provenance_spec is None:
@@ -5187,10 +5171,9 @@ class _WorkspaceIOController:
     def _pending_workspace_tool_attrs(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> dict[str, typing.Any]:
-        attrs = node.pending_workspace_payload_attrs
-        if attrs is None:
-            attrs = {}
-        attrs = dict(attrs)
+        attrs = self._pending_workspace_node_attrs(
+            node, node.pending_workspace_payload_attrs, kind="tool"
+        )
         old_display_name = self._decode_workspace_attr_text(
             attrs.get("tool_display_name")
         )
@@ -5200,14 +5183,6 @@ class _WorkspaceIOController:
             attrs["tool_title"] = old_title[: -len(old_display_name)] + node.name
         else:
             attrs["tool_title"] = node.name
-        attrs["manager_node_uid"] = node.uid
-        attrs["manager_node_kind"] = "tool"
-        attrs["manager_node_snapshot_token"] = node.snapshot_token
-        attrs["manager_node_added_at"] = node.added_time_iso
-        if node.note:
-            attrs["manager_node_note"] = node.note
-        else:
-            attrs.pop("manager_node_note", None)
 
         source_spec = node.source_spec
         if source_spec is None:
@@ -5541,22 +5516,12 @@ class _WorkspaceIOController:
         ):
             return None, ()
 
-        identities: dict[tuple[str, str], str] = {}
-        nodes = manifest.get("nodes", ())
-        if isinstance(nodes, list):
-            for entry in nodes:
-                if not isinstance(entry, dict):
-                    continue
-                uid = entry.get("uid")
-                kind = entry.get("kind")
-                path = entry.get("path")
-                if (
-                    isinstance(uid, str)
-                    and isinstance(kind, str)
-                    and kind in {"imagetool", "tool"}
-                    and isinstance(path, str)
-                ):
-                    identities[(uid, kind)] = f"{path}/{kind}"
+        identities = {
+            (uid, kind): payload_path
+            for uid, kind, payload_path in self._workspace_manifest_payload_entries(
+                manifest
+            )
+        }
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
         context = contextlib.nullcontext(None)
         if require_matching_compression and compression_mode is not None:
@@ -6338,7 +6303,7 @@ class _WorkspaceIOController:
                             if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                                 return self._finish_workspace_file_load(False)
                             selected_paths = dialog.selected_paths()
-                        loaded = self._manager._from_h5py_workspace_file(
+                        loaded = self._from_h5py_workspace_file(
                             access.path,
                             manifest,
                             replace=replace,
@@ -6386,7 +6351,7 @@ class _WorkspaceIOController:
                             tree.attrs
                         )
                     )
-                loaded = self._manager._from_datatree(
+                loaded = self._from_datatree(
                     tree,
                     replace=replace,
                     mark_dirty=mark_dirty,

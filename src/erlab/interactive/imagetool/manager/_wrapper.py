@@ -36,7 +36,7 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
     import os
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -351,7 +351,11 @@ class _ManagedWindowNode(QtCore.QObject):
             | None
         ) = None
         self._pending_workspace_preview_cache: (
-            tuple[tuple[pathlib.Path, str], tuple[float, QtGui.QPixmap] | None] | None
+            tuple[
+                tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
+                tuple[float, QtGui.QPixmap] | None,
+            ]
+            | None
         ) = None
         self._workspace_link_key: str | None = None
         self._workspace_link_colors: bool = True
@@ -647,57 +651,52 @@ class _ManagedWindowNode(QtCore.QObject):
             return True
         return self.manager._materialize_pending_workspace_payload(self)
 
-    def pending_workspace_preview_image(self) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self.pending_workspace_memory_payload
+    def _pending_workspace_preview_for_kind(
+        self,
+        kind: typing.Literal["imagetool", "tool"],
+        renderer: Callable[[_ManagedWindowNode], tuple[float, QtGui.QPixmap] | None]
+        | None = None,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        pending = (
+            self.pending_workspace_memory_payload
+            if kind == "imagetool"
+            else self.pending_workspace_tool_payload
+        )
         if pending is None:
             return None
+        cache_key = (kind, pending)
         if (
             self._pending_workspace_preview_cache is not None
-            and self._pending_workspace_preview_cache[0] == pending
+            and self._pending_workspace_preview_cache[0] == cache_key
         ):
             return self._pending_workspace_preview_cache[1]
-        preview = self.manager._pending_workspace_imagetool_preview_image(self)
-        self._pending_workspace_preview_cache = (pending, preview)
+        if renderer is None:
+            return None
+        preview = renderer(self)
+        self._pending_workspace_preview_cache = (cache_key, preview)
         return preview
+
+    def pending_workspace_preview_image(self) -> tuple[float, QtGui.QPixmap] | None:
+        return self._pending_workspace_preview_for_kind(
+            "imagetool", self.manager._pending_workspace_imagetool_preview_image
+        )
 
     def cached_pending_workspace_preview_image(
         self,
     ) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self.pending_workspace_memory_payload
-        if (
-            pending is None
-            or self._pending_workspace_preview_cache is None
-            or self._pending_workspace_preview_cache[0] != pending
-        ):
-            return None
-        return self._pending_workspace_preview_cache[1]
+        return self._pending_workspace_preview_for_kind("imagetool")
 
     def pending_workspace_tool_preview_image(
         self,
     ) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self.pending_workspace_tool_payload
-        if pending is None:
-            return None
-        if (
-            self._pending_workspace_preview_cache is not None
-            and self._pending_workspace_preview_cache[0] == pending
-        ):
-            return self._pending_workspace_preview_cache[1]
-        preview = self.manager._pending_workspace_tool_preview_image(self)
-        self._pending_workspace_preview_cache = (pending, preview)
-        return preview
+        return self._pending_workspace_preview_for_kind(
+            "tool", self.manager._pending_workspace_tool_preview_image
+        )
 
     def cached_pending_workspace_tool_preview_image(
         self,
     ) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self.pending_workspace_tool_payload
-        if (
-            pending is None
-            or self._pending_workspace_preview_cache is None
-            or self._pending_workspace_preview_cache[0] != pending
-        ):
-            return None
-        return self._pending_workspace_preview_cache[1]
+        return self._pending_workspace_preview_for_kind("tool")
 
     @property
     def workspace_link_key(self) -> str | None:
