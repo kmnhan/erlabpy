@@ -108,6 +108,7 @@ _TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
     contextvars.ContextVar("_TOOL_WINDOW_RESTORE_DEFER", default=None)
 )
+_WAIT_DIALOG_DEPTH = 0
 
 
 def _tool_window_restore_in_progress() -> bool:
@@ -616,8 +617,15 @@ class _WaitDialog(QtWidgets.QDialog):
         self.adjustSize()
 
 
+class _SuppressedWaitDialog:
+    def set_message(self, message: str) -> None:
+        del message
+
+
 @contextlib.contextmanager
-def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog]:
+def wait_dialog(
+    parent: QtWidgets.QWidget, message: str
+) -> Iterator[_WaitDialog | _SuppressedWaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -636,13 +644,24 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
     >>>    some_long_running_code()
 
     """
+    global _WAIT_DIALOG_DEPTH
+    if _WAIT_DIALOG_DEPTH > 0:
+        yield _SuppressedWaitDialog()
+        return
+
     dialog = _WaitDialog(parent, message)
+    _WAIT_DIALOG_DEPTH += 1
     try:
         dialog.open()
         yield dialog
     finally:
-        dialog.close()
-        dialog.deleteLater()
+        try:
+            try:
+                dialog.close()
+            finally:
+                dialog.deleteLater()
+        finally:
+            _WAIT_DIALOG_DEPTH -= 1
 
 
 def _format_traceback(exc_text: str) -> str:

@@ -870,6 +870,50 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
+def test_wait_dialog_suppresses_nested_dialog(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+
+    with erlab.interactive.utils.wait_dialog(parent, "Outer") as outer:
+        assert isinstance(outer, erlab.interactive.utils._WaitDialog)
+        outer.set_message("Outer updated")
+
+        with erlab.interactive.utils.wait_dialog(parent, "Inner") as inner:
+            assert not isinstance(inner, QtWidgets.QDialog)
+            inner.set_message("Inner ignored")
+            assert outer._label.text() == "Outer updated"
+
+
+def test_wait_dialog_constructor_failure_does_not_suppress_later_dialogs(
+    qtbot, monkeypatch
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
+
+    class BrokenWaitDialog:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("dialog construction failed")
+
+    original_wait_dialog = erlab.interactive.utils._WaitDialog
+    monkeypatch.setattr(erlab.interactive.utils, "_WaitDialog", BrokenWaitDialog)
+    try:
+        with (
+            pytest.raises(RuntimeError, match="dialog construction failed"),
+            erlab.interactive.utils.wait_dialog(parent, "Broken"),
+        ):
+            pass
+    finally:
+        monkeypatch.setattr(
+            erlab.interactive.utils, "_WaitDialog", original_wait_dialog
+        )
+
+    current_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
+    assert current_depth == original_depth
+    with erlab.interactive.utils.wait_dialog(parent, "Outer") as dialog:
+        assert isinstance(dialog, erlab.interactive.utils._WaitDialog)
+
+
 def test_single_shot_ignores_pyside_deleted_wrapper_error(qtbot) -> None:
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)
