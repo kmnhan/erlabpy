@@ -1112,7 +1112,7 @@ def test_batch_action_counts_pending_memory_imagetools_without_materializing(
 
         monkeypatch.setattr(
             manager,
-            "_materialize_pending_workspace_memory_payload",
+            "_materialize_pending_workspace_payload",
             _fail_materialize_pending_payload,
         )
 

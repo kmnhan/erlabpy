@@ -1090,7 +1090,7 @@ def _fake_edit_node(
         displayed_provenance_spec=spec,
         displayed_source_spec=source_display_spec,
         source_auto_update=True,
-        materialize_pending_workspace_memory_payload=lambda: True,
+        materialize_pending_workspace_payload=lambda: True,
         slicer_area=types.SimpleNamespace(
             _accepted_filter_provenance_operation=active_filter
         ),
@@ -11599,7 +11599,7 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
         assert node.imagetool is None
 
         materialize_calls = 0
-        materialize = manager._materialize_pending_workspace_memory_payload
+        materialize = manager._materialize_pending_workspace_payload
 
         def _record_materialize(
             target: manager_wrapper._ImageToolWrapper
@@ -11611,7 +11611,7 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
 
         monkeypatch.setattr(
             manager,
-            "_materialize_pending_workspace_memory_payload",
+            "_materialize_pending_workspace_payload",
             _record_materialize,
         )
 
