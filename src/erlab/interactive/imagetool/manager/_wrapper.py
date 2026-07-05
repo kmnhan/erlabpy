@@ -33,6 +33,7 @@ from erlab.interactive.imagetool._load_source import (
     _LoadSourceDetails,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 
 if typing.TYPE_CHECKING:
     import os
@@ -157,6 +158,70 @@ def _preview_from_imagetool(
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
 
 
+def _preview_curve_from_imagetool(
+    imagetool: ImageTool | None,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if imagetool is None:
+        return None
+    slicer_area = imagetool.slicer_area
+    slicer_area._update_if_delayed()
+    try:
+        main_image = slicer_area.main_image
+    except RuntimeError:
+        return None
+
+    if not erlab.interactive.utils.qt_is_valid(main_image):
+        return None
+    if not main_image.slicer_data_items:
+        return None
+
+    data_item = main_image.slicer_data_items[0]
+    if not erlab.interactive.utils.qt_is_valid(data_item):
+        return None
+
+    if main_image.is_image:
+        image = getattr(data_item, "image", None)
+        if image is None:
+            return None
+        image_values = np.asarray(image)
+        if image_values.ndim != 2 or image_values.size == 0:
+            return None
+        non_singleton_axes = tuple(
+            axis for axis, size in enumerate(image_values.shape) if size != 1
+        )
+        if len(non_singleton_axes) != 1:
+            return None
+        y_values = image_values.reshape(-1)
+        image_axis = non_singleton_axes[0]
+        axis_dims = (
+            tuple(reversed(main_image.axis_dims))
+            if 0 in main_image.display_axis
+            else main_image.axis_dims
+        )
+        if image_axis >= len(axis_dims):
+            return _curve_preview_data(
+                np.arange(y_values.size, dtype=np.float64), y_values
+            )
+        dim = axis_dims[image_axis]
+        x_values = None
+        if dim is not None:
+            with contextlib.suppress(TypeError, ValueError, RuntimeError):
+                coord_values = slicer_area.array_slicer.values_of_dim(dim)
+                if len(coord_values) == y_values.size:
+                    x_values = coord_values
+        if x_values is None:
+            x_values = np.arange(y_values.size, dtype=np.float64)
+        return _curve_preview_data(x_values, y_values)
+
+    try:
+        x_values, y_values = data_item.getData()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    if x_values is None or y_values is None:
+        return None
+    return _curve_preview_data(x_values, y_values)
+
+
 def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
     fallback = (float("NaN"), QtGui.QPixmap())
     dynamic_node = typing.cast("typing.Any", node)
@@ -184,6 +249,19 @@ def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
         )
     except (AttributeError, RuntimeError, ValueError):
         return fallback
+
+
+def _preview_curve_for_node(node: object) -> tuple[np.ndarray, np.ndarray] | None:
+    dynamic_node = typing.cast("typing.Any", node)
+    if getattr(dynamic_node, "pending_workspace_memory_payload", None) is not None:
+        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+            return dynamic_node.pending_workspace_preview_curve()
+        return None
+    try:
+        imagetool = dynamic_node.imagetool
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+    return _preview_curve_from_imagetool(typing.cast("ImageTool | None", imagetool))
 
 
 @dataclass(frozen=True)
@@ -354,6 +432,13 @@ class _ManagedWindowNode(QtCore.QObject):
             tuple[
                 tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
                 tuple[float, QtGui.QPixmap] | None,
+            ]
+            | None
+        ) = None
+        self._pending_workspace_curve_cache: (
+            tuple[
+                tuple[typing.Literal["imagetool"], tuple[pathlib.Path, str]],
+                tuple[np.ndarray, np.ndarray] | None,
             ]
             | None
         ) = None
@@ -607,6 +692,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_payload_attrs = dict(attrs)
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
 
     def set_pending_workspace_payload(
         self,
@@ -625,6 +711,7 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
 
     def set_pending_workspace_memory_payload(
         self,
@@ -645,6 +732,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_payload_attrs = None
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
 
     def materialize_pending_workspace_payload(self) -> bool:
         if self._pending_workspace_payload is None:
@@ -685,6 +773,23 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
     ) -> tuple[float, QtGui.QPixmap] | None:
         return self._pending_workspace_preview_for_kind("imagetool")
+
+    def pending_workspace_preview_curve(self) -> tuple[np.ndarray, np.ndarray] | None:
+        pending = self.pending_workspace_memory_payload
+        if pending is None:
+            return None
+        cache_key: tuple[typing.Literal["imagetool"], tuple[pathlib.Path, str]] = (
+            "imagetool",
+            pending,
+        )
+        if (
+            self._pending_workspace_curve_cache is not None
+            and self._pending_workspace_curve_cache[0] == cache_key
+        ):
+            return self._pending_workspace_curve_cache[1]
+        preview = self.manager._pending_workspace_imagetool_preview_curve(self)
+        self._pending_workspace_curve_cache = (cache_key, preview)
+        return preview
 
     def pending_workspace_tool_preview_image(
         self,
@@ -747,6 +852,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._name = name
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
         self.manager.tree_view.refresh(self.uid)
         self.manager._mark_node_state_dirty(self.uid)
 

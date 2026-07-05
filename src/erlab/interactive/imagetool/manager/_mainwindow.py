@@ -3777,6 +3777,13 @@ class ImageToolManager(_ImageToolManagerBase):
             node
         )
 
+    def _pending_workspace_imagetool_preview_curve(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        return self._workspace_controller._pending_workspace_imagetool_preview_curve(
+            node
+        )
+
     def _pending_workspace_tool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> tuple[float, QtGui.QPixmap] | None:

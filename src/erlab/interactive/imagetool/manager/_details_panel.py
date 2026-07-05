@@ -29,6 +29,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
     _MetadataField,
+    _preview_curve_for_node,
     _preview_image_for_node,
 )
 
@@ -1127,11 +1128,19 @@ class _DetailsPanelController:
 
                 if node.is_imagetool:
                     if node.pending_workspace_memory_payload is not None:
-                        pending_preview = node.pending_workspace_preview_image()
-                        if pending_preview is None:
+                        pending_curve = node.pending_workspace_preview_curve()
+                        if pending_curve is not None:
+                            self._manager.preview_widget.setCurve(*pending_curve)
+                        elif (
+                            pending_preview := node.pending_workspace_preview_image()
+                        ) is None:
                             self._manager.preview_widget.setLoadPrompt()
                         else:
                             self._manager.preview_widget.setPixmap(pending_preview[1])
+                        self._manager.preview_widget.setVisible(True)
+                        return
+                    if (curve := _preview_curve_for_node(node)) is not None:
+                        self._manager.preview_widget.setCurve(*curve)
                         self._manager.preview_widget.setVisible(True)
                         return
                     self._manager.preview_widget.setPixmap(

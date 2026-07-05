@@ -43,6 +43,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME,
     _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS,
+    _curve_preview_data,
     _manager_settings,
     _show_workspace_file_lock_error,
     _strip_workspace_modified_placeholder,
@@ -514,6 +515,13 @@ class _WorkspaceIOController:
 
         return source_parent_data, _tool_data_reference_resolver
 
+    @staticmethod
+    def _pending_workspace_data_with_loaded_coords(data: xr.DataArray) -> xr.DataArray:
+        loaded_coords = {
+            key: coord.copy(deep=False).load() for key, coord in data.coords.items()
+        }
+        return data.copy(deep=False).assign_coords(loaded_coords)
+
     @classmethod
     def _pending_workspace_imagetool_info_text(
         cls, node: _ImageToolWrapper | _ManagedWindowNode
@@ -532,12 +540,25 @@ class _WorkspaceIOController:
                     return None
                 name = None if node.name == "" else node.name
                 data = ds[_ITOOL_DATA_NAME].rename(name)
-                text = erlab.utils.formatting.format_darr_html(
-                    data,
-                    show_size=True,
-                    load_values=False,
-                    additional_info=[f"Added {node.added_time_display}"],
-                )
+                additional_info = [f"Added {node.added_time_display}"]
+                try:
+                    metadata_data = cls._pending_workspace_data_with_loaded_coords(data)
+                    text = erlab.utils.formatting.format_darr_html(
+                        metadata_data,
+                        show_size=True,
+                        additional_info=additional_info,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to load coordinates for pending workspace metadata",
+                        exc_info=True,
+                    )
+                    text = erlab.utils.formatting.format_darr_html(
+                        data,
+                        show_size=True,
+                        load_values=False,
+                        additional_info=additional_info,
+                    )
                 return erlab.interactive.utils._apply_qt_accent_color(text)
             finally:
                 ds.close()
@@ -691,6 +712,148 @@ class _WorkspaceIOController:
             bins.append(axis_bin)
         return tuple(indices), tuple(bins), tuple(axis_bin != 1 for axis_bin in bins)
 
+    @staticmethod
+    def _pending_preview_dataset_dims(
+        dataset: h5py.Dataset, state_dims: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], int | None] | None:
+        stack_axis: int | None = None
+        expected_dims = state_dims
+        if len(state_dims) != dataset.ndim:
+            if (
+                dataset.ndim == 1
+                and len(state_dims) == 2
+                and state_dims.count("stack_dim") == 1
+            ):
+                stack_axis = state_dims.index("stack_dim")
+                expected_dims = tuple(dim for dim in state_dims if dim != "stack_dim")
+            else:
+                return None
+
+        dataset_dims: list[str] = []
+        used_dims: set[str] = set()
+        for axis, dim in enumerate(dataset.dims):
+            dim_keys = tuple(str(key) for key in dim)
+            candidates: list[str] = []
+            for expected_dim in expected_dims:
+                if expected_dim in used_dims:
+                    continue
+                if expected_dim in dim_keys or (
+                    expected_dim.endswith("_idx")
+                    and expected_dim.removesuffix("_idx") in dim_keys
+                ):
+                    candidates.append(expected_dim)
+            candidates = list(dict.fromkeys(candidates))
+            positional_dim = expected_dims[axis]
+            if positional_dim in candidates:
+                dataset_dim = positional_dim
+            elif len(candidates) == 1:
+                dataset_dim = candidates[0]
+            else:
+                return None
+            dataset_dims.append(dataset_dim)
+            used_dims.add(dataset_dim)
+        stored_dims = tuple(dataset_dims)
+        if set(expected_dims) != set(stored_dims):
+            return None
+        return stored_dims, stack_axis
+
+    def _pending_workspace_imagetool_preview_curve(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        pending = node.pending_workspace_memory_payload
+        if pending is None:
+            return None
+        attrs = node.pending_workspace_payload_attrs
+        workspace_path, payload_path = pending
+        try:
+            with (
+                _manager_xarray._workspace_file_lock(workspace_path),
+                h5py.File(workspace_path, "r") as h5_file,
+            ):
+                group = h5_file.get(payload_path.strip("/"))
+                if not isinstance(group, h5py.Group):
+                    return None
+                dataset = group.get(_ITOOL_DATA_NAME)
+                if not isinstance(dataset, h5py.Dataset) or dataset.ndim != 1:
+                    return None
+                if dataset.dtype.kind not in "biuf":
+                    return None
+
+                group_attrs = (
+                    _manager_workspace._h5py_attrs_to_dict(group.attrs)
+                    if attrs is None
+                    else attrs
+                )
+                state = group_attrs.get("itool_state")
+                if isinstance(state, bytes):
+                    state = state.decode()
+                if isinstance(state, str):
+                    state = json.loads(state)
+                if not isinstance(state, collections.abc.Mapping):
+                    return None
+                slice_state = state.get("slice")
+                if not isinstance(slice_state, collections.abc.Mapping):
+                    return None
+                raw_state_dims = slice_state.get("dims")
+                if not isinstance(raw_state_dims, (list, tuple)):
+                    return None
+                state_dims = tuple(str(dim) for dim in raw_state_dims)
+                resolved_dims = self._pending_preview_dataset_dims(dataset, state_dims)
+                if resolved_dims is None:
+                    return None
+                stored_dims, promoted_stack_axis = resolved_dims
+                if promoted_stack_axis is None:
+                    return None
+
+                data_nbytes = int(dataset.size) * int(np.dtype(dataset.dtype).itemsize)
+                if data_nbytes > _PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES:
+                    return None
+                y_values = np.asarray(dataset[()]).reshape(-1)
+
+                x_values: np.ndarray | None = None
+                coord_dataset = None
+                stored_dim = stored_dims[0]
+                coord_names = (stored_dim,)
+                if stored_dim.endswith("_idx"):
+                    coord_names = (stored_dim, stored_dim.removesuffix("_idx"))
+                for coord_name in coord_names:
+                    with contextlib.suppress(KeyError, TypeError, RuntimeError):
+                        maybe_coord = dataset.dims[0][coord_name]
+                        if isinstance(maybe_coord, h5py.Dataset):
+                            coord_dataset = maybe_coord
+                            break
+                if coord_dataset is None:
+                    for coord_name in coord_names:
+                        maybe_coord = group.get(coord_name)
+                        if isinstance(maybe_coord, h5py.Dataset):
+                            coord_dataset = maybe_coord
+                            break
+                if (
+                    coord_dataset is not None
+                    and coord_dataset.shape == dataset.shape
+                    and coord_dataset.dtype.kind in "biuf"
+                ):
+                    coord_nbytes = int(coord_dataset.size) * int(
+                        np.dtype(coord_dataset.dtype).itemsize
+                    )
+                    if (
+                        data_nbytes + coord_nbytes
+                        <= _PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES
+                    ):
+                        x_values = np.asarray(coord_dataset[()]).reshape(-1)
+                if x_values is None:
+                    x_values = np.arange(y_values.size, dtype=np.float64)
+                return _curve_preview_data(x_values, y_values)
+        except Exception:
+            logger.debug(
+                "Failed to render curve preview for pending workspace payload "
+                "%s from %s",
+                payload_path,
+                workspace_path,
+                exc_info=True,
+            )
+            return None
+
     def _pending_workspace_imagetool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> tuple[float, QtGui.QPixmap] | None:
@@ -710,7 +873,7 @@ class _WorkspaceIOController:
                 dataset = group.get(_ITOOL_DATA_NAME)
                 if not isinstance(dataset, h5py.Dataset):
                     return None
-                if dataset.ndim < 2 or dataset.dtype.kind not in "biuf":
+                if dataset.dtype.kind not in "biuf":
                     return None
 
                 group_attrs = (
@@ -726,14 +889,6 @@ class _WorkspaceIOController:
                 if not isinstance(state, collections.abc.Mapping):
                     return None
 
-                dataset_dims: list[str] = []
-                for dim in dataset.dims:
-                    dim_keys = list(dim.keys())
-                    if len(dim_keys) != 1:
-                        return None
-                    dataset_dims.append(str(dim_keys[0]))
-                stored_dims = tuple(dataset_dims)
-
                 slice_state = state.get("slice")
                 if not isinstance(slice_state, collections.abc.Mapping):
                     return None
@@ -741,12 +896,16 @@ class _WorkspaceIOController:
                 if not isinstance(raw_state_dims, (list, tuple)):
                     return None
                 state_dims = tuple(str(dim) for dim in raw_state_dims)
-                if len(state_dims) != len(stored_dims) or set(state_dims) != set(
-                    stored_dims
-                ):
+                resolved_dims = self._pending_preview_dataset_dims(dataset, state_dims)
+                if resolved_dims is None:
+                    return None
+                stored_dims, promoted_stack_axis = resolved_dims
+                if promoted_stack_axis is not None:
                     return None
 
                 stored_shape = tuple(int(size) for size in dataset.shape)
+                if len(stored_shape) < 2:
+                    return None
                 slicer_shape = tuple(
                     stored_shape[stored_dims.index(dim)] for dim in state_dims
                 )
@@ -756,7 +915,8 @@ class _WorkspaceIOController:
                 indices, bins, binned = axis_state
                 hidden_axes = (
                     erlab.interactive.imagetool.slicer._hidden_axes_for_display(
-                        len(slicer_shape), _PENDING_WORKSPACE_PREVIEW_DISPLAY_AXES
+                        len(slicer_shape),
+                        _PENDING_WORKSPACE_PREVIEW_DISPLAY_AXES,
                     )
                 )
                 slicer_selection, reduction_axes, _any_binned, _all_binned = (
