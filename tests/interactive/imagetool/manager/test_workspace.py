@@ -6418,7 +6418,7 @@ def test_manager_load_workspace_figures_counts_loaded_and_skipped(
 
     with manager_context() as manager:
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "_load_workspace_node_or_warn",
             _fake_load_workspace_node_or_warn,
         )
@@ -6569,7 +6569,9 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
             raise RuntimeError("restore failed")
 
         monkeypatch.setattr(manager, "_load_workspace_imagetool_dataset", _raise_load)
-        monkeypatch.setattr(manager, "_restore_replaced_workspace", _raise_restore)
+        monkeypatch.setattr(
+            manager._workspace_controller, "_restore_replaced_workspace", _raise_restore
+        )
 
         with (
             caplog.at_level(logging.ERROR, logger=manager_workspace_io.logger.name),
@@ -7925,7 +7927,7 @@ def test_workspace_controller_helper_branch_edges(
             )
             manager._workspace_state.dirty_data.update({"parent", "child", "sibling"})
             with monkeypatch.context() as patch:
-                patch.setattr(manager, "_workspace_node_path", lambda uid: uid)
+                patch.setattr(controller, "_workspace_node_path", lambda uid: uid)
                 assert controller._workspace_highest_dirty_data_roots() == [
                     "parent",
                     "sibling",
@@ -8540,9 +8542,9 @@ def test_manager_open_recent_menu_state_labels_and_clear(
     with manager_context() as manager:
         assert not manager.open_recent_menu.isEnabled()
 
-        manager._record_recent_workspace(workspace_a)
-        manager._record_recent_workspace(workspace_b)
-        manager._populate_open_recent_menu()
+        manager._workspace_controller._record_recent_workspace(workspace_a)
+        manager._workspace_controller._record_recent_workspace(workspace_b)
+        manager._workspace_controller._populate_open_recent_menu()
 
         assert manager.open_recent_menu.isEnabled()
         actions = action_map_by_object_name(manager.open_recent_menu)
@@ -8555,7 +8557,7 @@ def test_manager_open_recent_menu_state_labels_and_clear(
         assert "manager_clear_recent_workspaces_action" in actions
 
         actions["manager_clear_recent_workspaces_action"].trigger()
-        assert manager._recent_workspace_paths() == []
+        assert manager._workspace_controller._recent_workspace_paths() == []
         assert not manager.open_recent_menu.isEnabled()
 
 
@@ -8570,13 +8572,13 @@ def test_manager_open_recent_menu_stays_disabled_while_save_in_progress(
     workspace.touch()
 
     with manager_context() as manager:
-        manager._record_recent_workspace(workspace)
+        manager._workspace_controller._record_recent_workspace(workspace)
         assert manager.open_recent_menu.isEnabled()
 
         manager._workspace_state.save_in_progress = True
-        manager._refresh_open_recent_menu_action()
+        manager._workspace_controller._refresh_open_recent_menu_action()
         assert not manager.open_recent_menu.isEnabled()
-        manager._populate_open_recent_menu()
+        manager._workspace_controller._populate_open_recent_menu()
         assert not manager.open_recent_menu.isEnabled()
         assert "manager_recent_workspace_action_0" in action_map_by_object_name(
             manager.open_recent_menu
@@ -8592,7 +8594,7 @@ def test_manager_open_recent_menu_stays_disabled_while_save_in_progress(
         assert not manager.open_recent_workspace(tmp_path / "missing.itws")
 
         manager._workspace_state.save_in_progress = False
-        manager._refresh_open_recent_menu_action()
+        manager._workspace_controller._refresh_open_recent_menu_action()
         assert manager.open_recent_menu.isEnabled()
 
 
@@ -8608,15 +8610,15 @@ def test_manager_recent_workspaces_dedupe_move_to_top_and_cap(
 
     with manager_context() as manager:
         for path in paths:
-            manager._record_recent_workspace(path)
+            manager._workspace_controller._record_recent_workspace(path)
 
-        assert manager._recent_workspace_paths() == [
+        assert manager._workspace_controller._recent_workspace_paths() == [
             path.resolve() for path in reversed(paths[2:])
         ]
 
-        manager._record_recent_workspace(paths[6])
+        manager._workspace_controller._record_recent_workspace(paths[6])
 
-        assert manager._recent_workspace_paths() == [
+        assert manager._workspace_controller._recent_workspace_paths() == [
             paths[6].resolve(),
             paths[11].resolve(),
             paths[10].resolve(),
@@ -8652,7 +8654,9 @@ def test_manager_recent_workspace_normalization_and_settings(
             manager_widgets._RECENT_WORKSPACES_SETTINGS_KEY, str(workspace)
         )
         settings.sync()
-        assert manager._recent_workspace_paths() == [workspace.resolve()]
+        assert manager._workspace_controller._recent_workspace_paths() == [
+            workspace.resolve()
+        ]
 
         class _ObjectSettings:
             def sync(self) -> None:
@@ -8666,7 +8670,7 @@ def test_manager_recent_workspace_normalization_and_settings(
             "_manager_settings",
             lambda: _ObjectSettings(),
         )
-        assert manager._recent_workspace_paths() == []
+        assert manager._workspace_controller._recent_workspace_paths() == []
 
 
 def test_manager_open_recent_workspace_flow(
@@ -8683,7 +8687,9 @@ def test_manager_open_recent_workspace_flow(
     newer.touch()
 
     with manager_context() as manager:
-        manager._set_recent_workspace_paths([newer.resolve(), older.resolve()])
+        manager._workspace_controller._set_recent_workspace_paths(
+            [newer.resolve(), older.resolve()]
+        )
         load_calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
 
         def _record_load(path, **kwargs):
@@ -8700,7 +8706,7 @@ def test_manager_open_recent_workspace_flow(
 
         assert not manager.open_recent_workspace(older)
         assert load_calls == []
-        assert manager._recent_workspace_paths() == [
+        assert manager._workspace_controller._recent_workspace_paths() == [
             newer.resolve(),
             older.resolve(),
         ]
@@ -8724,13 +8730,15 @@ def test_manager_open_recent_workspace_flow(
                 },
             )
         ]
-        assert manager._recent_workspace_paths() == [
+        assert manager._workspace_controller._recent_workspace_paths() == [
             older.resolve(),
             newer.resolve(),
         ]
 
         missing_warnings: list[tuple[typing.Any, ...]] = []
-        manager._set_recent_workspace_paths([missing.resolve(), older.resolve()])
+        manager._workspace_controller._set_recent_workspace_paths(
+            [missing.resolve(), older.resolve()]
+        )
         monkeypatch.setattr(
             QtWidgets.QMessageBox,
             "warning",
@@ -8739,13 +8747,17 @@ def test_manager_open_recent_workspace_flow(
 
         assert not manager.open_recent_workspace(missing)
         assert len(missing_warnings) == 1
-        assert manager._recent_workspace_paths() == [older.resolve()]
+        assert manager._workspace_controller._recent_workspace_paths() == [
+            older.resolve()
+        ]
 
         h5_workspace = tmp_path / "old-workspace.h5"
         h5_workspace.touch()
         confirm_calls: list[str] = []
         unsupported_warnings: list[tuple[typing.Any, ...]] = []
-        manager._set_recent_workspace_paths([h5_workspace.resolve(), older.resolve()])
+        manager._workspace_controller._set_recent_workspace_paths(
+            [h5_workspace.resolve(), older.resolve()]
+        )
         monkeypatch.setattr(
             manager._workspace_controller,
             "_dirty_workspace_save_choice",
@@ -8764,7 +8776,9 @@ def test_manager_open_recent_workspace_flow(
             "ImageTool Manager opens workspace files with the .itws extension.",
         )
         assert confirm_calls == []
-        assert manager._recent_workspace_paths() == [older.resolve()]
+        assert manager._workspace_controller._recent_workspace_paths() == [
+            older.resolve()
+        ]
 
 
 def test_manager_open_recent_workspace_reports_load_errors(
@@ -8867,7 +8881,7 @@ def test_manager_records_recent_workspace_accesses(
         )
         assert manager.import_workspace(native=False)
 
-        assert manager._recent_workspace_paths()[:3] == [
+        assert manager._workspace_controller._recent_workspace_paths()[:3] == [
             imported.resolve(),
             saved.resolve(),
             opened.resolve(),
@@ -8917,8 +8931,8 @@ def test_manager_records_packaged_workspace_with_desktop_shell(
 
     with manager_context() as manager:
         monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-        manager._record_recent_workspace(workspace)
-        manager._record_recent_workspace(data_file)
+        manager._workspace_controller._record_recent_workspace(workspace)
+        manager._workspace_controller._record_recent_workspace(data_file)
 
     assert recorded == [workspace.resolve()]
 
@@ -12893,7 +12907,7 @@ def test_manager_workspace_delta_snapshot_keeps_replacement_count_for_missing_gr
             lambda: ("uid",),
         )
         monkeypatch.setattr(
-            manager,
+            controller,
             "_workspace_rewrite_group_snapshot",
             lambda _uid: ("0", {}),
         )
@@ -12977,7 +12991,7 @@ def test_workspace_manifest_first_helper_edge_cases(
         uid = manager._tool_graph.root_wrappers[0].uid
 
         with monkeypatch.context() as mp:
-            mp.setattr(manager, "_workspace_node_path", lambda uid: uid)
+            mp.setattr(controller, "_workspace_node_path", lambda uid: uid)
             assert not controller._workspace_datatree_for_payload_uids(
                 ("missing",)
             ).children
@@ -13800,7 +13814,9 @@ def test_workspace_save_completion_ignores_inactive_document(
             controller, "_workspace_save_snapshot", lambda _path: snapshot
         )
         recorded_recent: list[pathlib.Path] = []
-        monkeypatch.setattr(manager, "_record_recent_workspace", recorded_recent.append)
+        monkeypatch.setattr(
+            controller, "_record_recent_workspace", recorded_recent.append
+        )
 
         def _finish_after_document_change(
             _fname, _snapshot, *, on_finished, on_start_error=None

@@ -945,7 +945,7 @@ class _WorkspaceIOController:
                 )
             self._manager.tree_view.childtool_added(node.uid, parent_target)
             self._manager._mark_node_added(node.uid)
-            self._manager._record_workspace_loaded_node_target(
+            self._record_workspace_loaded_node_target(
                 ds, node.uid, loaded_targets_by_uid
             )
             return node.uid
@@ -996,7 +996,7 @@ class _WorkspaceIOController:
         self._manager._register_root_wrapper(wrapper)
         self._manager.tree_view.imagetool_added(preferred_index)
         self._manager._mark_node_added(wrapper.uid)
-        self._manager._record_workspace_loaded_node_target(
+        self._record_workspace_loaded_node_target(
             ds, preferred_index, loaded_targets_by_uid
         )
         return preferred_index
@@ -1318,27 +1318,27 @@ class _WorkspaceIOController:
         path_key = os.path.normcase(str(path))
         paths = [
             existing
-            for existing in self._manager._recent_workspace_paths()
+            for existing in self._recent_workspace_paths()
             if os.path.normcase(str(existing)) != path_key
         ]
-        self._manager._set_recent_workspace_paths([path, *paths])
-        self._manager._refresh_open_recent_menu_action()
+        self._set_recent_workspace_paths([path, *paths])
+        self._refresh_open_recent_menu_action()
         if erlab.utils.misc._IS_PACKAGED:
             _desktop.record_recent_workspace(path)
 
     def _clear_recent_workspaces(self) -> None:
-        self._manager._set_recent_workspace_paths([])
-        self._manager._populate_open_recent_menu()
+        self._set_recent_workspace_paths([])
+        self._populate_open_recent_menu()
 
     def _refresh_open_recent_menu_action(self) -> None:
         self._manager.open_recent_menu.setEnabled(
-            bool(self._manager._recent_workspace_paths())
+            bool(self._recent_workspace_paths())
             and not self._manager._workspace_state.save_in_progress
         )
 
     def _populate_open_recent_menu(self) -> None:
         self._manager.open_recent_menu.clear()
-        paths = self._manager._recent_workspace_paths()
+        paths = self._recent_workspace_paths()
         self._manager.open_recent_menu.setEnabled(
             bool(paths) and not self._manager._workspace_state.save_in_progress
         )
@@ -1368,7 +1368,7 @@ class _WorkspaceIOController:
         self._manager.open_recent_menu.addSeparator()
         clear_action = QtWidgets.QAction("Clear Menu", self._manager.open_recent_menu)
         clear_action.setObjectName("manager_clear_recent_workspaces_action")
-        clear_action.triggered.connect(self._manager._clear_recent_workspaces)
+        clear_action.triggered.connect(self._clear_recent_workspaces)
         self._manager.open_recent_menu.addAction(clear_action)
 
     def _load_workspace_path(self, path: pathlib.Path, *, native: bool = True) -> bool:
@@ -1407,7 +1407,7 @@ class _WorkspaceIOController:
                 )
             return False
         if loaded:
-            self._manager._record_recent_workspace(path)
+            self._record_recent_workspace(path)
         return loaded
 
     def _open_workspace_after_dirty_prompt(
@@ -1435,12 +1435,12 @@ class _WorkspaceIOController:
         path = pathlib.Path(fname).expanduser().resolve()
         path_key = os.path.normcase(str(path))
         if not path.exists():
-            self._manager._set_recent_workspace_paths(
+            self._set_recent_workspace_paths(
                 existing
-                for existing in self._manager._recent_workspace_paths()
+                for existing in self._recent_workspace_paths()
                 if os.path.normcase(str(existing)) != path_key
             )
-            self._manager._refresh_open_recent_menu_action()
+            self._refresh_open_recent_menu_action()
             QtWidgets.QMessageBox.warning(
                 self._manager,
                 "Workspace Not Found",
@@ -1448,12 +1448,12 @@ class _WorkspaceIOController:
             )
             return False
         if not _manager_workspace._workspace_path_is_itws(path):
-            self._manager._set_recent_workspace_paths(
+            self._set_recent_workspace_paths(
                 existing
-                for existing in self._manager._recent_workspace_paths()
+                for existing in self._recent_workspace_paths()
                 if os.path.normcase(str(existing)) != path_key
             )
-            self._manager._refresh_open_recent_menu_action()
+            self._refresh_open_recent_menu_action()
             QtWidgets.QMessageBox.warning(
                 self._manager,
                 "Unsupported Workspace File",
@@ -1475,7 +1475,7 @@ class _WorkspaceIOController:
         """Show properties for the workspace associated with this manager."""
         _WorkspacePropertiesDialog(
             self._manager.workspace_path,
-            state=self._manager._workspace_properties_state(),
+            state=self._workspace_properties_state(),
             parent=self._manager,
         ).exec()
 
@@ -1560,7 +1560,7 @@ class _WorkspaceIOController:
     def _workspace_document_access_context(
         self, fname: str | os.PathLike[str]
     ) -> Iterator[_WorkspaceDocumentAccess]:
-        access = self._manager._workspace_document_access(fname)
+        access = self._workspace_document_access(fname)
         try:
             yield access
         finally:
@@ -1585,7 +1585,7 @@ class _WorkspaceIOController:
                 "Changing the workspace path requires a pre-acquired document lock"
             )
         old_workspace_path = self._manager._workspace_state.path
-        self._manager._release_workspace_lock()
+        self._release_workspace_lock()
         self._manager._workspace_state.lock = workspace_lock
         self._manager._workspace_state.path = workspace_path
         self._manager._workspace_state.advance_document_identity()
@@ -2329,7 +2329,7 @@ class _WorkspaceIOController:
         for uid in tuple(self._manager._tool_graph.nodes):
             self._manager._set_node_window_modified(uid, False)
         for event in retained_events:
-            self._manager._apply_workspace_dirty_event(event)
+            self._apply_workspace_dirty_event(event)
         self._manager._workspace_state.dirty_events = retained_events
         self._manager._update_workspace_window_title()
 
@@ -2495,12 +2495,10 @@ class _WorkspaceIOController:
             tool = self._manager.get_imagetool(target)
             ds = tool.to_dataset()
             ds.attrs["itool_title"] = node.name
-            constructor[f"{path}/imagetool"] = (
-                self._manager._annotate_workspace_dataset(
-                    ds,
-                    node,
-                    kind="imagetool",
-                )
+            constructor[f"{path}/imagetool"] = self._annotate_workspace_dataset(
+                ds,
+                node,
+                kind="imagetool",
             )
         else:
             if (
@@ -2518,7 +2516,7 @@ class _WorkspaceIOController:
             ds.attrs["tool_title"] = _strip_workspace_modified_placeholder(
                 ds.attrs.get("tool_title", "")
             )
-            constructor[f"{path}/tool"] = self._manager._annotate_workspace_dataset(
+            constructor[f"{path}/tool"] = self._annotate_workspace_dataset(
                 ds, node, kind="tool"
             )
 
@@ -2690,7 +2688,7 @@ class _WorkspaceIOController:
                     ).set_pending_workspace_memory_payload(
                         *pending_workspace_memory_payload
                     )
-                self._manager._record_workspace_loaded_node_target(
+                self._record_workspace_loaded_node_target(
                     ds, target, loaded_targets_by_uid
                 )
                 return target
@@ -2714,9 +2712,7 @@ class _WorkspaceIOController:
                 ].set_pending_workspace_memory_payload(
                     *pending_workspace_memory_payload
                 )
-        self._manager._record_workspace_loaded_node_target(
-            ds, target, loaded_targets_by_uid
-        )
+        self._record_workspace_loaded_node_target(ds, target, loaded_targets_by_uid)
         return target
 
     def _register_pending_workspace_tool(
@@ -2774,9 +2770,7 @@ class _WorkspaceIOController:
             payload_attrs=attrs,
         )
         self._manager._mark_node_added(node.uid)
-        self._manager._record_workspace_loaded_node_target(
-            ds, node.uid, loaded_targets_by_uid
-        )
+        self._record_workspace_loaded_node_target(ds, node.uid, loaded_targets_by_uid)
         return node.uid
 
     def _load_workspace_tool_dataset(
@@ -2862,9 +2856,7 @@ class _WorkspaceIOController:
                     created_time=ds.attrs.get("manager_node_added_at"),
                     note=ds.attrs.get("manager_node_note"),
                 )
-        self._manager._record_workspace_loaded_node_target(
-            ds, target, loaded_targets_by_uid
-        )
+        self._record_workspace_loaded_node_target(ds, target, loaded_targets_by_uid)
         return target
 
     @staticmethod
@@ -3157,7 +3149,7 @@ class _WorkspaceIOController:
                     and child_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
                 ):
                     continue
-                self._manager._load_workspace_node_or_warn(
+                self._load_workspace_node_or_warn(
                     child_node,
                     parent_target=target,
                     selection_item=child_item,
@@ -3214,7 +3206,7 @@ class _WorkspaceIOController:
             node = typing.cast("xr.DataTree", tree[key])
             item = self._manager._tree_item_child_by_key(root_item, key)
             if item is None or item.checkState(0) != QtCore.Qt.CheckState.Unchecked:
-                target = self._manager._load_workspace_node_or_warn(
+                target = self._load_workspace_node_or_warn(
                     node,
                     selection_item=item,
                     manifest=manifest,
@@ -3264,7 +3256,7 @@ class _WorkspaceIOController:
                 and item.checkState(0) == QtCore.Qt.CheckState.Unchecked
             ):
                 continue
-            target = self._manager._load_workspace_node_or_warn(
+            target = self._load_workspace_node_or_warn(
                 typing.cast("xr.DataTree", figures[figure_key]),
                 parent_target=None,
                 selection_item=item,
@@ -3526,9 +3518,7 @@ class _WorkspaceIOController:
                     self._manager._rebase_loaded_workspace_dependency_refs(
                         loaded_targets_by_uid
                     )
-                    self._manager._restore_workspace_link_groups(
-                        manifest, loaded_targets_by_uid
-                    )
+                    self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
                     with profiler.stage("link/layout restore"):
                         self._manager._restore_workspace_layout(manifest)
@@ -3559,12 +3549,10 @@ class _WorkspaceIOController:
         with self._manager._workspace_load_context():
             self._manager.remove_all_tools()
             self._manager._drain_workspace_restore_events()
-            self._manager._load_workspace_roots(
-                backup_tree, [str(key) for key in backup_tree]
-            )
+            self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
             self._manager._load_workspace_figures(backup_tree)
             self._manager._drain_workspace_restore_events()
-        self._manager._restore_workspace_state_snapshot(snapshot)
+        self._restore_workspace_state_snapshot(snapshot)
 
     def _restore_replaced_workspace_file(
         self, path: pathlib.Path, snapshot: _WorkspaceStateSnapshot
@@ -3596,13 +3584,13 @@ class _WorkspaceIOController:
                     workspace_file_path=path,
                 )
             self._manager._drain_workspace_restore_events()
-        self._manager._restore_workspace_state_snapshot(snapshot)
+        self._restore_workspace_state_snapshot(snapshot)
 
     def _restore_replaced_workspace_backup(
         self, backup: _WorkspaceReplaceBackup
     ) -> None:
         if backup.tree is not None:
-            self._manager._restore_replaced_workspace(backup.tree, backup.snapshot)
+            self._restore_replaced_workspace(backup.tree, backup.snapshot)
             return
         if backup.file_path is not None:
             self._restore_replaced_workspace_file(backup.file_path, backup.snapshot)
@@ -3631,9 +3619,9 @@ class _WorkspaceIOController:
             )
             match schema_version:
                 case 1:
-                    tree = self._manager._parse_datatree_compat_v1(tree)
+                    tree = self._parse_datatree_compat_v1(tree)
                 case 2:
-                    tree = self._manager._parse_datatree_compat_v2(tree)
+                    tree = self._parse_datatree_compat_v2(tree)
                 case 3:
                     pass
                 case 4:
@@ -3696,7 +3684,7 @@ class _WorkspaceIOController:
                         else dialog._tree_widget.invisibleRootItem()
                     )
                     with profiler.stage("payload read"):
-                        loaded_count = self._manager._load_workspace_roots(
+                        loaded_count = self._load_workspace_roots(
                             tree,
                             root_keys,
                             root_item=root_item,
@@ -3717,7 +3705,7 @@ class _WorkspaceIOController:
                         self._manager._rebase_loaded_workspace_dependency_refs(
                             loaded_targets_by_uid
                         )
-                        self._manager._restore_workspace_link_groups(
+                        self._restore_workspace_link_groups(
                             manifest, loaded_targets_by_uid
                         )
                     if replace:
@@ -3788,12 +3776,12 @@ class _WorkspaceIOController:
             return f"figures/{uid}"
         if node.parent_uid is None:
             raise KeyError(f"Node {uid!r} has no parent")
-        return f"{self._manager._workspace_node_path(node.parent_uid)}/childtools/{uid}"
+        return f"{self._workspace_node_path(node.parent_uid)}/childtools/{uid}"
 
     def _workspace_payload_path(self, uid: str) -> str:
         node = self._manager._tool_graph.nodes[uid]
         payload_name = "imagetool" if node.is_imagetool else "tool"
-        return f"{self._manager._workspace_node_path(uid)}/{payload_name}"
+        return f"{self._workspace_node_path(uid)}/{payload_name}"
 
     def _workspace_root_indices(self) -> tuple[int, ...]:
         return self._manager._tool_graph.root_indices_for_workspace()
@@ -3839,14 +3827,14 @@ class _WorkspaceIOController:
 
     def _workspace_node_manifest_entries(self) -> list[dict[str, typing.Any]]:
         entries: list[dict[str, typing.Any]] = []
-        link_metadata = self._manager._workspace_link_metadata_by_uid()
+        link_metadata = self._workspace_link_metadata_by_uid()
 
         def _append(uid: str) -> None:
             node = self._manager._tool_graph.nodes[uid]
             entry: dict[str, typing.Any] = {
                 "uid": uid,
                 # Payload group path relative to the workspace root HDF5 group.
-                "path": self._manager._workspace_node_path(uid),
+                "path": self._workspace_node_path(uid),
                 # Restores graph node type without probing payload attrs first.
                 "kind": "imagetool" if node.is_imagetool else "tool",
                 "parent_uid": node.parent_uid,
@@ -3904,12 +3892,12 @@ class _WorkspaceIOController:
         if repack_estimate_known is None:
             repack_estimate_known = state.repack_estimate_known
         return _manager_workspace._workspace_root_attrs_payload(
-            root_order=self._manager._workspace_root_indices(),
-            nodes=self._manager._workspace_node_manifest_entries(),
+            root_order=self._workspace_root_indices(),
+            nodes=self._workspace_node_manifest_entries(),
             delta_save_count=delta_save_count,
             erlab_version=str(erlab.__version__),
             workspace_link_id=self._manager._workspace_state.link_id,
-            manager_layout=self._manager._workspace_layout_snapshot(),
+            manager_layout=self._workspace_layout_snapshot(),
             loader_state=self._workspace_loader_state_snapshot(),
             standalone_apps=self._workspace_standalone_apps_snapshot(),
             option_overrides=self._workspace_option_overrides_snapshot(),
@@ -4169,14 +4157,14 @@ class _WorkspaceIOController:
 
     def _workspace_datatree_for_payload_uids(self, uids: Iterable[str]) -> xr.DataTree:
         constructor: dict[str, xr.Dataset] = {}
-        for uid in sorted(set(uids), key=self._manager._workspace_node_path):
+        for uid in sorted(set(uids), key=self._workspace_node_path):
             node = self._manager._tool_graph.nodes.get(uid)
             if node is None:
                 continue
             self._manager._serialize_workspace_node(
                 constructor,
                 node,
-                self._manager._workspace_node_path(uid),
+                self._workspace_node_path(uid),
                 include_children=False,
             )
         tree = xr.DataTree.from_dict(constructor)
@@ -4581,7 +4569,7 @@ class _WorkspaceIOController:
         dirty_set = set(dirty_existing)
         roots: list[str] = []
         for uid in sorted(
-            dirty_existing, key=lambda value: self._manager._workspace_node_path(value)
+            dirty_existing, key=lambda value: self._workspace_node_path(value)
         ):
             node = self._manager._tool_graph.nodes[uid]
             parent_uid = node.parent_uid
@@ -4632,7 +4620,7 @@ class _WorkspaceIOController:
                 continue
             if tool._persistence_reference_node_uids() - available_uids:
                 rewrite_uids.append(uid)
-        return sorted(rewrite_uids, key=self._manager._workspace_node_path)
+        return sorted(rewrite_uids, key=self._workspace_node_path)
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
         delta_save_count = self._manager._workspace_state.delta_save_count + 1
@@ -4671,8 +4659,8 @@ class _WorkspaceIOController:
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
-            with self._manager._workspace_document_access_context(fname) as access:
-                self._manager._save_workspace_document(
+            with self._workspace_document_access_context(fname) as access:
+                self._save_workspace_document(
                     access.path,
                     force_full=force_full,
                     document_access=access,
@@ -4686,11 +4674,9 @@ class _WorkspaceIOController:
         self._manager._workspace_state.saving_depth += 1
         try:
             _manager_workspace._recover_workspace_transactions(fname)
-            requires_full_save = (
-                force_full or self._manager._workspace_requires_full_save(fname)
-            )
+            requires_full_save = force_full or self._workspace_requires_full_save(fname)
             if requires_full_save:
-                self._manager._write_full_workspace_file(
+                self._write_full_workspace_file(
                     fname,
                     reuse_unchanged_groups=reuse_unchanged_groups,
                     require_matching_compression=require_matching_compression,
@@ -4701,7 +4687,7 @@ class _WorkspaceIOController:
                     _manager_workspace._current_workspace_schema_version()
                 )
             else:
-                self._manager._save_workspace_delta(fname)
+                self._save_workspace_delta(fname)
         finally:
             self._manager._workspace_state.saving_depth -= 1
         self._manager._workspace_state.needs_full_save = False
@@ -4885,7 +4871,7 @@ class _WorkspaceIOController:
             self._manager._rebind_workspace_backed_imagetools(associated_fname)
         self._manager._drain_workspace_restore_events()
         self._manager._mark_workspace_clean()
-        self._manager._record_recent_workspace(associated_fname)
+        self._record_recent_workspace(associated_fname)
 
     def _workspace_rebind_data_for_uid(
         self,
@@ -4950,9 +4936,7 @@ class _WorkspaceIOController:
                 node = self._manager._node_for_target(target)
                 if node.is_imagetool and node.imagetool is not None:
                     nodes.append(node)
-        for node in sorted(
-            nodes, key=lambda node: self._manager._workspace_node_path(node.uid)
-        ):
+        for node in sorted(nodes, key=lambda node: self._workspace_node_path(node.uid)):
             tool = node.imagetool
             if tool is None:
                 continue
@@ -5107,7 +5091,7 @@ class _WorkspaceIOController:
     ) -> tuple[str, dict[str, xr.Dataset]]:
         constructor: dict[str, xr.Dataset] = {}
         node = self._manager._tool_graph.nodes[uid]
-        node_path = self._manager._workspace_node_path(uid)
+        node_path = self._workspace_node_path(uid)
         self._manager._serialize_workspace_node(
             constructor, node, node_path, include_children=True
         )
@@ -5302,7 +5286,7 @@ class _WorkspaceIOController:
     ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
         constructor: dict[str, xr.Dataset] = {}
         node = self._manager._tool_graph.nodes[uid]
-        node_path = self._manager._workspace_node_path(uid)
+        node_path = self._workspace_node_path(uid)
         payload_path = self._manager._workspace_payload_path(uid)
         pending_attrs = self._pending_workspace_payload_attrs_for_save(node)
         if pending_attrs is not None:
@@ -5332,7 +5316,7 @@ class _WorkspaceIOController:
         rewrite_groups: list[tuple[str, dict[str, xr.Dataset]]] = []
         rewritten_uids: set[str] = set()
         for uid in self._manager._workspace_highest_dirty_data_roots():
-            rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
+            rewrite_groups.append(self._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._manager._iter_descendant_uids(uid))
 
@@ -5340,7 +5324,7 @@ class _WorkspaceIOController:
         for uid in self._workspace_stale_reference_rewrite_uids(manifest_uids):
             if uid in rewritten_uids:
                 continue
-            rewrite_groups.append(self._manager._workspace_rewrite_group_snapshot(uid))
+            rewrite_groups.append(self._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._manager._iter_descendant_uids(uid))
 
@@ -5350,7 +5334,7 @@ class _WorkspaceIOController:
         for uid in sorted(self._manager._workspace_state.dirty_state - rewritten_uids):
             if uid not in self._manager._tool_graph.nodes:
                 continue
-            update = self._manager._workspace_attr_update_snapshot(uid)
+            update = self._workspace_attr_update_snapshot(uid)
             if update is not None:
                 attr_updates.append(update)
 
@@ -5397,17 +5381,17 @@ class _WorkspaceIOController:
                 return self._workspace_full_save_snapshot(generation)
             if self._workspace_layout_only_modified():
                 delta_save_count = self._manager._workspace_state.delta_save_count
-                root_attrs = self._manager._workspace_root_attrs_payload(
+                root_attrs = self._workspace_root_attrs_payload(
                     delta_save_count=delta_save_count
                 )
-                return self._manager._workspace_delta_save_snapshot(
+                return self._workspace_delta_save_snapshot(
                     generation, root_attrs, delta_save_count
                 )
             delta_save_count = self._manager._workspace_state.delta_save_count + 1
-            root_attrs = self._manager._workspace_root_attrs_payload(
+            root_attrs = self._workspace_root_attrs_payload(
                 delta_save_count=delta_save_count
             )
-            return self._manager._workspace_delta_save_snapshot(
+            return self._workspace_delta_save_snapshot(
                 generation, root_attrs, delta_save_count
             )
         finally:
@@ -5787,7 +5771,7 @@ class _WorkspaceIOController:
             and self._manager.is_workspace_modified
         )
         if post_save_events:
-            self._manager._restore_workspace_dirty_events(post_save_events)
+            self._restore_workspace_dirty_events(post_save_events)
             message = "Workspace saved; new changes remain unsaved"
         elif has_new_dirty_generation:
             message = "Workspace saved; new changes remain unsaved"
@@ -5801,7 +5785,7 @@ class _WorkspaceIOController:
         self._manager._status_bar.showMessage(message, 5000)
         if restore_focus:
             self._manager._restore_focus_after_workspace_save(origin)
-        self._manager._record_recent_workspace(workspace_path)
+        self._record_recent_workspace(workspace_path)
         return True
 
     def _finish_background_workspace_save(
@@ -5974,7 +5958,7 @@ class _WorkspaceIOController:
         self._manager._status_bar.showMessage("Saving workspace...")
         started_at = time.perf_counter()
         try:
-            access = self._manager._workspace_document_access(fname)
+            access = self._workspace_document_access(fname)
             self._manager._drain_workspace_deferred_events()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
@@ -6084,7 +6068,7 @@ class _WorkspaceIOController:
             access = None
             self._manager._drain_workspace_deferred_events()
             self._manager._mark_workspace_clean()
-            self._manager._record_recent_workspace(saved_path)
+            self._record_recent_workspace(saved_path)
             message = (
                 f"Workspace saved in {total_elapsed:.1f} s"
                 if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
@@ -6177,7 +6161,7 @@ class _WorkspaceIOController:
                     if event.generation > snapshot.generation
                 )
                 if post_save_events:
-                    self._manager._restore_workspace_dirty_events(post_save_events)
+                    self._restore_workspace_dirty_events(post_save_events)
                 else:
                     self._manager._mark_workspace_clean()
             if on_finished is not None:
@@ -6511,7 +6495,7 @@ class _WorkspaceIOController:
             return False
         else:
             if loaded:
-                self._manager._record_recent_workspace(fname)
+                self._record_recent_workspace(fname)
             return loaded
 
     def open(self, *, native: bool = True) -> None:
