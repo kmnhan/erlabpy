@@ -1141,6 +1141,20 @@ class _DetailsPanelController:
                     return
 
                 tool_window = node.tool_window
+                if (
+                    tool_window is None
+                    and node.pending_workspace_tool_payload is not None
+                ):
+                    pending_preview = node.pending_workspace_tool_preview_image()
+                    if pending_preview is None:
+                        self._manager.preview_widget.setLoadPrompt()
+                    else:
+                        self._manager.preview_widget.setPixmap(
+                            pending_preview[1],
+                            aspect_ratio_mode=QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                        )
+                    self._manager.preview_widget.setVisible(True)
+                    return
                 preview_pixmap = (
                     None if tool_window is None else tool_window.preview_pixmap
                 )
@@ -1245,12 +1259,20 @@ class _DetailsPanelController:
     @QtCore.Slot()
     def _load_selected_preview_data(self) -> None:
         selected_imagetools = self._manager._selected_imagetool_targets()
-        if len(selected_imagetools) != 1 or self._manager._selected_tool_uids():
+        selected_tools = self._manager._selected_tool_uids()
+        if len(selected_imagetools) == 1 and not selected_tools:
+            node = self._manager._node_for_target(selected_imagetools[0])
+            if node.pending_workspace_memory_payload is None:
+                return
+            if node.materialize_pending_workspace_payload():
+                self._manager._update_info(uid=node.uid)
             return
-        node = self._manager._node_for_target(selected_imagetools[0])
-        if node.pending_workspace_memory_payload is None:
+        if selected_imagetools or len(selected_tools) != 1:
             return
-        if node.materialize_pending_workspace_memory_payload():
+        node = self._manager._child_node(selected_tools[0])
+        if node.pending_workspace_tool_payload is None:
+            return
+        if node.materialize_pending_workspace_payload():
             self._manager._update_info(uid=node.uid)
 
     def _update_actions(self) -> None:
@@ -1296,6 +1318,7 @@ class _DetailsPanelController:
             bool(imagetool_targets)
             and len(selection_children) == 0
             and len(selection_offloadable) == len(imagetool_targets)
+            and not self._manager._workspace_state.save_in_progress
         )
         self._manager.concat_action.setEnabled(
             multiple_selected and len(selection_children) == 0

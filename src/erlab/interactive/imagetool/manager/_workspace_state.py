@@ -19,6 +19,7 @@ if typing.TYPE_CHECKING:
 
 class _WorkspaceStateSnapshot(typing.TypedDict):
     path: pathlib.Path | None
+    document_id: str
     link_id: str
     needs_full_save: bool
     node_uid_counter: int
@@ -45,6 +46,7 @@ class _ManagerWorkspaceState:
 
     def __init__(self) -> None:
         self.path: pathlib.Path | None = None
+        self.document_id: str = uuid.uuid4().hex
         self.link_id: str = uuid.uuid4().hex
         self.loading_depth: int = 0
         self.saving_depth: int = 0
@@ -165,6 +167,9 @@ class _ManagerWorkspaceState:
         self.replacement_delta_count = max(0, int(replacement_delta_count))
         self.repack_estimate_known = known
 
+    def advance_document_identity(self) -> None:
+        self.document_id = uuid.uuid4().hex
+
     @contextlib.contextmanager
     def load_context(self) -> Iterator[None]:
         self.loading_depth += 1
@@ -176,6 +181,7 @@ class _ManagerWorkspaceState:
     def snapshot(self, *, node_uid_counter: int) -> _WorkspaceStateSnapshot:
         return {
             "path": self.path,
+            "document_id": self.document_id,
             "link_id": self.link_id,
             "needs_full_save": self.needs_full_save,
             "node_uid_counter": node_uid_counter,
@@ -199,6 +205,7 @@ class _ManagerWorkspaceState:
 
     def restore(self, snapshot: _WorkspaceStateSnapshot) -> set[str]:
         self.path = snapshot["path"]
+        self.document_id = snapshot["document_id"]
         self.link_id = snapshot["link_id"]
         self.needs_full_save = snapshot["needs_full_save"]
         self.structure_modified = snapshot["structure_modified"]

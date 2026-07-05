@@ -312,7 +312,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return node.is_imagetool
 
     def _is_figure_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
-        return (
+        return node.uid in self._tool_graph.figure_uids or (
             node.tool_window is not None
             and node.tool_window.manager_collection == "figures"
         )
@@ -400,7 +400,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         node = self._node_for_target(index)
         if not node.is_imagetool:
             raise KeyError(f"Target {index!r} is not an ImageTool")
-        if not node.materialize_pending_workspace_memory_payload():
+        if not node.materialize_pending_workspace_payload():
             raise ValueError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )

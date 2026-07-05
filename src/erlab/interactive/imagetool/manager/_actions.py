@@ -166,7 +166,7 @@ class _ActionsController:
         node = self._manager._child_node(uid)
         if not node.is_imagetool:
             raise KeyError(f"Target {uid!r} is not an ImageTool")
-        if not node.materialize_pending_workspace_memory_payload():
+        if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
@@ -239,21 +239,45 @@ class _ActionsController:
         if deselect:
             self._manager.tree_view.deselect_all()
 
+    def _prune_workspace_link_groups(
+        self, link_keys: Iterable[str], dirty_uids: set[str]
+    ) -> None:
+        dirty_uids.update(
+            self._manager._clear_singleton_workspace_link_groups(link_keys)
+        )
+
+    def unlink_imagetool_nodes(
+        self, nodes: Iterable[_ImageToolWrapper | _ManagedWindowNode]
+    ) -> None:
+        """Unlink ImageTool nodes without materializing pending payloads."""
+        dirty_uids: set[str] = set()
+        touched_link_keys: list[str] = []
+        for node in nodes:
+            if not node.is_imagetool:
+                raise KeyError(f"Node {node.uid!r} is not an ImageTool")
+            link_key = node.workspace_link_key
+            if link_key is not None:
+                touched_link_keys.append(link_key)
+            if node.workspace_linked:
+                dirty_uids.add(node.uid)
+            if node.imagetool is not None:
+                node.slicer_area.unlink()
+            node.clear_workspace_link_state()
+
+        self._prune_workspace_link_groups(touched_link_keys, dirty_uids)
+        for uid in sorted(dirty_uids):
+            self._manager._mark_node_state_dirty(uid)
+        self._manager._sigReloadLinkers.emit()
+
     def unlink_selected(self, deselect: bool = True) -> None:
         """Unlink selected ImageTool windows."""
-        dirty_uids: list[str] = []
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
         for index in self._manager._selected_imagetool_targets():
             node = self._manager._node_for_target(index)
             if not node.is_imagetool:
                 raise KeyError(f"Target {index!r} is not an ImageTool")
-            if node.workspace_linked:
-                dirty_uids.append(node.uid)
-            if node.imagetool is not None:
-                node.slicer_area.unlink()
-            node.clear_workspace_link_state()
-        for uid in dirty_uids:
-            self._manager._mark_node_state_dirty(uid)
-        self._manager._sigReloadLinkers.emit()
+            nodes.append(node)
+        self.unlink_imagetool_nodes(nodes)
         if deselect:
             self._manager.tree_view.deselect_all()
 
@@ -1190,6 +1214,11 @@ class _ActionsController:
         self, queued: list[pathlib.Path], try_workspace: bool = False
     ) -> None:
         """Open multiple files in the manager."""
+        if try_workspace and self._manager._workspace_state.save_in_progress:
+            self._manager._status_bar.showMessage(
+                "Workspace save in progress; open after it finishes", 3000
+            )
+            return
         n_files: int = len(queued)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
@@ -1673,6 +1702,11 @@ class _ActionsController:
             The index of the parent ImageTool window.
         """
         node = self._manager._child_node(uid)
+        if (
+            node.pending_workspace_tool_payload is not None
+            and not node.materialize_pending_workspace_payload()
+        ):
+            raise KeyError(f"No child tool with UID {uid} found")
         tool = node.tool_window
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
             self._manager._remove_childtool(uid)
@@ -1711,6 +1745,7 @@ class _ActionsController:
         if uid not in self._manager._tool_graph.nodes:
             return
         was_figure = self._manager._is_figure_uid(uid)
+        removed_link_keys = self._manager._workspace_link_keys_for_subtree(uid)
         self._manager._mark_removed_subtree_dirty(uid)
         closing_document = self._manager._workspace_state.closing_document
         if not closing_document:
@@ -1718,6 +1753,7 @@ class _ActionsController:
         self._manager._remove_uid_target(uid)
         if closing_document:
             return
+        self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
         if was_figure:
             self._manager._sync_figures_ui()
         self._manager._update_actions()

@@ -338,10 +338,17 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update: bool = False
         self._output_id: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
-        self._pending_workspace_memory_payload: tuple[pathlib.Path, str] | None = None
+        self._pending_workspace_payload: tuple[pathlib.Path, str] | None = None
+        self._pending_workspace_payload_kind: (
+            typing.Literal["imagetool", "tool"] | None
+        ) = None
         self._pending_workspace_payload_attrs: dict[str, typing.Any] | None = None
         self._pending_workspace_metadata_cache: (
-            tuple[tuple[pathlib.Path, str], str] | None
+            tuple[
+                tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
+                str,
+            ]
+            | None
         ) = None
         self._pending_workspace_preview_cache: (
             tuple[tuple[pathlib.Path, str], tuple[float, QtGui.QPixmap] | None] | None
@@ -562,7 +569,25 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def pending_workspace_memory_payload(self) -> tuple[pathlib.Path, str] | None:
-        return self._pending_workspace_memory_payload
+        if self._pending_workspace_payload_kind != "imagetool":
+            return None
+        return self._pending_workspace_payload
+
+    @property
+    def pending_workspace_tool_payload(self) -> tuple[pathlib.Path, str] | None:
+        if self._pending_workspace_payload_kind != "tool":
+            return None
+        return self._pending_workspace_payload
+
+    @property
+    def pending_workspace_payload_kind(
+        self,
+    ) -> typing.Literal["imagetool", "tool"] | None:
+        return self._pending_workspace_payload_kind
+
+    @property
+    def pending_workspace_payload(self) -> tuple[pathlib.Path, str] | None:
+        return self._pending_workspace_payload
 
     @property
     def pending_workspace_payload_attrs(self) -> dict[str, typing.Any] | None:
@@ -573,19 +598,21 @@ class _ManagedWindowNode(QtCore.QObject):
     def update_pending_workspace_payload_attrs(
         self, attrs: Mapping[str, typing.Any]
     ) -> None:
-        if self._pending_workspace_memory_payload is None:
+        if self._pending_workspace_payload is None:
             return
         self._pending_workspace_payload_attrs = dict(attrs)
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
 
-    def set_pending_workspace_memory_payload(
+    def set_pending_workspace_payload(
         self,
+        kind: typing.Literal["imagetool", "tool"],
         workspace_path: str | os.PathLike[str],
         payload_path: str,
         payload_attrs: Mapping[str, typing.Any] | None = None,
     ) -> None:
-        self._pending_workspace_memory_payload = (
+        self._pending_workspace_payload_kind = kind
+        self._pending_workspace_payload = (
             pathlib.Path(workspace_path),
             payload_path.strip("/"),
         )
@@ -595,19 +622,36 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
 
-    def clear_pending_workspace_memory_payload(self) -> None:
-        self._pending_workspace_memory_payload = None
+    def set_pending_workspace_memory_payload(
+        self,
+        workspace_path: str | os.PathLike[str],
+        payload_path: str,
+        payload_attrs: Mapping[str, typing.Any] | None = None,
+    ) -> None:
+        self.set_pending_workspace_payload(
+            "imagetool",
+            workspace_path,
+            payload_path,
+            payload_attrs=payload_attrs,
+        )
+
+    def clear_pending_workspace_payload(self) -> None:
+        self._pending_workspace_payload = None
+        self._pending_workspace_payload_kind = None
         self._pending_workspace_payload_attrs = None
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
 
-    def materialize_pending_workspace_memory_payload(self) -> bool:
-        if self._pending_workspace_memory_payload is None:
+    def clear_pending_workspace_memory_payload(self) -> None:
+        self.clear_pending_workspace_payload()
+
+    def materialize_pending_workspace_payload(self) -> bool:
+        if self._pending_workspace_payload is None:
             return True
-        return self.manager._materialize_pending_workspace_memory_payload(self)
+        return self.manager._materialize_pending_workspace_payload(self)
 
     def pending_workspace_preview_image(self) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self._pending_workspace_memory_payload
+        pending = self.pending_workspace_memory_payload
         if pending is None:
             return None
         if (
@@ -622,7 +666,34 @@ class _ManagedWindowNode(QtCore.QObject):
     def cached_pending_workspace_preview_image(
         self,
     ) -> tuple[float, QtGui.QPixmap] | None:
-        pending = self._pending_workspace_memory_payload
+        pending = self.pending_workspace_memory_payload
+        if (
+            pending is None
+            or self._pending_workspace_preview_cache is None
+            or self._pending_workspace_preview_cache[0] != pending
+        ):
+            return None
+        return self._pending_workspace_preview_cache[1]
+
+    def pending_workspace_tool_preview_image(
+        self,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        pending = self.pending_workspace_tool_payload
+        if pending is None:
+            return None
+        if (
+            self._pending_workspace_preview_cache is not None
+            and self._pending_workspace_preview_cache[0] == pending
+        ):
+            return self._pending_workspace_preview_cache[1]
+        preview = self.manager._pending_workspace_tool_preview_image(self)
+        self._pending_workspace_preview_cache = (pending, preview)
+        return preview
+
+    def cached_pending_workspace_tool_preview_image(
+        self,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        pending = self.pending_workspace_tool_payload
         if (
             pending is None
             or self._pending_workspace_preview_cache is None
@@ -742,6 +813,20 @@ class _ManagedWindowNode(QtCore.QObject):
     def type_badge_text(self) -> str | None:
         if self.tool_window is not None:
             return self.tool_window.tool_name
+        if self.pending_workspace_tool_payload is not None:
+            attrs = self.pending_workspace_payload_attrs or {}
+            qualname = attrs.get("tool_cls_qualname")
+            if isinstance(qualname, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    qualname = qualname.decode()
+            if isinstance(qualname, str) and qualname:
+                return qualname.rsplit(":", maxsplit=1)[-1].rsplit(".", maxsplit=1)[-1]
+            display_name = attrs.get("tool_display_name")
+            if isinstance(display_name, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    display_name = display_name.decode()
+            if isinstance(display_name, str) and display_name:
+                return display_name
         return None
 
     @property
@@ -766,17 +851,19 @@ class _ManagedWindowNode(QtCore.QObject):
         return erlab.interactive.utils._apply_qt_accent_color(text)
 
     def _pending_workspace_info_text(self) -> str | None:
-        pending = self._pending_workspace_memory_payload
-        if pending is None:
+        pending = self._pending_workspace_payload
+        kind = self._pending_workspace_payload_kind
+        if pending is None or kind is None:
             return None
+        cache_key = (kind, pending)
         if (
             self._pending_workspace_metadata_cache is not None
-            and self._pending_workspace_metadata_cache[0] == pending
+            and self._pending_workspace_metadata_cache[0] == cache_key
         ):
             return self._pending_workspace_metadata_cache[1]
-        text = self.manager._pending_workspace_imagetool_info_text(self)
+        text = self.manager._pending_workspace_info_text(self)
         if text is not None:
-            self._pending_workspace_metadata_cache = (pending, text)
+            self._pending_workspace_metadata_cache = (cache_key, text)
         return text
 
     @property
@@ -811,7 +898,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _metadata_data(self) -> xr.DataArray | None:
         if self.imagetool is not None:
-            if self._pending_workspace_memory_payload is not None:
+            if self.pending_workspace_memory_payload is not None:
                 return None
             return self.slicer_area.displayed_data
         if self.tool_window is not None:
@@ -938,8 +1025,13 @@ class _ManagedWindowNode(QtCore.QObject):
         kind_value = "ImageTool"
         if not self.is_imagetool:
             if tool_window is None:
-                raise RuntimeError("Managed non-ImageTool node is missing its tool.")
-            kind_value = tool_window.tool_name
+                if self.pending_workspace_tool_payload is None:
+                    raise RuntimeError(
+                        "Managed non-ImageTool node is missing its tool."
+                    )
+                kind_value = self.type_badge_text or "ToolWindow"
+            else:
+                kind_value = tool_window.tool_name
 
         fields = [
             _MetadataField(
@@ -979,7 +1071,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-        if self._pending_workspace_memory_payload is not None:
+        if self.pending_workspace_memory_payload is not None:
             preview = self.cached_pending_workspace_preview_image()
             if preview is not None:
                 return preview
@@ -1033,7 +1125,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
     ) -> tuple[typing.Literal["dask", "file_lazy", "memory"] | None, tuple[str, ...]]:
         """Return lightweight data backing metadata without capturing UI state."""
-        if self._pending_workspace_memory_payload is not None:
+        if self.pending_workspace_memory_payload is not None:
             return "memory", ()
         if self.imagetool is None:
             return None, ()
@@ -1052,12 +1144,9 @@ class _ManagedWindowNode(QtCore.QObject):
         self, *, materialize_pending: bool = True
     ) -> _NodePersistenceView:
         """Return the only manager persistence/clone view for this node."""
-        if (
-            materialize_pending
-            and not self.materialize_pending_workspace_memory_payload()
-        ):
+        if materialize_pending and not self.materialize_pending_workspace_payload():
             raise ValueError(
-                "Could not read this ImageTool's saved data from the workspace file."
+                "Could not read this node's saved data from the workspace file."
             )
         if self.imagetool is None:
             return _NodePersistenceView(
@@ -1301,6 +1390,30 @@ class _ManagedWindowNode(QtCore.QObject):
         self._set_source_state(state if self.has_source_binding else "fresh")
         self.manager._mark_node_state_dirty(self.uid)
 
+    def set_restored_source_binding_metadata(
+        self,
+        source_spec: provenance.ToolProvenanceSpec | None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None,
+        *,
+        auto_update: bool,
+        state: _source_state_type,
+    ) -> None:
+        """Restore saved source metadata without reading parent data."""
+        if source_spec is not None and not isinstance(
+            source_spec,
+            provenance.ToolProvenanceSpec,
+        ):
+            raise TypeError("source_spec must be a ToolProvenanceSpec or None")
+        if source_binding is not None and not isinstance(
+            source_binding,
+            provenance.ImageToolSelectionSourceBinding,
+        ):
+            raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
+        self._source_spec = provenance.require_live_source_spec(source_spec)
+        self._source_binding = None if self._source_spec is not None else source_binding
+        self._source_auto_update = bool(auto_update)
+        self._source_state = state if self.has_source_binding else "fresh"
+
     def set_output_binding(
         self,
         output_id: str,
@@ -1515,11 +1628,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def current_source_data(self) -> xr.DataArray:
         if (
-            self.pending_workspace_memory_payload is not None
-            and not self.materialize_pending_workspace_memory_payload()
+            self.pending_workspace_payload is not None
+            and not self.materialize_pending_workspace_payload()
         ):
             raise ValueError(
-                "Could not read this ImageTool's saved data from the workspace file."
+                "Could not read this node's saved data from the workspace file."
             )
         if self.imagetool is not None:
             return self.slicer_area._tool_source_parent_data()
@@ -1584,7 +1697,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def show(self) -> None:
-        if not self.materialize_pending_workspace_memory_payload():
+        if not self.materialize_pending_workspace_payload():
             return
         window = self.window
         if window is None:

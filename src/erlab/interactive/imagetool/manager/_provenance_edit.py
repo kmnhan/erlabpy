@@ -2125,7 +2125,7 @@ class _ProvenanceEditController:
         operation: provenance.ToolProvenanceOperation,
         dialog_cls: type[dialogs._DataManipulationDialog],
     ) -> None:
-        if not node.materialize_pending_workspace_memory_payload():
+        if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
@@ -2417,7 +2417,7 @@ class _ProvenanceEditController:
         spec: provenance.ToolProvenanceSpec,
         filter_operation: provenance.ToolProvenanceOperation | None,
     ) -> None:
-        if not node.materialize_pending_workspace_memory_payload():
+        if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )

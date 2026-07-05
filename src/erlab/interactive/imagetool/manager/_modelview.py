@@ -658,6 +658,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if child_node.tool_window is not None
                 else None
             )
+            if (
+                preview_pixmap is None
+                and child_node.pending_workspace_tool_payload is not None
+            ):
+                pending_preview = (
+                    child_node.cached_pending_workspace_tool_preview_image()
+                )
+                preview_pixmap = None if pending_preview is None else pending_preview[1]
             if preview_pixmap is not None and not preview_pixmap.isNull():
                 width = preview_pixmap.width()
                 height = preview_pixmap.height()
@@ -1885,12 +1893,8 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         ):
             return
 
-        if wrapper.imagetool is not None:
-            wrapper.slicer_area.unlink()
-        wrapper.clear_workspace_link_state()
         manager = self._model.manager
-        manager._mark_node_state_dirty(wrapper.uid)
-        manager._sigReloadLinkers.emit()
+        manager._actions_controller.unlink_imagetool_nodes((wrapper,))
         self.refresh(wrapper.index)
 
     def _show_watched_badge_menu(

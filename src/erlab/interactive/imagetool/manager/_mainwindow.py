@@ -1616,6 +1616,16 @@ class ImageToolManager(_ImageToolManagerBase):
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
+    def _configure_materialized_figure_tool(
+        self, node: _ManagedWindowNode, tool: erlab.interactive.utils.ToolWindow
+    ) -> None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        tool._refresh_reload_data_action()
+        if isinstance(tool, FigureComposerTool):
+            tool.set_options_getter(lambda: self.effective_interactive_options)
+            self._install_figure_source_refresh_callbacks(node.uid, tool)
+
     def _unregister_node(self, uid: str) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
@@ -1651,6 +1661,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 child.tool_window.set_source_parent_fetcher(None)
                 child.tool_window.set_input_provenance_parent_fetcher(None)
             child.dispose()
+
+    def _workspace_link_keys_for_subtree(self, uid: str) -> set[str]:
+        link_keys: set[str] = set()
+        for node_uid in self._tool_graph.subtree_uids(uid):
+            node = self._tool_graph.nodes.get(node_uid)
+            if node is not None and node.workspace_link_key is not None:
+                link_keys.add(node.workspace_link_key)
+        return link_keys
 
     def _figure_uids(self) -> list[str]:
         return [
@@ -1980,6 +1998,11 @@ class ImageToolManager(_ImageToolManagerBase):
         node = self._child_node(uid)
         tool_window = node.tool_window
         if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
+            pending_preview = node.pending_workspace_tool_preview_image()
+            if pending_preview is not None:
+                return QtGui.QIcon(
+                    self._figure_gallery_thumbnail_pixmap(pending_preview[1])
+                )
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
         thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
         if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
@@ -3185,6 +3208,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if index not in self._tool_graph.root_wrappers:
             return
         wrapper = self._tool_graph.root_wrappers[index]
+        removed_link_keys = self._workspace_link_keys_for_subtree(wrapper.uid)
         self._mark_removed_subtree_dirty(wrapper.uid)
         descendant_uids = list(wrapper._childtool_indices)
         if update_view:
@@ -3195,6 +3219,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._tool_graph.unregister_root(index)
         if not self._workspace_state.closing_document:
+            self._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
             self._refresh_dependency_dependents(wrapper.uid)
             self._refresh_figure_source_controls()
         wrapper.dispose()
@@ -3314,6 +3339,34 @@ class ImageToolManager(_ImageToolManagerBase):
         except ValueError:
             idx = 0
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
+
+    def _clear_singleton_workspace_link_groups(
+        self, link_keys: Iterable[str]
+    ) -> set[str]:
+        dirty_uids: set[str] = set()
+        for link_key in set(link_keys):
+            linked_nodes = [
+                node
+                for node in self._tool_graph.nodes.values()
+                if node.is_imagetool and node.workspace_link_key == link_key
+            ]
+            if len(linked_nodes) >= 2:
+                continue
+            for node in linked_nodes:
+                if node.imagetool is not None:
+                    node.slicer_area.unlink()
+                node.clear_workspace_link_state()
+                dirty_uids.add(node.uid)
+        return dirty_uids
+
+    def _mark_singleton_workspace_link_groups_dirty(
+        self, link_keys: Iterable[str]
+    ) -> None:
+        dirty_uids = self._clear_singleton_workspace_link_groups(link_keys)
+        for uid in sorted(dirty_uids):
+            self._mark_node_state_dirty(uid)
+        if dirty_uids:
+            self._sigReloadLinkers.emit()
 
     def linker_index(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
@@ -3763,17 +3816,20 @@ class ImageToolManager(_ImageToolManagerBase):
             pending_workspace_memory_payload=pending_workspace_memory_payload,
         )
 
-    def _materialize_pending_workspace_memory_payload(
+    def _materialize_pending_workspace_payload(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> bool:
-        return self._workspace_controller._materialize_pending_workspace_memory_payload(
-            node
-        )
+        return self._workspace_controller._materialize_pending_workspace_payload(node)
 
     def _pending_workspace_imagetool_info_text(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
         return self._workspace_controller._pending_workspace_imagetool_info_text(node)
+
+    def _pending_workspace_info_text(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        return self._workspace_controller._pending_workspace_info_text(node)
 
     def _pending_workspace_imagetool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -3781,6 +3837,11 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._pending_workspace_imagetool_preview_image(
             node
         )
+
+    def _pending_workspace_tool_preview_image(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._workspace_controller._pending_workspace_tool_preview_image(node)
 
     def _has_pending_workspace_linked_slicers(
         self, source: ImageSlicerArea, *, color: bool
@@ -3829,12 +3890,15 @@ class ImageToolManager(_ImageToolManagerBase):
         parent_target: int | str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         profiler: typing.Any | None = None,
+        pending_workspace_tool_payload: tuple[os.PathLike[str] | str, str]
+        | None = None,
     ) -> int | str:
         return self._workspace_controller._load_workspace_tool_dataset(
             ds,
             parent_target=parent_target,
             loaded_targets_by_uid=loaded_targets_by_uid,
             profiler=profiler,
+            pending_workspace_tool_payload=pending_workspace_tool_payload,
         )
 
     @staticmethod
@@ -4808,8 +4872,6 @@ class ImageToolManager(_ImageToolManagerBase):
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),
@@ -4822,9 +4884,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool._tool_display_name:
             tool._tool_display_name = self._next_figure_display_name()
         self._register_figure_node(node)
-        if isinstance(tool, FigureComposerTool):
-            tool.set_options_getter(lambda: self.effective_interactive_options)
-            self._install_figure_source_refresh_callbacks(node.uid, tool)
+        self._configure_materialized_figure_tool(node, tool)
         self._mark_node_added(node.uid)
         self._sync_figures_ui(select_uid=node.uid if show else None)
         if show:
