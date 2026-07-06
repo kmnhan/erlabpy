@@ -145,6 +145,9 @@ class _WorkspaceSweepChildTool(
     def _primary_output_data(self) -> xr.DataArray:
         return self._data
 
+    def update_data(self, new_data: xr.DataArray) -> None:
+        self._data = new_data
+
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         return {
             imagetool_serialization.SAVED_TOOL_DATA_NAME: self._data,
@@ -10161,6 +10164,109 @@ def test_manager_background_workspace_save_keeps_new_changes_and_queues_followup
         manager._workspace_state.path = None
 
 
+def test_manager_background_workspace_save_keeps_duplicate_layout_change_dirty(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    pool = _install_deferred_workspace_save_worker(monkeypatch)
+
+    with manager_context() as manager:
+        _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_snapshot",
+            lambda _path: _workspace_save_test_snapshot(manager),
+        )
+
+        assert manager._workspace_controller.save()
+        assert len(pool.workers) == 1
+        snapshot_generation = pool.workers[0]._snapshot.generation
+        assert manager._workspace_state.mark_layout_dirty()
+        assert manager._workspace_state.dirty_generation > snapshot_generation
+
+        pool.workers[0].finish()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.layout_modified
+        manager._workspace_state.path = None
+
+
+def test_manager_background_full_save_preserves_post_snapshot_data_edit(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    pool = _install_deferred_workspace_save_worker(monkeypatch)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        operation_errors: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: operation_errors.append((title, text)),
+        )
+        data = xr.DataArray(
+            np.arange(25.0).reshape((5, 5)),
+            dims=("x", "y"),
+            coords={"x": np.arange(5.0), "y": np.arange(5.0)},
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "post-snapshot-edit.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._rebind_workspace_backed_imagetools(fname, targets=[0], chunks={})
+        slicer_area = root.slicer_area
+        assert slicer_area.data_chunked
+        manager._mark_workspace_clean()
+
+        manager._mark_node_data_dirty(uid)
+        manager._workspace_state.needs_full_save = True
+        assert manager._workspace_controller.save()
+        assert len(pool.workers) == 1
+        assert manager._workspace_state.save_in_progress
+        snapshot_generation = pool.workers[0]._snapshot.generation
+
+        replacement = xr.DataArray(
+            np.full((5, 5), 42.0),
+            dims=("x", "y"),
+            coords={"x": np.arange(5.0), "y": np.arange(5.0)},
+            name="source",
+        )
+        slicer_area.replace_source_data(
+            replacement,
+            auto_compute=False,
+            emit_edited=True,
+        )
+        assert any(
+            event.uid == uid and event.data and event.generation > snapshot_generation
+            for event in manager._workspace_state.dirty_events
+        )
+
+        pool.workers[0].finish()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        np.testing.assert_array_equal(slicer_area._data.values, replacement.values)
+        assert not slicer_area.data_chunked
+        assert manager.is_workspace_modified
+        assert uid in manager._workspace_state.dirty_data
+        assert not operation_errors
+        manager._workspace_state.path = None
+
+
 def test_manager_background_workspace_save_failure_restores_state(
     qtbot,
     monkeypatch,
@@ -16318,6 +16424,126 @@ def test_full_save_copies_unopened_pending_toolwindows_without_construction(
             assert f"figures/{figure_uid}/tool" in h5_file
 
 
+def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="source")
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root_uid = manager._tool_graph.root_wrappers[0].uid
+
+        child_uid = manager.add_childtool(_AddedTimeChildTool(data), 0, show=False)
+        child_node = manager._child_node(child_uid)
+        child_node.set_pending_workspace_payload(
+            "tool",
+            tmp_path / "source.itws",
+            f"0/childtools/{child_uid}/tool",
+            payload_attrs={
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    {"data": {"kind": "manager_node", "node_uid": root_uid}}
+                )
+            },
+        )
+        assert (
+            manager._workspace_controller._pending_workspace_tool_references_available(
+                child_node
+            )
+        )
+
+        child_node.update_pending_workspace_payload_attrs(
+            {
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    {"data": {"kind": "future_reference", "node_uid": root_uid}}
+                )
+            }
+        )
+        assert not (
+            manager._workspace_controller._pending_workspace_tool_references_available(
+                child_node
+            )
+        )
+
+        child_node.update_pending_workspace_payload_attrs(
+            {
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    {"data": {"kind": "manager_node", "node_uid": "missing"}}
+                )
+            }
+        )
+        assert not (
+            manager._workspace_controller._pending_workspace_tool_references_available(
+                child_node
+            )
+        )
+
+
+def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _AcceptingMessageDialog(QtWidgets.QDialog):
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            super().__init__()
+
+        def exec(self):
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _AcceptingMessageDialog
+    )
+
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="source")
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        child = _AddedTimeChildTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        child.hide()
+
+        fname = tmp_path / "missing-hidden-tool-class.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r+") as h5_file:
+            h5_file[f"0/childtools/{child_uid}/tool"].attrs["tool_cls_qualname"] = (
+                "erlab.interactive._missing_tool_module:MissingTool"
+            )
+
+        skipped: list[tuple[str | None, Exception]] = []
+        original_record = manager._workspace_controller._record_skipped_workspace_node
+
+        def _record_skipped(node_path: str | None, exc: Exception) -> None:
+            skipped.append((node_path, exc))
+            original_record(node_path, exc)
+
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_record_skipped_workspace_node",
+            _record_skipped,
+        )
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        assert child_uid not in manager._tool_graph.nodes
+        assert skipped
+        assert skipped[0][0] == f"0/childtools/{child_uid}"
+        assert isinstance(skipped[0][1], ModuleNotFoundError)
+
+
 def test_pending_toolwindow_source_metadata_decodes_saved_state(
     qtbot,
     manager_context: Callable[
@@ -16772,16 +16998,31 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
         }
 
         original_materialize = manager._materialize_pending_workspace_payload
+        controller_cls = manager_workspace_io._WorkspaceIOController
+        original_read = controller_cls._read_workspace_imagetool_payload_dataset
 
         def _fail_materialize_pending_payload(_node) -> bool:
             if _node.is_imagetool:
                 pytest.fail("tool reference restore should not materialize parent data")
             return original_materialize(_node)
 
+        def _fail_eager_pending_read(cls, workspace_path, payload_path, *, load_data):
+            del cls
+            if load_data:
+                pytest.fail(
+                    "tool reference restore should not eagerly load parent data"
+                )
+            return original_read(workspace_path, payload_path, load_data=load_data)
+
         monkeypatch.setattr(
             manager,
             "_materialize_pending_workspace_payload",
             _fail_materialize_pending_payload,
+        )
+        monkeypatch.setattr(
+            controller_cls,
+            "_read_workspace_imagetool_payload_dataset",
+            classmethod(_fail_eager_pending_read),
         )
         assert manager._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
@@ -16793,6 +17034,7 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
         assert isinstance(loaded_child, _WorkspaceSweepChildTool)
         assert loaded_child.tool_data.name == child_data.name
         assert loaded_child.tool_data.dims == child_data.dims
+        assert loaded_child.tool_data.chunks is not None
         np.testing.assert_array_equal(loaded_child.tool_data.values, child_data.values)
 
 
@@ -16840,6 +17082,8 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
             )
 
         original_materialize = manager._materialize_pending_workspace_payload
+        controller_cls = manager_workspace_io._WorkspaceIOController
+        original_read = controller_cls._read_workspace_imagetool_payload_dataset
 
         def _fail_materialize_pending_payload(_node) -> bool:
             if _node.is_imagetool:
@@ -16848,10 +17092,23 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
                 )
             return original_materialize(_node)
 
+        def _fail_eager_pending_read(cls, workspace_path, payload_path, *, load_data):
+            del cls
+            if load_data:
+                pytest.fail(
+                    "tool manager-node restore should not eagerly load source data"
+                )
+            return original_read(workspace_path, payload_path, load_data=load_data)
+
         monkeypatch.setattr(
             manager,
             "_materialize_pending_workspace_payload",
             _fail_materialize_pending_payload,
+        )
+        monkeypatch.setattr(
+            controller_cls,
+            "_read_workspace_imagetool_payload_dataset",
+            classmethod(_fail_eager_pending_read),
         )
         assert manager._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
@@ -16867,7 +17124,321 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
         assert loaded_figure.tool_data.name == data.name
         assert loaded_figure.tool_data.dims == data.dims
+        assert loaded_figure.tool_data.chunks is not None
         np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+
+
+def test_manager_save_as_rebinds_live_tool_reference_dataset(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+
+        source = tmp_path / "reference-source.itws"
+        target = tmp_path / "reference-target.itws"
+        manager._save_workspace_document(source, force_full=True)
+        assert manager._load_workspace_file(
+            source, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded_wrapper = manager._tool_graph.root_wrappers[0]
+        assert loaded_wrapper.pending_workspace_memory_payload is not None
+
+        loaded_figure = manager.get_childtool(figure_uid)
+        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
+        source_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        assert str(source.resolve()) in source_paths
+
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        rebound_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        assert str(target.resolve()) in rebound_paths
+        assert str(source.resolve()) not in rebound_paths
+        assert loaded_wrapper.pending_workspace_memory_payload == (
+            target.resolve(),
+            "0/imagetool",
+        )
+        np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+
+
+def test_manager_save_as_rebind_failure_keeps_old_live_references(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+
+        source = tmp_path / "reference-failure-source.itws"
+        target = tmp_path / "reference-failure-target.itws"
+        manager._save_workspace_document(source, force_full=True)
+        assert manager._load_workspace_file(
+            source, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded_wrapper = manager._tool_graph.root_wrappers[0]
+        loaded_figure = manager.get_childtool(figure_uid)
+        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
+        original_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        assert str(source.resolve()) in original_paths
+
+        def _fail_replace(_data_items, _ds) -> None:
+            raise RuntimeError("replacement failed")
+
+        errors: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            loaded_figure, "_replace_persistence_data_items", _fail_replace
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        manager._mark_node_state_dirty(figure_uid)
+
+        assert not _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert errors[-1] == (
+            "Workspace file saved but live references were not updated",
+            "The workspace file was saved, but live tool data could not be "
+            "updated to use the saved file. Reopen the workspace to continue "
+            "from the saved version.",
+        )
+        assert manager._workspace_state.path == source.resolve()
+        assert manager.is_workspace_modified
+        assert loaded_wrapper.pending_workspace_memory_payload == (
+            source.resolve(),
+            "0/imagetool",
+        )
+        assert manager_xarray.dataarray_source_paths(loaded_figure.tool_data) == (
+            original_paths
+        )
+
+
+def test_manager_compact_rebind_failure_keeps_workspace_modified(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+
+        source = tmp_path / "reference-compact-failure-source.itws"
+        manager._save_workspace_document(source, force_full=True)
+        assert manager._load_workspace_file(
+            source, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded_figure = manager.get_childtool(figure_uid)
+        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
+        assert not manager.is_workspace_modified
+
+        def _fail_replace(_data_items, _ds) -> None:
+            raise RuntimeError("replacement failed")
+
+        errors: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            loaded_figure, "_replace_persistence_data_items", _fail_replace
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+
+        assert not manager.compact_workspace()
+        assert errors[-1] == (
+            "Workspace file saved but live references were not updated",
+            "The workspace file was saved, but live tool data could not be "
+            "updated to use the saved file. Reopen the workspace to continue "
+            "from the saved version.",
+        )
+        assert manager._workspace_state.path == source.resolve()
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.needs_full_save
+        assert "Live workspace data references need refresh" in (
+            manager._workspace_state.structure_reasons
+        )
+
+
+def test_manager_save_as_does_not_revive_stale_live_tool_references(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+
+        source = tmp_path / "stale-reference-source.itws"
+        target = tmp_path / "stale-reference-target.itws"
+        manager._save_workspace_document(source, force_full=True)
+        assert manager._load_workspace_file(
+            source, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded_figure = manager.get_childtool(figure_uid)
+        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
+        assert str(source.resolve()) in manager_xarray.dataarray_source_paths(
+            loaded_figure.tool_data
+        )
+
+        loaded_figure._reference_uid = None
+        manager._mark_node_state_dirty(figure_uid)
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        rebound_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        assert str(target.resolve()) in rebound_paths
+        assert str(source.resolve()) not in rebound_paths
+        assert (
+            manager._node_for_target(figure_uid)._workspace_tool_data_references == {}
+        )
+        np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+
+
+def test_manager_save_as_repoints_imported_pending_payload(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="imported",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+
+        source = tmp_path / "import-source.itws"
+        target = tmp_path / "import-target.itws"
+        manager._save_workspace_document(source, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        base_data = xr.DataArray(np.arange(4.0).reshape((2, 2)), dims=["x", "y"])
+        base_root = itool(base_data, manager=False, execute=False)
+        assert isinstance(base_root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(base_root, show=False)
+        base = tmp_path / "import-base.itws"
+        manager._save_workspace_document(base, force_full=True)
+        manager._adopt_workspace_path(base)
+        manager._mark_workspace_clean()
+
+        assert manager._load_workspace_file(
+            source, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        wrapper = next(
+            node
+            for node in manager._tool_graph.root_wrappers.values()
+            if node.pending_workspace_memory_payload is not None
+        )
+        assert wrapper.pending_workspace_memory_payload == (
+            source.resolve(),
+            "0/imagetool",
+        )
+        payload_path = manager._workspace_payload_path(wrapper.uid)
+
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert wrapper.pending_workspace_memory_payload == (
+            target.resolve(),
+            payload_path,
+        )
+
+        source.unlink()
+        manager.show_imagetool(wrapper.index)
+        qtbot.wait_until(lambda: manager.get_imagetool(wrapper.index).isVisible())
+        np.testing.assert_array_equal(
+            manager.get_imagetool(wrapper.index).slicer_area._data.values,
+            data.values,
+        )
 
 
 def test_manager_workspace_embedded_child_tool_keeps_parent_payload_pending(

@@ -412,6 +412,10 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_binding: provenance.ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: provenance.ToolProvenanceSpec | None = None
         self._detached_live_parent_data: xr.DataArray | None = None
+        self._workspace_reference_datasets: dict[
+            tuple[pathlib.Path, str], xr.Dataset
+        ] = {}
+        self._workspace_tool_data_references: dict[str, dict[str, typing.Any]] = {}
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
         self._output_id: str | None = None
@@ -498,6 +502,7 @@ class _ManagedWindowNode(QtCore.QObject):
             if manager is not None:
                 manager._unregister_interaction_window(self.imagetool)
             self._detach_imagetool()
+            self._close_workspace_reference_datasets()
         elif self.tool_window is not None:
             manager = self._manager()
             if manager is not None:
@@ -518,6 +523,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
+            self._close_workspace_reference_datasets()
 
         if value is None:
             return
@@ -570,6 +576,57 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
+
+    def _workspace_reference_dataset(
+        self,
+        key: tuple[pathlib.Path, str],
+        opener: Callable[[], xr.Dataset],
+    ) -> xr.Dataset:
+        try:
+            return self._workspace_reference_datasets[key]
+        except KeyError:
+            dataset = opener()
+            self._workspace_reference_datasets[key] = dataset
+            return dataset
+
+    def _adopt_workspace_reference_datasets(
+        self, datasets: Mapping[tuple[pathlib.Path, str], xr.Dataset]
+    ) -> None:
+        for key, dataset in datasets.items():
+            previous = self._workspace_reference_datasets.get(key)
+            if previous is not None and previous is not dataset:
+                with contextlib.suppress(Exception):
+                    previous.close()
+            self._workspace_reference_datasets[key] = dataset
+
+    def _set_workspace_tool_data_references(
+        self, references: Mapping[str, Mapping[str, typing.Any]]
+    ) -> None:
+        self._workspace_tool_data_references = {
+            variable_name: dict(reference)
+            for variable_name, reference in references.items()
+        }
+
+    def _replace_workspace_reference_datasets(
+        self, datasets: Mapping[tuple[pathlib.Path, str], xr.Dataset]
+    ) -> None:
+        previous = self._workspace_reference_datasets
+        self._workspace_reference_datasets = dict(datasets)
+        retained = {
+            id(dataset) for dataset in self._workspace_reference_datasets.values()
+        }
+        for dataset in previous.values():
+            if id(dataset) not in retained:
+                with contextlib.suppress(Exception):
+                    dataset.close()
+
+    def _close_workspace_reference_datasets(self) -> None:
+        datasets = tuple(self._workspace_reference_datasets.values())
+        self._workspace_reference_datasets.clear()
+        self._workspace_tool_data_references.clear()
+        for dataset in datasets:
+            with contextlib.suppress(Exception):
+                dataset.close()
 
     def _configure_tool_secondary_window(self, window: QtWidgets.QWidget) -> None:
         manager = self._manager()

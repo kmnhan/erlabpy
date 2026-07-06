@@ -5673,7 +5673,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_data = dict(self._source_data)
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
         changed = False
-        if primary_data is not None and self._recipe.primary_source not in source_data:
+        if (
+            primary_data is not None
+            and source_data.get(self._recipe.primary_source) is not primary_data
+        ):
             source_data[self._recipe.primary_source] = primary_data
             changed = True
         for source in self._recipe.sources:

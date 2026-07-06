@@ -1534,7 +1534,7 @@ class ArraySlicer(QtCore.QObject):
             self._binned[cursor],
         )
 
-        selected = self._obj.data[selection]
+        selected = self._obj.data[tuple(selection)]
         if not any_binned:
             return selected
 

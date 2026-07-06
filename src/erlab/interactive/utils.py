@@ -5041,6 +5041,27 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Restore named data artifacts saved by `_persistence_data_items()`."""
         del data_items, ds
 
+    def _replace_persistence_data_items(
+        self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+    ) -> None:
+        """Replace saved data artifacts in an already constructed tool window."""
+        primary_data = data_items.get(_SAVED_TOOL_DATA_NAME)
+        if primary_data is not None:
+            update_overridden = type(self).update_data is not ToolWindow.update_data
+            restore_overridden = (
+                type(self)._restore_persistence_data_items
+                is not ToolWindow._restore_persistence_data_items
+            )
+            if update_overridden:
+                current_name = self.tool_data.name
+                self.update_data(primary_data.rename(current_name))
+            elif not restore_overridden:
+                raise NotImplementedError(
+                    f"{type(self).__name__} must implement update_data() or "
+                    "_restore_persistence_data_items() to replace saved data."
+                )
+        self._restore_persistence_data_items(data_items, ds)
+
     def _flush_restore_work_for_save(self) -> None:
         """Materialize deferred restore work required before serialization."""
         self._flush_restore_work()
@@ -5277,6 +5298,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             data_items[_SAVED_TOOL_DATA_NAME] = ds[_SAVED_TOOL_DATA_NAME]
         return data_items
 
+    @staticmethod
+    def _saved_tool_class_from_dataset(ds: xr.Dataset) -> type[ToolWindow]:
+        qualname = ds.attrs.get("tool_cls_qualname")
+        if not isinstance(qualname, str):
+            raise TypeError("Saved tool dataset is missing a valid tool class")
+        try:
+            mod_name, qual = qualname.split(":", maxsplit=1)
+        except ValueError as exc:
+            raise TypeError("Saved tool dataset is missing a valid tool class") from exc
+        if not mod_name or not qual:
+            raise TypeError("Saved tool dataset is missing a valid tool class")
+
+        mod = importlib.import_module(mod_name)
+        cls_obj: object = mod
+        for attr in qual.split("."):
+            cls_obj = getattr(cls_obj, attr)
+        if not isinstance(cls_obj, type) or not issubclass(cls_obj, ToolWindow):
+            raise TypeError("Saved tool class is not a ToolWindow subclass")
+        return cls_obj
+
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
         """Restore a tool window from a :class:`xarray.Dataset`.
@@ -5314,13 +5355,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 f"({erlab.__version__}). Some features may not be supported.",
             )
 
-        # Get the class object from the saved qualname
-        mod_name, qual = ds.attrs["tool_cls_qualname"].split(":")
-        mod = importlib.import_module(mod_name)
-        cls_obj = mod
-        for attr in qual.split("."):
-            cls_obj = getattr(cls_obj, attr)
-        cls_obj = typing.cast("type[typing.Self]", cls_obj)
+        cls_obj = typing.cast(
+            "type[typing.Self]", cls._saved_tool_class_from_dataset(ds)
+        )
         data_items = cls_obj._tool_data_items_from_dataset(
             ds,
             source_parent_data=source_parent_data,

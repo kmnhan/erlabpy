@@ -70,6 +70,7 @@ if typing.TYPE_CHECKING:
         Mapping,
         Sequence,
     )
+    from collections.abc import Set as AbstractSet
 
     import numpy as np
     import xarray as xr
@@ -3984,6 +3985,7 @@ class ImageToolManager(_ImageToolManagerBase):
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
         require_matching_compression: bool = False,
+        mark_clean: bool = True,
     ) -> None:
         self._workspace_controller._save_workspace_document(
             fname,
@@ -3991,6 +3993,7 @@ class ImageToolManager(_ImageToolManagerBase):
             document_access=document_access,
             reuse_unchanged_groups=reuse_unchanged_groups,
             require_matching_compression=require_matching_compression,
+            mark_clean=mark_clean,
         )
 
     def _workspace_save_dialog(
@@ -4065,6 +4068,7 @@ class ImageToolManager(_ImageToolManagerBase):
         chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
         old_workspace_path: str | os.PathLike[str] | None = None,
+        exclude_uids: AbstractSet[str] = frozenset(),
     ) -> None:
         self._workspace_controller._rebind_workspace_backed_imagetools(
             fname,
@@ -4072,6 +4076,7 @@ class ImageToolManager(_ImageToolManagerBase):
             chunks=chunks,
             backing_snapshot=backing_snapshot,
             old_workspace_path=old_workspace_path,
+            exclude_uids=exclude_uids,
         )
 
     def offload_to_workspace(

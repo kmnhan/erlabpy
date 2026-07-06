@@ -112,7 +112,15 @@ class _ManagerWorkspaceState:
         return dirty_changed
 
     def mark_dirty(self, event: _manager_workspace._WorkspaceDirtyEvent) -> bool:
-        if self.apply_dirty_event(event):
+        dirty_changed = self.apply_dirty_event(event)
+        if dirty_changed or (
+            self.save_in_progress
+            and (
+                event.uid is not None
+                or event.removed is not None
+                or event.structure is not None
+            )
+        ):
             self.dirty_generation = event.generation
             self.dirty_events.append(event)
             return True
@@ -120,6 +128,9 @@ class _ManagerWorkspaceState:
 
     def mark_layout_dirty(self) -> bool:
         if self.layout_modified:
+            if self.save_in_progress:
+                self.dirty_generation += 1
+                return True
             return False
         self.layout_modified = True
         self.dirty_generation += 1
@@ -127,6 +138,9 @@ class _ManagerWorkspaceState:
 
     def mark_options_dirty(self) -> bool:
         if self.options_modified:
+            if self.save_in_progress:
+                self.dirty_generation += 1
+                return True
             return False
         self.options_modified = True
         self.dirty_generation += 1
