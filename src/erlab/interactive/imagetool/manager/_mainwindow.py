@@ -64,13 +64,13 @@ if typing.TYPE_CHECKING:
     import pathlib
     from collections.abc import (
         Callable,
+        Collection,
         Hashable,
         Iterable,
         Iterator,
         Mapping,
         Sequence,
     )
-    from collections.abc import Set as AbstractSet
 
     import numpy as np
     import xarray as xr
@@ -4068,7 +4068,7 @@ class ImageToolManager(_ImageToolManagerBase):
         chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
         old_workspace_path: str | os.PathLike[str] | None = None,
-        exclude_uids: AbstractSet[str] = frozenset(),
+        exclude_uids: Collection[str] = frozenset(),
     ) -> None:
         self._workspace_controller._rebind_workspace_backed_imagetools(
             fname,

@@ -60,13 +60,13 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     from collections.abc import (
         Callable,
+        Collection,
         Hashable,
         Iterable,
         Iterator,
         Mapping,
         Sequence,
     )
-    from collections.abc import Set as AbstractSet
 
     import h5py
 
@@ -1945,7 +1945,7 @@ class _WorkspaceIOController:
         self,
         workspace_path: str | os.PathLike[str],
         *,
-        exclude_data_uids: AbstractSet[str] = frozenset(),
+        exclude_data_uids: Collection[str] = frozenset(),
     ) -> None:
         for node in self._manager._tool_graph.nodes.values():
             tool = node.tool_window
@@ -2007,7 +2007,7 @@ class _WorkspaceIOController:
     @staticmethod
     def _workspace_tool_references_include_uids(
         references: Mapping[str, Mapping[str, typing.Any]],
-        uids: AbstractSet[str],
+        uids: Collection[str],
         *,
         parent_uid: str | None,
     ) -> bool:
@@ -2127,7 +2127,7 @@ class _WorkspaceIOController:
         *,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
         old_workspace_path: str | os.PathLike[str] | None = None,
-        skip_live_data_rebind_uids: AbstractSet[str] = frozenset(),
+        skip_live_data_rebind_uids: Collection[str] = frozenset(),
     ) -> None:
         pending_snapshot = self._pending_workspace_payload_snapshot()
         live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
@@ -5523,7 +5523,7 @@ class _WorkspaceIOController:
         chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
         old_workspace_path: str | os.PathLike[str] | None = None,
-        exclude_uids: AbstractSet[str] = frozenset(),
+        exclude_uids: Collection[str] = frozenset(),
     ) -> None:
         pending: list[
             tuple[
