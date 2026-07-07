@@ -15944,6 +15944,17 @@ def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     assert decimated is not None
     assert decimated[0].size <= manager_widgets._CURVE_PREVIEW_MAX_POINTS
 
+    assert manager_widgets._curve_preview_data(np.arange(2.0), np.arange(3.0)) is None
+    assert (
+        manager_widgets._curve_preview_data(
+            np.array([np.nan, np.inf]), np.array([1.0, np.nan])
+        )
+        is None
+    )
+    preview.setCurve(np.arange(2.0), np.arange(3.0))
+    assert preview._curve_data is None
+    assert not preview.isVisible()
+
     pixmap = QtGui.QPixmap(32, 16)
     pixmap.fill(QtCore.Qt.GlobalColor.white)
     preview.setPixmap(pixmap)
@@ -15951,6 +15962,111 @@ def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     assert preview._curve_item.isVisible() is False
     assert preview.scene() is not None
     assert preview.scene().sceneRect() == QtCore.QRectF(0.0, 0.0, 32.0, 16.0)
+
+    preview.setPixmap(QtGui.QPixmap())
+    assert not preview.isVisible()
+    assert preview.scene() is not None
+    assert preview.scene().sceneRect() == QtCore.QRectF()
+
+
+def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
+    monkeypatch,
+) -> None:
+    valid_objects: set[int] = set()
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda obj: id(obj) in valid_objects,
+    )
+
+    class _FakeArea:
+        def __init__(self, main_image: object | None) -> None:
+            self._main_image = main_image
+            self.array_slicer = types.SimpleNamespace(
+                values_of_dim=lambda _dim: np.arange(3.0)
+            )
+
+        def _update_if_delayed(self) -> None:
+            return
+
+        @property
+        def main_image(self) -> object:
+            if self._main_image is None:
+                raise RuntimeError
+            return self._main_image
+
+    def _tool(main_image: object | None) -> types.SimpleNamespace:
+        return types.SimpleNamespace(slicer_area=_FakeArea(main_image))
+
+    assert manager_wrapper._preview_curve_from_imagetool(None) is None
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(None)) is None
+
+    invalid_image = types.SimpleNamespace(slicer_data_items=[])
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(invalid_image)) is None
+
+    empty_image = types.SimpleNamespace(slicer_data_items=[])
+    valid_objects.add(id(empty_image))
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(empty_image)) is None
+
+    invalid_item = types.SimpleNamespace()
+    item_image = types.SimpleNamespace(slicer_data_items=[invalid_item])
+    valid_objects.add(id(item_image))
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(item_image)) is None
+
+    missing_values_item = types.SimpleNamespace(image=None)
+    image_without_values = types.SimpleNamespace(
+        is_image=True,
+        slicer_data_items=[missing_values_item],
+    )
+    valid_objects.update({id(image_without_values), id(missing_values_item)})
+    assert (
+        manager_wrapper._preview_curve_from_imagetool(_tool(image_without_values))
+        is None
+    )
+
+    bad_shape_item = types.SimpleNamespace(image=np.array(1.0))
+    bad_shape_image = types.SimpleNamespace(
+        is_image=True,
+        slicer_data_items=[bad_shape_item],
+    )
+    valid_objects.update({id(bad_shape_image), id(bad_shape_item)})
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(bad_shape_image)) is None
+
+    one_dimensional_image_item = types.SimpleNamespace(image=np.arange(3.0)[:, None])
+    one_dimensional_image = types.SimpleNamespace(
+        is_image=True,
+        slicer_data_items=[one_dimensional_image_item],
+        axis_dims=(),
+        display_axis=(),
+    )
+    valid_objects.update({id(one_dimensional_image), id(one_dimensional_image_item)})
+    curve = manager_wrapper._preview_curve_from_imagetool(_tool(one_dimensional_image))
+    assert curve is not None
+    np.testing.assert_allclose(curve[0], np.arange(3.0))
+    np.testing.assert_allclose(curve[1], np.arange(3.0))
+
+    class _RaisingCurveItem:
+        def getData(self) -> tuple[np.ndarray, np.ndarray]:
+            raise RuntimeError
+
+    raising_item = _RaisingCurveItem()
+    raising_curve_image = types.SimpleNamespace(
+        is_image=False,
+        slicer_data_items=[raising_item],
+    )
+    valid_objects.update({id(raising_curve_image), id(raising_item)})
+    assert (
+        manager_wrapper._preview_curve_from_imagetool(_tool(raising_curve_image))
+        is None
+    )
+
+    none_data_item = types.SimpleNamespace(getData=lambda: (None, np.arange(3.0)))
+    none_data_image = types.SimpleNamespace(
+        is_image=False,
+        slicer_data_items=[none_data_item],
+    )
+    valid_objects.update({id(none_data_image), id(none_data_item)})
+    assert manager_wrapper._preview_curve_from_imagetool(_tool(none_data_image)) is None
 
 
 def test_pending_workspace_preview_and_metadata_reader_fallbacks(
