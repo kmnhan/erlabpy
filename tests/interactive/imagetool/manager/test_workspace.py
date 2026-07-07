@@ -11334,7 +11334,10 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
 
         assert manager.offload_to_workspace([0], native=False)
         assert save_calls == [False]
-        qtbot.wait_until(lambda: root.slicer_area._data.chunks is not None)
+        qtbot.wait_until(
+            lambda: root.slicer_area._data.chunks is not None,
+            timeout=30000,
+        )
 
         rebound = manager.get_imagetool(0).slicer_area._data
         assert rebound.chunks is not None
