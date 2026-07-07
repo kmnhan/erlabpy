@@ -366,6 +366,15 @@ def _render_error_text(error: Exception) -> str:
     return type(error).__name__
 
 
+def _set_preview_draw_error(tool: FigureComposerTool, error: Exception) -> None:
+    current = tool._current_operation()
+    if current is None:
+        return
+    errors = dict(tool._operation_render_errors)
+    errors[current[1].operation_id] = _render_error_text(error)
+    tool._set_operation_render_errors(errors)
+
+
 def _render_preview(
     tool: FigureComposerTool, *, show_window: bool | None = None
 ) -> None:
@@ -386,8 +395,12 @@ def _render_preview(
             tool._mark_preview_pixmap_stale()
             return
         if show_window:
-            tool.canvas.draw()
-            tool.canvas.flush_events()
+            try:
+                tool.canvas.draw()
+            except Exception as exc:
+                _set_preview_draw_error(tool, exc)
+            else:
+                tool.canvas.flush_events()
         elif (window := _valid_figure_window(tool)) is not None and window.isVisible():
             window.canvas.draw_idle()
     finally:

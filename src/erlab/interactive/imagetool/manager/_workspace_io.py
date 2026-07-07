@@ -461,6 +461,57 @@ class _WorkspaceIOController:
         return ds[_ITOOL_DATA_NAME]
 
     @staticmethod
+    def _pending_workspace_data_with_saved_dim_order(
+        data: xr.DataArray, attrs: Mapping[typing.Any, typing.Any]
+    ) -> xr.DataArray:
+        raw_state = attrs.get("itool_state")
+        if isinstance(raw_state, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
+        if not isinstance(raw_state, str):
+            return data
+        try:
+            state = json.loads(raw_state)
+        except Exception:
+            logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            return data
+        if not isinstance(state, collections.abc.Mapping):
+            return data
+        slice_state = state.get("slice")
+        if not isinstance(slice_state, collections.abc.Mapping):
+            return data
+        raw_dims = slice_state.get("dims")
+        if not isinstance(raw_dims, (list, tuple)):
+            return data
+
+        saved_dims = tuple(str(dim) for dim in raw_dims)
+        dims_by_text = {str(dim): dim for dim in data.dims}
+        if (
+            len(saved_dims) != data.ndim
+            or len(dims_by_text) != data.ndim
+            or set(saved_dims) != set(dims_by_text)
+        ):
+            logger.debug(
+                "Ignoring incompatible saved pending ImageTool dimension order %s "
+                "for data dims %s",
+                saved_dims,
+                data.dims,
+            )
+            return data
+        ordered_dims = tuple(dims_by_text[dim] for dim in saved_dims)
+        if ordered_dims == data.dims:
+            return data
+        try:
+            return data.transpose(*ordered_dims, transpose_coords=True)
+        except ValueError:
+            logger.debug(
+                "Could not apply saved pending ImageTool dimension order %s",
+                saved_dims,
+                exc_info=True,
+            )
+            return data
+
+    @staticmethod
     def _apply_pending_workspace_filter(
         data: xr.DataArray, filter_payload: object
     ) -> xr.DataArray:
@@ -502,15 +553,21 @@ class _WorkspaceIOController:
         attrs = node.pending_workspace_payload_attrs
         if attrs is None:
             attrs = ds.attrs
+        data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
         raw_state = attrs.get("itool_state")
         if isinstance(raw_state, bytes):
-            raw_state = raw_state.decode()
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
         if isinstance(raw_state, str):
-            state = json.loads(raw_state)
-            if isinstance(state, collections.abc.Mapping):
-                data = self._apply_pending_workspace_filter(
-                    data, state.get("filter_operation")
-                )
+            try:
+                state = json.loads(raw_state)
+            except Exception:
+                logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            else:
+                if isinstance(state, collections.abc.Mapping):
+                    data = self._apply_pending_workspace_filter(
+                        data, state.get("filter_operation")
+                    )
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim == 1:
             data = provenance.mark_promoted_1d_source(data)
         return data.copy(deep=False)
@@ -617,6 +674,10 @@ class _WorkspaceIOController:
                     return None
                 name = None if node.name == "" else node.name
                 data = ds[_ITOOL_DATA_NAME].rename(name)
+                attrs = node.pending_workspace_payload_attrs
+                if attrs is None:
+                    attrs = ds.attrs
+                data = cls._pending_workspace_data_with_saved_dim_order(data, attrs)
                 additional_info = [f"Added {node.added_time_display}"]
                 try:
                     metadata_data = cls._pending_workspace_data_with_loaded_coords(data)
@@ -2581,6 +2642,9 @@ class _WorkspaceIOController:
                 if _ITOOL_DATA_NAME not in ds:
                     return False
                 target_data = ds[_ITOOL_DATA_NAME]
+                target_data = self._pending_workspace_data_with_saved_dim_order(
+                    target_data, attrs
+                )
                 array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
                     target_data,
                     self._manager,

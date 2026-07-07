@@ -935,8 +935,8 @@ def _compile_spec(
                     input_spec = script_input.parsed_provenance_spec()
                     if input_spec is None:
                         raise ReplayGraphError(
-                            f"{script_input.name} from {script_input.label} "
-                            "does not contain recorded source provenance"
+                            f"{script_input.name} does not contain recorded source "
+                            "provenance"
                         )
                     input_key = _compile_spec(
                         graph,
@@ -1641,6 +1641,36 @@ def _cleanup_emitted_replay_code(code: str) -> str:
     return _compact_replay_temp_names(code)
 
 
+def _hoist_top_level_imports(code: str) -> str:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+
+    imports: list[ast.stmt] = []
+    import_codes: set[str] = set()
+    body: list[ast.stmt] = []
+    changed = False
+    seen_non_import = False
+    for statement in module.body:
+        if isinstance(statement, ast.Import | ast.ImportFrom):
+            import_code = ast.unparse(statement)
+            if import_code not in import_codes:
+                imports.append(statement)
+                import_codes.add(import_code)
+            else:
+                changed = True
+            changed = changed or seen_non_import
+            continue
+        seen_non_import = True
+        body.append(statement)
+
+    if not changed:
+        return code
+    module.body = [*imports, *body]
+    return ast.unparse(ast.fix_missing_locations(module))
+
+
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
@@ -1764,7 +1794,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         planned_name = names[key]
         if public_name != planned_name:
             lines.append(f"{public_name} = {planned_name}")
-    return _cleanup_emitted_replay_code("\n".join(lines))
+    code = _cleanup_emitted_replay_code("\n".join(lines))
+    if graph.display:
+        code = _hoist_top_level_imports(code)
+    return code
 
 
 def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) -> str:
@@ -1779,8 +1812,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
         input_spec = script_input.parsed_provenance_spec()
         if input_spec is None:
             raise ReplayGraphError(
-                f"{script_input.name} from {script_input.label} "
-                "does not contain recorded source provenance"
+                f"{script_input.name} does not contain recorded source provenance"
             )
         input_key = _compile_spec(
             graph,
@@ -2087,7 +2119,7 @@ def rebuild_script_provenance(
             input_spec = script_input.parsed_provenance_spec()
             if input_spec is None:
                 raise ReplayGraphError(
-                    f"{script_input.name} from {script_input.label} is not open and "
+                    f"{script_input.name} is not open and "
                     "does not contain recorded source provenance."
                 )
             if input_spec.kind == "file":
@@ -2125,7 +2157,7 @@ def rebuild_script_provenance(
                 )
                 continue
             raise ReplayGraphError(
-                f"{script_input.name} from {script_input.label} is not open and "
+                f"{script_input.name} is not open and "
                 "does not contain reloadable script or file provenance."
             )
         return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})

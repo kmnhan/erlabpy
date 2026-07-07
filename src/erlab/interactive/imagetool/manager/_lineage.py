@@ -156,10 +156,9 @@ class _LineageController:
                 if self._manager._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
             name = " ".join(ref.name.split())
-            label = " ".join(ref.label.split())
             current = " ".join(current.split())
-            if name and label and current:
-                parts.append(f"{name}: {label} ({current})")
+            if name and current:
+                parts.append(f"{name} ({current})")
         if not parts:
             return None
         return "\n".join(parts)
@@ -331,26 +330,13 @@ class _LineageController:
             if input_provenance is not None
             else None
         )
-        if isinstance(node, _ImageToolWrapper):
-            label = f"ImageTool {node.index}"
-        else:
-            fallback_label = (
-                "ImageTool child"
-                if node.is_imagetool
-                else node.type_badge_text or "Tool"
-            )
-            label = node.display_text or fallback_label
-        if isinstance(node, _ImageToolWrapper) and node.name:
-            label += f": {node.name}"
         if node.uid == detached_input_uid:
             return provenance.ScriptInput(
                 name=self._manager._script_input_name_for_node(node),
-                label=label,
                 provenance_spec=provenance_spec,
             )
         return provenance.ScriptInput(
             name=self._manager._script_input_name_for_node(node),
-            label=label,
             node_uid=node.uid,
             node_snapshot_token=node.snapshot_token,
             provenance_spec=provenance_spec,
@@ -512,25 +498,25 @@ class _LineageController:
                 return None
         if spec is None:
             return (
-                f"{script_input.label} has no recorded reload source. Reopen the "
+                f"{script_input.name} has no recorded reload source. Reopen the "
                 "input or recreate the result from reloadable inputs, then try "
                 "again."
             )
         if spec.kind == "file" or provenance.has_file_load_source(spec):
-            reason = self._file_load_source_unavailable_reason(spec, script_input.label)
+            reason = self._file_load_source_unavailable_reason(spec, script_input.name)
             if reason is not None:
                 return reason
             if spec.kind == "file":
                 return None
         if spec.kind != "script":
             return (
-                f"{script_input.label} has recorded provenance that cannot be "
+                f"{script_input.name} has recorded provenance that cannot be "
                 "reloaded. Reopen the input or recreate the result from "
                 "reloadable inputs, then try again."
             )
         if not self._script_provenance_runnable(spec):
             return (
-                f"{script_input.label} was created from recorded code that "
+                f"{script_input.name} was created from recorded code that "
                 "cannot be replayed. Recreate the result from reloadable "
                 "inputs to enable reload."
             )

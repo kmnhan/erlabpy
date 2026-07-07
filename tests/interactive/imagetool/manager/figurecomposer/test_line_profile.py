@@ -3,6 +3,53 @@
 from ._common import *
 
 
+def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("cut", "kx"),
+        coords={"cut": [0.0, 1.0, 2.0], "kx": [-1.0, -0.5, 0.5, 1.0]},
+        name="profile",
+    )
+    operation = FigureOperationState.line(
+        label="profiles", source="profile"
+    ).model_copy(
+        update={
+            "map_selections": (
+                FigureDataSelectionState(source="profile", qsel={"cut": 0.0}),
+            ),
+            "line_x": "kx",
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"profile": data},
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.line_source == "profile_selected"
+    assert loaded_operation.map_selections == ()
+    source_by_name = {source.name: source for source in tool.source_states()}
+    assert source_by_name["profile_selected"].selection_source == "profile"
+    assert source_by_name["profile_selected"].qsel == {"cut": 0.0}
+    xr.testing.assert_identical(
+        tool.source_data()["profile_selected"], data.qsel(cut=0.0)
+    )
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+
+    assert tool.findChild(QtWidgets.QLineEdit, "figureComposerLineSelectionEdit")
+    assert (
+        tool.findChild(QtWidgets.QWidget, "figureComposerLineInputSelectionSection")
+        is None
+    )
+
+
 def test_imagetool_line_profile_seeds_public_nonuniform_coordinate(qtbot) -> None:
     public = xr.DataArray(
         np.arange(24.0).reshape(4, 2, 3),
@@ -365,7 +412,7 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         }
     )
     assert (
-        len(figurecomposer_line_profile._line_data_items(tool, selected_operation)) == 1
+        len(figurecomposer_line_profile._line_data_items(tool, selected_operation)) == 2
     )
     assert (
         figurecomposer_line_profile._line_data_items(
@@ -419,8 +466,8 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         == []
     )
     selection_lines = figurecomposer_line_profile._line_code(tool, selected_operation)
-    assert selection_lines[0] == "profiles = ["
-    assert any(".qsel(cut=0.0)" in line for line in selection_lines)
+    assert not any(line == "profiles = [" for line in selection_lines)
+    assert any(".qsel(kx=slice(-1.0, 1.0))" in line for line in selection_lines)
     one_per_axis_lines = figurecomposer_line_profile._line_code(
         tool, operation.model_copy(update={"line_placement": "one_per_axis"})
     )
@@ -1616,15 +1663,10 @@ def test_figure_composer_plot_slices_line_color_codegen_helper_variants() -> Non
 
     missing_key_operation = FigureOperationState.plot_slices(
         label="missing-key",
-        sources=("a",),
+        sources=("missing",),
         slice_dim="eV",
         slice_values=(0.1,),
-    ).model_copy(
-        update={
-            "line_color_mode": "coordinate",
-            "map_selections": (FigureDataSelectionState(source="missing"),),
-        }
-    )
+    ).model_copy(update={"line_color_mode": "coordinate"})
     assert (
         figurecomposer_plot_slices._plot_slices_line_color_code_lines(
             tool, missing_key_operation

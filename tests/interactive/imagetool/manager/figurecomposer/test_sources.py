@@ -3,6 +3,19 @@
 from ._common import *
 
 
+def _source_context_action(
+    tool: FigureComposerTool, object_name: str
+) -> tuple[QtWidgets.QMenu, QtGui.QAction]:
+    tool._show_source_context_menu(QtCore.QPoint(0, 0))
+    assert tool._source_context_menu is not None
+    action = next(
+        action
+        for action in tool._source_context_menu.actions()
+        if action.objectName() == object_name
+    )
+    return tool._source_context_menu, action
+
+
 def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     qtbot, monkeypatch
 ) -> None:
@@ -102,11 +115,11 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
     assert first_item.font(0).bold()
-    assert first_item.text(1) == "data_0"
+    assert first_item.text(0) == "data_0"
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
-    assert second_item.text(1) == "data_1"
+    assert second_item.text(0) == "data_1"
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -136,7 +149,7 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
 
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
-    shape_widget = tool.source_list.itemWidget(first_item, 2)
+    shape_widget = tool.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert shape_widget.text() == "<p>formatted shape</p>"
     assert tool.source_list.toolTip() == ""
@@ -214,9 +227,7 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
 
     buttons = _source_refresh_buttons(tool)
     assert buttons["data_0"].isEnabled()
-    assert buttons["data_0"].toolTip() == (
-        "Refresh “ImageTool 0: image” from ImageTool 0: image"
-    )
+    assert buttons["data_0"].toolTip() == "Refresh “data_0” from ImageTool 0: image"
     assert not buttons["profile"].isEnabled()
     assert buttons["profile"].toolTip() == (
         "This source is not linked to an open ImageTool"
@@ -293,11 +304,11 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     )
     assert tool._source_refresh_label("data_0") is None
 
-    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", "", ""])
+    direct_item = QtWidgets.QTreeWidgetItem(["direct", "", ""])
     tool.source_list.addTopLevelItem(direct_item)
     direct_button = QtWidgets.QToolButton(tool.source_list)
     direct_button.setObjectName("figureComposerRefreshSourceButton")
-    tool.source_list.setItemWidget(direct_item, 3, direct_button)
+    tool.source_list.setItemWidget(direct_item, 2, direct_button)
     assert (
         tool._source_list_row_button(direct_item, "figureComposerRefreshSourceButton")
         is direct_button
@@ -357,7 +368,7 @@ def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> N
     assert not buttons["profile"].isEnabled()
     assert buttons["profile"].toolTip() == "This source is used by one or more steps"
     assert buttons["unused"].isEnabled()
-    assert buttons["unused"].toolTip() == "Remove “Unused” from this figure"
+    assert buttons["unused"].toolTip() == "Remove “unused” from this figure"
 
     before_status = tool.tool_status
     before_source_data = tool.source_data()
@@ -452,31 +463,239 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert set(_source_remove_buttons(tool)) == {"data_0"}
 
 
-def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
-    source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
-    assert (
-        figurecomposer_sources._source_display_label(source, "data_0")
-        == "ImageTool 0: sample_map"
+def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data_0", label="Legacy first"),
+                FigureSourceState(name="data_1", label="Legacy second"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0", "data_1"),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.line(
+                    label="profile",
+                    source="data_0",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": first, "data_1": second},
     )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"data_0"}, "data_0")
+    tool._refresh_source_selection_editor()
+
+    alias_edit = tool.source_selection_controls.findChild(
+        QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
+    )
+    assert alias_edit is not None
+    assert alias_edit.text() == "data_0"
+    tool._rename_source_alias("data_0", "renamed")
+
+    assert tuple(source.name for source in tool.source_states()) == (
+        "renamed",
+        "data_1",
+    )
+    assert tool.tool_status.primary_source == "renamed"
+    assert tuple(tool.source_data()) == ("renamed", "data_1")
+    assert tool.tool_status.operations[0].sources == ("renamed", "data_1")
+    assert tool.tool_status.operations[1].line_source == "renamed"
+    assert tool.source_list.topLevelItem(0).text(0) == "renamed"
+    assert "Legacy" not in tool.source_list.topLevelItem(0).text(0)
+
+    assert tool._source_alias_error("data_1", current="renamed") is not None
+
+
+def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
+    first = _figure_composer_profile_source("first")
+    second = _figure_composer_profile_source("second")
+    third = _figure_composer_profile_source("third")
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second, "third": third},
+        sources=(
+            FigureSourceState(name="first"),
+            FigureSourceState(name="second", isel={"x": 0}, selection_source="first"),
+            FigureSourceState(name="third"),
+        ),
+        operations=(FigureOperationState.line(label="profile", source="first"),),
+        setup=FigureSubplotsState(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    tool._source_selection_base_data["second"] = first
+    tool._set_selected_source_names_silent({"second"}, "second")
+    tool._refresh_source_controls()
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerDuplicateSourceButton")
+        is None
+    )
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerMoveSourceUpButton")
+        is None
+    )
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerMoveSourceDownButton")
+        is None
+    )
+    assert (
+        tool.source_list.dragDropMode()
+        == QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+    )
+    assert tool.source_list.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
+    assert tool.source_list.showDropIndicator()
+
+    menu, move_up_action = _source_context_action(
+        tool, "figureComposerContextMoveSourceUpAction"
+    )
+    move_down_action = next(
+        action
+        for action in menu.actions()
+        if action.objectName() == "figureComposerContextMoveSourceDownAction"
+    )
+    assert move_up_action.text() == "Move Up"
+    assert move_down_action.text() == "Move Down"
+    assert move_up_action.isEnabled()
+    assert move_down_action.isEnabled()
+    menu.close()
+
+    menu, duplicate_action = _source_context_action(
+        tool, "figureComposerContextDuplicateSourceAction"
+    )
+    duplicate_action.trigger()
+    menu.close()
+
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second",
+        "second_copy",
+        "third",
+    )
+    duplicate = tool._source_by_name()["second_copy"]
+    assert duplicate.isel == {"x": 0}
+    assert duplicate.selection_source == "first"
+    xr.testing.assert_identical(tool.source_data()["second_copy"], second)
+    xr.testing.assert_identical(tool._source_selection_base_data["second_copy"], first)
+    assert tool.source_list.currentItem().text(0) == "second_copy"
+
+    menu, move_up_action = _source_context_action(
+        tool, "figureComposerContextMoveSourceUpAction"
+    )
+    move_up_action.trigger()
+    menu.close()
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second_copy",
+        "second",
+        "third",
+    )
+    assert tool.source_list.currentItem().text(0) == "second_copy"
+
+    menu, move_down_action = _source_context_action(
+        tool, "figureComposerContextMoveSourceDownAction"
+    )
+    move_down_action.trigger()
+    menu.close()
+    menu, move_down_action = _source_context_action(
+        tool, "figureComposerContextMoveSourceDownAction"
+    )
+    move_down_action.trigger()
+    menu.close()
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second",
+        "third",
+        "second_copy",
+    )
+    assert tool.source_list.currentItem().text(0) == "second_copy"
+
+
+def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> None:
+    data = {
+        name: _figure_composer_profile_source(name) for name in ("a", "b", "c", "d")
+    }
+    tool = FigureComposerTool.from_sources(
+        data,
+        sources=tuple(FigureSourceState(name=name) for name in data),
+        setup=FigureSubplotsState(),
+        primary_source="a",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"b", "c"}, "b")
+
+    first_moved = tool.source_list.takeTopLevelItem(1)
+    second_moved = tool.source_list.takeTopLevelItem(1)
+    assert first_moved is not None
+    assert second_moved is not None
+    tool.source_list.insertTopLevelItem(2, first_moved)
+    tool.source_list.insertTopLevelItem(3, second_moved)
+    tool._set_selected_source_names_silent({"b", "c"}, "b")
+    tool.source_list._emit_rows_reordered()
+
+    assert tuple(source.name for source in tool.source_states()) == (
+        "a",
+        "d",
+        "b",
+        "c",
+    )
+    assert tool.source_list.currentItem().text(0) == "b"
+    assert {item.text(0) for item in tool.source_list.selectedItems()} == {"b", "c"}
+
+
+def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
+    data = {name: _figure_composer_profile_source(name) for name in ("a", "b")}
+    tool = FigureComposerTool.from_sources(
+        data,
+        sources=tuple(FigureSourceState(name=name) for name in data),
+        setup=FigureSubplotsState(),
+        primary_source="a",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"b"}, "b")
+
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_F10,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
+    tool.source_list.keyPressEvent(event)
+
+    assert event.isAccepted()
+    assert tool._source_context_menu is not None
+    action_names = {
+        action.objectName()
+        for action in tool._source_context_menu.actions()
+        if action.objectName()
+    }
+    assert "figureComposerContextMoveSourceUpAction" in action_names
+    assert "figureComposerContextMoveSourceDownAction" in action_names
+    tool._source_context_menu.close()
+
+
+def test_figure_composer_source_display_helpers_use_alias_only() -> None:
+    source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
+    assert figurecomposer_sources._source_display_label(source, "data_0") == "data_0"
     assert (
         figurecomposer_sources._source_display_tooltip(source, "data_0")
-        == "ImageTool 0: sample_map\nAlias: data_0"
+        == "Alias: data_0"
     )
-
-    duplicates = figurecomposer_sources._source_duplicate_labels(
-        (
-            FigureSourceState(name="data_0", label="ImageTool"),
-            FigureSourceState(name="data_1", label="ImageTool"),
-        )
-    )
-    assert duplicates == frozenset(("ImageTool",))
     assert (
         figurecomposer_sources._source_display_label(
             FigureSourceState(name="data_0", label="ImageTool"),
             "data_0",
             disambiguate=True,
         )
-        == "ImageTool (data_0)"
+        == "data_0"
     )
 
 
@@ -533,11 +752,9 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
 
-    assert "ImageTool 0: original" in tool.operation_list.item(0).text()
-    assert "ImageTool 0: original" in tool.operation_list.item(1).text()
-    assert tool.step_section_buttons["sources"].text() == (
-        "Sources: ImageTool 0: original"
-    )
+    assert "data_0" in tool.operation_list.item(0).text()
+    assert "data_0" in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == "Sources: data_0"
 
     replaced = tool.replace_source(
         "data_0",
@@ -554,20 +771,17 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     assert replaced is True
     [source] = tool.source_states()
     assert source.name == "data_0"
-    assert source.label == "ImageTool 1: replacement"
     assert source.node_uid == "new-node"
     assert source.node_snapshot_token == new_snapshot_id
     assert source.provenance_spec == {"source": "new"}
     xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
     assert tool.tool_status.operations[0].sources == ("data_0",)
     assert tool.tool_status.operations[1].line_source == "data_0"
-    assert "ImageTool 1: replacement" in tool.operation_list.item(0).text()
-    assert "ImageTool 0: original" not in tool.operation_list.item(0).text()
-    assert "ImageTool 1: replacement" in tool.operation_list.item(1).text()
-    assert "ImageTool 0: original" not in tool.operation_list.item(1).text()
-    assert tool.step_section_buttons["sources"].text() == (
-        "Sources: ImageTool 1: replacement"
-    )
+    assert "data_0" in tool.operation_list.item(0).text()
+    assert "ImageTool 1: replacement" not in tool.operation_list.item(0).text()
+    assert "data_0" in tool.operation_list.item(1).text()
+    assert "ImageTool 1: replacement" not in tool.operation_list.item(1).text()
+    assert tool.step_section_buttons["sources"].text() == "Sources: data_0"
 
     _render_figure_composer_rgba(tool)
     assert tool._operation_render_errors == {}
@@ -602,7 +816,109 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         "data_0",
         "orphan",
     )
-    assert tool.source_states()[-1].label == "Orphan"
+    assert not hasattr(tool.source_states()[-1], "label")
+
+
+def test_figure_composer_source_refresh_applies_saved_selection(
+    qtbot,
+) -> None:
+    original = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "alpha"),
+        coords={"eV": [-1.0, 0.0], "alpha": [0.0, 1.0, 2.0]},
+        name="map",
+    )
+    selected = original.qsel(eV=0.0)
+    tool = FigureComposerTool.from_sources(
+        {"data": selected},
+        sources=(
+            FigureSourceState(
+                name="data",
+                label="data",
+                qsel={"eV": 0.0},
+                selection_source="data",
+                node_uid="node",
+            ),
+        ),
+        operations=(FigureOperationState.plot_array(label="array", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    replacement = original + 10.0
+    assert tool.replace_source(
+        "data",
+        FigureSourceState(name="data", label="replacement", node_uid="node"),
+        replacement,
+    )
+    xr.testing.assert_identical(tool.source_data()["data"], replacement.qsel(eV=0.0))
+    [source] = tool.source_states()
+    assert source.qsel == {"eV": 0.0}
+    assert source.selection_source == "data"
+
+    stale = tool.source_data()["data"]
+    incompatible = xr.DataArray(
+        np.arange(3.0),
+        dims=("alpha",),
+        coords={"alpha": [0.0, 1.0, 2.0]},
+        name="map",
+    )
+    assert not tool.replace_source(
+        "data",
+        FigureSourceState(name="data", label="bad", node_uid="node"),
+        incompatible,
+    )
+    xr.testing.assert_identical(tool.source_data()["data"], stale)
+    assert "Could not refresh source" in tool.source_status_label.text()
+
+    refreshed = original + 20.0
+    tool.refresh_from_sources({"data": refreshed})
+    xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
+    assert tool.source_status_label.text() == ""
+
+
+def test_figure_composer_batch_source_selection_skips_incompatible_sources(
+    qtbot,
+) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(3.0),
+        dims=("y",),
+        coords={"y": [0.0, 1.0, 2.0]},
+        name="second",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(FigureOperationState.plot_array(label="array", source="first"),),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    tool.source_list.clearSelection()
+    first_item = tool.source_list.topLevelItem(0)
+    second_item = tool.source_list.topLevelItem(1)
+    assert first_item is not None
+    assert second_item is not None
+    first_item.setSelected(True)
+    second_item.setSelected(True)
+
+    tool._update_selected_source_dimension("x", "isel", "1", "")
+
+    source_by_name = {source.name: source for source in tool.source_states()}
+    assert source_by_name["first"].isel == {"x": 1}
+    assert source_by_name["second"].isel == {}
+    xr.testing.assert_identical(tool.source_data()["first"], first.isel(x=1))
+    xr.testing.assert_identical(tool.source_data()["second"], second)
+    assert "second" in tool.source_status_label.text()
 
 
 def test_figure_composer_source_helpers_cover_selection_contract() -> None:
@@ -619,7 +935,7 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     assert figurecomposer_plot_slices._source_names(
         FigureOperationState.plot_slices(
             label="mapped",
-            sources=(),
+            sources=("extra",),
             map_selections=(FigureDataSelectionState(source="extra"),),
         )
     ) == ("extra",)
@@ -735,7 +1051,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     assert "sample_temp_idx" not in shape.source_text
     shape_item = tool.source_list.topLevelItem(0)
     assert shape_item is not None
-    shape_label = tool.source_list.itemWidget(shape_item, 2)
+    shape_label = tool.source_list.itemWidget(shape_item, 1)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert "sample_temp_idx" not in shape_label.text()
 
@@ -782,23 +1098,23 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     )
     qtbot.addWidget(tool)
 
-    assert tool.source_inspector.parentWidget() is tool.step_sources_page
+    assert tool.source_inspector.parentWidget() is tool.sources_page
+    assert tool.editor_tabs.indexOf(tool.sources_page) == 0
     assert not hasattr(tool, "step_detail_splitter")
     assert tool.source_inspector.source_name() == "map"
     assert tool.source_inspector.property("figureComposerSourceAlias") == "map"
     assert tool.source_inspector.property("figureComposerSourceDims") == ("eV", "kx")
     assert tool.source_inspector.property("figureComposerSourceDtype") == "float64"
-    assert tool.source_inspector.property("figureComposerSourceUsedByStep") is True
     assert not tool.source_inspector.details_button.isChecked()
     assert not tool.source_inspector.details_scroll.isVisibleTo(tool.source_inspector)
     assert tool.source_inspector.details_html() == "<p>formatted details</p>"
     assert format_calls[-1] == (
         ("eV", "kx"),
-        {"show_size": True, "show_summary": False, "load_values": False},
+        {"show_size": True, "show_summary": False},
     )
     assert (
         tool.source_list.selectionMode()
-        == QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        == QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
     )
     assert (
         tool.source_list.selectionBehavior()
@@ -808,7 +1124,7 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     assert first_item is not None
     assert first_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
     assert tool.source_list.selectedItems() == [first_item]
-    shape_label = tool.source_list.itemWidget(first_item, 2)
+    shape_label = tool.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert shape_label.testAttribute(
         QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
@@ -820,11 +1136,81 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
 
     second_item = tool.source_list.topLevelItem(1)
     assert second_item is not None
+    tool.source_list.clearSelection()
     tool.source_list.setCurrentItem(second_item)
     assert tool.source_list.selectedItems() == [second_item]
     assert tool.source_inspector.source_name() == "profile"
     assert tool.source_inspector.property("figureComposerSourceAlias") == "profile"
     assert tool.source_inspector.property("figureComposerSourceDims") == ("delay",)
+
+
+def test_figure_composer_source_inspector_details_show_coord_values(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0], "temperature": 20.0},
+        name="profile",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"profile": data},
+        sources=(FigureSourceState(name="profile", label="Profile"),),
+        primary_source="profile",
+    )
+    qtbot.addWidget(tool)
+
+    html = tool.source_inspector.details_html()
+
+    assert "0 : 1 : 2" in html
+    assert ">20</td>" in html
+    assert "float64 [3]" not in html
+    assert "float64 scalar" not in html
+
+
+def test_figure_composer_source_inspector_details_fallback_is_metadata_only(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="profile",
+    )
+    format_calls: list[dict[str, typing.Any]] = []
+
+    def raise_load_coords(data: xr.DataArray) -> xr.DataArray:
+        raise RuntimeError("coordinate metadata unavailable")
+
+    def fake_format_darr_html(
+        data: xr.DataArray,
+        **kwargs: typing.Any,
+    ) -> str:
+        format_calls.append(kwargs)
+        return "<p>fallback details</p>"
+
+    monkeypatch.setattr(
+        figurecomposer_source_inspector,
+        "_source_data_with_loaded_coords",
+        raise_load_coords,
+    )
+    monkeypatch.setattr(
+        erlab.utils.formatting,
+        "format_darr_html",
+        fake_format_darr_html,
+    )
+
+    tool = FigureComposerTool.from_sources(
+        {"profile": data},
+        sources=(FigureSourceState(name="profile", label="Profile"),),
+        primary_source="profile",
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.source_inspector.details_html() == "<p>fallback details</p>"
+    assert format_calls[-1] == {
+        "show_size": True,
+        "show_summary": False,
+        "load_values": False,
+    }
 
 
 def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None:
@@ -844,6 +1230,7 @@ def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None
         primary_source="map",
     )
     qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.sources_page)
     with qtbot.waitExposed(tool):
         tool.show()
 
@@ -901,7 +1288,7 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
         ),
         operations=(
             FigureOperationState.line(label="first line", source="first"),
-            FigureOperationState.line(label="second line", source="second"),
+            FigureOperationState.custom(label="custom", code="pass", trusted=True),
         ),
         primary_source="first",
     )
@@ -909,7 +1296,12 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
 
     assert tool.source_inspector.source_name() == "first"
     tool.operation_list.setCurrentRow(1)
-    assert tool.source_inspector.source_name() == "second"
+    assert tool.source_inspector.source_name() == "first"
+    assert tool.source_status_label.text() == ""
+    assert tool.source_status_label.isHidden()
+    assert (
+        tool.step_source_status_label.text() == "This step does not read a data source."
+    )
     first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
     tool.source_list.setCurrentItem(first_item)
@@ -959,7 +1351,6 @@ def test_figure_composer_source_inspector_updates_without_render_or_history(
     assert render_calls == []
     assert write_calls == []
     assert tool.source_inspector.source_name() == "y"
-    assert tool.source_inspector.property("figureComposerSourceUsedByStep") is True
     assert tool.source_inspector.property("figureComposerSourceAlias") == "y"
 
 
@@ -976,7 +1367,7 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
     missing_metadata = figurecomposer_source_inspector.source_metadata_tooltip(
         source, "data", None
     )
-    assert "Alias: data" in missing_metadata
+    assert missing_metadata.startswith("data")
     assert "unavailable" in missing_metadata
 
     metadata = figurecomposer_source_inspector.source_metadata_tooltip(
@@ -1021,21 +1412,17 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
         source_name=None,
         source_state=None,
         data=None,
-        operation_source_names=(),
     )
     assert inspector.source_name() is None
     assert inspector.property("figureComposerSourceDims") == ()
-    assert inspector.property("figureComposerSourceUsedByStep") is False
     assert not inspector.details_button.isEnabled()
 
     inspector.set_context(
         source_name="data",
         source_state=source,
         data=None,
-        operation_source_names=("data",),
     )
     assert inspector.source_name() == "data"
-    assert inspector.property("figureComposerSourceUsedByStep") is True
     assert inspector.property("figureComposerSourceDims") == ()
     assert not inspector.details_button.isEnabled()
 
@@ -1185,9 +1572,7 @@ def test_figure_composer_provenance_includes_sources_and_build_step(
     spec = tool.current_provenance_spec()
     assert spec is not None
     assert spec.active_name == "fig"
-    assert tuple(script_input.name for script_input in spec.script_inputs) == (
-        "data_0",
-    )
+    assert tuple(script_input.name for script_input in spec.script_inputs) == ("map",)
     entries = spec.display_entries()
     assert len(entries) == 3
     assert entries[1].code is None
@@ -1199,6 +1584,228 @@ def test_figure_composer_provenance_includes_sources_and_build_step(
     assert code is not None
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["fig"], Figure)
+
+
+def test_figure_composer_full_code_composes_selected_file_sources(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    first = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("hv", "x", "y"),
+        coords={"hv": [39.274, 43.698], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="QV12 LH gap15",
+    )
+    second = (first + 10.0).rename("QV12 LH gap15 ALSU")
+    first_path = tmp_path / "first.nc"
+    second_path = tmp_path / "second.nc"
+    first.to_netcdf(first_path)
+    second.to_netcdf(second_path)
+    first_source = FigureSourceState(
+        name="data_3",
+        label="ImageTool 3: QV12 LH gap15",
+        provenance_spec=_file_load_provenance(first_path).model_dump(mode="json"),
+    )
+    second_source = FigureSourceState(
+        name="data_4",
+        label="ImageTool 4: QV12 LH gap15 ALSU",
+        provenance_spec=_file_load_provenance(second_path).model_dump(mode="json"),
+    )
+    first_selected = FigureSourceState(
+        name="data_3_selected",
+        label="QV12 LH gap15 selection",
+        selection_source="data_3",
+        qsel={"hv": 39.274},
+        provenance_spec=first_source.provenance_spec,
+    )
+    second_selected = FigureSourceState(
+        name="data_4_selected",
+        label="QV12 LH gap15 ALSU selection",
+        selection_source="data_4",
+        qsel={"hv": 43.698},
+        provenance_spec=second_source.provenance_spec,
+    )
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(first_source, first_selected, second_source, second_selected),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="plot_array",
+                    source="data_3_selected",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+                FigureOperationState.plot_array(
+                    label="plot_array",
+                    source="data_4_selected",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+            ),
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            primary_source="data_3",
+        ),
+        source_data={
+            "data_3": first,
+            "data_3_selected": first.qsel(hv=39.274),
+            "data_4": second,
+            "data_4_selected": second.qsel(hv=43.698),
+        },
+    )
+    qtbot.addWidget(tool)
+
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    assert tuple(script_input.name for script_input in spec.script_inputs) == (
+        "qv12_lh_gap15",
+        "qv12_lh_gap15_alsu",
+    )
+    code = spec.display_code()
+    assert code is not None
+    lines = [line for line in code.splitlines() if line.strip()]
+    assert lines[:3] == [
+        "import xarray",
+        "import matplotlib.pyplot as plt",
+        "import erlab.plotting as eplt",
+    ]
+    assert "_itool_replay_" not in code
+    assert "data_3_selected =" not in code
+    assert "data_4_selected =" not in code
+    assert "qv12_lh_gap15 = xarray.load_dataarray" in code
+    assert "qv12_lh_gap15_alsu = xarray.load_dataarray" in code
+    assert code.count(".qsel(hv=") == 2
+    assert "eplt.plot_array(qv12_lh_gap15" in code
+    assert "eplt.plot_array(qv12_lh_gap15_alsu" in code
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **_kwargs: captured.append(arr),
+    )
+    namespace = _exec_generated_code(code, {})
+    assert isinstance(namespace["fig"], Figure)
+    xr.testing.assert_identical(captured[0], first.qsel(hv=39.274))
+    xr.testing.assert_identical(captured[1], second.qsel(hv=43.698))
+
+
+def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    data = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("hv", "x", "y"),
+        coords={"hv": [39.274, 43.698], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="fig",
+    )
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    source = FigureSourceState(
+        name="data_3",
+        label="ImageTool 3: fig",
+        provenance_spec=_file_load_provenance(path).model_dump(mode="json"),
+    )
+    selected = FigureSourceState(
+        name="data_3_selected",
+        label="fig selection",
+        selection_source="data_3",
+        qsel={"hv": 39.274},
+        provenance_spec=source.provenance_spec,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(source, selected),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="raw",
+                    source="data_3",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+                FigureOperationState.plot_array(
+                    label="selected",
+                    source="data_3_selected",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+            ),
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            primary_source="data_3",
+        ),
+        source_data={"data_3": data, "data_3_selected": data.qsel(hv=39.274)},
+    )
+    qtbot.addWidget(tool)
+
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    assert tuple(script_input.name for script_input in spec.script_inputs) == (
+        "fig_2",
+        "fig_3",
+    )
+    code = spec.display_code()
+    assert code is not None
+    assert "fig =" not in code
+    assert "fig_2 = xarray.load_dataarray" in code
+    assert "fig_3 = fig_2.qsel(hv=39.274)" in code
+    assert "eplt.plot_array(fig_2" in code
+    assert "eplt.plot_array(fig_3" in code
+
+
+def test_figure_composer_full_code_falls_back_for_live_selected_source(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("hv", "x", "y"),
+        coords={"hv": [39.274, 43.698], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="live",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data_3", label="live", node_uid="node"),
+                FigureSourceState(
+                    name="data_3_selected",
+                    label="live selection",
+                    selection_source="data_3",
+                    qsel={"hv": 39.274},
+                ),
+            ),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="selected",
+                    source="data_3_selected",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data_3",
+        ),
+        source_data={"data_3": data, "data_3_selected": data.qsel(hv=39.274)},
+    )
+    qtbot.addWidget(tool)
+
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    assert tuple(script_input.name for script_input in spec.script_inputs) == (
+        "data_3",
+    )
+    assert spec.display_code() is None
+
+    code = tool.generated_code()
+    assert "data_3_selected = data_3.qsel(hv=39.274)" in code
+    assert "eplt.plot_array(data_3_selected" in code
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **_kwargs: captured.append(arr),
+    )
+    namespace = _exec_generated_code(code, {"data_3": data})
+    assert isinstance(namespace["fig"], Figure)
+    xr.testing.assert_identical(captured[0], data.qsel(hv=39.274))
 
 
 def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
@@ -1306,7 +1913,7 @@ def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
     assert set(tool.source_data()) == {"data"}
     pasted_operation = tool.tool_status.operations[0]
     assert pasted_operation.sources == ("data",)
-    assert pasted_operation.map_selections[0].source == "data"
+    assert pasted_operation.map_selections == ()
     assert pasted_operation.operation_id != original_id
 
 
@@ -1375,7 +1982,7 @@ def test_figure_composer_cut_paste_steps_renames_cross_composer_sources(
     ]
     pasted_plot, pasted_line = destination.tool_status.operations
     assert pasted_plot.sources == ("data_copy",)
-    assert pasted_plot.map_selections[0].source == "data_copy"
+    assert pasted_plot.map_selections == ()
     assert pasted_line.line_source == "profile_copy"
     xr.testing.assert_identical(destination.source_data()["data"], existing_image)
     xr.testing.assert_identical(destination.source_data()["profile"], existing_profile)
@@ -1445,7 +2052,7 @@ def test_figure_composer_copy_paste_steps_renames_source_conflicts(qtbot) -> Non
     ]
     pasted_plot, pasted_line = destination.tool_status.operations
     assert pasted_plot.sources == ("data_copy",)
-    assert pasted_plot.map_selections[0].source == "data_copy"
+    assert pasted_plot.map_selections == ()
     assert pasted_line.line_source == "profile_copy"
     xr.testing.assert_identical(destination.source_data()["data"], existing_image)
     xr.testing.assert_identical(destination.source_data()["profile"], existing_profile)
@@ -1584,7 +2191,7 @@ def test_figure_composer_copy_paste_source_and_insert_fallbacks(
         sources=("data",),
         map_selections=(FigureDataSelectionState(source="extra"),),
     )
-    assert tool._operation_source_names(operation) == ("data", "extra")
+    assert tool._operation_source_names(operation) == ("data",)
 
     renamed_sources, _, _ = tool._renamed_pasted_sources(
         (
@@ -1708,7 +2315,8 @@ def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -
 
     tooltip = target_combo.itemData(0, QtCore.Qt.ItemDataRole.ToolTipRole)
     assert isinstance(tooltip, str)
-    assert all(label in tooltip for label in source_labels)
+    assert all(name in tooltip for name in source_names)
+    assert all(label not in tooltip for label in source_labels)
     assert target_combo.toolTip() == tooltip
     assert target_combo.view().textElideMode() == QtCore.Qt.TextElideMode.ElideMiddle
     assert (

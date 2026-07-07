@@ -457,51 +457,6 @@ def _plot_source_move_buttons(
     }
 
 
-def _plot_array_dimension_widget(
-    tool: FigureComposerTool,
-    widget_type: type[QtWidgets.QWidget],
-    dim: str,
-    *,
-    field: str | None = None,
-) -> QtWidgets.QWidget:
-    widget = next(
-        (
-            candidate
-            for candidate in tool.findChildren(widget_type)
-            if candidate.property("figure_composer_plot_array_dim") == dim
-            if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
-            if field is None
-            or candidate.property("figure_composer_plot_array_selection_field") == field
-        ),
-        None,
-    )
-    assert widget is not None
-    return widget
-
-
-def _plot_array_dimension_edit(
-    tool: FigureComposerTool, dim: str, field: str
-) -> QtWidgets.QLineEdit:
-    return typing.cast(
-        "QtWidgets.QLineEdit",
-        _plot_array_dimension_widget(tool, QtWidgets.QLineEdit, dim, field=field),
-    )
-
-
-def _activate_plot_array_dimension_mode(
-    tool: FigureComposerTool, dim: str, mode: str
-) -> None:
-    combo = typing.cast(
-        "QtWidgets.QComboBox",
-        _plot_array_dimension_widget(tool, QtWidgets.QComboBox, dim),
-    )
-    index = combo.findData(mode)
-    assert index >= 0
-    combo.setCurrentIndex(index)
-    combo.activated.emit(index)
-
-
 def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
     with figurecomposer_defaults._figure_style_context():
         figure = Figure(

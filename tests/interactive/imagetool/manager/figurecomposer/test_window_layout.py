@@ -3,6 +3,19 @@
 from ._common import *
 
 
+def _operation_context_action(
+    tool: FigureComposerTool, object_name: str
+) -> tuple[QtWidgets.QMenu, QtGui.QAction]:
+    tool._show_operation_context_menu(QtCore.QPoint(0, 0))
+    assert tool._operation_context_menu is not None
+    action = next(
+        action
+        for action in tool._operation_context_menu.actions()
+        if action.objectName() == object_name
+    )
+    return tool._operation_context_menu, action
+
+
 def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
     opaque = QtGui.QColor(1, 2, 3)
     translucent = QtGui.QColor(1, 2, 3, 4)
@@ -2342,7 +2355,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert item is not None
     assert "(render error)" in item.text()
     assert "RuntimeError: boom" in item.toolTip()
-    assert "Render error: RuntimeError: boom" in tool.source_status_label.text()
+    assert "Render error: RuntimeError: boom" in tool.step_source_status_label.text()
 
     tool._replace_operation(
         0,
@@ -2353,7 +2366,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert item is not None
     assert "(render error)" not in item.text()
     assert "RuntimeError: boom" not in item.toolTip()
-    assert "Render error" not in tool.source_status_label.text()
+    assert "Render error" not in tool.step_source_status_label.text()
 
 
 def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
@@ -2384,7 +2397,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     item = tool.operation_list.item(0)
     assert item is not None
     assert "Invalid input:" in item.toolTip()
-    assert "Invalid input:" in tool.source_status_label.text()
+    assert "Invalid input:" in tool.step_source_status_label.text()
     with pytest.raises(ValueError, match="invalid step inputs"):
         tool.generated_code()
 
@@ -2406,7 +2419,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     item = tool.operation_list.item(0)
     assert item is not None
     assert "Invalid input:" not in item.toolTip()
-    assert "Invalid input:" not in tool.source_status_label.text()
+    assert "Invalid input:" not in tool.step_source_status_label.text()
 
 
 def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -> None:
@@ -3222,30 +3235,44 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    duplicate_button = tool.findChild(
-        QtWidgets.QToolButton, "figureComposerDuplicateStepButton"
-    )
-    move_up_button = tool.findChild(
-        QtWidgets.QToolButton, "figureComposerMoveStepUpButton"
-    )
-    move_down_button = tool.findChild(
-        QtWidgets.QToolButton, "figureComposerMoveStepDownButton"
-    )
     delete_button = tool.findChild(
         QtWidgets.QToolButton, "figureComposerDeleteStepButton"
     )
-    assert duplicate_button is tool.duplicate_operation_button
-    assert move_up_button is tool.move_operation_up_button
-    assert move_down_button is tool.move_operation_down_button
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerDuplicateStepButton")
+        is None
+    )
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerMoveStepUpButton") is None
+    )
+    assert (
+        tool.findChild(QtWidgets.QToolButton, "figureComposerMoveStepDownButton")
+        is None
+    )
     assert delete_button is tool.remove_operation_button
 
     tool.operation_list.setCurrentRow(0)
-    assert move_up_button.isEnabled() is False
-    assert move_down_button.isEnabled() is True
+    menu, move_up_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepUpAction"
+    )
+    move_down_action = next(
+        action
+        for action in menu.actions()
+        if action.objectName() == "figureComposerContextMoveStepDownAction"
+    )
+    assert move_up_action.text() == "Move Up"
+    assert move_down_action.text() == "Move Down"
+    assert move_up_action.isEnabled() is False
+    assert move_down_action.isEnabled() is True
+    menu.close()
 
     _select_operation_rows(tool, (1,))
     second = tool.tool_status.operations[1]
-    duplicate_button.click()
+    menu, duplicate_action = _operation_context_action(
+        tool, "figureComposerContextDuplicateStepAction"
+    )
+    duplicate_action.trigger()
+    menu.close()
     duplicate = tool.tool_status.operations[2]
     assert tool.operation_list.currentRow() == 2
     assert len(tool.tool_status.operations) == 4
@@ -3255,16 +3282,33 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     )
 
     duplicate_id = duplicate.operation_id
-    move_up_button.click()
+    menu, move_up_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepUpAction"
+    )
+    move_up_action.trigger()
+    menu.close()
     assert tool.operation_list.currentRow() == 1
     assert tool.tool_status.operations[1].operation_id == duplicate_id
-    move_down_button.click()
+    menu, move_down_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepDownAction"
+    )
+    move_down_action.trigger()
+    menu.close()
     assert tool.operation_list.currentRow() == 2
     assert tool.tool_status.operations[2].operation_id == duplicate_id
 
     tool.operation_list.setCurrentRow(3)
-    assert move_up_button.isEnabled() is True
-    assert move_down_button.isEnabled() is False
+    menu, move_up_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepUpAction"
+    )
+    move_down_action = next(
+        action
+        for action in menu.actions()
+        if action.objectName() == "figureComposerContextMoveStepDownAction"
+    )
+    assert move_up_action.isEnabled() is True
+    assert move_down_action.isEnabled() is False
+    menu.close()
 
     namespace: dict[str, typing.Any] = {}
     exec(tool.generated_code(), namespace)  # noqa: S102
@@ -3307,7 +3351,11 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
     selected_originals = [
         tool.tool_status.operations[index].operation_id for index in (1, 3)
     ]
-    tool.duplicate_operation_button.click()
+    menu, duplicate_action = _operation_context_action(
+        tool, "figureComposerContextDuplicateStepAction"
+    )
+    duplicate_action.trigger()
+    menu.close()
 
     assert [operation.label for operation in tool.tool_status.operations] == [
         "a",
@@ -3327,7 +3375,11 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
     duplicate_ids = {
         tool.tool_status.operations[index].operation_id for index in (4, 5)
     }
-    tool.move_operation_up_button.click()
+    menu, move_up_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepUpAction"
+    )
+    move_up_action.trigger()
+    menu.close()
     assert [operation.label for operation in tool.tool_status.operations] == [
         "a",
         "b",
@@ -3346,7 +3398,11 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
     selected_ids = {
         tool.tool_status.operations[index].operation_id for index in (0, 2, 5)
     }
-    tool.move_operation_down_button.click()
+    menu, move_down_action = _operation_context_action(
+        tool, "figureComposerContextMoveStepDownAction"
+    )
+    move_down_action.trigger()
+    menu.close()
     assert [operation.label for operation in tool.tool_status.operations] == [
         "b",
         "a",
@@ -3432,6 +3488,38 @@ def test_figure_composer_drag_reorders_steps_and_history(qtbot) -> None:
         "b",
         "c",
     ]
+
+
+def test_figure_composer_operation_list_keyboard_context_menu(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(_custom_order_step(label) for label in "ab"),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(1)
+
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_Menu,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    tool.operation_list.keyPressEvent(event)
+
+    assert event.isAccepted()
+    assert tool._operation_context_menu is not None
+    action_names = {
+        action.objectName()
+        for action in tool._operation_context_menu.actions()
+        if action.objectName()
+    }
+    assert "figureComposerContextMoveStepUpAction" in action_names
+    assert "figureComposerContextMoveStepDownAction" in action_names
+    tool._operation_context_menu.close()
 
 
 def test_figure_composer_copy_paste_steps_preserves_order_and_history(qtbot) -> None:
@@ -5313,9 +5401,6 @@ def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
         tool.copy_operation_button,
         tool.cut_operation_button,
         tool.paste_operation_button,
-        tool.duplicate_operation_button,
-        tool.move_operation_up_button,
-        tool.move_operation_down_button,
         tool.remove_operation_button,
         tool.operation_list,
     )
@@ -6443,44 +6528,31 @@ def test_figure_composer_provenance_code_detection_edges() -> None:
     assert not figurecomposer_provenance._code_assigns_name("axs = make()", "fig")
 
 
-def test_figure_composer_provenance_build_code_handles_invalid_recipes() -> None:
-    class FakeTool:
-        def __init__(self, code: str | None = None, exc: Exception | None = None):
-            self._code = code
-            self._exc = exc
+def test_figure_composer_provenance_build_code_handles_invalid_recipes(
+    monkeypatch,
+) -> None:
+    code_or_exc: Exception | str = RuntimeError("invalid recipe")
 
-        def generated_code(self) -> str:
-            if self._exc is not None:
-                raise self._exc
-            if self._code is None:
-                raise RuntimeError
-            return self._code
+    def fake_generated_code(*_args, **_kwargs):
+        if isinstance(code_or_exc, Exception):
+            raise code_or_exc
+        return code_or_exc
 
-    assert (
-        figurecomposer_provenance._figure_build_code(
-            typing.cast(
-                "FigureComposerTool",
-                FakeTool(exc=RuntimeError("invalid recipe")),
-            )
-        )
-        is None
+    monkeypatch.setattr(
+        figurecomposer_provenance.erlab.interactive._figurecomposer._codegen,
+        "generated_code",
+        fake_generated_code,
     )
-    assert (
-        figurecomposer_provenance._figure_build_code(
-            typing.cast("FigureComposerTool", FakeTool("if"))
-        )
-        is None
-    )
-    assert (
-        figurecomposer_provenance._figure_build_code(
-            typing.cast("FigureComposerTool", FakeTool("axs = object()"))
-        )
-        is None
-    )
+    fake_tool = typing.cast("FigureComposerTool", object())
 
-    operation = figurecomposer_provenance._figure_build_operation(
-        typing.cast("FigureComposerTool", FakeTool("fig = object()"))
-    )
+    assert figurecomposer_provenance._figure_build_code(fake_tool) is None
+    code_or_exc = "if"
+    assert figurecomposer_provenance._figure_build_code(fake_tool) is None
+    code_or_exc = "axs = object()"
+    assert figurecomposer_provenance._figure_build_code(fake_tool) is None
+
+    code_or_exc = "fig = object()"
+    operation = figurecomposer_provenance._figure_build_operation(fake_tool)
     assert operation.copyable
     assert operation.code == "fig = object()"
 

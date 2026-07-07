@@ -5,9 +5,12 @@ from __future__ import annotations
 import ast
 import typing
 
+import erlab.interactive._figurecomposer._codegen
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -41,9 +44,18 @@ def _code_assigns_name(code: str, name: str) -> bool:
     return False
 
 
-def _figure_build_code(tool: FigureComposerTool) -> str | None:
+def _figure_build_code(
+    tool: FigureComposerTool,
+    *,
+    skip_source_selection_names: frozenset[str] = frozenset(),
+    source_name_map: Mapping[str, str] | None = None,
+) -> str | None:
     try:
-        code = tool.generated_code()
+        code = erlab.interactive._figurecomposer._codegen.generated_code(
+            tool,
+            skip_source_selection_names=skip_source_selection_names,
+            source_name_map=source_name_map,
+        )
     except Exception:
         # Details-panel refreshes happen while the user is editing. Temporarily
         # invalid recipes should make replay code unavailable, not crash metadata UI.
@@ -58,8 +70,15 @@ def _figure_build_code(tool: FigureComposerTool) -> str | None:
 
 def _figure_build_operation(
     tool: FigureComposerTool,
+    *,
+    skip_source_selection_names: frozenset[str] = frozenset(),
+    source_name_map: Mapping[str, str] | None = None,
 ) -> provenance.ScriptCodeOperation:
-    code = _figure_build_code(tool)
+    code = _figure_build_code(
+        tool,
+        skip_source_selection_names=skip_source_selection_names,
+        source_name_map=source_name_map,
+    )
     return provenance.ScriptCodeOperation(
         label="Build figure",
         code=code,

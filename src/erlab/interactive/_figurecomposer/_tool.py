@@ -8,10 +8,14 @@ import collections
 import contextlib
 import functools
 import json
+import keyword
+import logging
 import math
+import re
 import textwrap
 import traceback
 import typing
+import unicodedata
 import uuid
 import weakref
 
@@ -21,6 +25,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from matplotlib.figure import Figure
 # isort: on
+
+import pydantic
 
 import erlab
 import erlab.interactive._figurecomposer._codegen
@@ -82,6 +88,15 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
     _plot_slices_panel_keys,
 )
+from erlab.interactive._figurecomposer._operations._source_selection import (
+    selection_dim_mode,
+    selection_dim_value_text,
+    selection_dim_width_text,
+    selection_has_effect,
+    selection_value_from_text,
+    selection_width_from_text,
+    selection_with_dimension,
+)
 from erlab.interactive._figurecomposer._rendering import (
     _live_layout_axes,
     _render_into_figure,
@@ -96,13 +111,18 @@ from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
     _public_source_data,
+    _selected_data,
+    _selected_source_data,
     _source_display_label,
-    _source_duplicate_labels,
-    _source_label,
+    _source_has_selection,
     _source_name,
+    _source_selection,
+    _source_with_selection,
+    _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
+    FigureDataSelectionState,
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
     FigureGridSpecSpanState,
@@ -164,12 +184,23 @@ _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
 _RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
 _SOURCE_LIST_SOURCE_COLUMN = 0
-_SOURCE_LIST_ALIAS_COLUMN = 1
-_SOURCE_LIST_SHAPE_COLUMN = 2
-_SOURCE_LIST_ACTION_COLUMN = 3
+_SOURCE_LIST_SHAPE_COLUMN = 1
+_SOURCE_LIST_ACTION_COLUMN = 2
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+_FIGURE_CODE_RESERVED_NAMES = frozenset(
+    {
+        "axs",
+        "eplt",
+        "fig",
+        "np",
+        "plt",
+        "xr",
+        "xarray",
+    }
+)
+logger = logging.getLogger(__name__)
 
 
 class _FigureComposerStepMimeData(QtCore.QMimeData):
@@ -188,6 +219,13 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
         self.figure_composer_cut_source_tool_id = cut_source_tool_id
         self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
         self.setText(step_code_text)
+
+
+def _event_requests_context_menu(event: QtGui.QKeyEvent) -> bool:
+    return event.key() == QtCore.Qt.Key.Key_Menu or (
+        event.key() == QtCore.Qt.Key.Key_F10
+        and bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
+    )
 
 
 class _FigureComposerOperationList(QtWidgets.QListWidget):
@@ -227,6 +265,12 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
             return
+        if _event_requests_context_menu(event):
+            item = self.currentItem()
+            rect = self.visualItemRect(item) if item is not None else QtCore.QRect()
+            self.context_menu_requested.emit(rect.center())
+            event.accept()
+            return
         if event.matches(QtGui.QKeySequence.StandardKey.Copy):
             self.copy_requested.emit()
             event.accept()
@@ -264,6 +308,91 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
             selected_ids,
             current_id if isinstance(current_id, str) else None,
         )
+
+
+class _FigureComposerSourceList(QtWidgets.QTreeWidget):
+    context_menu_requested = QtCore.Signal(QtCore.QPoint)
+    rows_reordered = QtCore.Signal(object, object, object)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.context_menu_requested)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        model = self.model()
+        if model is None:
+            raise RuntimeError("Figure Composer source list has no item model")
+        model.rowsMoved.connect(self._model_rows_moved)
+
+    def _source_names(self) -> tuple[str, ...]:
+        source_names: list[str] = []
+        for row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(row)
+            source_name = (
+                None
+                if item is None
+                else item.data(
+                    _SOURCE_LIST_SOURCE_COLUMN,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            if not isinstance(source_name, str):
+                return ()
+            source_names.append(source_name)
+        return tuple(source_names)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
+        if event is None:
+            return
+        if _event_requests_context_menu(event):
+            item = self.currentItem()
+            rect = self.visualItemRect(item) if item is not None else QtCore.QRect()
+            self.context_menu_requested.emit(rect.center())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _model_rows_moved(self, *_args: object) -> None:
+        self._emit_rows_reordered()
+
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
+        if event is None:
+            return
+        before = self._source_names()
+        super().dropEvent(event)
+        if self._source_names() != before:
+            self._emit_rows_reordered()
+
+    def _emit_rows_reordered(self) -> None:
+        source_names = self._source_names()
+        if not source_names or len(set(source_names)) != len(source_names):
+            return
+        current_name = None
+        current_item = self.currentItem()
+        if current_item is not None:
+            candidate = current_item.data(
+                _SOURCE_LIST_SOURCE_COLUMN,
+                QtCore.Qt.ItemDataRole.UserRole,
+            )
+            if isinstance(candidate, str):
+                current_name = candidate
+        selected_names = frozenset(
+            source_name
+            for item in self.selectedItems()
+            if isinstance(
+                source_name := item.data(
+                    _SOURCE_LIST_SOURCE_COLUMN,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                ),
+                str,
+            )
+        )
+        self.rows_reordered.emit(source_names, selected_names, current_name)
 
 
 def _step_clipboard_payload_text(
@@ -427,10 +556,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             str, weakref.ReferenceType[QtWidgets.QWidget]
         ] = {}
         self._source_data: dict[str, xr.DataArray] = {}
+        self._source_selection_base_data: dict[str, xr.DataArray] = {}
         self._source_refresh_available_callback: Callable[[str], bool] | None = None
         self._source_refresh_callback: Callable[[str], bool] | None = None
         self._source_refresh_many_callback: Callable[[Sequence[str]], int] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
+        self._source_add_available_callback: Callable[[], bool] | None = None
+        self._source_add_callback: Callable[[], bool] | None = None
+        self._source_drop_available_callback: (
+            Callable[[QtCore.QMimeData], bool] | None
+        ) = None
+        self._source_drop_callback: Callable[[QtCore.QMimeData], bool] | None = None
         self._source_inspector_target: str | None = None
         self._updating_source_selection = False
         self._recipe = recipe or self._default_recipe(data)
@@ -440,6 +576,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
         self._operation_context_menu: QtWidgets.QMenu | None = None
+        self._source_context_menu: QtWidgets.QMenu | None = None
         self._connected_step_clipboard: QtGui.QClipboard | None = None
         self._step_clipboard_tool_id = uuid.uuid4().hex
         self._prev_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
@@ -462,8 +599,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._recipe.primary_source not in self._source_data:
             self._source_data[self._recipe.primary_source] = data
 
+        self._normalize_operation_source_selections()
         self._current_step_section_key = "sources"
         self._build_ui()
+        self.setAcceptDrops(True)
         self._apply_recipe_to_controls()
         self._write_state()
 
@@ -483,7 +622,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
         source_name = _source_name(data)
         setup = _default_setup_for_data(data)
-        source = FigureSourceState(name=source_name, label=_source_label(data))
+        source = FigureSourceState(name=source_name)
         return FigureRecipeState(
             setup=setup,
             sources=(source,),
@@ -546,6 +685,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 redo_callback=self.redo,
                 undoable_callback=lambda: self.undoable,
                 redoable_callback=lambda: self.redoable,
+                source_drop_available_callback=self._source_drop_available,
+                source_drop_callback=self._add_sources_from_mime,
             )
             window_ref = weakref.ref(self._figure_window)
             tool_ref = weakref.ref(self)
@@ -1122,15 +1263,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Remove the selected recipe step or steps.",
         )
         self.remove_operation_button.clicked.connect(self._remove_current_operation)
-        self.duplicate_operation_button = _step_toolbar_button(
-            recipe_page,
-            "figureComposerDuplicateStepButton",
-            "Duplicate",
-            "Copy the selected step or steps after the last selected step.",
-        )
-        self.duplicate_operation_button.clicked.connect(
-            self._duplicate_current_operation
-        )
         self.copy_operation_button = _step_toolbar_button(
             recipe_page,
             "figureComposerCopyStepButton",
@@ -1153,22 +1285,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.paste_operation_button.clicked.connect(
             self._paste_operations_from_clipboard
-        )
-        self.move_operation_up_button = _step_toolbar_button(
-            recipe_page,
-            "figureComposerMoveStepUpButton",
-            "Up",
-            "Move the selected recipe step or steps earlier.",
-        )
-        self.move_operation_up_button.clicked.connect(self._move_current_operation_up)
-        self.move_operation_down_button = _step_toolbar_button(
-            recipe_page,
-            "figureComposerMoveStepDownButton",
-            "Down",
-            "Move the selected recipe step or steps later.",
-        )
-        self.move_operation_down_button.clicked.connect(
-            self._move_current_operation_down
         )
         self.show_figure_button = QtWidgets.QPushButton("Show Plot", root)
         self.show_figure_button.setObjectName("figureComposerShowFigureButton")
@@ -1220,9 +1336,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_step_action_layout.addWidget(self.copy_operation_button)
         selected_step_action_layout.addWidget(self.cut_operation_button)
         selected_step_action_layout.addWidget(self.paste_operation_button)
-        selected_step_action_layout.addWidget(self.duplicate_operation_button)
-        selected_step_action_layout.addWidget(self.move_operation_up_button)
-        selected_step_action_layout.addWidget(self.move_operation_down_button)
         selected_step_action_layout.addWidget(self.remove_operation_button)
         selected_step_action_layout.addStretch(1)
         recipe_layout.addLayout(selected_step_action_layout)
@@ -1290,9 +1403,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         self.step_sources_page = QtWidgets.QWidget(self.step_editor_stack)
         self.step_sources_page.setObjectName("figureComposerStepSourcesPage")
-        sources_layout = QtWidgets.QVBoxLayout(self.step_sources_page)
-        sources_layout.setContentsMargins(6, 6, 6, 6)
-        sources_layout.setSpacing(4)
+        step_sources_layout = QtWidgets.QVBoxLayout(self.step_sources_page)
+        step_sources_layout.setContentsMargins(6, 6, 6, 6)
+        step_sources_layout.setSpacing(4)
         self.step_source_controls = QtWidgets.QWidget(self.step_sources_page)
         self.step_source_controls_layout = QtWidgets.QFormLayout(
             self.step_source_controls
@@ -1302,16 +1415,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_source_controls_layout.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
-        sources_layout.addWidget(self.step_source_controls)
-        self.source_status_label = QtWidgets.QLabel(self.step_sources_page)
+        step_sources_layout.addWidget(self.step_source_controls)
+        self.step_source_status_label = QtWidgets.QLabel(self.step_sources_page)
+        self.step_source_status_label.setObjectName("figureComposerStepSourceStatus")
+        self.step_source_status_label.setWordWrap(True)
+        self.step_source_status_label.setVisible(False)
+        step_sources_layout.addWidget(self.step_source_status_label)
+
+        self.sources_page = QtWidgets.QWidget(self.editor_tabs)
+        self.sources_page.setObjectName("figureComposerSourcesPage")
+        sources_layout = QtWidgets.QVBoxLayout(self.sources_page)
+        sources_layout.setContentsMargins(6, 6, 6, 6)
+        sources_layout.setSpacing(4)
+        self.source_status_label = QtWidgets.QLabel(self.sources_page)
         self.source_status_label.setObjectName("figureComposerSourceStatus")
         self.source_status_label.setWordWrap(True)
-        sources_layout.addWidget(self.source_status_label)
-        self.source_actions = QtWidgets.QWidget(self.step_sources_page)
+        self.source_status_label.setVisible(False)
+        self.source_actions = QtWidgets.QWidget(self.sources_page)
         self.source_actions.setObjectName("figureComposerSourceActions")
         source_actions_layout = QtWidgets.QHBoxLayout(self.source_actions)
         source_actions_layout.setContentsMargins(0, 0, 0, 0)
         source_actions_layout.setSpacing(4)
+        self.add_source_button = _step_toolbar_button(
+            self.source_actions,
+            "figureComposerAddSourceButton",
+            "Add…",
+            "Add ImageTool data from the manager as figure sources.",
+        )
+        self.add_source_button.clicked.connect(self._request_add_sources_from_button)
+        source_actions_layout.addWidget(self.add_source_button)
+        self.remove_selected_source_button = _step_toolbar_button(
+            self.source_actions,
+            "figureComposerRemoveSelectedSourceButton",
+            "Remove",
+            "Remove the selected unused source or sources.",
+        )
+        self.remove_selected_source_button.clicked.connect(
+            self._remove_selected_sources
+        )
+        source_actions_layout.addWidget(self.remove_selected_source_button)
         source_actions_layout.addStretch(1)
         self.refresh_sources_button = QtWidgets.QToolButton(self.source_actions)
         self.refresh_sources_button.setObjectName("figureComposerRefreshSourcesButton")
@@ -1325,16 +1467,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.refresh_sources_button.clicked.connect(self._refresh_sources_from_button)
         source_actions_layout.addWidget(self.refresh_sources_button)
         sources_layout.addWidget(self.source_actions)
-        self.source_list = QtWidgets.QTreeWidget(self.step_sources_page)
+        sources_layout.addWidget(self.source_status_label)
+        self.source_list = _FigureComposerSourceList(self.sources_page)
         self.source_list.setObjectName("figureComposerSourceList")
-        self.source_list.setColumnCount(4)
-        self.source_list.setHeaderLabels(("Source", "Alias", "Shape", ""))
+        self.source_list.setColumnCount(3)
+        self.source_list.setHeaderLabels(("Alias", "Shape", ""))
+        self.source_list.context_menu_requested.connect(self._show_source_context_menu)
+        self.source_list.rows_reordered.connect(self._source_list_reordered)
         self.source_list.setRootIsDecorated(False)
         self.source_list.setIndentation(0)
         self.source_list.setUniformRowHeights(True)
         self.source_list.setAlternatingRowColors(True)
         self.source_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.source_list.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
@@ -1342,11 +1487,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_list.currentItemChanged.connect(
             self._source_list_current_item_changed
         )
+        self.source_list.itemSelectionChanged.connect(
+            self._source_list_selection_changed
+        )
+        self.source_list.itemDoubleClicked.connect(
+            self._source_list_item_double_clicked
+        )
+        self.rename_source_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key.Key_F2), self.source_list
+        )
+        self.rename_source_shortcut.setObjectName("figureComposerRenameSourceShortcut")
+        self.rename_source_shortcut.activated.connect(self._focus_source_alias_editor)
         self.source_list.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.source_list.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         source_header = self.source_list.header()
         if source_header is not None:
@@ -1354,10 +1510,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SOURCE_COLUMN,
                 QtWidgets.QHeaderView.ResizeMode.Stretch,
-            )
-            source_header.setSectionResizeMode(
-                _SOURCE_LIST_ALIAS_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SHAPE_COLUMN,
@@ -1368,8 +1520,33 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
             )
         sources_layout.addWidget(self.source_list, 1)
-        self.source_inspector = SourceInspectorWidget(self.step_sources_page)
+        self.source_inspector = SourceInspectorWidget(self.sources_page)
+        self.source_inspector.setAcceptDrops(True)
         sources_layout.addWidget(self.source_inspector)
+        self.source_selection_controls = QtWidgets.QWidget(self.sources_page)
+        self.source_selection_controls.setObjectName(
+            "figureComposerSourceSelectionControls"
+        )
+        self.source_selection_controls_layout = QtWidgets.QFormLayout(
+            self.source_selection_controls
+        )
+        self.source_selection_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.source_selection_controls_layout.setSpacing(4)
+        self.source_selection_controls_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        self.source_selection_controls.setAcceptDrops(True)
+        sources_layout.addWidget(self.source_selection_controls)
+        for drop_target in (
+            self.sources_page,
+            self.source_list,
+            self.source_list.viewport(),
+            self.source_inspector,
+            self.source_selection_controls,
+        ):
+            if drop_target is not None:
+                drop_target.setAcceptDrops(True)
+                drop_target.installEventFilter(self)
 
         self.target_axes_page = QtWidgets.QWidget(self.step_editor_stack)
         self.target_axes_page.setObjectName("figureComposerTargetAxesPage")
@@ -1763,6 +1940,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         setup_layout.setRowStretch(9, 1)
 
+        sources_index = self.editor_tabs.addTab(self.sources_page, "Sources")
+        self.editor_tabs.setTabToolTip(
+            sources_index, "Named data variables captured for this figure."
+        )
         layout_index = self.editor_tabs.addTab(layout_page, "Layout")
         self.editor_tabs.setTabToolTip(
             layout_index, "Subplot grid, figure size, and shared axes."
@@ -1855,6 +2036,59 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_label_callback = source_label
         self._refresh_source_controls()
 
+    def _set_source_add_callbacks(
+        self,
+        *,
+        can_add_sources: Callable[[], bool] | None = None,
+        add_sources: Callable[[], bool] | None = None,
+        can_drop_sources: Callable[[QtCore.QMimeData], bool] | None = None,
+        drop_sources: Callable[[QtCore.QMimeData], bool] | None = None,
+    ) -> None:
+        self._source_add_available_callback = can_add_sources
+        self._source_add_callback = add_sources
+        self._source_drop_available_callback = can_drop_sources
+        self._source_drop_callback = drop_sources
+        if self._figure_window is not None and erlab.interactive.utils.qt_is_valid(
+            self._figure_window
+        ):
+            self._figure_window.set_source_drop_callbacks(
+                can_drop=self._source_drop_available,
+                drop=self._add_sources_from_mime,
+            )
+        self._refresh_source_controls()
+
+    def _source_add_available(self) -> bool:
+        if self._source_add_callback is None:
+            return False
+        if self._source_add_available_callback is None:
+            return True
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            return bool(self._source_add_available_callback())
+        return False
+
+    @QtCore.Slot()
+    def _request_add_sources_from_button(self) -> None:
+        callback = self._source_add_callback
+        if callback is None or not self._source_add_available():
+            self._refresh_source_controls()
+            return
+        callback()
+        self._refresh_source_controls()
+
+    def _source_drop_available(self, mime: QtCore.QMimeData | None) -> bool:
+        if mime is None or self._source_drop_available_callback is None:
+            return False
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            return bool(self._source_drop_available_callback(mime))
+        return False
+
+    def _add_sources_from_mime(self, mime: QtCore.QMimeData | None) -> bool:
+        if mime is None or self._source_drop_callback is None:
+            return False
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            return bool(self._source_drop_callback(mime))
+        return False
+
     def _sync_size_mm_controls(self, figsize: tuple[float, float]) -> None:
         self.width_mm_spin.setValue(figsize[0] * _MM_PER_INCH)
         self.height_mm_spin.setValue(figsize[1] * _MM_PER_INCH)
@@ -1890,53 +2124,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _refresh_source_list(self) -> None:
         self._clear_source_list_widgets()
         source_by_name = {source.name: source for source in self._recipe.sources}
-        duplicate_labels = _source_duplicate_labels(self._recipe.sources)
-        current = self._current_operation()
-        used_sources = (
-            set(self._selected_sources_for_operation(current[1]))
-            if current is not None
-            else set()
-        )
-        for name, data in self._source_data.items():
-            source = source_by_name.get(name)
-            display = _source_display_label(
-                source,
+        used_sources = self._sources_used_by_recipe()
+        shown: set[str] = set()
+        for source in self._recipe.sources:
+            name = source.name
+            shown.add(name)
+            display = _source_display_label(source, name)
+            self._add_source_list_row(
+                display,
                 name,
-                disambiguate=(
-                    source is not None
-                    and (source.label.strip() or name) in duplicate_labels
-                ),
+                data=self._source_data.get(name),
+                missing=name not in self._source_data,
+                used=name in used_sources,
             )
+
+        for name, data in self._source_data.items():
+            if name in shown:
+                continue
+            display = _source_display_label(source_by_name.get(name), name)
             self._add_source_list_row(
                 display,
                 name,
                 data=data,
-                missing=source is None,
+                missing=name not in source_by_name,
                 used=name in used_sources,
             )
-
-        missing = [
-            source
-            for source in self._recipe.sources
-            if source.name not in self._source_data
-        ]
-        for source in missing:
-            display = _source_display_label(
-                source,
-                source.name,
-                disambiguate=(source.label.strip() or source.name) in duplicate_labels,
-            )
-            self._add_source_list_row(
-                display,
-                source.name,
-                missing=True,
-                used=source.name in used_sources,
-            )
-        self.source_list.resizeColumnToContents(_SOURCE_LIST_ALIAS_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
         self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
         self._refresh_source_controls()
         self._refresh_source_inspector()
+        self._refresh_source_selection_editor()
 
     def _clear_source_list_widgets(self) -> None:
         for row in range(self.source_list.topLevelItemCount()):
@@ -1963,18 +2180,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         used: bool = False,
     ) -> None:
         item = QtWidgets.QTreeWidgetItem(
-            [display, name, "missing" if data is None else "", ""]
+            [display, "missing" if data is None else "", ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
         item.setFlags(
-            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+            QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsDragEnabled
         )
         if missing:
             item.setForeground(
                 _SOURCE_LIST_SOURCE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
-            )
-            item.setForeground(
-                _SOURCE_LIST_ALIAS_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
             )
             item.setForeground(
                 _SOURCE_LIST_SHAPE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
@@ -2026,6 +2242,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         self._source_inspector_target = source_name
         self._refresh_source_inspector()
+        self._refresh_source_selection_editor()
+
+    @QtCore.Slot()
+    def _source_list_selection_changed(self) -> None:
+        if self._updating_source_selection:
+            return
+        self._refresh_source_controls()
+        self._refresh_source_selection_editor()
 
     @staticmethod
     def _source_name_from_list_item(
@@ -2037,6 +2261,66 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
         )
         return source_name if isinstance(source_name, str) else None
+
+    def _selected_source_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        for item in self.source_list.selectedItems():
+            source_name = self._source_name_from_list_item(item)
+            if source_name is not None and source_name not in names:
+                names.append(source_name)
+        current = self._source_name_from_list_item(self.source_list.currentItem())
+        if not names and current is not None:
+            names.append(current)
+        return tuple(names)
+
+    def _selected_source_indices(self) -> tuple[int, ...]:
+        selected = set(self._selected_source_names())
+        return tuple(
+            index
+            for index, source in enumerate(self._recipe.sources)
+            if source.name in selected
+        )
+
+    def _source_move_possible(self, offset: int) -> bool:
+        indices = self._selected_source_indices()
+        if not indices:
+            return False
+        index_set = set(indices)
+        if offset < 0:
+            return any(index > 0 and index - 1 not in index_set for index in indices)
+        return any(
+            index < len(self._recipe.sources) - 1 and index + 1 not in index_set
+            for index in indices
+        )
+
+    def _source_duplicate_possible(self) -> bool:
+        return bool(self._selected_source_indices())
+
+    def _set_selected_source_names_silent(
+        self, selected_names: set[str], current_name: str | None
+    ) -> None:
+        self._updating_source_selection = True
+        try:
+            self.source_list.clearSelection()
+            current_item: QtWidgets.QTreeWidgetItem | None = None
+            for row in range(self.source_list.topLevelItemCount()):
+                item = self.source_list.topLevelItem(row)
+                if item is None:  # pragma: no cover
+                    continue
+                source_name = self._source_name_from_list_item(item)
+                if source_name == current_name:
+                    current_item = item
+            if current_item is not None:
+                self.source_list.setCurrentItem(current_item)
+            for row in range(self.source_list.topLevelItemCount()):
+                item = self.source_list.topLevelItem(row)
+                if item is None:  # pragma: no cover
+                    continue
+                item.setSelected(
+                    self._source_name_from_list_item(item) in selected_names
+                )
+        finally:
+            self._updating_source_selection = False
 
     def _source_refresh_button(self, name: str) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.source_list)
@@ -2130,6 +2414,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _refresh_source_controls(self) -> None:
         has_refreshable_source = False
+        selected_names = self._selected_source_names()
+        add_enabled = self._source_add_available()
+        self.add_source_button.setEnabled(add_enabled)
+        add_tip = (
+            "Add ImageTool data from the manager as figure sources"
+            if add_enabled
+            else "Open this Figure Composer from ImageTool Manager to add sources"
+        )
+        self.add_source_button.setToolTip(add_tip)
+        self.add_source_button.setStatusTip(add_tip)
         for row in range(self.source_list.topLevelItemCount()):
             item = self.source_list.topLevelItem(row)
             if item is None:  # pragma: no cover
@@ -2168,12 +2462,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.refresh_sources_button.setToolTip(tooltip)
         self.refresh_sources_button.setStatusTip(tooltip)
 
+        removable_selected = [
+            name for name in selected_names if self._source_removable(name)
+        ]
+        remove_enabled = bool(removable_selected)
+        self.remove_selected_source_button.setEnabled(remove_enabled)
+        remove_tip = (
+            "Remove the selected unused source or sources"
+            if remove_enabled
+            else "Selected sources are in use or cannot be removed"
+        )
+        self.remove_selected_source_button.setToolTip(remove_tip)
+        self.remove_selected_source_button.setStatusTip(remove_tip)
+
     def refresh_source_controls(self) -> None:
         self._refresh_source_controls()
 
     def _set_source_status_text(self, text: str | None) -> None:
         self.source_status_label.setText("" if text is None else text)
         self.source_status_label.setVisible(bool(text))
+
+    def _set_step_source_status_text(self, text: str | None) -> None:
+        self.step_source_status_label.setText("" if text is None else text)
+        self.step_source_status_label.setVisible(bool(text))
 
     def _refresh_source_from_button(self, name: str, _checked: bool = False) -> None:
         callback = self._source_refresh_callback
@@ -2197,6 +2508,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             name in self._operation_source_names(operation)
             for operation in self._recipe.operations
         )
+
+    def _sources_used_by_recipe(self) -> set[str]:
+        return {
+            source_name
+            for operation in self._recipe.operations
+            for source_name in self._operation_source_names(operation)
+        }
 
     def _source_removable(self, name: str) -> bool:
         return (
@@ -2224,6 +2542,324 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not self.remove_source(name):
             self._refresh_source_controls()
 
+    @QtCore.Slot()
+    def _remove_selected_sources(self) -> None:
+        removed = False
+        for name in tuple(self._selected_source_names()):
+            if self.remove_source(name):
+                removed = True
+        if not removed:
+            self._refresh_source_controls()
+
+    def _source_alias_error(
+        self, alias: str, *, current: str | None = None
+    ) -> str | None:
+        if not alias:
+            return "Source alias must not be empty."
+        try:
+            _valid_source_variable(alias)
+        except ValueError:
+            return f"{alias!r} is not a valid Python variable name."
+        if alias == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
+            return "This alias is reserved for saved tool data."
+        if alias in _FIGURE_CODE_RESERVED_NAMES:
+            return f"{alias!r} is reserved for generated figure code."
+        if alias != current and (
+            alias in {source.name for source in self._recipe.sources}
+            or alias in self._source_data
+        ):
+            return f"Source alias {alias!r} is already in use."
+        return None
+
+    def _source_unique_alias(self, source_name: str, reserved: set[str]) -> str:
+        stem = f"{source_name}_copy"
+        alias = stem
+        suffix = 2
+        while self._source_alias_error(alias) is not None or alias in reserved:
+            alias = f"{stem}_{suffix}"
+            suffix += 1
+        reserved.add(alias)
+        return alias
+
+    @QtCore.Slot()
+    def _commit_source_alias_edit(self) -> None:
+        edit = self.sender()
+        if not isinstance(edit, QtWidgets.QLineEdit):
+            return
+        original = edit.property("figure_composer_source_alias_original")
+        if not isinstance(original, str):
+            return
+        alias = edit.text().strip()
+        if alias == original:
+            edit.setText(original)
+            return
+        error = self._source_alias_error(alias, current=original)
+        if error is not None:
+            self._set_source_status_text(error)
+            edit.setText(original)
+            return
+        self._rename_source_alias(original, alias)
+
+    @QtCore.Slot()
+    def _focus_source_alias_editor(self) -> None:
+        if len(self._selected_source_names()) != 1:
+            return
+        editor = self.source_selection_controls.findChild(
+            QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
+        )
+        if editor is None:
+            self._refresh_source_selection_editor()
+            editor = self.source_selection_controls.findChild(
+                QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
+            )
+        if editor is None:
+            return
+        editor.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        editor.selectAll()
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _source_list_item_double_clicked(
+        self, _item: QtWidgets.QTreeWidgetItem, column: int
+    ) -> None:
+        if column == _SOURCE_LIST_SOURCE_COLUMN:
+            self._focus_source_alias_editor()
+
+    def _finish_source_structure_change(
+        self, selected_names: set[str], current_name: str | None
+    ) -> None:
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        self._refresh_source_list()
+        self._set_selected_source_names_silent(selected_names, current_name)
+        self._refresh_source_controls()
+        self._source_inspector_target = current_name
+        self._refresh_source_inspector()
+        self._refresh_source_selection_editor()
+        self._update_source_section()
+        self._maybe_redraw_plot()
+        self._set_source_status_text(None)
+        self.sigDataChanged.emit()
+        self.sigInfoChanged.emit()
+        self._write_state()
+
+    def _rename_source_alias(self, old_name: str, new_name: str) -> None:
+        rename_map = {old_name: new_name}
+        sources: list[FigureSourceState] = []
+        changed = False
+        for source in self._recipe.sources:
+            source_updates: dict[str, typing.Any] = {}
+            if source.name == old_name:
+                source_updates["name"] = new_name
+            if source.selection_source == old_name:
+                source_updates["selection_source"] = new_name
+            if source_updates:
+                changed = True
+                sources.append(source.model_copy(update=source_updates))
+            else:
+                sources.append(source)
+        if not changed:
+            self._refresh_source_controls()
+            return
+
+        self._source_data = {
+            rename_map.get(name, name): data for name, data in self._source_data.items()
+        }
+        self._source_selection_base_data = {
+            rename_map.get(name, name): data
+            for name, data in self._source_selection_base_data.items()
+        }
+        operations = tuple(
+            self._operation_with_renamed_sources(operation, rename_map)
+            for operation in self._recipe.operations
+        )
+        updates: dict[str, typing.Any] = {
+            "sources": tuple(sources),
+            "operations": operations,
+        }
+        if self._recipe.primary_source == old_name:
+            updates["primary_source"] = new_name
+        self._recipe = self._recipe.model_copy(update=updates)
+        self._finish_source_structure_change({new_name}, new_name)
+
+    @QtCore.Slot()
+    def _duplicate_selected_sources(self) -> None:
+        indices = self._selected_source_indices()
+        if not indices:
+            return
+        sources = list(self._recipe.sources)
+        reserved = {source.name for source in sources}
+        reserved.update(self._source_data)
+        duplicates: list[FigureSourceState] = []
+        duplicated_names: set[str] = set()
+        for index in indices:
+            source = sources[index]
+            alias = self._source_unique_alias(source.name, reserved)
+            duplicates.append(source.model_copy(update={"name": alias}))
+            duplicated_names.add(alias)
+            if source.name in self._source_data:
+                self._source_data[alias] = self._source_data[source.name].copy(
+                    deep=False
+                )
+            if source.name in self._source_selection_base_data:
+                self._source_selection_base_data[alias] = (
+                    self._source_selection_base_data[source.name].copy(deep=False)
+                )
+        insert_index = max(indices) + 1
+        sources[insert_index:insert_index] = duplicates
+        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self._finish_source_structure_change(duplicated_names, duplicates[0].name)
+
+    def _move_selected_sources(self, offset: int) -> None:
+        indices = self._selected_source_indices()
+        if not indices:
+            return
+        sources = list(self._recipe.sources)
+        index_set = set(indices)
+        selected_names = {sources[index].name for index in indices}
+        moved = False
+        if offset < 0:
+            for index in indices:
+                if index > 0 and index - 1 not in index_set:
+                    sources[index - 1], sources[index] = (
+                        sources[index],
+                        sources[index - 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index - 1)
+                    moved = True
+        else:
+            for index in reversed(indices):
+                if index < len(sources) - 1 and index + 1 not in index_set:
+                    sources[index + 1], sources[index] = (
+                        sources[index],
+                        sources[index + 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index + 1)
+                    moved = True
+        if not moved:
+            self._refresh_source_controls()
+            return
+        current = self._source_name_from_list_item(self.source_list.currentItem())
+        current_name = (
+            current if current in selected_names else next(iter(selected_names))
+        )
+        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self._finish_source_structure_change(selected_names, current_name)
+
+    @QtCore.Slot()
+    def _move_selected_sources_up(self) -> None:
+        self._move_selected_sources(-1)
+
+    @QtCore.Slot()
+    def _move_selected_sources_down(self) -> None:
+        self._move_selected_sources(1)
+
+    @QtCore.Slot(object, object, object)
+    def _source_list_reordered(
+        self,
+        source_names: object,
+        selected_names: object,
+        current_name: object,
+    ) -> None:
+        if not isinstance(source_names, (tuple, list)):
+            self._refresh_source_list()
+            return
+        ordered_names = tuple(name for name in source_names if isinstance(name, str))
+        source_by_name = {source.name: source for source in self._recipe.sources}
+        if (
+            len(ordered_names) != len(source_names)
+            or len(ordered_names) != len(source_by_name)
+            or set(ordered_names) != set(source_by_name)
+        ):
+            self._refresh_source_list()
+            return
+        current_order = tuple(source.name for source in self._recipe.sources)
+        if ordered_names == current_order:
+            return
+        selected_name_set: set[str] = set()
+        if isinstance(selected_names, (set, frozenset, tuple, list)):
+            selected_name_set = {
+                name
+                for name in selected_names
+                if isinstance(name, str) and name in source_by_name
+            }
+        current_source_name = (
+            current_name
+            if isinstance(current_name, str) and current_name in source_by_name
+            else None
+        )
+        if not selected_name_set and current_source_name is not None:
+            selected_name_set = {current_source_name}
+        if current_source_name is None:
+            current_source_name = next(
+                iter(selected_name_set),
+                ordered_names[0] if ordered_names else None,
+            )
+
+        sources = tuple(source_by_name[name] for name in ordered_names)
+        self._recipe = self._recipe.model_copy(update={"sources": sources})
+        self._finish_source_structure_change(selected_name_set, current_source_name)
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_source_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu("Sources", self.source_list)
+        self._source_context_menu = menu
+        add_action = QtGui.QAction("Add…", menu)
+        add_action.setObjectName("figureComposerContextAddSourceAction")
+        add_action.setEnabled(self.add_source_button.isEnabled())
+        add_action.triggered.connect(self._request_add_sources_from_button)
+        menu.addAction(add_action)
+
+        menu.addSeparator()
+        rename_action = QtGui.QAction("Rename Alias", menu)
+        rename_action.setObjectName("figureComposerContextRenameSourceAction")
+        rename_action.setEnabled(len(self._selected_source_indices()) == 1)
+        rename_action.triggered.connect(self._focus_source_alias_editor)
+        menu.addAction(rename_action)
+
+        duplicate_action = QtGui.QAction("Duplicate", menu)
+        duplicate_action.setObjectName("figureComposerContextDuplicateSourceAction")
+        duplicate_action.setEnabled(self._source_duplicate_possible())
+        duplicate_action.triggered.connect(self._duplicate_selected_sources)
+        menu.addAction(duplicate_action)
+
+        move_up_action = QtGui.QAction("Move Up", menu)
+        move_up_action.setObjectName("figureComposerContextMoveSourceUpAction")
+        move_up_action.setEnabled(self._source_move_possible(-1))
+        move_up_action.triggered.connect(self._move_selected_sources_up)
+        menu.addAction(move_up_action)
+
+        move_down_action = QtGui.QAction("Move Down", menu)
+        move_down_action.setObjectName("figureComposerContextMoveSourceDownAction")
+        move_down_action.setEnabled(self._source_move_possible(1))
+        move_down_action.triggered.connect(self._move_selected_sources_down)
+        menu.addAction(move_down_action)
+
+        menu.addSeparator()
+        refresh_action = QtGui.QAction("Refresh", menu)
+        refresh_action.setObjectName("figureComposerContextRefreshSourceAction")
+        selected_names = self._selected_source_names()
+        refresh_action.setEnabled(
+            len(selected_names) == 1
+            and self._source_refresh_available(selected_names[0])
+        )
+        if len(selected_names) == 1:
+            refresh_action.triggered.connect(
+                functools.partial(self._refresh_source_from_button, selected_names[0])
+            )
+        menu.addAction(refresh_action)
+
+        remove_action = QtGui.QAction("Remove", menu)
+        remove_action.setObjectName("figureComposerContextRemoveSourceAction")
+        remove_action.setEnabled(self.remove_selected_source_button.isEnabled())
+        remove_action.triggered.connect(self._remove_selected_sources)
+        menu.addAction(remove_action)
+
+        viewport = self.source_list.viewport()
+        if viewport is not None:  # pragma: no branch
+            menu.popup(viewport.mapToGlobal(position))
+
     def _set_source_list_row_used(
         self, item: QtWidgets.QTreeWidgetItem, used: bool
     ) -> None:
@@ -2246,12 +2882,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
 
     def _sync_source_list_used_state(self) -> None:
-        current = self._current_operation()
-        used_sources = (
-            set(self._selected_sources_for_operation(current[1]))
-            if current is not None
-            else set()
-        )
+        used_sources = self._sources_used_by_recipe()
         for row in range(self.source_list.topLevelItemCount()):
             item = self.source_list.topLevelItem(row)
             if item is None:  # pragma: no cover
@@ -2261,15 +2892,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
             )
             self._set_source_list_row_used(item, source_name in used_sources)
-        self._refresh_source_inspector()
 
     def _default_source_inspector_target(self) -> str | None:
-        current = self._current_operation()
-        source_states = self._source_by_name()
-        if current is not None:
-            for source_name in self._selected_sources_for_operation(current[1]):
-                if source_name in self._source_data or source_name in source_states:
-                    return source_name
         source_name = self._source_name_from_list_item(self.source_list.currentItem())
         if source_name is not None:
             return source_name
@@ -2294,22 +2918,550 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             target = self._default_source_inspector_target()
         self._source_inspector_target = target
-        self._select_source_list_row_silent(target)
-        current = self._current_operation()
-        operation = None if current is None else current[1]
-        operation_sources = (
-            () if operation is None else self._selected_sources_for_operation(operation)
-        )
+        if target not in self._selected_source_names():
+            self._select_source_list_row_silent(target)
         inspector.set_context(
             source_name=target,
             source_state=None if target is None else source_states.get(target),
             data=None if target is None else self._source_data.get(target),
-            operation_source_names=operation_sources,
         )
+
+    def _refresh_source_selection_editor(self) -> None:
+        layout = getattr(self, "source_selection_controls_layout", None)
+        if not isinstance(layout, QtWidgets.QFormLayout):
+            return
+        self._clear_form_layout(layout)
+        selected_names = self._selected_source_names()
+        if not selected_names:
+            label = QtWidgets.QLabel("Select a source to edit its selection.", self)
+            label.setWordWrap(True)
+            layout.addRow(label)
+            return
+
+        source_by_name = self._source_by_name()
+        self._add_source_alias_editor(layout, selected_names, source_by_name)
+        available_names = tuple(
+            name
+            for name in selected_names
+            if name in source_by_name and name in self._source_data
+        )
+        self._add_form_section(
+            layout,
+            "Selection",
+            object_name="figureComposerSourceSelectionSection",
+        )
+        if not available_names:
+            label = QtWidgets.QLabel("No selected source data is available.", self)
+            label.setObjectName("figureComposerSourceSelectionMessage")
+            label.setWordWrap(True)
+            self._add_form_row(
+                layout,
+                "Dimensions",
+                label,
+                "Source selections can be edited after source data is available.",
+            )
+            return
+
+        dimensions = self._common_source_selection_dims(available_names)
+        if not dimensions:
+            label = QtWidgets.QLabel("No common dimensions.", self)
+            label.setObjectName("figureComposerSourceSelectionMessage")
+            self._add_form_row(
+                layout,
+                "Dimensions",
+                label,
+                "The selected source data has no common editable dimensions.",
+            )
+            return
+
+        for dim_index, dim_name in enumerate(dimensions):
+            selections = tuple(
+                _source_selection(source_by_name[name]) for name in available_names
+            )
+            modes = tuple(
+                selection_dim_mode(selection, dim_name) for selection in selections
+            )
+            mode_mixed = len(set(modes)) > 1
+            value_texts = tuple(
+                selection_dim_value_text(selection, dim_name)
+                for selection in selections
+            )
+            value_mixed = len(set(value_texts)) > 1
+            width_texts = tuple(
+                selection_dim_width_text(selection, dim_name)
+                for selection in selections
+            )
+            width_mixed = len(set(width_texts)) > 1
+            current_mode = None if mode_mixed else modes[0]
+
+            row = QtWidgets.QWidget(self.source_selection_controls)
+            row.setObjectName(f"figureComposerSourceSelectionDimRow{dim_index}")
+            row_layout = QtWidgets.QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            mode_combo = self._source_selection_mode_combo(
+                current=current_mode,
+                mixed=mode_mixed,
+                parent=row,
+            )
+            mode_combo.setObjectName(
+                f"figureComposerSourceSelectionModeCombo{dim_index}"
+            )
+            mode_combo.setProperty("figure_composer_source_selection_dim", dim_name)
+            mode_combo.setToolTip(
+                "Choose whether this source dimension stays, is selected, or averaged."
+            )
+            value_edit = QtWidgets.QLineEdit(row)
+            value_edit.setObjectName(
+                f"figureComposerSourceSelectionValueEdit{dim_index}"
+            )
+            value_edit.setProperty("figure_composer_source_selection_dim", dim_name)
+            value_edit.setProperty("figure_composer_source_selection_field", "value")
+            value_edit.setPlaceholderText("value")
+            value_edit.setToolTip(
+                "Selection value. Use integer positions or slices for isel; use "
+                "coordinate values or slices for qsel."
+            )
+            value_edit.setText("" if value_mixed else value_texts[0])
+            self._apply_mixed_line_edit(value_edit, value_mixed)
+            width_edit = QtWidgets.QLineEdit(row)
+            width_edit.setObjectName(
+                f"figureComposerSourceSelectionWidthEdit{dim_index}"
+            )
+            width_edit.setProperty("figure_composer_source_selection_dim", dim_name)
+            width_edit.setProperty("figure_composer_source_selection_field", "width")
+            width_edit.setPlaceholderText("width")
+            width_edit.setToolTip(
+                "Optional qsel width centered on the value. Leave blank for nearest "
+                "coordinate selection."
+            )
+            width_edit.setText("" if width_mixed else width_texts[0])
+            self._apply_mixed_line_edit(width_edit, width_mixed)
+            value_edit.setVisible(current_mode in {"isel", "qsel"})
+            width_edit.setVisible(current_mode == "qsel")
+            self._connect_source_selection_dimension_controls(
+                dim_name,
+                mode_combo,
+                value_edit,
+                width_edit,
+            )
+            row_layout.addWidget(mode_combo)
+            row_layout.addWidget(value_edit, 1)
+            row_layout.addWidget(width_edit, 1)
+            self._add_form_row(
+                layout,
+                dim_name,
+                row,
+                "Choose how this source variable is selected before plotting.",
+            )
+
+    def _add_source_alias_editor(
+        self,
+        layout: QtWidgets.QFormLayout,
+        selected_names: Sequence[str],
+        source_by_name: Mapping[str, FigureSourceState],
+    ) -> None:
+        self._add_form_section(
+            layout,
+            "Source",
+            object_name="figureComposerSourceAliasSection",
+        )
+        if len(selected_names) != 1:
+            label = QtWidgets.QLabel("Select one source to rename its alias.", self)
+            label.setObjectName("figureComposerSourceAliasMessage")
+            label.setWordWrap(True)
+            self._add_form_row(
+                layout,
+                "Alias",
+                label,
+                "Source aliases are edited one at a time.",
+            )
+            return
+        source_name = selected_names[0]
+        if source_name not in source_by_name:
+            label = QtWidgets.QLabel("This source is missing from the recipe.", self)
+            label.setObjectName("figureComposerSourceAliasMessage")
+            label.setWordWrap(True)
+            self._add_form_row(
+                layout,
+                "Alias",
+                label,
+                "Missing recipe sources cannot be renamed.",
+            )
+            return
+        edit = QtWidgets.QLineEdit(self.source_selection_controls)
+        edit.setObjectName("figureComposerSourceAliasEdit")
+        edit.setText(source_name)
+        edit.setProperty("figure_composer_source_alias_original", source_name)
+        edit.setToolTip("Rename this source variable.")
+        edit.editingFinished.connect(self._commit_source_alias_edit)
+        self._add_form_row(
+            layout,
+            "Alias",
+            edit,
+            "Rename this source variable.",
+        )
+
+    def _source_selection_mode_combo(
+        self,
+        *,
+        current: str | None,
+        mixed: bool,
+        parent: QtWidgets.QWidget,
+    ) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox(parent)
+        if mixed:
+            combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
+        for mode, label in (
+            ("keep", "None"),
+            ("isel", "isel"),
+            ("qsel", "qsel"),
+            ("mean", "Mean"),
+        ):
+            combo.addItem(label, mode)
+        if mixed:
+            item = typing.cast("typing.Any", combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+            combo.setCurrentIndex(0)
+        elif current is not None:
+            index = combo.findData(current)
+            combo.setCurrentIndex(max(index, 0))
+        self._track_combo_interaction(combo)
+        return combo
+
+    def _connect_source_selection_dimension_controls(
+        self,
+        dim: str,
+        mode_combo: QtWidgets.QComboBox,
+        value_edit: QtWidgets.QLineEdit,
+        width_edit: QtWidgets.QLineEdit,
+    ) -> None:
+        def set_control_visibility(mode: str) -> None:
+            value_edit.setVisible(mode in {"isel", "qsel"})
+            width_edit.setVisible(mode == "qsel")
+
+        def update_from_controls() -> None:
+            mode = mode_combo.currentData()
+            if not isinstance(mode, str) or mode not in {
+                "keep",
+                "isel",
+                "qsel",
+                "mean",
+            }:
+                return
+            if LineEditControlAdapter(value_edit).unchanged_mixed() and mode in {
+                "isel",
+                "qsel",
+            }:
+                return
+            if LineEditControlAdapter(width_edit).unchanged_mixed() and mode == "qsel":
+                return
+            self._update_selected_source_dimension(
+                dim,
+                mode,
+                value_edit.text(),
+                width_edit.text(),
+            )
+
+        def mode_changed(_index: int) -> None:
+            mode = mode_combo.currentData()
+            mode_text = mode if isinstance(mode, str) else ""
+            set_control_visibility(mode_text)
+            previous_mode = mode_combo.property(
+                "figure_composer_source_selection_previous_mode"
+            )
+            mode_changed_from_previous = previous_mode != mode_text
+            if mode_changed_from_previous or mode_text not in {"isel", "qsel"}:
+                value_edit.clear()
+                value_edit.setModified(False)
+            if mode_changed_from_previous or mode_text != "qsel":
+                width_edit.clear()
+                width_edit.setModified(False)
+            mode_combo.setProperty(
+                "figure_composer_source_selection_previous_mode", mode_text
+            )
+            if mode_text in {"isel", "qsel"} and not value_edit.text().strip():
+                return
+            update_from_controls()
+
+        mode_combo.setProperty(
+            "figure_composer_source_selection_previous_mode",
+            mode_combo.currentData(),
+        )
+        mode_combo.activated.connect(mode_changed)
+        value_edit.editingFinished.connect(update_from_controls)
+        width_edit.editingFinished.connect(update_from_controls)
+
+    def _common_source_selection_dims(
+        self, source_names: Sequence[str]
+    ) -> tuple[str, ...]:
+        source_by_name = self._source_by_name()
+        common: list[str] | None = None
+        for source_name in source_names:
+            data = self._source_selection_input_data(
+                source_name, source_by_name.get(source_name)
+            )
+            if data is None:
+                continue
+            dims = [str(dim) for dim in _public_source_data(data).dims]
+            if common is None:
+                common = dims
+            else:
+                dim_set = set(dims)
+                common = [dim for dim in common if dim in dim_set]
+        return tuple(common or ())
+
+    def _update_selected_source_dimension(
+        self,
+        dim: str,
+        mode: str,
+        value_text: str,
+        width_text: str,
+    ) -> None:
+        try:
+            value = (
+                selection_value_from_text(value_text)
+                if mode in {"isel", "qsel"}
+                else None
+            )
+            width = selection_width_from_text(width_text) if mode == "qsel" else None
+        except FigureComposerInputError as exc:
+            self._set_source_status_text(str(exc))
+            return
+
+        changed = False
+        skipped: list[str] = []
+        source_by_name = self._source_by_name()
+        source_list = list(self._recipe.sources)
+        for source_name in self._selected_source_names():
+            source = source_by_name.get(source_name)
+            if source is None or source_name not in self._source_data:
+                skipped.append(source_name)
+                continue
+            try:
+                selection = selection_with_dimension(
+                    _source_selection(source),
+                    dim,
+                    mode,
+                    value,
+                    width,
+                )
+                raw_data = self._source_selection_input_data(source_name, source)
+                if raw_data is None:
+                    skipped.append(source_name)
+                    continue
+                updated_source = _source_with_selection(source, selection)
+                selected_data = self._source_data_from_selection(
+                    source_name,
+                    raw_data,
+                    updated_source,
+                )
+            except (IndexError, KeyError, TypeError, ValueError) as exc:
+                message = str(exc) or exc.__class__.__name__
+                skipped.append(f"{source_name} ({message})")
+                continue
+            if selection_has_effect(selection):
+                self._source_selection_base_data[source_name] = raw_data
+            else:
+                self._source_selection_base_data.pop(source_name, None)
+            self._source_data[source_name] = selected_data
+            for index, candidate in enumerate(source_list):
+                if candidate.name == source_name:
+                    source_list[index] = updated_source
+                    break
+            changed = True
+
+        status_text = (
+            "Selection was not applied to: " + ", ".join(skipped) if skipped else None
+        )
+        if not changed:
+            self._set_source_status_text(status_text)
+            self._refresh_source_selection_editor()
+            return
+        self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        self._refresh_source_list()
+        self._update_source_section()
+        self._maybe_redraw_plot()
+        self._set_source_status_text(status_text)
+        self.sigDataChanged.emit()
+        self.sigInfoChanged.emit()
+        self._write_state()
+
+    @staticmethod
+    def _source_data_from_selection(
+        source_name: str,
+        data: xr.DataArray,
+        source: FigureSourceState,
+    ) -> xr.DataArray:
+        selected = _selected_source_data(data, source)
+        return selected.rename(data.name).copy(deep=False)
+
+    def _source_selection_input_data(
+        self, source_name: str, source: FigureSourceState | None
+    ) -> xr.DataArray | None:
+        data = self._source_selection_base_data.get(source_name)
+        if data is not None:
+            return data
+        selection_source = None if source is None else source.selection_source
+        if selection_source is not None and selection_source != source_name:
+            data = self._source_data.get(selection_source)
+            if data is not None:
+                return data
+        return self._source_data.get(source_name)
+
+    def _normalize_operation_source_selections(self) -> None:
+        operations: list[FigureOperationState] = []
+        source_list = list(self._recipe.sources)
+        source_by_name = {source.name: source for source in source_list}
+        reserved = set(source_by_name)
+        reserved.update(self._source_data)
+        changed = False
+        for operation in self._recipe.operations:
+            if not operation.map_selections:
+                operations.append(operation)
+                continue
+            if len(operation.map_selections) != 1:
+                updated = self._operation_without_map_selections(operation, None)
+                operations.append(updated)
+                changed = changed or updated != operation
+                continue
+            selection = operation.map_selections[0]
+            source_name = selection.source
+            if not selection_has_effect(selection):
+                updated = self._operation_without_map_selections(
+                    operation,
+                    self._legacy_selection_fallback_source(operation, source_name),
+                )
+                operations.append(updated)
+                changed = changed or updated != operation
+                continue
+            alias = self._source_alias_for_legacy_selection(
+                selection,
+                source_list=source_list,
+                source_by_name=source_by_name,
+                reserved=reserved,
+            )
+            operations.append(self._operation_without_map_selections(operation, alias))
+            changed = True
+        if not changed:
+            return
+        self._recipe = self._recipe.model_copy(
+            update={"sources": tuple(source_list), "operations": tuple(operations)}
+        )
+
+    @staticmethod
+    def _legacy_selection_fallback_source(
+        operation: FigureOperationState,
+        source_name: str,
+    ) -> str | None:
+        if operation.kind == FigureOperationKind.LINE:
+            return source_name if operation.line_source is None else None
+        if operation.kind in {
+            FigureOperationKind.PLOT_ARRAY,
+            FigureOperationKind.PLOT_SLICES,
+        }:
+            return source_name if not operation.sources else None
+        return None
+
+    def _source_alias_for_legacy_selection(
+        self,
+        selection: FigureDataSelectionState,
+        *,
+        source_list: list[FigureSourceState],
+        source_by_name: dict[str, FigureSourceState],
+        reserved: set[str],
+    ) -> str:
+        source_name = selection.source
+        for source in source_list:
+            if source.selection_source != source_name:
+                continue
+            if (
+                source.isel == selection.isel
+                and source.qsel == selection.qsel
+                and source.mean_dims == selection.mean_dims
+            ):
+                if source.name not in self._source_data:
+                    base_data = self._source_data.get(source_name)
+                    if base_data is not None:
+                        self._source_selection_base_data[source.name] = base_data
+                        try:
+                            selected = self._source_data_from_selection(
+                                source.name, base_data, source
+                            )
+                        except (IndexError, KeyError, TypeError, ValueError):
+                            pass
+                        else:
+                            self._source_data[source.name] = selected
+                return source.name
+
+        alias = self._selected_source_alias(source_name, reserved)
+        reserved.add(alias)
+        base_source = source_by_name.get(
+            source_name, FigureSourceState(name=source_name)
+        )
+        selected_source = _source_with_selection(
+            base_source.model_copy(
+                update={
+                    "name": alias,
+                    "selection_source": source_name,
+                }
+            ),
+            selection.model_copy(update={"source": alias}),
+        )
+        source_by_name[alias] = selected_source
+        source_list.append(selected_source)
+        base_data = self._source_data.get(source_name)
+        if base_data is None:
+            return alias
+        self._source_selection_base_data[alias] = base_data
+        try:
+            selected = _selected_data(self._source_data, selection)
+        except (IndexError, KeyError, TypeError, ValueError):
+            return alias
+        if selected is not None:
+            self._source_data[alias] = selected.copy(deep=False)
+        return alias
+
+    @staticmethod
+    def _operation_without_map_selections(
+        operation: FigureOperationState,
+        source_name: str | None,
+    ) -> FigureOperationState:
+        updates: dict[str, typing.Any] = {"map_selections": ()}
+        if operation.kind == FigureOperationKind.LINE:
+            if source_name is not None:
+                updates["line_source"] = source_name
+            return operation.model_copy(update=updates)
+        if operation.kind == FigureOperationKind.PLOT_ARRAY:
+            if source_name is not None:
+                updates["sources"] = (source_name,)
+            elif operation.sources:
+                updates["sources"] = operation.sources[:1]
+            return operation.model_copy(update=updates)
+        if operation.kind == FigureOperationKind.PLOT_SLICES:
+            if source_name is not None:
+                updates["sources"] = (source_name,)
+            return operation.model_copy(update=updates)
+        return operation.model_copy(update=updates)
+
+    @staticmethod
+    def _selected_source_alias(source_name: str, reserved: set[str]) -> str:
+        stem = f"{source_name}_selected"
+        alias = stem
+        suffix = 2
+        while alias in reserved:
+            alias = f"{stem}_{suffix}"
+            suffix += 1
+        return alias
 
     def _select_source_list_row_silent(self, source_name: str | None) -> None:
         self._updating_source_selection = True
         try:
+            self._source_inspector_target = source_name
             if source_name is None:
                 self.source_list.clearSelection()
                 self.source_list.setCurrentIndex(QtCore.QModelIndex())
@@ -2907,6 +4059,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if operation.operation_id in selected_ids
         )
 
+    def _operation_duplicate_possible(self) -> bool:
+        return bool(self._selected_operation_indices())
+
+    def _operation_move_possible(self, offset: int) -> bool:
+        indices = self._selected_operation_indices()
+        if not indices:
+            return False
+        index_set = set(indices)
+        if offset < 0:
+            return any(index > 0 and index - 1 not in index_set for index in indices)
+        return any(
+            index < len(self._recipe.operations) - 1 and index + 1 not in index_set
+            for index in indices
+        )
+
     @staticmethod
     def _operation_editor_schema_key(
         operation: FigureOperationState,
@@ -3227,28 +4394,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         can_paste = self._clipboard_step_payload() is not None
         if not indices:
             self.remove_operation_button.setEnabled(False)
-            self.duplicate_operation_button.setEnabled(False)
             self.copy_operation_button.setEnabled(False)
             self.cut_operation_button.setEnabled(False)
             self.paste_operation_button.setEnabled(can_paste)
-            self.move_operation_up_button.setEnabled(False)
-            self.move_operation_down_button.setEnabled(False)
             return
-        index_set = set(indices)
         self.remove_operation_button.setEnabled(True)
-        self.duplicate_operation_button.setEnabled(True)
         self.copy_operation_button.setEnabled(True)
         self.cut_operation_button.setEnabled(True)
         self.paste_operation_button.setEnabled(can_paste)
-        self.move_operation_up_button.setEnabled(
-            any(index > 0 and index - 1 not in index_set for index in indices)
-        )
-        self.move_operation_down_button.setEnabled(
-            any(
-                index < len(self._recipe.operations) - 1 and index + 1 not in index_set
-                for index in indices
-            )
-        )
 
     @QtCore.Slot()
     @QtCore.Slot(int)
@@ -3546,7 +4699,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 operation_id = self._operation_id_for_item(item)
                 if operation_id is not None:
                     self._set_selected_operation_ids_silent({operation_id})
-        self._source_inspector_target = None
         self._sync_axes_selector()
         self._refresh_operation_editor()
 
@@ -3562,6 +4714,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def eventFilter(
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
+        if self._handle_source_drag_event(event):
+            return True
         self._handle_combo_interaction_event(watched, event)
         operation_list_viewport = self._operation_list_viewport
         if (
@@ -3585,6 +4739,48 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self, 0, self._clear_operation_multi_select_event
             )
         return super().eventFilter(watched, event)
+
+    def _handle_source_drag_event(self, event: QtCore.QEvent | None) -> bool:
+        if event is None or event.type() not in {
+            QtCore.QEvent.Type.DragEnter,
+            QtCore.QEvent.Type.DragMove,
+            QtCore.QEvent.Type.Drop,
+        }:
+            return False
+        if not isinstance(
+            event, (QtGui.QDragEnterEvent, QtGui.QDragMoveEvent, QtGui.QDropEvent)
+        ):
+            return False
+        mime = event.mimeData()
+        if mime is None:
+            return False
+        if not self._source_drop_available(mime):
+            return False
+        if event.type() == QtCore.QEvent.Type.Drop and not self._add_sources_from_mime(
+            mime
+        ):
+            return False
+        event.setDropAction(QtCore.Qt.DropAction.CopyAction)
+        event.accept()
+        return True
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
+        if self._handle_source_drag_event(event):
+            return
+        if event is not None:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent | None) -> None:
+        if self._handle_source_drag_event(event):
+            return
+        if event is not None:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
+        if self._handle_source_drag_event(event):
+            return
+        if event is not None:
+            super().dropEvent(event)
 
     def _handle_combo_interaction_event(
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
@@ -3708,6 +4904,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, source_data: Mapping[str, xr.DataArray]
     ) -> None:
         self._source_data = dict(source_data)
+        self._source_selection_base_data.clear()
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -3928,13 +5125,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_display_name(self, name: str) -> str:
         sources = self._source_by_name()
         source = sources.get(name)
-        duplicate_labels = _source_duplicate_labels(tuple(sources.values()))
-        return _source_display_label(
-            source,
-            name,
-            disambiguate=source is not None
-            and (source.label.strip() or name) in duplicate_labels,
-        )
+        return _source_display_label(source, name)
 
     def _source_display_names(self, names: Sequence[str]) -> tuple[str, ...]:
         return tuple(self._source_display_name(name) for name in names)
@@ -4208,19 +5399,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         menu.addSeparator()
         duplicate_action = QtGui.QAction("Duplicate", menu)
         duplicate_action.setObjectName("figureComposerContextDuplicateStepAction")
-        duplicate_action.setEnabled(self.duplicate_operation_button.isEnabled())
+        duplicate_action.setEnabled(self._operation_duplicate_possible())
         duplicate_action.triggered.connect(self._duplicate_current_operation)
         menu.addAction(duplicate_action)
 
-        move_up_action = QtGui.QAction("Up", menu)
+        move_up_action = QtGui.QAction("Move Up", menu)
         move_up_action.setObjectName("figureComposerContextMoveStepUpAction")
-        move_up_action.setEnabled(self.move_operation_up_button.isEnabled())
+        move_up_action.setEnabled(self._operation_move_possible(-1))
         move_up_action.triggered.connect(self._move_current_operation_up)
         menu.addAction(move_up_action)
 
-        move_down_action = QtGui.QAction("Down", menu)
+        move_down_action = QtGui.QAction("Move Down", menu)
         move_down_action.setObjectName("figureComposerContextMoveStepDownAction")
-        move_down_action.setEnabled(self.move_operation_down_button.isEnabled())
+        move_down_action.setEnabled(self._operation_move_possible(1))
         move_down_action.triggered.connect(self._move_current_operation_down)
         menu.addAction(move_down_action)
 
@@ -4285,9 +5476,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         source_by_name = {source.name: source for source in self._recipe.sources}
         sources = tuple(
-            source_by_name.get(
-                source_name, FigureSourceState(name=source_name, label=source_name)
-            )
+            source_by_name.get(source_name, FigureSourceState(name=source_name))
             for source_name in source_names
         )
         source_data = {
@@ -4457,6 +5646,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 "operations": tuple(operation_list),
             }
         )
+        self._normalize_operation_source_selections()
         self._refresh_source_list()
         if renamed_source_data:
             self.sigDataChanged.emit()
@@ -4637,6 +5827,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(
             update={"operations": (*self._recipe.operations, operation)}
         )
+        self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
         self._maybe_redraw_plot()
@@ -4655,11 +5846,34 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updated together so workspace saves include the new source data.
         """
         existing = {source.name: source for source in self._recipe.sources}
+        reserved = set(existing)
+        reserved.update(self._source_data)
+        source_data_updates: dict[str, xr.DataArray] = {}
         for source in sources:
-            existing[source.name] = source
-        self._source_data.update(source_data)
+            data = source_data.get(source.name)
+            if data is None:
+                continue
+            target_name = source.name
+            existing_source = existing.get(target_name)
+            same_linked_source = (
+                existing_source is not None
+                and existing_source.node_uid is not None
+                and existing_source.node_uid == source.node_uid
+            )
+            if existing_source is not None and not same_linked_source:
+                target_name = self._source_unique_alias(target_name, reserved)
+                source = source.model_copy(update={"name": target_name})
+            else:
+                reserved.add(target_name)
+            existing[target_name] = source
+            source_data_updates[target_name] = data
+            self._source_selection_base_data.pop(target_name, None)
+        if not source_data_updates:
+            return
+        self._source_data.update(source_data_updates)
         ordered_sources = tuple(existing[name] for name in existing)
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
+        self._normalize_operation_source_selections()
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
@@ -4680,16 +5894,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         Returns ``False`` when no matching stored source or backing data slot exists.
         """
         source_list = list(self._recipe.sources)
-        for index, existing_source in enumerate(source_list):
-            if existing_source.name == alias:
-                source_list[index] = source.model_copy(update={"name": alias})
+        existing_source: FigureSourceState | None = None
+        existing_index: int | None = None
+        for candidate_index, candidate_source in enumerate(source_list):
+            if candidate_source.name == alias:
+                existing_source = candidate_source
+                existing_index = candidate_index
                 break
         else:
             if alias not in self._source_data:
                 return False
+            existing_source = None
             source_list.append(source.model_copy(update={"name": alias}))
+            existing_index = len(source_list) - 1
 
-        self._source_data[alias] = data
+        if existing_index is None:  # pragma: no cover
+            raise RuntimeError("source replacement index was not resolved")
+        replacement = source.model_copy(update={"name": alias})
+        if existing_source is not None and not _source_has_selection(replacement):
+            replacement = _source_with_selection(
+                replacement.model_copy(
+                    update={"selection_source": existing_source.selection_source}
+                ),
+                _source_selection(existing_source),
+            )
+        try:
+            selected_data = self._source_data_from_selection(alias, data, replacement)
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            message = str(exc) or exc.__class__.__name__
+            self._set_source_status_text(
+                f"Could not refresh source “{alias}”: {message}"
+            )
+            return False
+        source_list[existing_index] = replacement
+
+        self._source_data[alias] = selected_data
+        if _source_has_selection(replacement):
+            self._source_selection_base_data[alias] = data
+        else:
+            self._source_selection_base_data.pop(alias, None)
         self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
@@ -4699,6 +5942,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
+        self._set_source_status_text(None)
         return True
 
     def remove_source(self, name: str) -> bool:
@@ -4714,6 +5958,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             updates["primary_source"] = source_list[0].name
         self._recipe = self._recipe.model_copy(update=updates)
         self._source_data.pop(name, None)
+        self._source_selection_base_data.pop(name, None)
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
@@ -4951,9 +6196,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.copy_operation_button,
             self.cut_operation_button,
             self.paste_operation_button,
-            self.duplicate_operation_button,
-            self.move_operation_up_button,
-            self.move_operation_down_button,
             self.remove_operation_button,
             self.operation_list,
         )
@@ -4987,28 +6229,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
-            self._set_source_status_text("Select a step to choose data sources.")
+            self._set_step_source_status_text("Select a step to choose data sources.")
             return
         if (input_error := self._operation_input_error_text(operation)) is not None:
-            self._set_source_status_text(f"Invalid input: {input_error}")
+            self._set_step_source_status_text(f"Invalid input: {input_error}")
             return
         if (
             render_error := self._operation_render_errors.get(operation.operation_id)
         ) is not None:
-            self._set_source_status_text(f"Render error: {render_error}")
+            self._set_step_source_status_text(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [
             source for source in selected_sources if source not in self._source_data
         ]
         if missing:
-            self._set_source_status_text(
+            self._set_step_source_status_text(
                 "Missing sources: " + ", ".join(self._source_display_names(missing))
             )
         elif selected_sources:
-            self._set_source_status_text(None)
+            self._set_step_source_status_text(None)
         else:
-            self._set_source_status_text("This step does not read a data source.")
+            self._set_step_source_status_text("This step does not read a data source.")
 
     def _update_source_section(self) -> None:
         self._clear_step_source_controls()
@@ -5535,6 +6777,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._recipe = status.model_copy(update={"operations": operations})
         self._ensure_primary_source_data()
+        self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self._sync_figure_window_to_recipe_setup()
         if self._dataset_restore_in_progress:
@@ -5544,6 +6787,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data = dict(source_data)
+        self._source_selection_base_data.clear()
         self._mark_preview_pixmap_stale()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
@@ -5671,12 +6915,42 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
         source_data = dict(self._source_data)
+        selection_base_data: dict[str, xr.DataArray] = {}
+
+        def restored_source_data(
+            source: FigureSourceState, data: xr.DataArray
+        ) -> xr.DataArray:
+            if not _source_has_selection(source):
+                return data
+            try:
+                selected = self._source_data_from_selection(source.name, data, source)
+            except (IndexError, KeyError, TypeError, ValueError):
+                logger.debug(
+                    "Could not apply saved Figure Composer source selection for %s",
+                    source.name,
+                    exc_info=True,
+                )
+                return data
+            selection_base_data[source.name] = data
+            return selected
+
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
         changed = False
-        if primary_data is not None:
+        if (
+            primary_data is not None
+            and source_data.get(self._recipe.primary_source) is not primary_data
+        ):
             current_primary = source_data.get(self._recipe.primary_source)
             if current_primary is not None:
                 primary_data = primary_data.rename(current_primary.name)
+            else:
+                tool_data_name = ds.attrs.get("tool_data_name", "<none-value>")
+                if tool_data_name == "<none-value>":
+                    tool_data_name = None
+                primary_data = primary_data.rename(tool_data_name)
+            primary_source = self._recipe_source(self._recipe.primary_source)
+            if primary_source is not None:
+                primary_data = restored_source_data(primary_source, primary_data)
             source_data[self._recipe.primary_source] = primary_data
             changed = True
         for source in self._recipe.sources:
@@ -5685,13 +6959,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_data_item = data_items.get(source.name)
             if source_data_item is None:
                 continue
-            source_data[source.name] = source_data_item
+            source_data[source.name] = restored_source_data(source, source_data_item)
             changed = True
         if not changed:
             self._restore_persisted_preview_cache(ds)
             self._queue_post_restore_redraw_if_needed(ds)
             return
         self.set_source_data(source_data)
+        self._source_selection_base_data.update(selection_base_data)
+        self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self._restore_persisted_preview_cache(ds)
         self._queue_post_restore_redraw_if_needed(ds)
@@ -5960,19 +7236,210 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def source_data(self) -> dict[str, xr.DataArray]:
         return dict(self._source_data)
 
+    @staticmethod
+    def _source_selection_replay_operations(
+        source: FigureSourceState,
+    ) -> tuple[provenance.ToolProvenanceOperation, ...]:
+        operations: list[provenance.ToolProvenanceOperation] = []
+        if source.isel:
+            operations.append(
+                provenance.IselOperation(
+                    kwargs=typing.cast(
+                        "dict[Hashable, typing.Any]",
+                        dict(source.isel),
+                    )
+                )
+            )
+        if source.qsel:
+            operations.append(
+                provenance.QSelOperation(
+                    kwargs=typing.cast(
+                        "dict[Hashable, typing.Any]",
+                        dict(source.qsel),
+                    )
+                )
+            )
+        if source.mean_dims:
+            operations.append(
+                provenance.QSelAggregationOperation(
+                    dims=tuple(source.mean_dims),
+                    func="mean",
+                )
+            )
+        return tuple(operations)
+
+    @staticmethod
+    def _source_code_name_candidate(text: str) -> str | None:
+        text = re.sub(r"^\s*ImageTool\s+\d+\s*:\s*", "", text.strip())
+        text = (
+            unicodedata.normalize("NFKD", text)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+        text = re.sub(r"[^0-9A-Za-z_]+", "_", text).strip("_").lower()
+        text = re.sub(r"_+", "_", text)
+        if text.startswith("data_"):
+            text = f"source_{text.removeprefix('data_')}"
+        if not text:
+            return None
+        if text[0].isdigit():
+            text = f"source_{text}"
+        if not text.isidentifier() or keyword.iskeyword(text):
+            return None
+        return text
+
+    def _source_display_code_name(
+        self,
+        source: FigureSourceState,
+        *,
+        used_names: set[str],
+    ) -> str:
+        candidates: list[str] = []
+        data = self._source_data.get(source.name)
+        if data is not None and isinstance(data.name, str):
+            candidates.append(data.name)
+        candidates.append(source.name)
+        for candidate in candidates:
+            name = self._source_code_name_candidate(candidate)
+            if name is not None:
+                break
+        else:
+            name = "source"
+
+        base = name
+        index = 2
+        while (
+            name in used_names
+            or name in _FIGURE_CODE_RESERVED_NAMES
+            or keyword.iskeyword(name)
+        ):
+            name = f"{base}_{index}"
+            index += 1
+        used_names.add(name)
+        return name
+
+    @staticmethod
+    def _script_input_with_name(
+        script_input: provenance.ScriptInput,
+        name: str,
+    ) -> provenance.ScriptInput:
+        if script_input.name == name:
+            return script_input
+        return script_input.model_copy(update={"name": name})
+
+    def _selected_source_script_input(
+        self,
+        source: FigureSourceState,
+        *,
+        display_name: str,
+        source_by_name: Mapping[str, FigureSourceState],
+    ) -> provenance.ScriptInput | None:
+        base_source = source_by_name.get(source.selection_source or source.name)
+        base_input = None if base_source is None else base_source.to_script_input()
+        if base_input is None:
+            base_input = source.to_script_input()
+        if base_input is None:
+            return None
+        base_spec = base_input.parsed_provenance_spec()
+        if base_spec is None:
+            return None
+
+        operations = self._source_selection_replay_operations(source)
+        if not operations:
+            return self._script_input_with_name(base_input, display_name)
+        try:
+            base_replay_spec = provenance.to_replay_provenance_spec(base_spec)
+            if base_replay_spec is None:
+                return None
+            selected_spec = base_replay_spec.append_replay_stage(
+                provenance.public_data(*operations)
+            )
+        except (TypeError, ValueError, pydantic.ValidationError):
+            return None
+        return provenance.ScriptInput(
+            name=display_name,
+            node_uid=base_input.node_uid,
+            node_snapshot_token=base_input.node_snapshot_token,
+            provenance_spec=selected_spec.model_dump(mode="json"),
+        )
+
+    def _display_code_source_plan(
+        self,
+    ) -> tuple[
+        tuple[provenance.ScriptInput, ...],
+        frozenset[str],
+        dict[str, str],
+    ]:
+        source_by_name = self._source_by_name()
+        used_sources = self._sources_used_by_recipe()
+        used_code_names = set(_FIGURE_CODE_RESERVED_NAMES)
+        script_inputs: list[provenance.ScriptInput] = []
+        script_input_names: set[str] = set()
+        skip_source_selection_names: set[str] = set()
+        source_name_map: dict[str, str] = {}
+
+        def append_script_input(script_input: provenance.ScriptInput | None) -> None:
+            if script_input is None or script_input.name in script_input_names:
+                return
+            script_inputs.append(script_input)
+            script_input_names.add(script_input.name)
+
+        for source in self._recipe.sources:
+            if source.name not in used_sources:
+                continue
+            display_name = self._source_display_code_name(
+                source,
+                used_names=used_code_names,
+            )
+            script_input: provenance.ScriptInput | None = None
+            if _source_has_selection(source):
+                script_input = self._selected_source_script_input(
+                    source,
+                    display_name=display_name,
+                    source_by_name=source_by_name,
+                )
+                if script_input is not None:
+                    skip_source_selection_names.add(source.name)
+                    source_name_map[source.name] = display_name
+                else:
+                    used_code_names.discard(display_name)
+                    base_source = source_by_name.get(
+                        source.selection_source or source.name
+                    )
+                    append_script_input(
+                        None if base_source is None else base_source.to_script_input()
+                    )
+            else:
+                script_input = source.to_script_input()
+                if script_input is not None:
+                    script_input = self._script_input_with_name(
+                        script_input,
+                        display_name,
+                    )
+                    source_name_map[source.name] = display_name
+            append_script_input(script_input)
+
+        return (
+            tuple(script_inputs),
+            frozenset(skip_source_selection_names),
+            source_name_map,
+        )
+
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
     ) -> provenance.ToolProvenanceSpec | None:
         del flush_deferred_restore
-        script_inputs = tuple(
-            script_input
-            for source in self._recipe.sources
-            if (script_input := source.to_script_input()) is not None
+        script_inputs, skip_source_selection_names, source_name_map = (
+            self._display_code_source_plan()
         )
         if not script_inputs:
             return None
         return provenance.script(
-            erlab.interactive._figurecomposer._provenance._figure_build_operation(self),
+            erlab.interactive._figurecomposer._provenance._figure_build_operation(
+                self,
+                skip_source_selection_names=skip_source_selection_names,
+                source_name_map=source_name_map,
+            ),
             start_label="Figure",
             active_name="fig",
             script_inputs=script_inputs,
@@ -5984,12 +7451,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         for source in self._recipe.sources:
             if source.name in names:
                 self._source_data.pop(source.name, None)
+                self._source_selection_base_data.pop(source.name, None)
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
-        self._source_data.update(source_data)
+        source_by_name = self._source_by_name()
+        skipped: list[str] = []
+        changed = False
+        for source_name, data in source_data.items():
+            source = source_by_name.get(source_name)
+            if source is None:
+                self._source_data[source_name] = data
+                self._source_selection_base_data.pop(source_name, None)
+                changed = True
+                continue
+            try:
+                selected_data = self._source_data_from_selection(
+                    source_name, data, source
+                )
+            except (IndexError, KeyError, TypeError, ValueError) as exc:
+                message = str(exc) or exc.__class__.__name__
+                skipped.append(f"{source_name} ({message})")
+                continue
+            self._source_data[source_name] = selected_data
+            if _source_has_selection(source):
+                self._source_selection_base_data[source_name] = data
+            else:
+                self._source_selection_base_data.pop(source_name, None)
+            changed = True
+        if skipped:
+            self._set_source_status_text(
+                "Could not refresh source data for: " + ", ".join(skipped)
+            )
+        elif changed:
+            self._set_source_status_text(None)
+        if not changed:
+            self._refresh_source_controls()
+            return
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()

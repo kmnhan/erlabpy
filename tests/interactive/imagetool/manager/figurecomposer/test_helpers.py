@@ -277,17 +277,6 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
 
     tool.operation_list.setCurrentRow(4)
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    plot_array_selection_page = tool.step_editor_stack.currentWidget()
-    assert plot_array_selection_page is not None
-    _assert_step_editor_section(
-        plot_array_selection_page,
-        "figureComposerPlotArraySelectionDataSection",
-    )
-    _assert_step_editor_section(
-        plot_array_selection_page,
-        "figureComposerPlotArraySelectionDimensionsSection",
-    )
     tool._select_step_section("view")
     plot_array_view_page = tool.step_editor_stack.currentWidget()
     assert plot_array_view_page is not None

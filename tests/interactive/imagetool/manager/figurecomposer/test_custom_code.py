@@ -478,7 +478,7 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert item is not None
     assert "(render error)" in item.text()
     assert "Custom code is not trusted" in item.toolTip()
-    assert "Enable Trusted to render it" in tool.source_status_label.text()
+    assert "Enable Trusted to render it" in tool.step_source_status_label.text()
 
     tool.operation_list.setCurrentRow(0)
     tool._select_step_section("code")
@@ -496,4 +496,4 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert item is not None
     assert "(render error)" not in item.text()
     assert "Custom code is not trusted" not in item.toolTip()
-    assert "Render error" not in tool.source_status_label.text()
+    assert "Render error" not in tool.step_source_status_label.text()

@@ -15384,6 +15384,71 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
     assert float(loaded.coords["temperature"].values) == 12.0
 
 
+def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4, dtype=np.float64).reshape((2, 3, 4)),
+        dims=("x", "hv", "y"),
+        coords={
+            "x": np.array([0.0, 1.0]),
+            "hv": np.array([10.0, 20.0, 30.0]),
+            "y": np.array([-1.0, 0.0, 1.0, 2.0]),
+        },
+        name="pending_order",
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    saved = tool.to_dataset()
+    state = json.loads(saved.attrs["itool_state"])
+    assert tuple(state["slice"]["dims"]) == data.dims
+
+    stored = xr.Dataset(
+        {
+            manager_workspace_io._ITOOL_DATA_NAME: saved[
+                manager_workspace_io._ITOOL_DATA_NAME
+            ].transpose("hv", "y", "x")
+        },
+        attrs=dict(saved.attrs),
+    )
+    fname = tmp_path / "pending-saved-dim-order.itws"
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", stored
+    )
+    node = types.SimpleNamespace(
+        pending_workspace_memory_payload=(fname, "0/imagetool"),
+        pending_workspace_payload_attrs=None,
+        name="pending_order",
+        added_time_display="Today",
+    )
+    controller = manager_workspace_io._WorkspaceIOController(
+        typing.cast("ImageToolManager", None)
+    )
+    reference_datasets = {}
+    try:
+        pending = controller._pending_workspace_lazy_source_data(
+            node,
+            reference_datasets=reference_datasets,
+        )
+        assert pending.dims == data.dims
+        assert pending.chunks is not None
+        np.testing.assert_array_equal(pending.values, data.values)
+    finally:
+        controller._close_workspace_reference_datasets(reference_datasets)
+    assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
+
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    loaded_ds = controller_cls._read_workspace_imagetool_payload_dataset(
+        fname, "0/imagetool", load_data=True
+    )
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
+    qtbot.addWidget(restored)
+    try:
+        assert restored.slicer_area.data.dims == pending.dims
+    finally:
+        loaded_ds.close()
+
+
 def test_pending_workspace_metadata_coord_load_failure_falls_back(
     tmp_path, monkeypatch
 ) -> None:

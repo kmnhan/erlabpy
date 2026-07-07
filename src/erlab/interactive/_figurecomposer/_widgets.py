@@ -745,6 +745,10 @@ def _false_toolbar_state() -> bool:
     return False
 
 
+def _false_mime_state(_mime: QtCore.QMimeData) -> bool:
+    return False
+
+
 def _axis_limit_pair(axis: object, getter_name: str) -> tuple[float, float] | None:
     getter = getattr(axis, getter_name, None)
     if getter is None:
@@ -1064,6 +1068,10 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         redo_callback: Callable[[], None] = _noop_toolbar_callback,
         undoable_callback: Callable[[], bool] = _false_toolbar_state,
         redoable_callback: Callable[[], bool] = _false_toolbar_state,
+        source_drop_available_callback: Callable[
+            [QtCore.QMimeData], bool
+        ] = _false_mime_state,
+        source_drop_callback: Callable[[QtCore.QMimeData], bool] = _false_mime_state,
     ) -> None:
         super().__init__(None)
         erlab.interactive.utils.patch_macos_matplotlib_qt_cursor()
@@ -1071,6 +1079,8 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self._suppress_resize_signal = False
         self._resize_signal_pending = False
         self._resize_signal_generation = 0
+        self._source_drop_available_callback = source_drop_available_callback
+        self._source_drop_callback = source_drop_callback
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         with _figure_style_context():
@@ -1104,6 +1114,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
         self.setWindowTitle("Figure")
         for widget in (self, root, self.toolbar, self.canvas):
+            widget.setAcceptDrops(True)
             widget.installEventFilter(self)
         self._close_shortcut = erlab.interactive.utils._install_close_shortcut(
             self, self.hide
@@ -1123,6 +1134,39 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             with contextlib.suppress(RuntimeError):
                 target.removeEventFilter(self)
 
+    def set_source_drop_callbacks(
+        self,
+        *,
+        can_drop: Callable[[QtCore.QMimeData], bool] = _false_mime_state,
+        drop: Callable[[QtCore.QMimeData], bool] = _false_mime_state,
+    ) -> None:
+        self._source_drop_available_callback = can_drop
+        self._source_drop_callback = drop
+
+    def _handle_source_drag_event(self, event: QtCore.QEvent | None) -> bool:
+        if event is None or event.type() not in {
+            QtCore.QEvent.Type.DragEnter,
+            QtCore.QEvent.Type.DragMove,
+            QtCore.QEvent.Type.Drop,
+        }:
+            return False
+        if not isinstance(
+            event, (QtGui.QDragEnterEvent, QtGui.QDragMoveEvent, QtGui.QDropEvent)
+        ):
+            return False
+        mime = event.mimeData()
+        if mime is None:
+            return False
+        if not self._source_drop_available_callback(mime):
+            return False
+        if event.type() == QtCore.QEvent.Type.Drop:
+            accepted = self._source_drop_callback(mime)
+            if not accepted:
+                return False
+        event.setDropAction(QtCore.Qt.DropAction.CopyAction)
+        event.accept()
+        return True
+
     def _cancel_resize_callbacks(self, *, suppress: bool) -> None:
         self._suppress_resize_signal = suppress
         self._resize_signal_pending = False
@@ -1133,6 +1177,8 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
+        if self._handle_source_drag_event(event):
+            return True
         if self._is_workspace_save_shortcut_event(event) and (
             shortcut := self._workspace_save_shortcut()
         ):

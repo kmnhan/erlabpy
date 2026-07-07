@@ -11,11 +11,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._code import (
-    _axes_code,
-    _maybe_squeeze_drop_code,
-    _selection_code,
-)
+from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._defaults import (
     _current_options,
     _styled_rcparams_value,
@@ -100,7 +96,6 @@ from erlab.interactive._figurecomposer._rendering import (
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
     _public_source_data,
-    _selected_data,
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
@@ -200,7 +195,11 @@ def _operation_dim_names(
                 dims.append(dim_text)
     if dims:
         return tuple(dims)
-    return tuple(_available_source_dims(tool._source_data, operation.sources))
+    return tuple(
+        _available_source_dims(
+            tool._source_data, _plot_slices_selection_sources(operation)
+        )
+    )
 
 
 def _slice_values_mode_text(mode: str) -> str:
@@ -300,8 +299,6 @@ def _all_coordinate_slice_values_summary(
 
 
 def _first_plot_slices_source_code(operation: FigureOperationState) -> str | None:
-    if operation.map_selections:
-        return _selection_code(operation.map_selections[0])
     if operation.sources:
         return _valid_source_variable(operation.sources[0])
     return None
@@ -377,13 +374,9 @@ def _plot_slices_panel_keys(
 ) -> tuple[_PlotSlicesPanelKey, ...]:
     operation = _normalized_selection_operation(tool, operation)
     maps = _operation_maps(tool, operation)
-    map_count = len(maps) or max(len(operation.sources), 1)
+    source_names = _plot_slices_selection_sources(operation)
+    map_count = len(maps) or max(len(source_names), 1)
     slice_count = _plot_slices_slice_count(tool, operation)
-    source_names = (
-        tuple(selection.source for selection in operation.map_selections)
-        if operation.map_selections
-        else operation.sources
-    )
     map_labels = tuple(
         tool._source_display_name(source_names[index])
         if index < len(source_names)
@@ -805,11 +798,7 @@ def _plot_slices_line_colormap_colors(
 def _plot_slices_source_labels(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
-    source_names = (
-        tuple(selection.source for selection in operation.map_selections)
-        if operation.map_selections
-        else operation.sources
-    )
+    source_names = _plot_slices_selection_sources(operation)
     map_count = len(_operation_maps(tool, operation)) or max(len(source_names), 1)
     return tuple(
         tool._source_display_name(source_names[index])
@@ -2371,6 +2360,19 @@ def _normalized_selection_operation(
     return operation.model_copy(update=updates)
 
 
+def _plot_slices_selection_sources(
+    operation: FigureOperationState,
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(operation.sources))
+
+
+def _plot_slices_operation_with_sources(
+    operation: FigureOperationState,
+    sources: tuple[str, ...],
+) -> FigureOperationState:
+    return operation.model_copy(update={"sources": sources, "map_selections": ()})
+
+
 def _add_plot_slices_line_color_controls(
     tool: FigureComposerTool,
     operation: FigureOperationState,
@@ -2662,7 +2664,9 @@ def _build_plot_slices_editor(
         "Slice values",
         object_name="figureComposerPlotSlicesSelectionValuesSection",
     )
-    dims = _available_source_dims(tool._source_data, operation.sources)
+    dims = _available_source_dims(
+        tool._source_data, _plot_slices_selection_sources(operation)
+    )
     dim_mixed = tool._batch_is_mixed(operation, lambda target: target.slice_dim)
     dim_combo = tool._combo(
         ["", *dims],
@@ -4302,16 +4306,8 @@ def _plot_slices_selection_cache_key(
     operation: FigureOperationState, maps: Sequence[xr.DataArray]
 ) -> tuple[object, ...]:
     source_key = tuple(
-        (
-            selection.source,
-            repr(selection.isel),
-            repr(selection.qsel),
-            tuple(selection.mean_dims),
-        )
-        for selection in operation.map_selections
+        (source,) for source in _plot_slices_selection_sources(operation)
     )
-    if not source_key:
-        source_key = tuple((source,) for source in operation.sources)
     map_key = tuple(
         (id(data.data), tuple(data.dims), tuple(data.shape)) for data in maps
     )
@@ -4321,13 +4317,6 @@ def _plot_slices_selection_cache_key(
 def _operation_maps(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[xr.DataArray]:
-    if operation.map_selections:
-        return [
-            selected
-            for selection in operation.map_selections
-            if (selected := _selected_data(tool._source_data, selection)) is not None
-        ]
-
     return [
         _public_source_data(tool._source_data[name])
         for name in operation.sources
@@ -4339,17 +4328,10 @@ def _plot_slices_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | None:
     operation = _normalized_selection_operation(tool, operation)
-    if operation.map_selections:
-        maps_code = (
-            _selection_code(operation.map_selections[0])
-            if len(operation.map_selections) == 1
-            else "selected_maps"
-        )
-    else:
-        sources = [_valid_source_variable(source) for source in operation.sources]
-        if not sources:
-            return None
-        maps_code = sources[0] if len(sources) == 1 else f"[{', '.join(sources)}]"
+    sources = [_valid_source_variable(source) for source in operation.sources]
+    if not sources:
+        return None
+    maps_code = sources[0] if len(sources) == 1 else f"[{', '.join(sources)}]"
 
     kwargs = _plot_slices_code_kwargs(tool, operation)
     kwargs["axes"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=True))
@@ -4360,10 +4342,6 @@ def _plot_slices_code(
 def _plot_slices_profile_source_codes(
     operation: FigureOperationState,
 ) -> tuple[str, ...]:
-    if operation.map_selections:
-        return tuple(
-            _selection_code(selection) for selection in operation.map_selections
-        )
     return tuple(_valid_source_variable(source) for source in operation.sources)
 
 
@@ -4504,18 +4482,7 @@ def _plot_slices_code_lines(
     if code is None:
         return []
     color_lines = _plot_slices_line_color_code_lines(tool, operation)
-    if not operation.map_selections:
-        return [*color_lines, code]
-    if len(operation.map_selections) == 1:
-        return [*color_lines, code]
-    lines = ["selected_maps = ["]
-    lines.extend(
-        f"    {_selection_code(selection)}," for selection in operation.map_selections
-    )
-    lines.append("]")
-    lines.extend(color_lines)
-    lines.append(code)
-    return lines
+    return [*color_lines, code]
 
 
 def _plot_slices_code_kwargs(
@@ -4570,7 +4537,9 @@ def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationSt
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     operation = _normalized_selection_operation(tool, operation)
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    source_text = ", ".join(tool._source_display_names(operation.sources))
+    source_text = ", ".join(
+        tool._source_display_names(_plot_slices_selection_sources(operation))
+    )
     if not source_text:
         source_text = "missing source"
     shape = _plot_slices_shape(tool, operation)
@@ -4597,14 +4566,7 @@ def _has_invalid_target(
 
 
 def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    names: list[str] = []
-    for source_name in operation.sources:
-        if source_name not in names:
-            names.append(source_name)
-    for selection in operation.map_selections:
-        if selection.source not in names:
-            names.append(selection.source)
-    return tuple(names)
+    return _plot_slices_selection_sources(operation)
 
 
 def _plot_source_check_state(
@@ -4616,10 +4578,13 @@ def _plot_source_check_state(
     if len(editable) <= 1:
         return (
             QtCore.Qt.CheckState.Checked
-            if source_name in operation.sources
+            if source_name in _plot_slices_selection_sources(operation)
             else QtCore.Qt.CheckState.Unchecked
         )
-    selected_count = sum(source_name in target.sources for _index, target in editable)
+    selected_count = sum(
+        source_name in _plot_slices_selection_sources(target)
+        for _index, target in editable
+    )
     if selected_count == 0:
         return QtCore.Qt.CheckState.Unchecked
     if selected_count == len(editable):
@@ -4644,22 +4609,25 @@ def _plot_source_check_changed(
         _index: int, target: FigureOperationState
     ) -> FigureOperationState:
         if checked:
-            if source_name in target.sources:
+            target_sources = _plot_slices_selection_sources(target)
+            if source_name in target_sources:
                 return target
-            source_set = {*target.sources, source_name}
+            source_set = {*target_sources, source_name}
             ordered_sources = tuple(
                 source for source in row_order if source in source_set
             )
             missing_sources = tuple(
-                source for source in target.sources if source not in row_order
+                source for source in target_sources if source not in row_order
             )
-            return target.model_copy(
-                update={"sources": (*ordered_sources, *missing_sources)}
+            return _plot_slices_operation_with_sources(
+                target, (*ordered_sources, *missing_sources)
             )
         next_sources = tuple(
-            source for source in target.sources if source != source_name
+            source
+            for source in _plot_slices_selection_sources(target)
+            if source != source_name
         )
-        return target.model_copy(update={"sources": next_sources})
+        return _plot_slices_operation_with_sources(target, next_sources)
 
     tool._update_operations(
         update_operation,
@@ -4681,7 +4649,9 @@ def _plot_source_move(
         _index: int, target: FigureOperationState
     ) -> FigureOperationState:
         ordered_sources = [
-            source for source in target.sources if source in available_sources
+            source
+            for source in _plot_slices_selection_sources(target)
+            if source in available_sources
         ]
         if source_name not in ordered_sources:
             return target
@@ -4694,10 +4664,12 @@ def _plot_source_move(
             ordered_sources[source_index],
         )
         missing_sources = tuple(
-            source for source in target.sources if source not in available_sources
+            source
+            for source in _plot_slices_selection_sources(target)
+            if source not in available_sources
         )
-        return target.model_copy(
-            update={"sources": (*ordered_sources, *missing_sources)}
+        return _plot_slices_operation_with_sources(
+            target, (*ordered_sources, *missing_sources)
         )
 
     tool._update_operations(
@@ -4715,10 +4687,16 @@ def _plot_source_order_matches(
         return True
     available_sources = set(tool._source_names())
     expected = tuple(
-        source for source in operation.sources if source in available_sources
+        source
+        for source in _plot_slices_selection_sources(operation)
+        if source in available_sources
     )
     return all(
-        tuple(source for source in target.sources if source in available_sources)
+        tuple(
+            source
+            for source in _plot_slices_selection_sources(target)
+            if source in available_sources
+        )
         == expected
         for _index, target in editable
     )
@@ -4729,7 +4707,9 @@ def _plot_source_row_names(
 ) -> tuple[str, ...]:
     source_names = tool._source_names()
     selected_sources = tuple(
-        source for source in operation.sources if source in source_names
+        source
+        for source in _plot_slices_selection_sources(operation)
+        if source in source_names
     )
     unselected_sources = tuple(
         source for source in source_names if source not in selected_sources
@@ -4871,7 +4851,9 @@ def _build_source_editor(
     layout.setVerticalSpacing(2)
     row_names = _plot_source_row_names(tool, operation)
     selected_sources = tuple(
-        source for source in operation.sources if source in tool._source_names()
+        source
+        for source in _plot_slices_selection_sources(operation)
+        if source in tool._source_names()
     )
     order_controls_enabled = _plot_source_order_matches(tool, operation)
     if row_names:
@@ -4920,7 +4902,14 @@ def _section_summary(
     operation = _normalized_selection_operation(tool, operation)
     match key:
         case "sources":
-            return ", ".join(tool._source_display_names(operation.sources)) or "none"
+            return (
+                ", ".join(
+                    tool._source_display_names(
+                        _plot_slices_selection_sources(operation)
+                    )
+                )
+                or "none"
+            )
         case "axes":
             return tool._axes_target_text(operation.axes)
         case "selection":

@@ -13,7 +13,6 @@ from erlab.interactive._figurecomposer._code import (
     _axes_sequence_code,
     _maybe_squeeze_drop_code,
     _needs_squeeze_drop,
-    _selection_code,
 )
 from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
@@ -80,7 +79,6 @@ from erlab.interactive._figurecomposer._rendering import (
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
     _public_source_data,
-    _selected_data,
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
@@ -181,6 +179,12 @@ def _line_color_mode_from_text(
     return "manual"
 
 
+def _line_selection_sources(operation: FigureOperationState) -> tuple[str, ...]:
+    if operation.line_source is None:
+        return ()
+    return (operation.line_source,)
+
+
 def _line_reduce_active(operation: FigureOperationState) -> bool:
     return operation.line_iter_dim is not None and operation.line_reduce != "disabled"
 
@@ -246,6 +250,14 @@ def _available_line_offset_coords(
     line_data = data.squeeze(drop=True)
     if operation.line_y:
         line_data = line_data[operation.line_y]
+    return _line_offset_coord_names(line_data, operation)
+
+
+def _line_offset_coord_names(
+    line_data: xr.DataArray, operation: FigureOperationState
+) -> list[str]:
+    if operation.line_iter_dim is None:
+        return []
     coords: list[str] = []
     for name, coord in line_data.coords.items():
         if name == operation.line_iter_dim:
@@ -1238,38 +1250,28 @@ def _line_data_items(
 def _line_data_items_with_sources(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[tuple[xr.DataArray, str | None]]:
-    if operation.map_selections:
+    if operation.line_source is None:
+        return []
+    data = tool._source_data.get(operation.line_source)
+    if data is None:
+        return []
+    data = _public_source_data(data)
+    if operation.line_selection:
+        data = data.qsel(operation.line_selection)
+    line_data = data.squeeze(drop=True)
+    if operation.line_y:
+        line_data = line_data[operation.line_y]
+    line_data = _reduced_line_iter_data(line_data, operation)
+    if operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
         line_items = [
             (
-                selected.squeeze(drop=True),
-                tool._source_display_name(selection.source),
+                item.squeeze(drop=True),
+                tool._source_display_name(operation.line_source),
             )
-            for selection in operation.map_selections
-            if (selected := _selected_data(tool._source_data, selection)) is not None
+            for item in line_data.transpose(operation.line_iter_dim, ...)
         ]
-    elif operation.line_source is not None:
-        data = tool._source_data.get(operation.line_source)
-        if data is None:
-            return []
-        data = _public_source_data(data)
-        if operation.line_selection:
-            data = data.qsel(operation.line_selection)
-        line_data = data.squeeze(drop=True)
-        if operation.line_y:
-            line_data = line_data[operation.line_y]
-        line_data = _reduced_line_iter_data(line_data, operation)
-        if operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
-            line_items = [
-                (
-                    item.squeeze(drop=True),
-                    tool._source_display_name(operation.line_source),
-                )
-                for item in line_data.transpose(operation.line_iter_dim, ...)
-            ]
-        else:
-            line_items = [(line_data, tool._source_display_name(operation.line_source))]
     else:
-        return []
+        line_items = [(line_data, tool._source_display_name(operation.line_source))]
 
     profiles: list[tuple[xr.DataArray, str | None]] = []
     for line_data, source in line_items:
@@ -1463,8 +1465,6 @@ def _line_text_values(
 
 
 def _line_code(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:
-    if operation.map_selections:
-        return _line_selection_code(tool, operation)
     source_expression = _line_source_expression_and_data(tool, operation)
     if source_expression is None:
         return []
@@ -1535,27 +1535,6 @@ def _line_stack_transform_code(
     return profile_stack_transform_code(
         operation, data_name="profile_data", line_data=line_data
     )
-
-
-def _line_selection_code(
-    tool: FigureComposerTool, operation: FigureOperationState
-) -> list[str]:
-    selected_items = tuple(
-        (selection, selected)
-        for selection in operation.map_selections
-        if (selected := _selected_data(tool._source_data, selection)) is not None
-    )
-    lines = ["profiles = ["]
-    lines.extend(
-        f"    {_maybe_squeeze_drop_code(_selection_code(selection), selected)},"
-        for selection, selected in selected_items
-    )
-    lines.append("]")
-    if operation.line_placement == "one_per_axis":
-        lines.extend(_one_profile_per_axis_code(tool, operation))
-        return lines
-    lines.extend(_regular_line_code(tool, operation))
-    return lines
 
 
 def _regular_line_code(
@@ -2082,11 +2061,8 @@ def _default_profile_x_dim(
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    source = (
-        tool._source_display_name(operation.line_source)
-        if operation.line_source is not None
-        else "missing source"
-    )
+    source_names = _line_selection_sources(operation)
+    source = ", ".join(tool._source_display_names(source_names)) or "missing source"
     return f"{prefix}Line/profile: {source}"
 
 
@@ -2105,7 +2081,7 @@ def _has_invalid_target(
 
 
 def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    return (operation.line_source,) if operation.line_source is not None else ()
+    return _line_selection_sources(operation)
 
 
 def _build_source_editor(

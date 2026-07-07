@@ -290,6 +290,9 @@ def test_drop_mimedata(
 
         # Test single selection, top-level drops
         mime_single = model.mimeData([model.index(0, 0)])
+        assert manager.tree_view.figure_source_uids_from_mime(mime_single) == (
+            model.index(0, 0).internalPointer().uid,
+        )
         assert model.canDropMimeData(
             mime_single, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
         )
@@ -328,6 +331,12 @@ def test_drop_mimedata(
         old_order = list(parent_wrapper._childtool_indices)
         parent_index: QtCore.QModelIndex = model._row_index(0)
         child_index: QtCore.QModelIndex = model._row_index(child_uid)
+        assert (
+            manager.tree_view.figure_source_uids_from_mime(
+                model.mimeData([child_index])
+            )
+            == ()
+        )
 
         # Drop to different parent
         logger.info("Testing drop to different parent")

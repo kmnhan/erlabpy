@@ -4497,3 +4497,49 @@ def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
     assert axs[0, 1].get_xlabel() == ""
     assert axs[0, 0].get_ylabel() == ""
     assert axs[0, 1].get_ylabel() == ""
+
+
+def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    plot_operation = FigureOperationState.plot_array(label="plot", source="data")
+    title_operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="set_titles",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"text_values": ("ALS, $$39.3 eV",)})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(plot_operation, title_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(1)
+
+    tool._redraw_plot(show_window=True)
+
+    render_error = tool._operation_render_errors[title_operation.operation_id]
+    assert "ValueError" in render_error
+    assert "ParseException" in render_error
+    item = tool.operation_list.item(1)
+    assert item is not None
+    assert "(render error)" in item.text()
+    assert "ParseException" in item.toolTip()
+
+    tool._replace_operation(
+        1,
+        title_operation.model_copy(update={"text_values": ("ALS, $39.3$ eV",)}),
+    )
+    tool._redraw_plot(show_window=True)
+
+    assert title_operation.operation_id not in tool._operation_render_errors
+    item = tool.operation_list.item(1)
+    assert item is not None
+    assert "(render error)" not in item.text()

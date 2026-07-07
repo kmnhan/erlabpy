@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -18,6 +19,9 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._figurecomposer._state import FigureSourceState
+
+
+logger = logging.getLogger(__name__)
 
 
 def _dims_text(dims: Sequence[typing.Hashable]) -> str:
@@ -39,8 +43,6 @@ def source_metadata_tooltip(
 ) -> str:
     """Return a compact source tooltip with public DataArray metadata."""
     lines = [_source_display_label(source, name, disambiguate=False)]
-    if source is not None and (source.label.strip() or name) != name:
-        lines.append(f"Alias: {name}")
     if data is None:
         lines.append("DataArray: unavailable")
         return "\n".join(lines)
@@ -110,6 +112,33 @@ def _coord_by_name(data: xr.DataArray, name: str | None) -> xr.DataArray | None:
         if str(coord_name) == name:
             return coord_data
     return None
+
+
+def _source_data_with_loaded_coords(data: xr.DataArray) -> xr.DataArray:
+    loaded_coords = {
+        key: coord.copy(deep=False).load() for key, coord in data.coords.items()
+    }
+    return data.copy(deep=False).assign_coords(loaded_coords)
+
+
+def _source_details_html(data: xr.DataArray) -> str:
+    try:
+        return erlab.utils.formatting.format_darr_html(
+            _source_data_with_loaded_coords(data),
+            show_size=True,
+            show_summary=False,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to load coordinates for Figure Composer source details",
+            exc_info=True,
+        )
+        return erlab.utils.formatting.format_darr_html(
+            data,
+            show_size=True,
+            show_summary=False,
+            load_values=False,
+        )
 
 
 class SourceInspectorWidget(QtWidgets.QWidget):
@@ -196,7 +225,6 @@ class SourceInspectorWidget(QtWidgets.QWidget):
         source_name: str | None,
         source_state: FigureSourceState | None,
         data: xr.DataArray | None,
-        operation_source_names: Sequence[str],
     ) -> None:
         self._source_name = source_name
         self.setProperty("figureComposerSourceAlias", source_name or "")
@@ -206,11 +234,8 @@ class SourceInspectorWidget(QtWidgets.QWidget):
             self.details_label.clear()
             self.details_button.setEnabled(False)
             self.setProperty("figureComposerSourceDims", ())
-            self.setProperty("figureComposerSourceUsedByStep", False)
             return
         self.title_label.setText(_source_display_label(source_state, source_name))
-        used_by_step = source_name in set(operation_source_names)
-        self.setProperty("figureComposerSourceUsedByStep", used_by_step)
         if data is None:
             self.subtitle_label.setText(f"Alias: {source_name}<br>Unavailable")
             self.details_label.clear()
@@ -227,12 +252,7 @@ class SourceInspectorWidget(QtWidgets.QWidget):
         )
         self.details_label.setText(
             erlab.interactive.utils._apply_qt_accent_color(
-                erlab.utils.formatting.format_darr_html(
-                    public.rename(None),
-                    show_size=True,
-                    show_summary=False,
-                    load_values=False,
-                )
+                _source_details_html(public.rename(None))
             )
         )
         self.details_button.setEnabled(True)

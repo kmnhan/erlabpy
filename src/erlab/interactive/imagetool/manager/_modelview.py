@@ -1029,6 +1029,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
 
 _MIME = "application/x-imagetool-manager-internal-move"
+_FIGURE_SOURCE_MIME = "application/x-erlab-imagetool-manager-figure-sources"
 
 
 class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
@@ -1299,7 +1300,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         )
 
     def supportedDragActions(self) -> QtCore.Qt.DropAction:
-        return QtCore.Qt.DropAction.MoveAction
+        return QtCore.Qt.DropAction.MoveAction | QtCore.Qt.DropAction.CopyAction
 
     def supportedDropActions(self) -> QtCore.Qt.DropAction:
         return QtCore.Qt.DropAction.MoveAction
@@ -1414,11 +1415,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         return False
 
     def mimeTypes(self) -> list[str]:
-        return [_MIME]
+        return [_MIME, _FIGURE_SOURCE_MIME]
 
     def mimeData(self, indexes: Iterable[QtCore.QModelIndex]) -> QtCore.QMimeData:
         # Collect unique sibling rows from a single parent.
         rows: list[int] = []
+        source_uids: list[str] = []
+        internal_move_valid = True
         parent_pointer: str | None = None
 
         for idx in indexes:
@@ -1426,43 +1429,63 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 continue
             node = idx.internalPointer()
             if isinstance(node, _ImageToolWrapper):
+                if node.uid not in source_uids:
+                    source_uids.append(node.uid)
                 current_parent_pointer = None
             else:
+                child_node = self._node_from_uid(typing.cast("str", node))
+                if (
+                    child_node is not None
+                    and child_node.is_imagetool
+                    and child_node.uid not in source_uids
+                ):
+                    source_uids.append(child_node.uid)
                 parent_index = self.parent(idx)
                 if not parent_index.isValid():
-                    return QtCore.QMimeData()
+                    internal_move_valid = False
+                    continue
                 current_parent = parent_index.internalPointer()
                 if isinstance(current_parent, _ImageToolWrapper):
                     current_parent_pointer = current_parent.uid
                 elif isinstance(current_parent, str):
                     current_parent_pointer = current_parent
                 else:
-                    return QtCore.QMimeData()
+                    internal_move_valid = False
+                    continue
 
             if parent_pointer is None and current_parent_pointer is None:
                 parent_pointer = None
             elif rows and current_parent_pointer != parent_pointer:
-                return QtCore.QMimeData()
+                internal_move_valid = False
+                continue
             else:
                 parent_pointer = current_parent_pointer
 
             rows.append(idx.row())
 
-        if not rows:
+        if not rows and not source_uids:
             return QtCore.QMimeData()
 
         mime_data = QtCore.QMimeData()
-        mime_data.setData(
-            _MIME,
-            QtCore.QByteArray(
-                json.dumps(
-                    {
-                        "parent_id": parent_pointer,
-                        "rows": sorted(set(rows)),
-                    }
-                ).encode("utf-8")
-            ),
-        )
+        if rows and internal_move_valid:
+            mime_data.setData(
+                _MIME,
+                QtCore.QByteArray(
+                    json.dumps(
+                        {
+                            "parent_id": parent_pointer,
+                            "rows": sorted(set(rows)),
+                        }
+                    ).encode("utf-8")
+                ),
+            )
+        if source_uids:
+            mime_data.setData(
+                _FIGURE_SOURCE_MIME,
+                QtCore.QByteArray(
+                    json.dumps({"uids": tuple(source_uids)}).encode("utf-8")
+                ),
+            )
         return mime_data
 
     @staticmethod
@@ -1488,6 +1511,26 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if len(set(rows)) != len(rows):
             return None
         return {"parent_id": parent_id, "rows": sorted(rows)}
+
+    @staticmethod
+    def decode_figure_source_mime(mime: QtCore.QMimeData | None) -> tuple[str, ...]:
+        if mime is None or _FIGURE_SOURCE_MIME not in mime.formats():
+            return ()
+        raw: bytes = mime.data(_FIGURE_SOURCE_MIME).data()
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return ()
+        if not isinstance(payload, dict):
+            return ()
+        uids = payload.get("uids")
+        if not isinstance(uids, list):
+            return ()
+        output: list[str] = []
+        for uid in uids:
+            if isinstance(uid, str) and uid not in output:
+                output.append(uid)
+        return tuple(output)
 
     @staticmethod
     def _contiguous_runs(rows: list[int]) -> list[tuple[int, int]]:
@@ -1708,7 +1751,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
-        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.setDragDropOverwriteMode(False)
         self.setUniformRowHeights(True)
@@ -1785,6 +1828,11 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             for index in self.selectedIndexes()
             if isinstance(index.internalPointer(), str)
         ]
+
+    def figure_source_uids_from_mime(
+        self, mime: QtCore.QMimeData | None
+    ) -> tuple[str, ...]:
+        return self._model.decode_figure_source_mime(mime)
 
     @QtCore.Slot()
     def deselect_all(self) -> None:

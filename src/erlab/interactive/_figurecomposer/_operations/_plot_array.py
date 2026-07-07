@@ -8,11 +8,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._code import (
-    _axes_code,
-    _maybe_squeeze_drop_code,
-    _selection_code,
-)
+from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE,
@@ -46,16 +42,13 @@ from erlab.interactive._figurecomposer._rendering import (
 )
 from erlab.interactive._figurecomposer._sources import (
     _public_source_data,
-    _selected_data,
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
-    FigureDataSelectionState,
     FigureOperationKind,
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._text import (
-    FigureComposerInputError,
     _code_kwargs,
     _dict_from_text,
     _format_dict,
@@ -86,15 +79,10 @@ def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
     for source_name in operation.sources:
         if source_name not in names:
             names.append(source_name)
-    for selection in operation.map_selections:
-        if selection.source not in names:
-            names.append(selection.source)
     return tuple(names)
 
 
 def _primary_source(operation: FigureOperationState) -> str | None:
-    if operation.map_selections:
-        return operation.map_selections[0].source
     if operation.sources:
         return operation.sources[0]
     return None
@@ -106,11 +94,6 @@ def _selected_plot_array_data(
     *,
     squeeze: bool = True,
 ) -> xr.DataArray | None:
-    if operation.map_selections:
-        data = _selected_data(tool._source_data, operation.map_selections[0])
-        if data is None:
-            return None
-        return data.squeeze(drop=True) if squeeze else data
     source_name = _primary_source(operation)
     if source_name is None or source_name not in tool._source_data:
         return None
@@ -130,21 +113,6 @@ def _safe_selected_plot_array_data(
         return None
 
 
-def _primary_selection(operation: FigureOperationState) -> FigureDataSelectionState:
-    if operation.map_selections:
-        return operation.map_selections[0]
-    return FigureDataSelectionState(source=_primary_source(operation) or "")
-
-
-def _plot_array_source_data(
-    tool: FigureComposerTool, operation: FigureOperationState
-) -> xr.DataArray | None:
-    source_name = _primary_source(operation)
-    if source_name is None or source_name not in tool._source_data:
-        return None
-    return _public_source_data(tool._source_data[source_name])
-
-
 def _plot_array_selection_error(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | None:
@@ -155,324 +123,16 @@ def _plot_array_selection_error(
     return None
 
 
-def _selection_summary(
-    tool: FigureComposerTool, operation: FigureOperationState
-) -> str:
-    source_data = _plot_array_source_data(tool, operation)
-    selection_error = _plot_array_selection_error(tool, operation)
-    selected = (
-        None
-        if selection_error is not None
-        else (_safe_selected_plot_array_data(tool, operation))
-    )
-    input_dims = (
-        "missing"
-        if source_data is None
-        else ", ".join(str(dim) for dim in source_data.dims) or "none"
-    )
-    plotted_dims = (
-        "missing"
-        if selected is None
-        else ", ".join(str(dim) for dim in selected.dims) or "scalar"
-    )
-    text = f"Input dims: {input_dims}\nPlotted dims: {plotted_dims}"
-    if selection_error is not None:
-        text += f"\nSelection error: {selection_error}"
-    return text
-
-
-def _plot_array_operation_with_selection(
-    operation: FigureOperationState,
-    selection: FigureDataSelectionState,
-) -> FigureOperationState:
-    map_selections = (
-        (selection,) if selection.isel or selection.qsel or selection.mean_dims else ()
-    )
-    return operation.model_copy(
-        update={
-            "sources": (selection.source,),
-            "map_selections": map_selections,
-        }
-    )
-
-
-def _update_current_selection_source(
-    tool: FigureComposerTool, source: str | None
-) -> None:
-    if source is None:
-        return
-
-    def update_operation(
-        _index: int, target: FigureOperationState
-    ) -> FigureOperationState:
-        selection = _primary_selection(target).model_copy(update={"source": source})
-        return _plot_array_operation_with_selection(target, selection)
-
-    tool._update_operations(update_operation, rebuild_editor=True)
-
-
-_PLOT_ARRAY_SELECTION_MODE_LABELS = {
-    "keep": "None",
-    "isel": "isel",
-    "qsel": "qsel",
-    "mean": "Mean",
-}
-_PLOT_ARRAY_SELECTION_VALUE_MODES = {"isel", "qsel"}
-_PLOT_ARRAY_SELECTION_VALUE_MESSAGE = (
-    "Enter a selection value, such as 0 or slice(0, 2)."
-)
-_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE = "Enter a qsel width, such as 0.1."
-_PLOT_ARRAY_SELECTION_MODE_TOOLTIP = (
-    "Choose whether this dimension stays, is selected, or is averaged."
-)
-_PLOT_ARRAY_SELECTION_VALUE_TOOLTIP = (
-    "Selection value. Use integer positions or slices for isel; use coordinate "
-    "values or slices for qsel."
-)
-_PLOT_ARRAY_SELECTION_WIDTH_TOOLTIP = (
-    "Optional qsel width centered on the value. Leave blank for nearest "
-    "coordinate selection."
-)
-
-
-def _plot_array_selection_dim_mode(
-    selection: FigureDataSelectionState, dim: str
-) -> str:
-    if dim in selection.isel:
-        return "isel"
-    if dim in selection.qsel or _plot_array_selection_width_key(dim) in selection.qsel:
-        return "qsel"
-    if dim in selection.mean_dims:
-        return "mean"
-    return "keep"
-
-
-def _plot_array_selection_dim_value_text(
-    selection: FigureDataSelectionState, dim: str
-) -> str:
-    if dim in selection.isel:
-        return erlab.interactive.utils._parse_single_arg(selection.isel[dim])
-    if dim in selection.qsel:
-        return erlab.interactive.utils._parse_single_arg(selection.qsel[dim])
-    return ""
-
-
-def _plot_array_selection_width_key(dim: str) -> str:
-    return f"{dim}_width"
-
-
-def _plot_array_selection_dim_width_text(
-    selection: FigureDataSelectionState, dim: str
-) -> str:
-    width_key = _plot_array_selection_width_key(dim)
-    if width_key in selection.qsel:
-        return erlab.interactive.utils._parse_single_arg(selection.qsel[width_key])
-    return ""
-
-
-def _plot_array_selection_value_from_text(text: str) -> typing.Any:
-    stripped = text.strip()
-    if not stripped:
-        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_VALUE_MESSAGE)
-    try:
-        return _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
-    except FigureComposerInputError as exc:
-        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_VALUE_MESSAGE) from exc
-
-
-def _plot_array_selection_width_from_text(text: str) -> typing.Any:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    try:
-        value = _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
-    except FigureComposerInputError as exc:
-        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE) from exc
-    if isinstance(value, slice):
-        raise FigureComposerInputError(_PLOT_ARRAY_SELECTION_WIDTH_MESSAGE)
-    return value
-
-
-def _plot_array_selection_with_dimension(
-    selection: FigureDataSelectionState,
-    dim: str,
-    mode: str,
-    value: typing.Any = None,
-    width: typing.Any = None,
-) -> FigureDataSelectionState:
-    isel = dict(selection.isel)
-    qsel = dict(selection.qsel)
-    mean_dims = [target for target in selection.mean_dims if target != dim]
-    isel.pop(dim, None)
-    qsel.pop(dim, None)
-    qsel.pop(_plot_array_selection_width_key(dim), None)
-    if mode == "isel":
-        isel[dim] = value
-    elif mode == "qsel":
-        if isinstance(value, slice) and width is not None:
-            raise FigureComposerInputError(
-                "A qsel slice cannot also use a width argument."
-            )
-        qsel[dim] = value
-        if width is not None:
-            qsel[_plot_array_selection_width_key(dim)] = width
-    elif mode == "mean":
-        mean_dims.append(dim)
-    return selection.model_copy(
-        update={
-            "isel": isel,
-            "qsel": qsel,
-            "mean_dims": tuple(mean_dims),
-        }
-    )
-
-
-def _update_current_selection_dimension(
-    tool: FigureComposerTool,
-    dim: str,
-    mode: str,
-    value_text: str = "",
-    width_text: str = "",
-) -> None:
-    if mode not in _PLOT_ARRAY_SELECTION_MODE_LABELS:
-        return
-    value = (
-        _plot_array_selection_value_from_text(value_text)
-        if mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
-        else None
-    )
-    width = (
-        _plot_array_selection_width_from_text(width_text) if mode == "qsel" else None
-    )
-
-    def update_operation(
-        _index: int, target: FigureOperationState
-    ) -> FigureOperationState:
-        selection = _plot_array_selection_with_dimension(
-            _primary_selection(target),
-            dim,
-            mode,
-            value,
-            width,
-        )
-        return _plot_array_operation_with_selection(target, selection)
-
-    tool._update_operations(update_operation, rebuild_editor=True)
-
-
-def _plot_array_selection_mode_combo(
-    tool: FigureComposerTool,
-    *,
-    current: str | None,
-    mixed: bool,
-    parent: QtWidgets.QWidget,
-) -> QtWidgets.QComboBox:
-    combo = QtWidgets.QComboBox(parent)
-    tool._mark_editor_control(combo)
-    if mixed:
-        combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
-    for mode, label in _PLOT_ARRAY_SELECTION_MODE_LABELS.items():
-        combo.addItem(label, mode)
-    if mixed:
-        item = typing.cast("typing.Any", combo.model()).item(0)
-        if item is not None:
-            item.setEnabled(False)
-        combo.setCurrentIndex(0)
-    elif current is not None:
-        for index in range(combo.count()):
-            if combo.itemData(index) == current:
-                combo.setCurrentIndex(index)
-                break
-    return combo
-
-
-def _connect_plot_array_selection_dimension_controls(
-    tool: FigureComposerTool,
-    dim: str,
-    mode_combo: QtWidgets.QComboBox,
-    value_edit: QtWidgets.QLineEdit,
-    width_edit: QtWidgets.QLineEdit,
-) -> None:
-    def set_control_visibility(mode: str) -> None:
-        value_edit.setVisible(mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
-        width_edit.setVisible(mode == "qsel")
-
-    def current_value_text() -> str:
-        return value_edit.text()
-
-    def current_width_text() -> str:
-        return width_edit.text()
-
-    def clear_hidden_controls(mode: str) -> None:
-        if mode not in _PLOT_ARRAY_SELECTION_VALUE_MODES:
-            value_edit.clear()
-            value_edit.setModified(False)
-            tool._clear_editor_input_error(value_edit)
-        if mode != "qsel":
-            width_edit.clear()
-            width_edit.setModified(False)
-            tool._clear_editor_input_error(width_edit)
-
-    def mode_changed(value: typing.Any) -> None:
-        mode = value if isinstance(value, str) else ""
-        set_control_visibility(mode)
-        clear_hidden_controls(mode)
-        value_mode = mode in _PLOT_ARRAY_SELECTION_VALUE_MODES
-        if value_mode:
-            if current_value_text().strip():
-                _update_current_selection_dimension(
-                    tool,
-                    dim,
-                    mode,
-                    current_value_text(),
-                    current_width_text(),
-                )
-            return
-        _update_current_selection_dimension(tool, dim, mode)
-
-    def value_changed(text: str) -> None:
-        mode = mode_combo.currentData()
-        if isinstance(mode, str) and mode in _PLOT_ARRAY_SELECTION_VALUE_MODES:
-            _update_current_selection_dimension(
-                tool,
-                dim,
-                mode,
-                text,
-                current_width_text(),
-            )
-
-    def width_changed(text: str) -> None:
-        mode = mode_combo.currentData()
-        if isinstance(mode, str) and mode == "qsel":
-            _update_current_selection_dimension(
-                tool,
-                dim,
-                mode,
-                current_value_text(),
-                text,
-            )
-
-    ComboBoxDataControlAdapter(mode_combo).connect_commit(
-        tool._connect_editor_signal,
-        mode_changed,
-    )
-    tool._connect_line_edit_finished(value_edit, value_changed)
-    tool._connect_line_edit_finished(width_edit, width_changed)
-
-
 def _plot_array_source_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | None:
     data = _selected_plot_array_data(tool, operation, squeeze=False)
     if data is None:
         return None
-    if operation.map_selections:
-        code = _selection_code(operation.map_selections[0])
-    else:
-        source_name = _primary_source(operation)
-        if source_name is None:
-            return None
-        code = _valid_source_variable(source_name)
+    source_name = _primary_source(operation)
+    if source_name is None:
+        return None
+    code = _valid_source_variable(source_name)
     code = _maybe_squeeze_drop_code(code, data)
     if operation.transpose:
         code = f"{code}.T"
@@ -532,13 +192,7 @@ def _update_current_source(tool: FigureComposerTool, source: str | None) -> None
     def update_operation(
         _index: int, target: FigureOperationState
     ) -> FigureOperationState:
-        updates: dict[str, typing.Any] = {"sources": (source,)}
-        if target.map_selections:
-            updates["map_selections"] = tuple(
-                selection.model_copy(update={"source": source})
-                for selection in target.map_selections
-            )
-        return target.model_copy(update=updates)
+        return target.model_copy(update={"sources": (source,), "map_selections": ()})
 
     tool._update_operations(update_operation, rebuild_editor=True)
 
@@ -561,169 +215,6 @@ def _build_source_editor(
         source_combo,
         "Data array plotted by this Image Plot step.",
     )
-
-
-def _build_plot_array_selection_page(
-    tool: FigureComposerTool, operation: FigureOperationState
-) -> QtWidgets.QWidget:
-    page, layout = tool._new_step_form_page("figureComposerPlotArraySelectionPage")
-    selection = _primary_selection(operation)
-
-    tool._add_form_section(
-        layout,
-        "Data",
-        object_name="figureComposerPlotArraySelectionDataSection",
-    )
-    summary = QtWidgets.QLabel(_selection_summary(tool, operation), page)
-    summary.setObjectName("figureComposerPlotArraySelectionSummary")
-    summary.setWordWrap(True)
-    tool._add_form_row(
-        layout,
-        "Summary",
-        summary,
-        "Shows the original dimensions and the dimensions plotted by this image step.",
-    )
-
-    source_mixed = tool._batch_is_mixed(operation, _primary_source)
-    source_combo = tool._source_combo(
-        tool._source_names(),
-        None if source_mixed else selection.source or _primary_source(operation),
-        lambda source: _update_current_selection_source(tool, source),
-        parent=page,
-        mixed=source_mixed,
-    )
-    source_combo.setObjectName("figureComposerPlotArraySelectionSourceCombo")
-    tool._add_form_row(
-        layout,
-        "Image data",
-        source_combo,
-        "Data array selected before plot_array draws this image.",
-    )
-
-    tool._add_form_section(
-        layout,
-        "Dimensions",
-        object_name="figureComposerPlotArraySelectionDimensionsSection",
-    )
-    source_data = None if source_mixed else _plot_array_source_data(tool, operation)
-    if source_mixed or source_data is None:
-        dimensions_message = QtWidgets.QLabel(
-            "Choose an image data source to edit dimension selections."
-            if source_mixed
-            else "No source dimensions are available.",
-            page,
-        )
-        dimensions_message.setObjectName(
-            "figureComposerPlotArraySelectionDimensionsMessage"
-        )
-        dimensions_message.setWordWrap(True)
-        tool._add_form_row(
-            layout,
-            "Dimensions",
-            dimensions_message,
-            "Dimension controls are available after the source data is known.",
-        )
-        return page
-
-    if not source_data.dims:
-        dimensions_message = QtWidgets.QLabel("No dimensions.", page)
-        dimensions_message.setObjectName(
-            "figureComposerPlotArraySelectionDimensionsMessage"
-        )
-        tool._add_form_row(
-            layout,
-            "Dimensions",
-            dimensions_message,
-            "This source is scalar, so no dimension selections are available.",
-        )
-        return page
-
-    for dim_index, dim in enumerate(source_data.dims):
-        dim_name = str(dim)
-
-        def mode_getter(target: FigureOperationState, dim_name: str = dim_name) -> str:
-            return _plot_array_selection_dim_mode(_primary_selection(target), dim_name)
-
-        def value_getter(target: FigureOperationState, dim_name: str = dim_name) -> str:
-            return _plot_array_selection_dim_value_text(
-                _primary_selection(target), dim_name
-            )
-
-        def width_getter(target: FigureOperationState, dim_name: str = dim_name) -> str:
-            return _plot_array_selection_dim_width_text(
-                _primary_selection(target), dim_name
-            )
-
-        mode_mixed = tool._batch_is_mixed(operation, mode_getter)
-        value_text, value_mixed = tool._batch_text(
-            operation,
-            value_getter,
-            str,
-        )
-        width_text, width_mixed = tool._batch_text(
-            operation,
-            width_getter,
-            str,
-        )
-        current_mode = (
-            None if mode_mixed else _plot_array_selection_dim_mode(selection, dim_name)
-        )
-        row = QtWidgets.QWidget(page)
-        row.setObjectName(f"figureComposerPlotArraySelectionDimRow{dim_index}")
-        row.setProperty("figure_composer_plot_array_dim", dim_name)
-        row_layout = QtWidgets.QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(4)
-
-        mode_combo = _plot_array_selection_mode_combo(
-            tool,
-            current=current_mode,
-            mixed=mode_mixed,
-            parent=row,
-        )
-        mode_combo.setObjectName(
-            f"figureComposerPlotArraySelectionModeCombo{dim_index}"
-        )
-        mode_combo.setProperty("figure_composer_plot_array_dim", dim_name)
-        mode_combo.setToolTip(_PLOT_ARRAY_SELECTION_MODE_TOOLTIP)
-        value_edit = tool._line_edit(value_text, parent=row)
-        value_edit.setObjectName(
-            f"figureComposerPlotArraySelectionValueEdit{dim_index}"
-        )
-        value_edit.setProperty("figure_composer_plot_array_dim", dim_name)
-        value_edit.setProperty("figure_composer_plot_array_selection_field", "value")
-        value_edit.setPlaceholderText("value")
-        value_edit.setToolTip(_PLOT_ARRAY_SELECTION_VALUE_TOOLTIP)
-        value_edit.setVisible(current_mode in _PLOT_ARRAY_SELECTION_VALUE_MODES)
-        tool._apply_mixed_line_edit(value_edit, value_mixed)
-        width_edit = tool._line_edit(width_text, parent=row)
-        width_edit.setObjectName(
-            f"figureComposerPlotArraySelectionWidthEdit{dim_index}"
-        )
-        width_edit.setProperty("figure_composer_plot_array_dim", dim_name)
-        width_edit.setProperty("figure_composer_plot_array_selection_field", "width")
-        width_edit.setPlaceholderText("width")
-        width_edit.setToolTip(_PLOT_ARRAY_SELECTION_WIDTH_TOOLTIP)
-        width_edit.setVisible(current_mode == "qsel")
-        tool._apply_mixed_line_edit(width_edit, width_mixed)
-        _connect_plot_array_selection_dimension_controls(
-            tool,
-            dim_name,
-            mode_combo,
-            value_edit,
-            width_edit,
-        )
-
-        row_layout.addWidget(mode_combo)
-        row_layout.addWidget(value_edit, 1)
-        row_layout.addWidget(width_edit, 1)
-        tool._add_form_row(
-            layout,
-            dim_name,
-            row,
-            "Choose how this dimension is prepared before plotting.",
-        )
-    return page
 
 
 def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]:
@@ -1333,12 +824,6 @@ def _editor_sections(
 ) -> tuple[StepSection, ...]:
     return (
         StepSection(
-            "selection",
-            "Selection",
-            _build_plot_array_selection_page(tool, operation),
-            "Choose the source data and selection reduced to one 2D image.",
-        ),
-        StepSection(
             "view",
             "View",
             _build_plot_array_view_page(tool, operation),
@@ -1368,20 +853,6 @@ def _section_summary(
             return tool._source_display_name(source_name) if source_name else "none"
         case "axes":
             return tool._axes_target_text(operation.axes)
-        case "selection":
-            if _plot_array_selection_error(tool, operation) is not None:
-                return "invalid"
-            selection = _primary_selection(operation)
-            labels = [
-                label
-                for label, value in (
-                    ("isel", selection.isel),
-                    ("qsel", selection.qsel),
-                    ("mean", selection.mean_dims),
-                )
-                if value
-            ]
-            return ", ".join(labels) if labels else "none"
         case "view":
             labels = [
                 label

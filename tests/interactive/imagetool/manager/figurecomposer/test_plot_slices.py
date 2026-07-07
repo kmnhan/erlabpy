@@ -3,6 +3,143 @@
 from ._common import *
 
 
+def _plot_slices_selection_migration_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("x", "hv", "y"),
+        coords={"x": [0.0, 1.0], "hv": [10.0, 20.0, 30.0], "y": [-1.0, 0.0, 1.0, 2.0]},
+        name="first",
+    )
+
+
+def test_figure_composer_plot_slices_migrates_single_map_selection_to_source_alias(
+    qtbot,
+) -> None:
+    data = _plot_slices_selection_migration_data()
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("first",),
+        map_selections=(FigureDataSelectionState(source="first", qsel={"y": 0.0}),),
+        axes=FigureAxesSelectionState(),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": data},
+        sources=(FigureSourceState(name="first", label="first"),),
+        operations=(operation,),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.sources == ("first_selected",)
+    assert loaded_operation.map_selections == ()
+    source_by_name = {source.name: source for source in tool.source_states()}
+    assert source_by_name["first_selected"].selection_source == "first"
+    assert source_by_name["first_selected"].qsel == {"y": 0.0}
+    xr.testing.assert_identical(tool.source_data()["first_selected"], data.qsel(y=0.0))
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("selection")
+    assert (
+        tool.findChild(
+            QtWidgets.QWidget,
+            "figureComposerPlotSlicesInputSelectionSection",
+        )
+        is None
+    )
+
+
+def test_figure_composer_plot_slices_clears_unsupported_multi_map_selections(
+    qtbot,
+) -> None:
+    first = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("x", "hv", "y"),
+        coords={"x": [0.0, 1.0], "hv": [10.0, 20.0, 30.0], "y": [-1.0, 0.0, 1.0, 2.0]},
+        name="first",
+    )
+    second = first + 100.0
+    second.name = "second"
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=("first", "second"),
+                map_selections=(
+                    FigureDataSelectionState(source="first", qsel={"y": 0.0}),
+                    FigureDataSelectionState(source="second", qsel={"y": 2.0}),
+                ),
+                axes=FigureAxesSelectionState(),
+            ),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.sources == ("first", "second")
+    assert loaded_operation.map_selections == ()
+
+
+def test_figure_composer_plot_slices_source_selector_updates_alias_sources(
+    qtbot,
+) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=("first",),
+                map_selections=(
+                    FigureDataSelectionState(source="first", qsel={"eV": 0.0}),
+                ),
+            ),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("sources")
+
+    checks = _plot_source_checks(tool)
+    checks["second"].setCheckState(QtCore.Qt.CheckState.Checked)
+
+    updated = tool.tool_status.operations[0]
+    assert updated.sources == ("first_selected", "second")
+    assert updated.map_selections == ()
+
+    qtbot.waitUntil(
+        lambda: _plot_source_move_buttons(tool)[("second", "up")].isEnabled(),
+        timeout=1000,
+    )
+    _plot_source_move_buttons(tool)[("second", "up")].click()
+    qtbot.waitUntil(
+        lambda: (
+            tool.tool_status.operations[0].sources
+            == (
+                "second",
+                "first_selected",
+            )
+        ),
+        timeout=1000,
+    )
+
+    updated = tool.tool_status.operations[0]
+    assert updated.sources == ("second", "first_selected")
+    assert updated.map_selections == ()
+
+
 def test_figure_composer_plot_slices_source_selector_updates_sources(
     qtbot, monkeypatch
 ) -> None:
@@ -918,13 +1055,13 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         ),
     )
     assert (
-        len(figurecomposer_plot_slices._operation_maps(tool, selection_operation)) == 2
+        len(figurecomposer_plot_slices._operation_maps(tool, selection_operation)) == 1
     )
     selection_lines = figurecomposer_plot_slices._plot_slices_code_lines(
         tool,
         selection_operation,
     )
-    assert selection_lines[0] == "selected_maps = ["
+    assert all("selected_maps" not in line for line in selection_lines)
     assert any("eplt.plot_slices" in line for line in selection_lines)
     single_selection_operation = FigureOperationState.plot_slices(
         label="single_selection",
@@ -937,7 +1074,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     assert len(single_selection_lines) == 1
     assert "selected_maps" not in single_selection_lines[0]
-    assert "eplt.plot_slices(image.qsel(eV=1.0)" in single_selection_lines[0]
+    assert "eplt.plot_slices(image" in single_selection_lines[0]
     assert (
         figurecomposer_plot_slices._plot_slices_code_lines(
             tool,
@@ -1710,7 +1847,11 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert editor_tabs is tool.editor_tabs
     assert [
         editor_tabs.widget(index).objectName() for index in range(editor_tabs.count())
-    ] == ["figureComposerLayoutPage", "figureComposerRecipePage"]
+    ] == [
+        "figureComposerSourcesPage",
+        "figureComposerLayoutPage",
+        "figureComposerRecipePage",
+    ]
     assert editor_tabs.currentWidget() is tool.recipe_page
     assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
     layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
@@ -1780,9 +1921,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     )
     step_toolbar_buttons = (
         tool.add_step_button,
-        tool.duplicate_operation_button,
-        tool.move_operation_up_button,
-        tool.move_operation_down_button,
+        tool.copy_operation_button,
+        tool.cut_operation_button,
+        tool.paste_operation_button,
         tool.remove_operation_button,
     )
     assert all(button.styleSheet() == "" for button in step_toolbar_buttons)
@@ -2610,9 +2751,9 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
             )
         }
     )
-    assert ".qsel" in (
+    assert (
         figurecomposer_plot_slices._first_plot_slices_source_code(selection_operation)
-        or ""
+        == "data"
     )
     assert (
         figurecomposer_plot_slices._all_coordinate_slice_values_code(

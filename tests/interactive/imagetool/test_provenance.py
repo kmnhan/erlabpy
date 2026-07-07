@@ -4261,8 +4261,8 @@ def test_script_provenance_supports_named_console_inputs() -> None:
     assert reparsed == spec
     assert [entry.label for entry in spec.display_entries()] == [
         "Run ImageTool manager console code",
-        "Use data_0 from ImageTool 0",
-        "Use data_1 from ImageTool 1",
+        "Use data_0",
+        "Use data_1",
         "Subtract console inputs",
     ]
     rows = spec.display_rows()
@@ -4489,7 +4489,6 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
     assert [source.name for source in rebased.script_inputs] == ["diff", "data_2"]
     assert rebased.script_inputs[1].node_uid == "new-extra"
-    assert rebased.script_inputs[1].label == "ImageTool 2"
     assert typing.cast("str", rebased.operations[-1].derivation_entry().code) == (
         "derived = diff + data_2"
     )
@@ -4633,10 +4632,6 @@ derived = data
 
     with pytest.raises(ValidationError):
         provenance.ScriptInput(name=None, label="Input")
-    with pytest.raises(TypeError, match="script input label"):
-        provenance.ScriptInput(name="data_0", label=1)
-    with pytest.raises(ValidationError):
-        provenance.ScriptInput(name="data_0", label="   ")
     with pytest.raises(ValidationError):
         provenance.ScriptInput(name="data_0", label="Input", node_snapshot_token="")
     with pytest.raises(TypeError, match="script input provenance"):
@@ -4693,16 +4688,17 @@ derived = data
             provenance._validate_script_replay_code(code_snippet)
 
 
-def test_script_input_label_is_single_line_display_text() -> None:
+def test_script_input_legacy_label_is_ignored() -> None:
 
     script_input = provenance.ScriptInput(
         name="data_0",
         label="  ImageTool 0:\n\n  processed data  ",
     )
 
-    assert script_input.label == "ImageTool 0: processed data"
-    with pytest.raises(ValidationError):
-        provenance.ScriptInput(name="data_0", label="\n  \t")
+    assert script_input.name == "data_0"
+    assert "label" not in script_input.model_dump()
+    assert not hasattr(script_input, "label")
+    assert provenance.ScriptInput(name="data_0", label="\n  \t").name == "data_0"
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:

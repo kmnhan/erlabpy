@@ -3,7 +3,53 @@
 from ._common import *
 
 
-def test_figure_composer_plot_array_source_selector_updates_selection(qtbot) -> None:
+def _source_selection_widget(
+    tool: FigureComposerTool,
+    widget_type: type[QtWidgets.QWidget],
+    dim: str,
+    *,
+    field: str | None = None,
+) -> QtWidgets.QWidget:
+    widget = next(
+        (
+            candidate
+            for candidate in tool.source_selection_controls.findChildren(widget_type)
+            if not candidate.signalsBlocked()
+            if candidate.property("figure_composer_source_selection_dim") == dim
+            if field is None
+            or candidate.property("figure_composer_source_selection_field") == field
+        ),
+        None,
+    )
+    assert widget is not None
+    return widget
+
+
+def _source_selection_edit(
+    tool: FigureComposerTool, dim: str, field: str
+) -> QtWidgets.QLineEdit:
+    return typing.cast(
+        "QtWidgets.QLineEdit",
+        _source_selection_widget(tool, QtWidgets.QLineEdit, dim, field=field),
+    )
+
+
+def _activate_source_selection_mode(
+    tool: FigureComposerTool, dim: str, mode: str
+) -> None:
+    combo = typing.cast(
+        "QtWidgets.QComboBox",
+        _source_selection_widget(tool, QtWidgets.QComboBox, dim),
+    )
+    index = combo.findData(mode)
+    assert index >= 0
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
+    qtbot,
+) -> None:
     first = _figure_composer_image_source("first")
     second = _figure_composer_image_source("second")
     operation = FigureOperationState.plot_array(
@@ -45,12 +91,12 @@ def test_figure_composer_plot_array_source_selector_updates_selection(qtbot) -> 
 
     updated = tool.tool_status.operations[0]
     assert updated.sources == ("second_source",)
-    assert updated.map_selections == (
-        FigureDataSelectionState(source="second_source", qsel={"eV": 0.0}),
-    )
+    assert updated.map_selections == ()
 
 
-def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) -> None:
+def test_figure_composer_source_selection_editor_updates_source_snapshot(
+    qtbot,
+) -> None:
     data = xr.DataArray(
         np.arange(24.0).reshape(2, 3, 2, 2),
         dims=("hv", "eV", "beta", "alpha"),
@@ -62,17 +108,7 @@ def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) ->
         },
         name="map",
     )
-    operation = FigureOperationState.plot_array(
-        label="plot_array",
-        source="data",
-        map_selections=(
-            FigureDataSelectionState(
-                source="data",
-                qsel={"eV": 0.0},
-                mean_dims=("hv",),
-            ),
-        ),
-    )
+    operation = FigureOperationState.plot_array(label="plot_array", source="data")
     tool = FigureComposerTool.from_sources(
         {"data": data},
         sources=(FigureSourceState(name="data", label="data"),),
@@ -80,104 +116,48 @@ def test_figure_composer_plot_array_selection_editor_updates_selection(qtbot) ->
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
-
-    def current_dimension_widget(
-        widget_type: type[QtWidgets.QWidget], dim: str
-    ) -> QtWidgets.QWidget:
-        widget = next(
-            (
-                candidate
-                for candidate in tool.findChildren(widget_type)
-                if candidate.property("figure_composer_plot_array_dim") == dim
-                if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
-            ),
-            None,
-        )
-        assert widget is not None
-        return widget
-
-    def activate_dimension_mode(dim: str, mode: str) -> None:
-        combo = typing.cast(
-            "QtWidgets.QComboBox",
-            current_dimension_widget(QtWidgets.QComboBox, dim),
-        )
-        index = combo.findData(mode)
-        assert index >= 0
-        combo.setCurrentIndex(index)
-        combo.activated.emit(index)
-
-    def current_dimension_value(dim: str) -> QtWidgets.QLineEdit:
-        return typing.cast(
-            "QtWidgets.QLineEdit",
-            current_dimension_widget(QtWidgets.QLineEdit, dim),
-        )
-
-    summary = tool.findChild(
-        QtWidgets.QLabel, "figureComposerPlotArraySelectionSummary"
-    )
-    assert summary is not None
-    assert "Input dims: hv, eV, beta, alpha" in summary.text()
-    assert "Plotted dims: beta, alpha" in summary.text()
+    tool.editor_tabs.setCurrentWidget(tool.sources_page)
 
     eV_mode = typing.cast(
         "QtWidgets.QComboBox",
-        current_dimension_widget(QtWidgets.QComboBox, "eV"),
+        _source_selection_widget(tool, QtWidgets.QComboBox, "eV"),
     )
-    assert eV_mode.currentData() == "qsel"
-    qsel_edit = current_dimension_value("eV")
+    assert eV_mode.currentData() == "keep"
+    _activate_source_selection_mode(tool, "eV", "qsel")
+    qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("1.0")
-    qsel_edit.setModified(True)
     qsel_edit.editingFinished.emit()
 
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            qsel={"eV": 1.0},
-            mean_dims=("hv",),
-        ),
-    )
+    [source] = tool.source_states()
+    assert source.qsel == {"eV": 1.0}
+    assert source.isel == {}
+    assert source.mean_dims == ()
+    assert source.selection_source == "data"
+    xr.testing.assert_identical(tool.source_data()["data"], data.qsel(eV=1.0))
+    assert tool.tool_status.operations[0].map_selections == ()
 
-    activate_dimension_mode("eV", "isel")
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            isel={"eV": 1.0},
-            mean_dims=("hv",),
-        ),
-    )
-    activate_dimension_mode("eV", "qsel")
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            qsel={"eV": 1.0},
-            mean_dims=("hv",),
-        ),
-    )
+    _activate_source_selection_mode(tool, "eV", "isel")
+    isel_eV_edit = _source_selection_edit(tool, "eV", "value")
+    isel_eV_edit.setText("1")
+    isel_eV_edit.editingFinished.emit()
+    [source] = tool.source_states()
+    assert source.isel == {"eV": 1}
+    assert source.qsel == {}
 
-    activate_dimension_mode("hv", "keep")
-    activate_dimension_mode("hv", "isel")
-    isel_edit = current_dimension_value("hv")
+    _activate_source_selection_mode(tool, "hv", "isel")
+    isel_edit = _source_selection_edit(tool, "hv", "value")
     isel_edit.setText("1")
-    isel_edit.setModified(True)
     isel_edit.editingFinished.emit()
 
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            isel={"hv": 1},
-            qsel={"eV": 1.0},
-        ),
+    [source] = tool.source_states()
+    assert source.isel == {"eV": 1, "hv": 1}
+    xr.testing.assert_identical(
+        tool.source_data()["data"],
+        data.isel(eV=1, hv=1),
     )
 
 
-def test_figure_composer_plot_array_qsel_to_keep_clears_selection(qtbot) -> None:
+def test_figure_composer_source_qsel_to_keep_clears_selection(qtbot) -> None:
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 2, 2),
         dims=("eV", "beta", "alpha"),
@@ -196,65 +176,36 @@ def test_figure_composer_plot_array_qsel_to_keep_clears_selection(qtbot) -> None
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
+    tool.editor_tabs.setCurrentWidget(tool.sources_page)
 
-    def current_dimension_widget(
-        widget_type: type[QtWidgets.QWidget], dim: str
-    ) -> QtWidgets.QWidget:
-        widget = next(
-            (
-                candidate
-                for candidate in tool.findChildren(widget_type)
-                if candidate.property("figure_composer_plot_array_dim") == dim
-                if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
-            ),
-            None,
-        )
-        assert widget is not None
-        return widget
-
-    def activate_dimension_mode(dim: str, mode: str) -> None:
-        combo = typing.cast(
-            "QtWidgets.QComboBox",
-            current_dimension_widget(QtWidgets.QComboBox, dim),
-        )
-        index = combo.findData(mode)
-        assert index >= 0
-        combo.setCurrentIndex(index)
-        combo.activated.emit(index)
-
-    activate_dimension_mode("eV", "qsel")
-    qsel_edit = typing.cast(
-        "QtWidgets.QLineEdit",
-        current_dimension_widget(QtWidgets.QLineEdit, "eV"),
-    )
+    _activate_source_selection_mode(tool, "eV", "qsel")
+    qsel_edit = _source_selection_edit(tool, "eV", "value")
     assert qsel_edit.isEnabled()
-    assert not _plot_array_dimension_edit(tool, "eV", "value").isHidden()
-    assert not _plot_array_dimension_edit(tool, "eV", "width").isHidden()
+    assert not _source_selection_edit(tool, "eV", "value").isHidden()
+    assert not _source_selection_edit(tool, "eV", "width").isHidden()
     qsel_edit.setText("0.0")
-    qsel_edit.setModified(True)
     qsel_edit.editingFinished.emit()
 
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
-    )
+    [source] = tool.source_states()
+    assert source.qsel == {"eV": 0.0}
+    xr.testing.assert_identical(tool.source_data()["data"], data.qsel(eV=0.0))
 
-    activate_dimension_mode("eV", "keep")
+    _activate_source_selection_mode(tool, "eV", "keep")
 
-    updated = tool.tool_status.operations[0]
-    assert updated.sources == ("data",)
-    assert updated.map_selections == ()
-    value_edit = _plot_array_dimension_edit(tool, "eV", "value")
-    width_edit = _plot_array_dimension_edit(tool, "eV", "width")
+    [source] = tool.source_states()
+    assert source.isel == {}
+    assert source.qsel == {}
+    assert source.mean_dims == ()
+    assert source.selection_source is None
+    xr.testing.assert_identical(tool.source_data()["data"], data)
+    value_edit = _source_selection_edit(tool, "eV", "value")
+    width_edit = _source_selection_edit(tool, "eV", "width")
     assert value_edit.isHidden()
     assert width_edit.isHidden()
     assert value_edit.text() == ""
 
 
-def test_figure_composer_plot_array_keep_clears_stale_qsel_input_error(
+def test_figure_composer_source_keep_clears_stale_qsel_input_error(
     qtbot,
 ) -> None:
     data = xr.DataArray(
@@ -275,35 +226,29 @@ def test_figure_composer_plot_array_keep_clears_stale_qsel_input_error(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
+    tool.editor_tabs.setCurrentWidget(tool.sources_page)
 
-    _activate_plot_array_dimension_mode(tool, "eV", "qsel")
-    qsel_edit = _plot_array_dimension_edit(tool, "eV", "value")
+    _activate_source_selection_mode(tool, "eV", "qsel")
+    qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("slice(-0.5, 0.5)")
-    qsel_edit.setModified(True)
     qsel_edit.editingFinished.emit()
 
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(source="data", qsel={"eV": slice(-0.5, 0.5)}),
-    )
+    [source] = tool.source_states()
+    assert source.qsel == {"eV": slice(-0.5, 0.5)}
 
-    qsel_edit = _plot_array_dimension_edit(tool, "eV", "value")
+    qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("")
-    qsel_edit.setModified(True)
     qsel_edit.editingFinished.emit()
-    assert tool._operation_input_errors
+    assert "selection value" in tool.source_status_label.text()
 
-    _activate_plot_array_dimension_mode(tool, "eV", "keep")
+    _activate_source_selection_mode(tool, "eV", "keep")
 
-    updated = tool.tool_status.operations[0]
-    assert updated.sources == ("data",)
-    assert updated.map_selections == ()
-    assert tool._operation_input_errors == {}
+    [source] = tool.source_states()
+    assert source.qsel == {}
+    assert tool.source_status_label.text() == ""
 
 
-def test_figure_composer_plot_array_qsel_width_editor_updates_selection(
+def test_figure_composer_source_qsel_width_editor_updates_selection(
     qtbot,
 ) -> None:
     data = _figure_composer_image_source("data")
@@ -325,19 +270,30 @@ def test_figure_composer_plot_array_qsel_width_editor_updates_selection(
     )
     qtbot.addWidget(tool)
 
-    selected = figurecomposer_plot_array._safe_selected_plot_array_data(tool, operation)
+    normalized_operation = tool.tool_status.operations[0]
+    assert normalized_operation.sources == ("data_selected",)
+    assert normalized_operation.map_selections == ()
+    [raw_source, selected_source] = tool.source_states()
+    assert raw_source.name == "data"
+    assert selected_source.name == "data_selected"
+    assert selected_source.qsel == {"eV": 0.0, "eV_width": 0.2}
+    assert selected_source.selection_source == "data"
+    selected = figurecomposer_plot_array._safe_selected_plot_array_data(
+        tool, normalized_operation
+    )
     assert selected is not None
     xr.testing.assert_identical(selected, data.qsel(eV=0.0, eV_width=0.2))
-    assert "data.qsel(eV=0.0, eV_width=0.2)" in tool.generated_code()
+    assert "data_selected = data.qsel(eV=0.0, eV_width=0.2)" in tool.generated_code()
 
-    tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
+    tool.editor_tabs.setCurrentWidget(tool.sources_page)
+    tool._select_source_list_row_silent("data_selected")
+    tool._refresh_source_selection_editor()
     mode_combo = typing.cast(
         "QtWidgets.QComboBox",
-        _plot_array_dimension_widget(tool, QtWidgets.QComboBox, "eV"),
+        _source_selection_widget(tool, QtWidgets.QComboBox, "eV"),
     )
-    value_edit = _plot_array_dimension_edit(tool, "eV", "value")
-    width_edit = _plot_array_dimension_edit(tool, "eV", "width")
+    value_edit = _source_selection_edit(tool, "eV", "value")
+    width_edit = _source_selection_edit(tool, "eV", "width")
     assert not value_edit.isHidden()
     assert not width_edit.isHidden()
     assert value_edit.text() == "0.0"
@@ -348,44 +304,122 @@ def test_figure_composer_plot_array_qsel_width_editor_updates_selection(
     assert len({mode_combo.toolTip(), value_edit.toolTip(), width_edit.toolTip()}) == 3
 
     width_edit.setText("0.5")
-    width_edit.setModified(True)
     width_edit.editingFinished.emit()
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            qsel={"eV": 0.0, "eV_width": 0.5},
-        ),
+    selected_source = tool.source_states()[1]
+    assert selected_source.qsel == {"eV": 0.0, "eV_width": 0.5}
+    xr.testing.assert_identical(
+        tool.source_data()["data_selected"],
+        data.qsel(eV=0.0, eV_width=0.5),
     )
 
-    _activate_plot_array_dimension_mode(tool, "eV", "isel")
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(source="data", isel={"eV": 0.0}),
-    )
-    assert not _plot_array_dimension_edit(tool, "eV", "value").isHidden()
-    assert _plot_array_dimension_edit(tool, "eV", "width").isHidden()
+    _activate_source_selection_mode(tool, "eV", "isel")
+    value_edit = _source_selection_edit(tool, "eV", "value")
+    value_edit.setText("1")
+    value_edit.editingFinished.emit()
+    selected_source = tool.source_states()[1]
+    assert selected_source.isel == {"eV": 1}
+    assert not _source_selection_edit(tool, "eV", "value").isHidden()
+    assert _source_selection_edit(tool, "eV", "width").isHidden()
 
-    _activate_plot_array_dimension_mode(tool, "eV", "qsel")
-    width_edit = _plot_array_dimension_edit(tool, "eV", "width")
+    _activate_source_selection_mode(tool, "eV", "qsel")
+    value_edit = _source_selection_edit(tool, "eV", "value")
+    value_edit.setText("0.0")
+    value_edit.editingFinished.emit()
+    width_edit = _source_selection_edit(tool, "eV", "width")
     width_edit.setText("0.1")
-    width_edit.setModified(True)
     width_edit.editingFinished.emit()
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(
-            source="data",
-            qsel={"eV": 0.0, "eV_width": 0.1},
-        ),
+    selected_source = tool.source_states()[1]
+    assert selected_source.qsel == {"eV": 0.0, "eV_width": 0.1}
+
+    _activate_source_selection_mode(tool, "eV", "mean")
+    selected_source = tool.source_states()[1]
+    assert selected_source.mean_dims == ("eV",)
+    assert _source_selection_edit(tool, "eV", "value").isHidden()
+    assert _source_selection_edit(tool, "eV", "width").isHidden()
+
+
+def test_figure_composer_plot_array_add_operation_promotes_selection_to_source(
+    qtbot,
+) -> None:
+    first = _figure_composer_image_source("data_3")
+    second = _figure_composer_image_source("data_4")
+    initial_operation = FigureOperationState.plot_array(
+        label="plot_array",
+        source="data_3",
+        map_selections=(FigureDataSelectionState(source="data_3", qsel={"eV": 0.0}),),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data_3": first},
+        sources=(FigureSourceState(name="data_3", label="data_3"),),
+        operations=(initial_operation,),
+        primary_source="data_3",
+    )
+    qtbot.addWidget(tool)
+    tool.add_sources(
+        (FigureSourceState(name="data_4", label="data_4"),),
+        {"data_4": second},
+    )
+    tool.add_operation(
+        FigureOperationState.plot_array(
+            label="plot_array",
+            source="data_4",
+            map_selections=(
+                FigureDataSelectionState(source="data_4", qsel={"eV": 0.5}),
+            ),
+        )
     )
 
-    _activate_plot_array_dimension_mode(tool, "eV", "mean")
-    updated = tool.tool_status.operations[0]
-    assert updated.map_selections == (
-        FigureDataSelectionState(source="data", mean_dims=("eV",)),
+    data_4_source = next(
+        source for source in tool.source_states() if source.name == "data_4_selected"
     )
-    assert _plot_array_dimension_edit(tool, "eV", "value").isHidden()
-    assert _plot_array_dimension_edit(tool, "eV", "width").isHidden()
+    assert data_4_source.selection_source == "data_4"
+    assert data_4_source.qsel == {"eV": 0.5}
+    assert tool.tool_status.operations[-1].sources == ("data_4_selected",)
+    assert tool.tool_status.operations[-1].map_selections == ()
+    xr.testing.assert_identical(
+        tool.source_data()["data_4_selected"], second.qsel(eV=0.5)
+    )
+
+
+def test_figure_composer_restored_selected_source_applies_source_selection(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data_3")
+    selected_source = FigureSourceState(
+        name="data_3_selected",
+        label="data_3 selection",
+        selection_source="data_3",
+        qsel={"eV": 0.0},
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data_3": data, "data_3_selected": data.qsel(eV=0.0)},
+        sources=(
+            FigureSourceState(name="data_3", label="data_3"),
+            selected_source,
+        ),
+        operations=(
+            FigureOperationState.plot_array(
+                label="plot_array",
+                source="data_3_selected",
+            ),
+        ),
+        primary_source="data_3",
+    )
+    qtbot.addWidget(tool)
+
+    tool._restore_persistence_data_items(
+        {"data_3_selected": data},
+        xr.Dataset(),
+    )
+
+    xr.testing.assert_identical(
+        tool.source_data()["data_3_selected"], data.qsel(eV=0.0)
+    )
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["data_3_selected"], data
+    )
+    assert tool.tool_status.operations[0].sources == ("data_3_selected",)
+    assert tool.tool_status.operations[0].map_selections == ()
 
 
 def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
@@ -410,121 +444,17 @@ def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert "invalid selection" in figurecomposer_plot_array._display_text(
-        tool, operation
+    normalized_operation = tool.tool_status.operations[0]
+    assert normalized_operation.map_selections == ()
+    assert "missing" in figurecomposer_plot_array._display_text(
+        tool, normalized_operation
     )
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
-
-    summary = tool.findChild(
-        QtWidgets.QLabel, "figureComposerPlotArraySelectionSummary"
-    )
-    assert summary is not None
-    assert "missing" in summary.text()
+    assert "selection" not in tool.step_section_buttons
 
 
-def test_figure_composer_plot_array_selection_helper_edges(qtbot) -> None:
-    data = xr.DataArray(
-        np.arange(4.0).reshape(2, 2),
-        dims=("y", "x"),
-        coords={"y": [0.0, 1.0], "x": [0.0, 1.0]},
-        name="map",
-    )
-    tool = FigureComposerTool.from_sources(
-        {"data": data},
-        sources=(FigureSourceState(name="data", label="data"),),
-        operations=(
-            FigureOperationState.plot_array(label="plot_array", source="data"),
-        ),
-        primary_source="data",
-    )
-    qtbot.addWidget(tool)
-    figurecomposer_plot_array._update_current_selection_source(tool, "data")
-    assert tool.tool_status.operations[0].sources == ("data",)
-    assert tool.tool_status.operations[0].map_selections == ()
-
-    missing_operation = FigureOperationState.plot_array(
-        label="missing", source="missing"
-    )
-    assert (
-        figurecomposer_plot_array._plot_array_source_data(tool, missing_operation)
-        is None
-    )
-    assert "missing" in figurecomposer_plot_array._display_text(tool, missing_operation)
-
-    no_update_tool = types.SimpleNamespace(
-        _update_operations=lambda *_args, **_kwargs: pytest.fail(
-            "None source should not update"
-        )
-    )
-    figurecomposer_plot_array._update_current_selection_source(
-        typing.cast("FigureComposerTool", no_update_tool),
-        None,
-    )
-    figurecomposer_plot_array._update_current_selection_dimension(
-        typing.cast("FigureComposerTool", no_update_tool),
-        "x",
-        "bad",
-    )
-
-    with pytest.raises(figurecomposer_text.FigureComposerInputError):
-        figurecomposer_plot_array._plot_array_selection_value_from_text("")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError):
-        figurecomposer_plot_array._plot_array_selection_value_from_text("slice(")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError):
-        figurecomposer_plot_array._plot_array_selection_width_from_text("slice(0, 1)")
-
-    selection = FigureDataSelectionState(
-        source="data",
-        isel={"x": 0},
-        qsel={"y": 0.0},
-    )
-    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
-        selection,
-        "x",
-        "mean",
-    ) == FigureDataSelectionState(
-        source="data",
-        qsel={"y": 0.0},
-        mean_dims=("x",),
-    )
-    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
-        FigureDataSelectionState(source="data"),
-        "x",
-        "isel",
-        slice(0, 2),
-    ) == FigureDataSelectionState(source="data", isel={"x": slice(0, 2)})
-
-    empty_selection = FigureDataSelectionState(
-        source="data",
-        qsel={"x": 0.0, "x_width": 0.1},
-    )
-    assert figurecomposer_plot_array._plot_array_selection_with_dimension(
-        empty_selection,
-        "x",
-        "keep",
-    ) == FigureDataSelectionState(source="data")
-    width_only = FigureDataSelectionState(source="data", qsel={"x_width": 0.1})
-    assert (
-        figurecomposer_plot_array._plot_array_selection_dim_mode(width_only, "x")
-        == "qsel"
-    )
-    assert (
-        figurecomposer_plot_array._plot_array_selection_dim_width_text(width_only, "x")
-        == "0.1"
-    )
-
-    combo = figurecomposer_plot_array._plot_array_selection_mode_combo(
-        tool,
-        current=None,
-        mixed=True,
-        parent=tool,
-    )
-    assert combo.currentData() is _editor_controls.MIXED_VALUE
-
-
-def test_figure_composer_plot_array_selection_page_empty_sources(qtbot) -> None:
+def test_figure_composer_plot_array_has_no_operation_selection_page(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("y", "x"),
@@ -541,31 +471,12 @@ def test_figure_composer_plot_array_selection_page_empty_sources(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("selection")
-    assert (
-        tool.findChild(
-            QtWidgets.QLabel,
-            "figureComposerPlotArraySelectionDimensionsMessage",
-        )
-        is not None
-    )
-
-    scalar = xr.DataArray(1.0, name="scalar")
-    scalar_tool = FigureComposerTool.from_sources(
-        {"scalar": scalar},
-        sources=(FigureSourceState(name="scalar", label="scalar"),),
-        operations=(FigureOperationState.plot_array(label="scalar", source="scalar"),),
-        primary_source="scalar",
-    )
-    qtbot.addWidget(scalar_tool)
-    scalar_tool.operation_list.setCurrentRow(0)
-    scalar_tool._select_step_section("selection")
-    assert (
-        scalar_tool.findChild(
-            QtWidgets.QLabel,
-            "figureComposerPlotArraySelectionDimensionsMessage",
-        )
-        is not None
+    assert tuple(tool.step_section_buttons) == (
+        "sources",
+        "axes",
+        "view",
+        "colors",
+        "advanced",
     )
 
     mixed_tool = FigureComposerTool.from_sources(
@@ -585,13 +496,12 @@ def test_figure_composer_plot_array_selection_page_empty_sources(qtbot) -> None:
     )
     qtbot.addWidget(mixed_tool)
     _select_operation_rows(mixed_tool, (0, 1))
-    mixed_tool._select_step_section("selection")
-    assert (
-        mixed_tool.findChild(
-            QtWidgets.QLabel,
-            "figureComposerPlotArraySelectionDimensionsMessage",
-        )
-        is not None
+    assert tuple(mixed_tool.step_section_buttons) == (
+        "sources",
+        "axes",
+        "view",
+        "colors",
+        "advanced",
     )
 
 
@@ -961,7 +871,8 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert kwargs["aspect"] == "equal"
 
     code = tool.generated_code()
-    assert "eplt.plot_array(data.qsel(eV=0.0).T" in code
+    assert "data_selected = data.qsel(eV=0.0)" in code
+    assert "eplt.plot_array(data_selected.T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
 
@@ -1169,7 +1080,7 @@ def test_figure_composer_plot_array_codegen_handles_spaced_dimension(qtbot) -> N
     qtbot.addWidget(tool)
 
     code = tool.generated_code()
-    assert 'data.qsel(**{"Track Shift": 1.0})' in code
+    assert 'data_selected = data.qsel(**{"Track Shift": 1.0})' in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
 
@@ -1245,7 +1156,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
             FigureDataSelectionState(source="derived", qsel={"beta": 0.0}),
         ),
     )
-    assert figurecomposer_plot_array._source_names(operation) == ("image", "derived")
+    assert figurecomposer_plot_array._source_names(operation) == ("image",)
 
     empty_operation = FigureOperationState(
         kind=FigureOperationKind.PLOT_ARRAY,
@@ -1262,8 +1173,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
 
     missing_selection = FigureOperationState.plot_array(
         label="missing",
-        source="image",
-        map_selections=(FigureDataSelectionState(source="missing", qsel={"eV": 0.0}),),
+        source="missing",
     )
     assert (
         figurecomposer_plot_array._selected_plot_array_data(

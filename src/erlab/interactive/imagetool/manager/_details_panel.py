@@ -298,6 +298,7 @@ class _DetailsPanelController:
         *,
         include_history: bool,
     ) -> str:
+        del include_history
         graph = getattr(self._manager, "_tool_graph", None)
         node_uid = script_input.node_uid
         if graph is not None and node_uid is not None:
@@ -307,11 +308,8 @@ class _DetailsPanelController:
                     f"Use {script_input.name} from "
                     f"{self._script_input_current_node_label(node)}"
                 )
-            label = f"Missing source for {script_input.name}"
-            if include_history:
-                label += f" (recorded as {script_input.label})"
-            return label
-        return f"Use {script_input.name} from {script_input.label}"
+            return f"Missing source for {script_input.name}"
+        return f"Use {script_input.name}"
 
     @staticmethod
     def _script_input_for_row(

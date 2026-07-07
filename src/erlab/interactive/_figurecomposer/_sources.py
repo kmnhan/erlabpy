@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import keyword
 import typing
 
 if typing.TYPE_CHECKING:
@@ -36,34 +37,18 @@ def _source_label(data: xr.DataArray) -> str:
 def _source_display_label(
     source: FigureSourceState | None, name: str, *, disambiguate: bool = False
 ) -> str:
-    """Return the user-facing source label for a recipe source alias."""
-    label = name if source is None else source.label.strip() or name
-    if source is not None and disambiguate and label != name:
-        return f"{label} ({name})"
-    return label
-
-
-def _source_duplicate_labels(
-    sources: Sequence[FigureSourceState],
-) -> frozenset[str]:
-    counts: dict[str, int] = {}
-    for source in sources:
-        label = source.label.strip() or source.name
-        counts[label] = counts.get(label, 0) + 1
-    return frozenset(label for label, count in counts.items() if count > 1)
+    """Return the user-facing source alias."""
+    del source, disambiguate
+    return name
 
 
 def _source_display_tooltip(source: FigureSourceState | None, name: str) -> str:
-    if source is None:
-        return f"Alias: {name}"
-    label = source.label.strip() or name
-    if label == name:
-        return f"Alias: {name}"
-    return f"{label}\nAlias: {name}"
+    del source
+    return f"Alias: {name}"
 
 
 def _valid_source_variable(name: str) -> str:
-    if not name.isidentifier():
+    if not name.isidentifier() or keyword.iskeyword(name):
         raise ValueError(f"Figure source name {name!r} is not a valid variable name")
     return name
 
@@ -104,6 +89,44 @@ def _selected_data(
         else:
             mean_arg = selection.mean_dims
         selected = selected.qsel.mean(mean_arg)
+    return selected
+
+
+def _source_selection(source: FigureSourceState) -> FigureDataSelectionState:
+    return FigureDataSelectionState(
+        source=source.name,
+        isel=dict(source.isel),
+        qsel=dict(source.qsel),
+        mean_dims=tuple(source.mean_dims),
+    )
+
+
+def _source_has_selection(source: FigureSourceState) -> bool:
+    return bool(source.isel or source.qsel or source.mean_dims)
+
+
+def _source_with_selection(
+    source: FigureSourceState, selection: FigureDataSelectionState
+) -> FigureSourceState:
+    has_selection = bool(selection.isel or selection.qsel or selection.mean_dims)
+    return source.model_copy(
+        update={
+            "isel": dict(selection.isel),
+            "qsel": dict(selection.qsel),
+            "mean_dims": tuple(selection.mean_dims),
+            "selection_source": (
+                (source.selection_source or source.name) if has_selection else None
+            ),
+        }
+    )
+
+
+def _selected_source_data(
+    data: xr.DataArray, source: FigureSourceState
+) -> xr.DataArray:
+    selected = _selected_data({source.name: data}, _source_selection(source))
+    if selected is None:  # pragma: no cover
+        raise KeyError(source.name)
     return selected
 
 

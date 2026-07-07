@@ -21,9 +21,9 @@ set of source forms:
      and replayed through structured :class:`ReplayStage` operations.
 
    - Use :func:`script` for console-derived and other multi-input results. Script
-     specs may reference any number of :class:`ScriptInput` records. Each input stores
-     an immutable replay name, a historical display label, optional live manager node
-     identity and ``node_snapshot_token``, and an optional nested provenance snapshot.
+   specs may reference any number of :class:`ScriptInput` records. Each input stores
+   an immutable replay name, optional live manager node identity and
+   ``node_snapshot_token``, and an optional nested provenance snapshot.
 
 Each transformation is represented by an immutable
 :class:`ToolProvenanceOperation` subclass whose serialized fields are safe to persist
@@ -428,7 +428,6 @@ class ScriptInputDependencyRef:
     """Live manager dependency captured by a script input."""
 
     name: str
-    label: str
     node_uid: str
     node_snapshot_token: str | None = None
 
@@ -2459,14 +2458,13 @@ class FileLoadSource(pydantic.BaseModel):
 class ScriptInput(pydantic.BaseModel):
     """Named input captured by script or multi-tool provenance.
 
-    ``name`` is the immutable replay variable, ``label`` is the historical display
-    label, ``node_uid`` and ``node_snapshot_token`` identify the live manager input
-    that was used, and ``provenance_spec`` stores the historical replay source used
-    when that live input is unavailable.
+    ``name`` is the immutable replay variable, ``node_uid`` and
+    ``node_snapshot_token`` identify the live manager input that was used, and
+    ``provenance_spec`` stores the historical replay source used when that live input
+    is unavailable.
     """
 
     name: str
-    label: str
     node_uid: str | None = None
     node_snapshot_token: str | None = None
     provenance_spec: dict[str, typing.Any] | None = None
@@ -2477,6 +2475,14 @@ class ScriptInput(pydantic.BaseModel):
         extra="forbid",
     )
 
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_label(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping) and "label" in value:
+            value = dict(value)
+            value.pop("label", None)
+        return value
+
     @pydantic.field_validator("name", mode="before")
     @classmethod
     def _validate_name(cls, value: typing.Any) -> str:
@@ -2484,16 +2490,6 @@ class ScriptInput(pydantic.BaseModel):
         if name is None:
             raise ValueError("script input name must not be None")
         return name
-
-    @pydantic.field_validator("label", mode="before")
-    @classmethod
-    def _validate_label(cls, value: typing.Any) -> str:
-        if not isinstance(value, str):
-            raise TypeError("script input label must be a string")
-        label = " ".join(value.split())
-        if not label:
-            raise ValueError("script input label must not be empty")
-        return label
 
     @pydantic.field_validator("node_uid", mode="before")
     @classmethod
@@ -3167,7 +3163,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind == "script":
             entries.extend(
                 DerivationEntry(
-                    f"Use {script_input.name} from {script_input.label}",
+                    f"Use {script_input.name}",
                     None,
                     False,
                 )
@@ -3227,7 +3223,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         entries = [self._start_entry()]
         entries.extend(
             DerivationEntry(
-                f"Use {script_input.name} from {script_input.label}",
+                f"Use {script_input.name}",
                 None,
                 False,
             )
@@ -3336,7 +3332,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 rows.append(
                     _ProvenanceDisplayRow(
                         DerivationEntry(
-                            f"Use {script_input.name} from {script_input.label}",
+                            f"Use {script_input.name}",
                             None,
                             False,
                         ),
@@ -3605,7 +3601,6 @@ def script_input_dependency_refs(
                 refs.append(
                     ScriptInputDependencyRef(
                         name=script_input.name,
-                        label=script_input.label,
                         node_uid=script_input.node_uid,
                         node_snapshot_token=script_input.node_snapshot_token,
                     )

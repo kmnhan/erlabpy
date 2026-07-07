@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import typing
 import uuid
+from collections.abc import Mapping
 
 import pydantic
 
@@ -19,7 +20,7 @@ from erlab.interactive._figurecomposer._defaults import (
 from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
 
 class FigureGridSpecSpanState(pydantic.BaseModel):
@@ -102,12 +103,23 @@ class FigureSourceState(pydantic.BaseModel):
     """A named data source used by a figure recipe."""
 
     name: str
-    label: str
+    isel: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    qsel: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    mean_dims: tuple[str, ...] = ()
+    selection_source: str | None = None
     node_uid: str | None = None
     node_snapshot_token: str | None = None
     provenance_spec: dict[str, typing.Any] | None = None
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_label(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping) and "label" in value:
+            value = dict(value)
+            value.pop("label", None)
+        return value
 
     @classmethod
     def from_script_input(
@@ -115,7 +127,6 @@ class FigureSourceState(pydantic.BaseModel):
     ) -> FigureSourceState:
         return cls(
             name=script_input.name,
-            label=script_input.label,
             node_uid=script_input.node_uid,
             node_snapshot_token=script_input.node_snapshot_token,
             provenance_spec=script_input.provenance_spec,
@@ -126,7 +137,6 @@ class FigureSourceState(pydantic.BaseModel):
             return None
         return provenance.ScriptInput(
             name=self.name,
-            label=self.label,
             node_uid=self.node_uid,
             node_snapshot_token=self.node_snapshot_token,
             provenance_spec=self.provenance_spec,
@@ -334,7 +344,11 @@ class FigureOperationState(pydantic.BaseModel):
     palette_color_codes: bool = False
 
     sources: tuple[str, ...] = ()
-    map_selections: tuple[FigureDataSelectionState, ...] = ()
+    # Legacy load-only source selections. Live recipes normalize these into
+    # source-level selections before user-visible editing or saving.
+    map_selections: tuple[FigureDataSelectionState, ...] = pydantic.Field(
+        default=(), exclude=True
+    )
     slice_dim: str | None = None
     slice_values_mode: typing.Literal["manual", "all"] = "manual"
     slice_values: tuple[float, ...] = ()

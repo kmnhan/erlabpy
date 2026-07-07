@@ -632,6 +632,134 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         return self._operation.kind == FigureOperationKind.PLOT_SLICES
 
 
+class _FigureSourcePickerDialog(QtWidgets.QDialog):
+    """Select live ImageTool manager rows to add as Figure Composer sources."""
+
+    def __init__(
+        self, manager: ImageToolManager, *, prechecked_uids: Iterable[str] = ()
+    ) -> None:
+        super().__init__(manager)
+        self._manager = manager
+        self._prechecked_uids = set(prechecked_uids)
+        self.setObjectName("managerFigureSourcePickerDialog")
+        self.setWindowTitle("Add Figure Sources")
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.tree = QtWidgets.QTreeWidget(self)
+        self.tree.setObjectName("managerFigureSourcePickerTree")
+        self.tree.setColumnCount(1)
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.tree.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.tree.itemChanged.connect(self._item_changed)
+        layout.addWidget(self.tree)
+
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setObjectName("managerFigureSourcePickerStatus")
+        layout.addWidget(self.status_label)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+        self._populate_tree()
+        self.tree.expandAll()
+        self._refresh_ok_state()
+
+    def _populate_tree(self) -> None:
+        for index in self._manager._tool_graph.root_indices_for_workspace():
+            wrapper = self._manager._tool_graph.root_wrappers.get(index)
+            if wrapper is None:
+                continue
+            item = self._add_node_item(self.tree.invisibleRootItem(), wrapper)
+            self._populate_child_items(item, wrapper)
+
+    def _populate_child_items(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        parent_node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> None:
+        for uid in parent_node._childtool_indices:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if not isinstance(node, _ManagedWindowNode):
+                continue
+            if self._manager._is_figure_node(node):
+                continue
+            item = self._add_node_item(parent_item, node)
+            self._populate_child_items(item, node)
+
+    def _add_node_item(
+        self,
+        parent: QtWidgets.QTreeWidget | QtWidgets.QTreeWidgetItem | None,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> QtWidgets.QTreeWidgetItem:
+        item = QtWidgets.QTreeWidgetItem(parent, [node.display_text])
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node.uid)
+        flags = QtCore.Qt.ItemFlag.ItemIsEnabled
+        if node.is_imagetool:
+            flags |= QtCore.Qt.ItemFlag.ItemIsUserCheckable
+            item.setCheckState(
+                0,
+                QtCore.Qt.CheckState.Checked
+                if node.uid in self._prechecked_uids
+                else QtCore.Qt.CheckState.Unchecked,
+            )
+        else:
+            item.setToolTip(0, "Only ImageTool rows can be added as figure sources.")
+            item.setForeground(0, QtGui.QBrush(QtGui.QColor("gray")))
+        item.setFlags(flags)
+        return item
+
+    def selected_targets(self) -> tuple[str, ...]:
+        output: list[str] = []
+        root = self.tree.invisibleRootItem()
+        if root is None:  # pragma: no cover
+            return ()
+        self._collect_checked_targets(root, output)
+        return tuple(output)
+
+    def _collect_checked_targets(
+        self, item: QtWidgets.QTreeWidgetItem, output: list[str]
+    ) -> None:
+        uid = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(uid, str) and item.checkState(0) == QtCore.Qt.CheckState.Checked:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is not None and node.is_imagetool and uid not in output:
+                output.append(uid)
+        for row in range(item.childCount()):
+            child = item.child(row)
+            if child is not None:
+                self._collect_checked_targets(child, output)
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _item_changed(self, _item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
+        self._refresh_ok_state()
+
+    def _refresh_ok_state(self) -> None:
+        selected = self.selected_targets()
+        ok_button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(bool(selected))
+        count = len(selected)
+        if count:
+            suffix = "source" if count == 1 else "sources"
+            self.status_label.setText(f"{count} ImageTool {suffix} selected.")
+        else:
+            self.status_label.setText("Select at least one ImageTool source.")
+
+
 class ImageToolManager(_ImageToolManagerBase):
     """The ImageToolManager window.
 
@@ -2608,7 +2736,7 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> tuple[tuple[int | str, ...], tuple[typing.Any, ...], dict[str, xr.DataArray]]:
         from erlab.interactive._figurecomposer import FigureSourceState
 
-        resolved_targets = tuple(dict.fromkeys(targets))
+        resolved_targets = self._figure_imagetool_targets(targets)
         source_data: dict[str, xr.DataArray] = {}
         sources = []
         for target in resolved_targets:
@@ -2620,6 +2748,45 @@ class ImageToolManager(_ImageToolManagerBase):
             source_data[source.name] = data
             sources.append(source)
         return resolved_targets, tuple(sources), source_data
+
+    def _figure_source_uid_for_target(self, target: int | str) -> str | None:
+        try:
+            node = self._node_for_target(target)
+        except KeyError:
+            return None
+        return node.uid if node.is_imagetool else None
+
+    def _figure_imagetool_targets(
+        self, targets: Iterable[int | str]
+    ) -> tuple[int | str, ...]:
+        resolved: list[int | str] = []
+        seen_uids: set[str] = set()
+        for target in targets:
+            uid = self._figure_source_uid_for_target(target)
+            if uid is None or uid in seen_uids:
+                continue
+            resolved.append(target)
+            seen_uids.add(uid)
+        return tuple(resolved)
+
+    def _selected_figure_source_uids(self) -> tuple[str, ...]:
+        uids: list[str] = []
+        for target in self._selected_imagetool_targets():
+            uid = self._figure_source_uid_for_target(target)
+            if uid is not None and uid not in uids:
+                uids.append(uid)
+        return tuple(uids)
+
+    def _figure_source_uids_from_mime(
+        self, mime: QtCore.QMimeData | None
+    ) -> tuple[str, ...]:
+        uids = self.tree_view.figure_source_uids_from_mime(mime)
+        return tuple(
+            uid
+            for uid in uids
+            if (node := self._tool_graph.nodes.get(uid)) is not None
+            and node.is_imagetool
+        )
 
     def _selected_figure_uid_for_figure_dialog(self) -> str | None:
         selected_uids = self._selected_figure_uids()
@@ -2649,6 +2816,58 @@ class ImageToolManager(_ImageToolManagerBase):
         self._select_figure_uid(figure_uid)
         if show:
             node.show()
+        return True
+
+    def _add_imagetool_sources_to_figure(
+        self,
+        figure_uid: str,
+        targets: Iterable[int | str],
+        *,
+        show: bool = False,
+    ) -> bool:
+        requested_targets = tuple(targets)
+        skipped_targets = sum(
+            1
+            for target in requested_targets
+            if self._figure_source_uid_for_target(target) is None
+        )
+        resolved_targets, sources, source_data = self._figure_sources_from_targets(
+            requested_targets
+        )
+        if not resolved_targets:
+            return False
+        node = self._child_node(figure_uid) if self._is_figure_uid(figure_uid) else None
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        tool_before = node.tool_window if node is not None else None
+        existing_source_uids: set[str] = (
+            {
+                source.node_uid
+                for source in tool_before.source_states()
+                if source.node_uid is not None
+            }
+            if isinstance(tool_before, FigureComposerTool)
+            else set()
+        )
+        if not self._add_sources_to_figure(figure_uid, sources, source_data, show=show):
+            return False
+        tool = node.tool_window if node is not None else None
+        if isinstance(tool, FigureComposerTool):
+            updated = sum(
+                1 for source in sources if source.node_uid in existing_source_uids
+            )
+            added = len(sources) - updated
+            parts: list[str] = []
+            if added:
+                suffix = "source" if added == 1 else "sources"
+                parts.append(f"Added {added} ImageTool {suffix}")
+            if updated:
+                suffix = "source" if updated == 1 else "sources"
+                parts.append(f"Updated {updated} ImageTool {suffix}")
+            if skipped_targets:
+                suffix = "selection" if skipped_targets == 1 else "selections"
+                parts.append(f"Skipped {skipped_targets} unsupported {suffix}")
+            tool._set_source_status_text("; ".join(parts) + ".")
         return True
 
     def _replace_figure_source(
@@ -2699,6 +2918,52 @@ class ImageToolManager(_ImageToolManagerBase):
                 figure_uid, source_name
             ),
         )
+        tool._set_source_add_callbacks(
+            can_add_sources=functools.partial(
+                self._can_request_add_sources_to_figure, figure_uid
+            ),
+            add_sources=functools.partial(
+                self._request_add_sources_to_figure, figure_uid
+            ),
+            can_drop_sources=functools.partial(
+                self._can_add_figure_sources_from_mime, figure_uid
+            ),
+            drop_sources=functools.partial(
+                self._add_figure_sources_from_mime, figure_uid
+            ),
+        )
+
+    def _can_request_add_sources_to_figure(self, figure_uid: str) -> bool:
+        return self._is_figure_uid(figure_uid) and any(
+            node.is_imagetool for node in self._tool_graph.nodes.values()
+        )
+
+    def _request_add_sources_to_figure(self, figure_uid: str) -> bool:
+        if not self._is_figure_uid(figure_uid):
+            return False
+        dialog = _FigureSourcePickerDialog(
+            self, prechecked_uids=self._selected_figure_source_uids()
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+        return self._add_imagetool_sources_to_figure(
+            figure_uid, dialog.selected_targets(), show=False
+        )
+
+    def _can_add_figure_sources_from_mime(
+        self, figure_uid: str, mime: QtCore.QMimeData | None
+    ) -> bool:
+        return self._is_figure_uid(figure_uid) and bool(
+            self._figure_source_uids_from_mime(mime)
+        )
+
+    def _add_figure_sources_from_mime(
+        self, figure_uid: str, mime: QtCore.QMimeData | None
+    ) -> bool:
+        targets = self._figure_source_uids_from_mime(mime)
+        if not targets:
+            return False
+        return self._add_imagetool_sources_to_figure(figure_uid, targets, show=False)
 
     @staticmethod
     def _figure_source_state(tool: typing.Any, source_name: str) -> typing.Any | None:
@@ -2808,7 +3073,7 @@ class ImageToolManager(_ImageToolManagerBase):
         from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
 
-        resolved_targets = tuple(dict.fromkeys(targets))
+        resolved_targets = self._figure_imagetool_targets(targets)
         if not resolved_targets:
             return None
 
@@ -3050,7 +3315,7 @@ class ImageToolManager(_ImageToolManagerBase):
         from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
 
-        resolved_targets = tuple(dict.fromkeys(targets))
+        resolved_targets = self._figure_imagetool_targets(targets)
         if not resolved_targets:
             return False
 
