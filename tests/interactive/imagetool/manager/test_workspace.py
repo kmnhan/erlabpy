@@ -16146,6 +16146,19 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
             == "NestedTool"
         )
         assert (
+            controller._workspace_tool_display_name_from_attrs(
+                {"tool_display_name": b"Display Tool"}
+            )
+            == "Display Tool"
+        )
+        assert (
+            controller._workspace_tool_display_name_from_attrs(
+                {"tool_title": "Window[*]"}
+            )
+            == "Window"
+        )
+        assert controller._workspace_tool_display_name_from_attrs({}) == "ToolWindow"
+        assert (
             controller._workspace_tool_source_state_from_attrs(
                 {"tool_source_state": b"stale"}
             )
@@ -16165,19 +16178,48 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         assert "stale" in text
         assert controller._pending_workspace_info_text(node) == text
 
-        preview = controller._pending_workspace_tool_preview_image(node)
+        preview = node.pending_workspace_tool_preview_image()
         assert preview is not None
         assert preview[0] == 0.5
         assert not preview[1].isNull()
+        assert node.cached_pending_workspace_tool_preview_image() == preview
+
+        node.update_pending_workspace_payload_attrs(
+            {
+                "tool_display_name": b"Bytes Preview Tool",
+                "figure_composer_preview_cache_png": encoded_png.encode(),
+            }
+        )
+        bytes_preview = controller._pending_workspace_tool_preview_image(node)
+        assert bytes_preview is not None
+        assert not bytes_preview[1].isNull()
 
         node.update_pending_workspace_payload_attrs(
             {
                 "tool_display_name": b"Display Tool",
+                "tool_data_name": "<none-value>",
                 "figure_composer_preview_cache_png": "not valid base64",
             }
         )
         assert node.type_badge_text == "Display Tool"
+        text_without_data = controller._pending_workspace_tool_info_text(node)
+        assert text_without_data is not None
+        assert "Data:" not in text_without_data
         assert controller._pending_workspace_tool_preview_image(node) is None
+
+        node_without_pending = manager_wrapper._ManagedWindowNode(
+            manager,
+            "not-pending-tool",
+            None,
+            None,
+            window_kind="tool",
+            name="not-pending-tool",
+        )
+        node_without_pending.update_pending_workspace_payload_attrs(
+            {"tool_display_name": "ignored"}
+        )
+        assert node_without_pending.type_badge_text is None
+        assert node_without_pending.pending_workspace_preview_curve() is None
 
         no_pending = types.SimpleNamespace(
             pending_workspace_tool_payload=None,
