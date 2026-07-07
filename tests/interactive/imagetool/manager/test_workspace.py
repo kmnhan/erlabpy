@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import datetime
 import errno
@@ -16067,6 +16068,124 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     )
     valid_objects.update({id(none_data_image), id(none_data_item)})
     assert manager_wrapper._preview_curve_from_imagetool(_tool(none_data_image)) is None
+
+
+def test_pending_toolwindow_metadata_and_preview_helpers(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+        workspace = tmp_path / "pending-tool-metadata.itws"
+        with h5py.File(workspace, "w") as h5_file:
+            payload = h5_file.create_group("payload/tool")
+            payload.attrs["tool_visible"] = False
+            payload.attrs["tool_display_name"] = "Saved Tool"
+
+        assert (
+            manager_workspace_io._workspace_payload_window_visible_h5py(
+                workspace, "payload/tool", "tool"
+            )
+            is False
+        )
+        assert (
+            manager_workspace_io._workspace_payload_window_visible_h5py(
+                workspace, "missing", "tool"
+            )
+            is None
+        )
+        payload_attrs = manager_workspace_io._workspace_payload_attrs_h5py(
+            workspace, "payload/tool"
+        )
+        assert payload_attrs is not None
+        assert payload_attrs["tool_display_name"] == "Saved Tool"
+        assert (
+            manager_workspace_io._workspace_payload_attrs_h5py(workspace, "missing")
+            is None
+        )
+
+        pixmap = QtGui.QPixmap(8, 4)
+        pixmap.fill(QtCore.Qt.GlobalColor.white)
+        png_bytes = QtCore.QByteArray()
+        buffer = QtCore.QBuffer(png_bytes)
+        buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        assert pixmap.save(buffer, "PNG")
+        encoded_png = base64.b64encode(bytes(png_bytes)).decode("ascii")
+
+        node = manager_wrapper._ManagedWindowNode(
+            manager,
+            "pending-tool",
+            None,
+            None,
+            window_kind="tool",
+            name="pending-tool",
+        )
+        node.set_pending_workspace_payload(
+            "tool",
+            workspace,
+            "payload/tool",
+            payload_attrs={
+                "tool_cls_qualname": b"example.module:Outer.NestedTool",
+                "tool_data_name": b"source_data",
+                "tool_source_state": b"stale",
+                "figure_composer_preview_cache_png": encoded_png,
+            },
+        )
+
+        assert node.type_badge_text == "NestedTool"
+        fields = {field.label: field.value for field in node.metadata_fields}
+        assert fields["Kind"] == "NestedTool"
+        assert (
+            controller._workspace_tool_display_name_from_attrs(
+                {"tool_cls_qualname": b"example.module:Outer.NestedTool"}
+            )
+            == "NestedTool"
+        )
+        assert (
+            controller._workspace_tool_source_state_from_attrs(
+                {"tool_source_state": b"stale"}
+            )
+            == "stale"
+        )
+        assert (
+            controller._workspace_tool_source_state_from_attrs(
+                {"tool_source_state": b"unknown"}
+            )
+            == "fresh"
+        )
+
+        text = controller._pending_workspace_tool_info_text(node)
+        assert text is not None
+        assert "NestedTool" in text
+        assert "source_data" in text
+        assert "stale" in text
+        assert controller._pending_workspace_info_text(node) == text
+
+        preview = controller._pending_workspace_tool_preview_image(node)
+        assert preview is not None
+        assert preview[0] == 0.5
+        assert not preview[1].isNull()
+
+        node.update_pending_workspace_payload_attrs(
+            {
+                "tool_display_name": b"Display Tool",
+                "figure_composer_preview_cache_png": "not valid base64",
+            }
+        )
+        assert node.type_badge_text == "Display Tool"
+        assert controller._pending_workspace_tool_preview_image(node) is None
+
+        no_pending = types.SimpleNamespace(
+            pending_workspace_tool_payload=None,
+            pending_workspace_payload_kind=None,
+        )
+        assert controller._pending_workspace_tool_info_text(no_pending) is None
+        assert controller._pending_workspace_tool_preview_image(no_pending) is None
+        assert controller._pending_workspace_info_text(no_pending) is None
 
 
 def test_pending_workspace_preview_and_metadata_reader_fallbacks(
