@@ -35,6 +35,7 @@ import erlab.interactive.imagetool.manager._provenance_edit as manager_provenanc
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._workspace_state as manager_workspace_state
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
@@ -7655,6 +7656,20 @@ def test_manager_tool_dirty_event_escalates_state_to_data(
             "n1",
             "n1",
         ]
+
+
+def test_workspace_state_repeated_options_dirty_during_save() -> None:
+    state = manager_workspace_state._ManagerWorkspaceState()
+
+    assert state.mark_options_dirty()
+    assert state.dirty_generation == 1
+    assert not state.mark_options_dirty()
+    assert state.dirty_generation == 1
+
+    state.save_in_progress = True
+
+    assert state.mark_options_dirty()
+    assert state.dirty_generation == 2
 
 
 def test_manager_workspace_window_title_clears_file_path_without_workspace(
