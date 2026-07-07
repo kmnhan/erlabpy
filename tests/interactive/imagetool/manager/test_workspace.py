@@ -11317,6 +11317,8 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
         root.slicer_area.replace_source_data(
             updated, auto_compute=False, emit_edited=True
         )
+        uid = manager._tool_graph.root_wrappers[0].uid
+        assert ("snapshot-token-refresh", uid) in manager._interaction_gate.pending_keys
         assert manager.is_workspace_modified
 
         original_save = manager._workspace_controller.save
@@ -11342,6 +11344,10 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
         rebound = manager.get_imagetool(0).slicer_area._data
         assert rebound.chunks is not None
         assert _compute_first_value(rebound) == 10.0
+        assert (
+            "snapshot-token-refresh",
+            uid,
+        ) not in manager._interaction_gate.pending_keys
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
@@ -12103,6 +12109,7 @@ def test_manager_workspace_save_drain_does_not_force_deferred_delete(
 ) -> None:
     with manager_context() as manager, monkeypatch.context() as save_drain_patch:
         event_types: list[int] = []
+        idle_flushes: list[dict[str, object]] = []
         save_drain_patch.setattr(
             QtWidgets.QApplication,
             "sendPostedEvents",
@@ -12111,10 +12118,14 @@ def test_manager_workspace_save_drain_does_not_force_deferred_delete(
         save_drain_patch.setattr(
             QtWidgets.QApplication, "processEvents", lambda *_args, **_kwargs: None
         )
+        save_drain_patch.setattr(
+            manager, "_flush_idle_work", lambda **kwargs: idle_flushes.append(kwargs)
+        )
 
         manager._drain_workspace_deferred_events()
 
-        assert event_types == [int(QtCore.QEvent.Type.MetaCall.value)] * 3
+        assert event_types == [int(QtCore.QEvent.Type.MetaCall.value)] * 6
+        assert idle_flushes == [{"force": True}]
 
 
 def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(

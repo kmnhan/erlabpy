@@ -2891,6 +2891,10 @@ class _WorkspaceIOController:
         self._send_workspace_posted_events(QtCore.QEvent.Type.MetaCall)
         for _ in range(3):
             QtWidgets.QApplication.processEvents()
+        self._manager._flush_idle_work(force=True)
+        self._send_workspace_posted_events(QtCore.QEvent.Type.MetaCall)
+        for _ in range(3):
+            QtWidgets.QApplication.processEvents()
 
     def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
         return self._manager._workspace_state.snapshot(
