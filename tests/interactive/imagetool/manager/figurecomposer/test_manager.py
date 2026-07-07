@@ -705,6 +705,16 @@ def _record_figure_composer_editor_updates(monkeypatch) -> list[FigureComposerTo
     return editor_calls
 
 
+def _materialized_figure_tool(
+    manager: erlab.interactive.imagetool.manager.ImageToolManager, figure_uid: str
+) -> FigureComposerTool:
+    node = manager._child_node(figure_uid)
+    assert node.materialize_pending_workspace_payload()
+    tool = node.tool_window
+    assert isinstance(tool, FigureComposerTool)
+    return tool
+
+
 def test_figure_composer_deferred_restore_delays_operation_editor(
     qtbot,
     monkeypatch,
@@ -887,10 +897,11 @@ def test_manager_workspace_restores_figure_gallery_preview_cache(
             mark_dirty=False,
             select=False,
         )
-        loaded_tool = manager._child_node(figure_uid).tool_window
-        assert isinstance(loaded_tool, FigureComposerTool)
-        assert loaded_tool.preview_pixmap is not None
-        assert not loaded_tool.preview_pixmap_stale
+        loaded_node = manager._child_node(figure_uid)
+        assert loaded_node.tool_window is None
+        pending_preview = loaded_node.pending_workspace_tool_preview_image()
+        assert pending_preview is not None
+        assert not pending_preview[1].isNull()
 
         manager.figure_view_gallery_button.click()
         item = manager._figure_list_item_for_uid(figure_uid)
@@ -1795,15 +1806,12 @@ def test_manager_workspace_figure_sources_save_as_references(
                 mark_dirty=False,
                 select=False,
             )
-            loaded_tool = manager._tool_graph.nodes[figure_uid].tool_window
-            assert isinstance(loaded_tool, FigureComposerTool)
+            loaded_tool = _materialized_figure_tool(manager, figure_uid)
             xr.testing.assert_identical(loaded_tool._source_data["data_1"], second)
         finally:
             tree.close()
 
-        restored = typing.cast(
-            "FigureComposerTool", manager._child_node(figure_uid).tool_window
-        )
+        restored = _materialized_figure_tool(manager, figure_uid)
         source_data = restored.source_data()
         xr.testing.assert_identical(source_data["data_0"], first)
         xr.testing.assert_identical(source_data["data_1"], second)
@@ -2247,6 +2255,7 @@ def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source
         assert dialog._figure_source_count("missing") == 0
 
         class EmptyFigureNode:
+            uid = "empty-figure"
             tool_window = None
 
         with monkeypatch.context() as context:
@@ -3419,8 +3428,7 @@ def test_manager_figure_remove_unused_source_persists_workspace(
             mark_dirty=False,
             select=False,
         )
-        loaded_tool = manager._child_node(figure_uid).tool_window
-        assert isinstance(loaded_tool, FigureComposerTool)
+        loaded_tool = _materialized_figure_tool(manager, figure_uid)
         assert source.name not in loaded_tool.source_data()
         assert source.name not in {
             source.name for source in loaded_tool.source_states()
