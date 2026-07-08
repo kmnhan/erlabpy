@@ -1576,15 +1576,20 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._ensure_serializable_state()
         return super().duplicate(**kwargs)
 
-    def _stop_server(self) -> bool:
+    def _stop_server(self, *, timeout_ms: int | None = None) -> bool:
         """Stop the fitter thread properly."""
         self._pending_update_request = None
         self._pending_update_timer.stop()
         self._abort_fit_task()
+        if timeout_ms is None:
+            timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
         return self._wait_for_threadpool(
             self._threadpool,
-            timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS,
+            timeout_ms=timeout_ms,
         )
+
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._stop_server(timeout_ms=timeout_ms)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
