@@ -19,6 +19,7 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive.utils
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._modelview import (
+    _FIGURE_SOURCE_MIME,
     _MIME,
     _NODE_UID_ROLE,
     _TOOL_TYPE_ROLE,
@@ -3728,7 +3729,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     assert model.parent(child_index).internalPointer() is parent_node
     assert model.rowCount(nonzero_column_index) == 0
     assert not model.hasChildren(nonzero_column_index)
-    assert model.mimeTypes() == [_MIME]
+    assert model.mimeTypes() == [_MIME, _FIGURE_SOURCE_MIME]
     with pytest.raises(KeyError):
         model._childtool_uid(0, "missing-parent")
 

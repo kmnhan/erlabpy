@@ -1686,10 +1686,14 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
             levels_locked=True,
             levels=(-2.0, 4.0),
         )
-        manager.get_imagetool(1).slicer_area.set_colormap("viridis", gamma=0.25)
+        second_tool = manager.get_imagetool(1)
+        second_tool.slicer_area.set_colormap("viridis", gamma=0.25)
         vmin, vmax = first_tool.slicer_area.colormap_properties["levels"]
-        expected = first_tool.slicer_area.images[0].figure_composer_operation(
+        expected_first = first_tool.slicer_area.images[0].figure_composer_operation(
             source_name="data_0"
+        )
+        expected_second = second_tool.slicer_area.images[0].figure_composer_operation(
+            source_name="data_1"
         )
 
         figure_uid = manager.create_figure_from_targets((0, 1), show=False)
@@ -1698,19 +1702,24 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
             "FigureComposerTool", manager._child_node(figure_uid).tool_window
         )
         operation = figure_tool.tool_status.operations[0]
-        assert operation.sources == ("data_0", "data_1")
+        assert operation.sources == ("data_0_selected", "data_1_selected")
+        sources = {source.name: source for source in figure_tool.source_states()}
+        assert sources["data_0_selected"].selection_source == "data_0"
+        assert sources["data_0_selected"].qsel == expected_first.map_selections[0].qsel
+        assert sources["data_1_selected"].selection_source == "data_1"
+        assert sources["data_1_selected"].qsel == expected_second.map_selections[0].qsel
         assert operation.order == "F"
         assert figure_tool.tool_status.setup.nrows == 1
         assert figure_tool.tool_status.setup.ncols == 2
-        assert operation.slice_dim == expected.slice_dim
-        assert operation.slice_values == expected.slice_values
-        assert operation.slice_width == expected.slice_width
-        assert operation.slice_kwargs == expected.slice_kwargs
-        assert operation.transpose == expected.transpose
-        assert operation.xlim == expected.xlim
-        assert operation.ylim == expected.ylim
-        assert operation.crop == expected.crop
-        assert operation.axis == expected.axis
+        assert operation.slice_dim is None
+        assert operation.slice_values == ()
+        assert operation.slice_width is None
+        assert operation.slice_kwargs == {}
+        assert operation.transpose == expected_first.transpose
+        assert operation.xlim == expected_first.xlim
+        assert operation.ylim == expected_first.ylim
+        assert operation.crop == expected_first.crop
+        assert operation.axis == expected_first.axis
         assert operation.cmap is None
         assert operation.same_limits is False
         assert operation.norm_name == "PowerNorm"

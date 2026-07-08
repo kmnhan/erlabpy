@@ -3620,6 +3620,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert not manager._script_input_can_reload(full_data_input)
         assert manager._script_input_unavailable_reason(full_data_input) is not None
         file_without_source_input = types.SimpleNamespace(
+            name="file_without_source",
             node_uid=None,
             label="File without source",
             parsed_provenance_spec=lambda: file_spec.model_copy(
@@ -3653,6 +3654,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         replay_call = load_source.replay_call
         assert replay_call is not None
         no_replay_call_input = types.SimpleNamespace(
+            name="no_replay_call",
             node_uid=None,
             label="No replay call",
             parsed_provenance_spec=lambda: file_spec.model_copy(
@@ -3805,7 +3807,6 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         )
         ref = provenance.ScriptInputDependencyRef(
             name="file_input",
-            label="File input",
             node_uid="missing-file-node",
             node_snapshot_token=file_marker,
         )
