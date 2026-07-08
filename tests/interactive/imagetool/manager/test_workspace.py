@@ -16072,6 +16072,7 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
 
 def test_pending_toolwindow_metadata_and_preview_helpers(
     qtbot,
+    monkeypatch,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -16184,6 +16185,14 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         assert not preview[1].isNull()
         assert node.cached_pending_workspace_tool_preview_image() == preview
 
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_selected_imagetool_targets", lambda: ())
+            patch.setattr(manager, "_selected_tool_uids", lambda: (node.uid,))
+            patch.setattr(manager, "_node_for_target", lambda _target: node)
+            manager._details_panel._update_info()
+        assert manager.preview_widget.isVisible()
+        assert not manager.preview_widget._pixmapitem.pixmap().isNull()
+
         node.update_pending_workspace_payload_attrs(
             {
                 "tool_display_name": b"Bytes Preview Tool",
@@ -16206,6 +16215,27 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         assert text_without_data is not None
         assert "Data:" not in text_without_data
         assert controller._pending_workspace_tool_preview_image(node) is None
+
+        updates: list[str | None] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_selected_imagetool_targets", lambda: ())
+            patch.setattr(manager, "_selected_tool_uids", lambda: (node.uid,))
+            patch.setattr(manager, "_node_for_target", lambda _target: node)
+            patch.setattr(manager, "_child_node", lambda _uid: node)
+            patch.setattr(
+                manager,
+                "_update_info",
+                lambda *, uid=None: updates.append(uid),
+            )
+            patch.setattr(node, "materialize_pending_workspace_payload", lambda: True)
+            manager._details_panel._update_info()
+            manager._details_panel._load_selected_preview_data()
+        load_button = manager.preview_widget.findChild(
+            QtWidgets.QPushButton, "manager_pending_preview_load_button"
+        )
+        assert load_button is not None
+        assert load_button.isVisible()
+        assert updates == [node.uid]
 
         node_without_pending = manager_wrapper._ManagedWindowNode(
             manager,
