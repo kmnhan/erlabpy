@@ -146,13 +146,20 @@ def link_slicer(
             records_history = getattr(func, "_itool_records_history", False)
             if keep_pending is None:
                 keep_pending = obj._history_group_active
-            sync_enabled = (
+            live_sync_enabled = (
                 obj.is_linked
                 and not skip_sync
                 and obj._link_sync_suppressed == 0
                 and obj._linking_proxy is not None
                 and (not color or obj._linking_proxy.link_colors)
             )
+            managed_sync_enabled = (
+                not skip_sync
+                and obj._link_sync_suppressed == 0
+                and hasattr(obj, "_managed_link_sync_enabled")
+                and obj._managed_link_sync_enabled(color)
+            )
+            sync_enabled = live_sync_enabled or managed_sync_enabled
             if records_history and transaction_id is None and sync_enabled:
                 transaction_id = obj.next_linked_history_transaction_id()
 
@@ -164,6 +171,8 @@ def link_slicer(
             out = func(*args, **call_kwargs)
             if sync_enabled and isinstance(out, LinkSyncResult) and not out.sync:
                 sync_enabled = False
+                live_sync_enabled = False
+                managed_sync_enabled = False
             if sync_enabled:
                 all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
                 all_args.apply_defaults()
@@ -172,9 +181,22 @@ def link_slicer(
                 if isinstance(out, LinkSyncResult) and out.arguments is not None:
                     sync_arguments = dict(sync_arguments)
                     sync_arguments.update(out.arguments)
-                if obj._linking_proxy is not None:  # pragma: no branch
+                if live_sync_enabled and obj._linking_proxy is not None:
                     obj._linking_proxy.sync(
                         obj,
+                        func.__name__,
+                        sync_arguments,
+                        source_dims,
+                        indices,
+                        steps,
+                        color,
+                        transaction_id,
+                        keep_pending,
+                    )
+                if managed_sync_enabled and hasattr(
+                    obj, "_sync_managed_workspace_link"
+                ):
+                    obj._sync_managed_workspace_link(
                         func.__name__,
                         sync_arguments,
                         source_dims,

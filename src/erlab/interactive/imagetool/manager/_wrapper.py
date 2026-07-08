@@ -7,6 +7,8 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import functools
+import importlib
+import json
 import keyword
 import logging
 import pathlib
@@ -21,6 +23,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._xarray as _manager_xarray
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
@@ -30,9 +33,11 @@ from erlab.interactive.imagetool._load_source import (
     _LoadSourceDetails,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    import os
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -153,6 +158,70 @@ def _preview_from_imagetool(
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
 
 
+def _preview_curve_from_imagetool(
+    imagetool: ImageTool | None,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if imagetool is None:
+        return None
+    slicer_area = imagetool.slicer_area
+    slicer_area._update_if_delayed()
+    try:
+        main_image = slicer_area.main_image
+    except RuntimeError:
+        return None
+
+    if not erlab.interactive.utils.qt_is_valid(main_image):
+        return None
+    if not main_image.slicer_data_items:
+        return None
+
+    data_item = main_image.slicer_data_items[0]
+    if not erlab.interactive.utils.qt_is_valid(data_item):
+        return None
+
+    if main_image.is_image:
+        image = getattr(data_item, "image", None)
+        if image is None:
+            return None
+        image_values = np.asarray(image)
+        if image_values.ndim != 2 or image_values.size == 0:
+            return None
+        non_singleton_axes = tuple(
+            axis for axis, size in enumerate(image_values.shape) if size != 1
+        )
+        if len(non_singleton_axes) != 1:
+            return None
+        y_values = image_values.reshape(-1)
+        image_axis = non_singleton_axes[0]
+        axis_dims = (
+            tuple(reversed(main_image.axis_dims))
+            if 0 in main_image.display_axis
+            else main_image.axis_dims
+        )
+        if image_axis >= len(axis_dims):
+            return _curve_preview_data(
+                np.arange(y_values.size, dtype=np.float64), y_values
+            )
+        dim = axis_dims[image_axis]
+        x_values = None
+        if dim is not None:
+            with contextlib.suppress(TypeError, ValueError, RuntimeError):
+                coord_values = slicer_area.array_slicer.values_of_dim(dim)
+                if len(coord_values) == y_values.size:
+                    x_values = coord_values
+        if x_values is None:
+            x_values = np.arange(y_values.size, dtype=np.float64)
+        return _curve_preview_data(x_values, y_values)
+
+    try:
+        x_values, y_values = data_item.getData()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    if x_values is None or y_values is None:
+        return None
+    return _curve_preview_data(x_values, y_values)
+
+
 def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
     fallback = (float("NaN"), QtGui.QPixmap())
     dynamic_node = typing.cast("typing.Any", node)
@@ -180,6 +249,19 @@ def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
         )
     except (AttributeError, RuntimeError, ValueError):
         return fallback
+
+
+def _preview_curve_for_node(node: object) -> tuple[np.ndarray, np.ndarray] | None:
+    dynamic_node = typing.cast("typing.Any", node)
+    if getattr(dynamic_node, "pending_workspace_memory_payload", None) is not None:
+        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+            return dynamic_node.pending_workspace_preview_curve()
+        return None
+    try:
+        imagetool = dynamic_node.imagetool
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+    return _preview_curve_from_imagetool(typing.cast("ImageTool | None", imagetool))
 
 
 @dataclass(frozen=True)
@@ -289,8 +371,10 @@ class _ManagedWindowNode(QtCore.QObject):
         manager: ImageToolManager,
         uid: str,
         parent_uid: str | None,
-        window: QtWidgets.QWidget,
+        window: QtWidgets.QWidget | None,
         *,
+        window_kind: typing.Literal["imagetool", "tool"] | None = None,
+        name: str | None = None,
         provenance_spec: provenance.ToolProvenanceSpec | None = None,
         source_spec: provenance.ToolProvenanceSpec | None = None,
         source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
@@ -313,19 +397,57 @@ class _ManagedWindowNode(QtCore.QObject):
 
         self._imagetool: ImageTool | None = None
         self._tool_window: erlab.interactive.utils.ToolWindow | None = None
-        self._window_kind: typing.Literal["imagetool", "tool"] = (
-            "imagetool" if isinstance(window, ImageTool) else "tool"
+        if window_kind is None:
+            if window is None:
+                raise TypeError("window_kind is required when window is None")
+            window_kind = "imagetool" if isinstance(window, ImageTool) else "tool"
+        self._window_kind = window_kind
+        self._name = (
+            name
+            if name is not None
+            else ("" if window is None else window.windowTitle())
         )
-        self._name = window.windowTitle()
 
         self._source_spec: provenance.ToolProvenanceSpec | None = None
         self._source_binding: provenance.ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: provenance.ToolProvenanceSpec | None = None
         self._detached_live_parent_data: xr.DataArray | None = None
+        self._workspace_reference_datasets: dict[
+            tuple[pathlib.Path, str], xr.Dataset
+        ] = {}
+        self._workspace_tool_data_references: dict[str, dict[str, typing.Any]] = {}
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
         self._output_id: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
+        self._pending_workspace_payload: tuple[pathlib.Path, str] | None = None
+        self._pending_workspace_payload_kind: (
+            typing.Literal["imagetool", "tool"] | None
+        ) = None
+        self._pending_workspace_payload_attrs: dict[str, typing.Any] | None = None
+        self._pending_workspace_metadata_cache: (
+            tuple[
+                tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
+                str,
+            ]
+            | None
+        ) = None
+        self._pending_workspace_preview_cache: (
+            tuple[
+                tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
+                tuple[float, QtGui.QPixmap] | None,
+            ]
+            | None
+        ) = None
+        self._pending_workspace_curve_cache: (
+            tuple[
+                tuple[typing.Literal["imagetool"], tuple[pathlib.Path, str]],
+                tuple[np.ndarray, np.ndarray] | None,
+            ]
+            | None
+        ) = None
+        self._workspace_link_key: str | None = None
+        self._workspace_link_colors: bool = True
         self._snapshot_token = (
             str(snapshot_token) if snapshot_token else uuid.uuid4().hex
         )
@@ -380,6 +502,7 @@ class _ManagedWindowNode(QtCore.QObject):
             if manager is not None:
                 manager._unregister_interaction_window(self.imagetool)
             self._detach_imagetool()
+            self._close_workspace_reference_datasets()
         elif self.tool_window is not None:
             manager = self._manager()
             if manager is not None:
@@ -400,6 +523,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
+            self._close_workspace_reference_datasets()
 
         if value is None:
             return
@@ -452,6 +576,57 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
+
+    def _workspace_reference_dataset(
+        self,
+        key: tuple[pathlib.Path, str],
+        opener: Callable[[], xr.Dataset],
+    ) -> xr.Dataset:
+        try:
+            return self._workspace_reference_datasets[key]
+        except KeyError:
+            dataset = opener()
+            self._workspace_reference_datasets[key] = dataset
+            return dataset
+
+    def _adopt_workspace_reference_datasets(
+        self, datasets: Mapping[tuple[pathlib.Path, str], xr.Dataset]
+    ) -> None:
+        for key, dataset in datasets.items():
+            previous = self._workspace_reference_datasets.get(key)
+            if previous is not None and previous is not dataset:
+                with contextlib.suppress(Exception):
+                    previous.close()
+            self._workspace_reference_datasets[key] = dataset
+
+    def _set_workspace_tool_data_references(
+        self, references: Mapping[str, Mapping[str, typing.Any]]
+    ) -> None:
+        self._workspace_tool_data_references = {
+            variable_name: dict(reference)
+            for variable_name, reference in references.items()
+        }
+
+    def _replace_workspace_reference_datasets(
+        self, datasets: Mapping[tuple[pathlib.Path, str], xr.Dataset]
+    ) -> None:
+        previous = self._workspace_reference_datasets
+        self._workspace_reference_datasets = dict(datasets)
+        retained = {
+            id(dataset) for dataset in self._workspace_reference_datasets.values()
+        }
+        for dataset in previous.values():
+            if id(dataset) not in retained:
+                with contextlib.suppress(Exception):
+                    dataset.close()
+
+    def _close_workspace_reference_datasets(self) -> None:
+        datasets = tuple(self._workspace_reference_datasets.values())
+        self._workspace_reference_datasets.clear()
+        self._workspace_tool_data_references.clear()
+        for dataset in datasets:
+            with contextlib.suppress(Exception):
+                dataset.close()
 
     def _configure_tool_secondary_window(self, window: QtWidgets.QWidget) -> None:
         manager = self._manager()
@@ -539,6 +714,175 @@ class _ManagedWindowNode(QtCore.QObject):
         return self.imagetool.slicer_area
 
     @property
+    def pending_workspace_memory_payload(self) -> tuple[pathlib.Path, str] | None:
+        if self._pending_workspace_payload_kind != "imagetool":
+            return None
+        return self._pending_workspace_payload
+
+    @property
+    def pending_workspace_tool_payload(self) -> tuple[pathlib.Path, str] | None:
+        if self._pending_workspace_payload_kind != "tool":
+            return None
+        return self._pending_workspace_payload
+
+    @property
+    def pending_workspace_payload_kind(
+        self,
+    ) -> typing.Literal["imagetool", "tool"] | None:
+        return self._pending_workspace_payload_kind
+
+    @property
+    def pending_workspace_payload(self) -> tuple[pathlib.Path, str] | None:
+        return self._pending_workspace_payload
+
+    @property
+    def pending_workspace_payload_attrs(self) -> dict[str, typing.Any] | None:
+        if self._pending_workspace_payload_attrs is None:
+            return None
+        return dict(self._pending_workspace_payload_attrs)
+
+    def update_pending_workspace_payload_attrs(
+        self, attrs: Mapping[str, typing.Any]
+    ) -> None:
+        if self._pending_workspace_payload is None:
+            return
+        self._pending_workspace_payload_attrs = dict(attrs)
+        self._pending_workspace_metadata_cache = None
+        self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
+
+    def set_pending_workspace_payload(
+        self,
+        kind: typing.Literal["imagetool", "tool"],
+        workspace_path: str | os.PathLike[str],
+        payload_path: str,
+        payload_attrs: Mapping[str, typing.Any] | None = None,
+    ) -> None:
+        self._pending_workspace_payload_kind = kind
+        self._pending_workspace_payload = (
+            pathlib.Path(workspace_path),
+            payload_path.strip("/"),
+        )
+        self._pending_workspace_payload_attrs = (
+            None if payload_attrs is None else dict(payload_attrs)
+        )
+        self._pending_workspace_metadata_cache = None
+        self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
+
+    def set_pending_workspace_memory_payload(
+        self,
+        workspace_path: str | os.PathLike[str],
+        payload_path: str,
+        payload_attrs: Mapping[str, typing.Any] | None = None,
+    ) -> None:
+        self.set_pending_workspace_payload(
+            "imagetool",
+            workspace_path,
+            payload_path,
+            payload_attrs=payload_attrs,
+        )
+
+    def clear_pending_workspace_payload(self) -> None:
+        self._pending_workspace_payload = None
+        self._pending_workspace_payload_kind = None
+        self._pending_workspace_payload_attrs = None
+        self._pending_workspace_metadata_cache = None
+        self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
+
+    def materialize_pending_workspace_payload(self) -> bool:
+        if self._pending_workspace_payload is None:
+            return True
+        return self.manager._materialize_pending_workspace_payload(self)
+
+    def _pending_workspace_preview_for_kind(
+        self,
+        kind: typing.Literal["imagetool", "tool"],
+        renderer: Callable[[_ManagedWindowNode], tuple[float, QtGui.QPixmap] | None]
+        | None = None,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        pending = (
+            self.pending_workspace_memory_payload
+            if kind == "imagetool"
+            else self.pending_workspace_tool_payload
+        )
+        if pending is None:
+            return None
+        cache_key = (kind, pending)
+        if (
+            self._pending_workspace_preview_cache is not None
+            and self._pending_workspace_preview_cache[0] == cache_key
+        ):
+            return self._pending_workspace_preview_cache[1]
+        if renderer is None:
+            return None
+        preview = renderer(self)
+        self._pending_workspace_preview_cache = (cache_key, preview)
+        return preview
+
+    def pending_workspace_preview_image(self) -> tuple[float, QtGui.QPixmap] | None:
+        return self._pending_workspace_preview_for_kind(
+            "imagetool", self.manager._pending_workspace_imagetool_preview_image
+        )
+
+    def cached_pending_workspace_preview_image(
+        self,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._pending_workspace_preview_for_kind("imagetool")
+
+    def pending_workspace_preview_curve(self) -> tuple[np.ndarray, np.ndarray] | None:
+        pending = self.pending_workspace_memory_payload
+        if pending is None:
+            return None
+        cache_key: tuple[typing.Literal["imagetool"], tuple[pathlib.Path, str]] = (
+            "imagetool",
+            pending,
+        )
+        if (
+            self._pending_workspace_curve_cache is not None
+            and self._pending_workspace_curve_cache[0] == cache_key
+        ):
+            return self._pending_workspace_curve_cache[1]
+        preview = self.manager._pending_workspace_imagetool_preview_curve(self)
+        self._pending_workspace_curve_cache = (cache_key, preview)
+        return preview
+
+    def pending_workspace_tool_preview_image(
+        self,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._pending_workspace_preview_for_kind(
+            "tool", self.manager._pending_workspace_tool_preview_image
+        )
+
+    def cached_pending_workspace_tool_preview_image(
+        self,
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._pending_workspace_preview_for_kind("tool")
+
+    @property
+    def workspace_link_key(self) -> str | None:
+        return self._workspace_link_key
+
+    @property
+    def workspace_link_colors(self) -> bool:
+        return self._workspace_link_colors
+
+    @property
+    def workspace_linked(self) -> bool:
+        if self.imagetool is not None and self.slicer_area.is_linked:
+            return True
+        return self._workspace_link_key is not None
+
+    def set_workspace_link_state(self, key: str, *, link_colors: bool) -> None:
+        self._workspace_link_key = key
+        self._workspace_link_colors = bool(link_colors)
+
+    def clear_workspace_link_state(self) -> None:
+        self._workspace_link_key = None
+        self._workspace_link_colors = True
+
+    @property
     def name(self) -> str:
         if self.imagetool is not None:
             return _dataarray_name(self.slicer_area._data)
@@ -563,6 +907,9 @@ class _ManagedWindowNode(QtCore.QObject):
             self._rename_imagetool_data(name, record_provenance=manual)
             return
         self._name = name
+        self._pending_workspace_metadata_cache = None
+        self._pending_workspace_preview_cache = None
+        self._pending_workspace_curve_cache = None
         self.manager.tree_view.refresh(self.uid)
         self.manager._mark_node_state_dirty(self.uid)
 
@@ -625,6 +972,20 @@ class _ManagedWindowNode(QtCore.QObject):
     def type_badge_text(self) -> str | None:
         if self.tool_window is not None:
             return self.tool_window.tool_name
+        if self.pending_workspace_tool_payload is not None:
+            attrs = self.pending_workspace_payload_attrs or {}
+            qualname = attrs.get("tool_cls_qualname")
+            if isinstance(qualname, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    qualname = qualname.decode()
+            if isinstance(qualname, str) and qualname:
+                return qualname.rsplit(":", maxsplit=1)[-1].rsplit(".", maxsplit=1)[-1]
+            display_name = attrs.get("tool_display_name")
+            if isinstance(display_name, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    display_name = display_name.decode()
+            if isinstance(display_name, str) and display_name:
+                return display_name
         return None
 
     @property
@@ -633,12 +994,36 @@ class _ManagedWindowNode(QtCore.QObject):
             return erlab.interactive.utils._apply_qt_accent_color(
                 self.tool_window.info_text
             )
+        pending_info = self._pending_workspace_info_text()
+        if pending_info is not None:
+            return pending_info
+        data = self._metadata_data()
+        if data is None:
+            return erlab.interactive.utils._apply_qt_accent_color(
+                f"Added {self.added_time_display}"
+            )
         text = erlab.utils.formatting.format_darr_html(
-            self.slicer_area.displayed_data,
+            data,
             show_size=True,
             additional_info=[f"Added {self.added_time_display}"],
         )
         return erlab.interactive.utils._apply_qt_accent_color(text)
+
+    def _pending_workspace_info_text(self) -> str | None:
+        pending = self._pending_workspace_payload
+        kind = self._pending_workspace_payload_kind
+        if pending is None or kind is None:
+            return None
+        cache_key = (kind, pending)
+        if (
+            self._pending_workspace_metadata_cache is not None
+            and self._pending_workspace_metadata_cache[0] == cache_key
+        ):
+            return self._pending_workspace_metadata_cache[1]
+        text = self.manager._pending_workspace_info_text(self)
+        if text is not None:
+            self._pending_workspace_metadata_cache = (cache_key, text)
+        return text
 
     @property
     def tree_uid_text(self) -> str:
@@ -672,6 +1057,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _metadata_data(self) -> xr.DataArray | None:
         if self.imagetool is not None:
+            if self.pending_workspace_memory_payload is not None:
+                return None
             return self.slicer_area.displayed_data
         if self.tool_window is not None:
             with contextlib.suppress(NotImplementedError, RuntimeError):
@@ -692,28 +1079,96 @@ class _ManagedWindowNode(QtCore.QObject):
             return _load_source_details_from_provenance(
                 provenance_spec.file_load_source
             )
-        return None
+        return self._pending_workspace_load_source_details()
 
-    def load_source_code(self, *, assign: str = "data") -> str | None:
-        if self.imagetool is None:
+    def _pending_workspace_load_source_details(self) -> _LoadSourceDetails | None:
+        attrs = self._pending_workspace_payload_attrs
+        if attrs is None:
             return None
-        file_path = self.slicer_area._file_path
-        if file_path is None:
+        raw_state = attrs.get("itool_state")
+        if isinstance(raw_state, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                raw_state = raw_state.decode()
+        if not isinstance(raw_state, str):
             return None
-        return _load_code_from_file_details(
-            file_path,
-            self.slicer_area._load_func,
-            assign=assign,
+        try:
+            state = typing.cast("dict[str, typing.Any]", json.loads(raw_state))
+        except Exception:
+            return None
+        file_path = state.get("file_path")
+        if not isinstance(file_path, str):
+            return None
+        load_func = state.get("load_func")
+        return _load_source_details_from_file(
+            pathlib.Path(file_path),
+            self._load_func_from_serialized_state(load_func),
             source_input_dtype=self._load_source_input_dtype(),
         )
 
+    @staticmethod
+    def _load_func_from_serialized_state(
+        load_func: typing.Any,
+    ) -> (
+        tuple[typing.Callable[..., typing.Any] | str, dict[str, typing.Any], typing.Any]
+        | None
+    ):
+        if not isinstance(load_func, list | tuple) or len(load_func) != 3:
+            return None
+        fn, kwargs, selection = load_func
+        if not isinstance(fn, str) or not isinstance(kwargs, dict):
+            return None
+        if ":" in fn:
+            try:
+                mod_name, qual = fn.split(":", maxsplit=1)
+                func_obj: typing.Any = importlib.import_module(mod_name)
+                for attr in qual.split("."):
+                    func_obj = getattr(func_obj, attr)
+            except Exception:
+                return None
+            if not callable(func_obj):
+                return None
+            return func_obj, dict(kwargs), selection
+        if fn in erlab.io.loaders:
+            return fn, dict(kwargs), selection
+        return None
+
+    def load_source_code(self, *, assign: str = "data") -> str | None:
+        if self.imagetool is not None:
+            file_path = self.slicer_area._file_path
+            if file_path is None:
+                return None
+            return _load_code_from_file_details(
+                file_path,
+                self.slicer_area._load_func,
+                assign=assign,
+                source_input_dtype=self._load_source_input_dtype(),
+            )
+
+        details = self._load_source_details()
+        if details is None or details.load_code is None:
+            return None
+        if not erlab.interactive.utils._is_kwarg_name(assign):
+            raise ValueError("assign must be a valid Python identifier")
+        if assign == "data":
+            return details.load_code
+        try:
+            return provenance._replace_code_identifiers(
+                details.load_code,
+                {"data": assign},
+            )
+        except SyntaxError:
+            return None
+
     def default_load_source_name(self) -> str | None:
-        if self.imagetool is None:
+        if self.imagetool is not None:
+            file_path = self.slicer_area._file_path
+            if file_path is None:
+                return None
+            return _default_load_source_name(file_path)
+        details = self._load_source_details()
+        if details is None:
             return None
-        file_path = self.slicer_area._file_path
-        if file_path is None:
-            return None
-        return _default_load_source_name(file_path)
+        return _default_load_source_name(details.path)
 
     def _load_source_input_dtype(self) -> np.dtype[typing.Any] | None:
         return None
@@ -729,8 +1184,13 @@ class _ManagedWindowNode(QtCore.QObject):
         kind_value = "ImageTool"
         if not self.is_imagetool:
             if tool_window is None:
-                raise RuntimeError("Managed non-ImageTool node is missing its tool.")
-            kind_value = tool_window.tool_name
+                if self.pending_workspace_tool_payload is None:
+                    raise RuntimeError(
+                        "Managed non-ImageTool node is missing its tool."
+                    )
+                kind_value = self.type_badge_text or "ToolWindow"
+            else:
+                kind_value = tool_window.tool_name
 
         fields = [
             _MetadataField(
@@ -770,6 +1230,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
+        if self.pending_workspace_memory_payload is not None:
+            preview = self.cached_pending_workspace_preview_image()
+            if preview is not None:
+                return preview
+            return float("NaN"), QtGui.QPixmap()
         return _preview_from_imagetool(self.imagetool, float("NaN"), QtGui.QPixmap())
 
     @property
@@ -815,8 +1280,33 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
 
-    def persistence_view(self) -> _NodePersistenceView:
+    def persistence_data_backing(
+        self,
+    ) -> tuple[typing.Literal["dask", "file_lazy", "memory"] | None, tuple[str, ...]]:
+        """Return lightweight data backing metadata without capturing UI state."""
+        if self.pending_workspace_memory_payload is not None:
+            return "memory", ()
+        if self.imagetool is None:
+            return None, ()
+
+        slicer_area = self.slicer_area
+        data = slicer_area._data
+        if slicer_area.data_chunked:
+            data_backing: typing.Literal["dask", "file_lazy", "memory"] = "dask"
+        elif slicer_area.data_file_backed:
+            data_backing = "file_lazy"
+        else:
+            data_backing = "memory"
+        return data_backing, _manager_xarray.dataarray_source_paths(data)
+
+    def persistence_view(
+        self, *, materialize_pending: bool = True
+    ) -> _NodePersistenceView:
         """Return the only manager persistence/clone view for this node."""
+        if materialize_pending and not self.materialize_pending_workspace_payload():
+            raise ValueError(
+                "Could not read this node's saved data from the workspace file."
+            )
         if self.imagetool is None:
             return _NodePersistenceView(
                 data=None,
@@ -831,15 +1321,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
 
         data, state = self.slicer_area.persistence_data_and_state()
-        from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
-
-        data_backing: typing.Literal["dask", "file_lazy", "memory"]
-        if data.chunks is not None:
-            data_backing = "dask"
-        elif _manager_xarray.dataarray_is_file_backed(data):
-            data_backing = "file_lazy"
-        else:
-            data_backing = "memory"
+        data_backing, source_paths = self.persistence_data_backing()
         return _NodePersistenceView(
             data=data,
             state=state,
@@ -850,7 +1332,7 @@ class _ManagedWindowNode(QtCore.QObject):
             source_state=self.source_state,
             source_auto_update=self.source_auto_update,
             data_backing=data_backing,
-            source_paths=_manager_xarray.dataarray_source_paths(data),
+            source_paths=source_paths,
         )
 
     @property
@@ -983,10 +1465,11 @@ class _ManagedWindowNode(QtCore.QObject):
             return None
         return provenance_spec.display_code()
 
-    def add_child_reference(self, uid: str, window: QtWidgets.QWidget) -> None:
+    def add_child_reference(self, uid: str, window: QtWidgets.QWidget | None) -> None:
         if uid not in self._childtool_indices:
             self._childtool_indices.append(uid)
-        self._childtools[uid] = window
+        if window is not None:
+            self._childtools[uid] = window
 
     def remove_child_reference(self, uid: str) -> None:
         self._childtools.pop(uid, None)
@@ -1065,6 +1548,30 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._set_source_state(state if self.has_source_binding else "fresh")
         self.manager._mark_node_state_dirty(self.uid)
+
+    def set_restored_source_binding_metadata(
+        self,
+        source_spec: provenance.ToolProvenanceSpec | None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None,
+        *,
+        auto_update: bool,
+        state: _source_state_type,
+    ) -> None:
+        """Restore saved source metadata without reading parent data."""
+        if source_spec is not None and not isinstance(
+            source_spec,
+            provenance.ToolProvenanceSpec,
+        ):
+            raise TypeError("source_spec must be a ToolProvenanceSpec or None")
+        if source_binding is not None and not isinstance(
+            source_binding,
+            provenance.ImageToolSelectionSourceBinding,
+        ):
+            raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
+        self._source_spec = provenance.require_live_source_spec(source_spec)
+        self._source_binding = None if self._source_spec is not None else source_binding
+        self._source_auto_update = bool(auto_update)
+        self._source_state = state if self.has_source_binding else "fresh"
 
     def set_output_binding(
         self,
@@ -1279,6 +1786,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self.manager._mark_node_state_dirty(self.uid)
 
     def current_source_data(self) -> xr.DataArray:
+        if (
+            self.pending_workspace_payload is not None
+            and not self.materialize_pending_workspace_payload()
+        ):
+            raise ValueError(
+                "Could not read this node's saved data from the workspace file."
+            )
         if self.imagetool is not None:
             return self.slicer_area._tool_source_parent_data()
         if self.tool_window is not None:
@@ -1342,6 +1856,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def show(self) -> None:
+        if not self.materialize_pending_workspace_payload():
+            return
         window = self.window
         if window is None:
             return
@@ -1510,15 +2026,17 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.tool_window.handle_parent_source_replaced(parent_data)
             return self.tool_window.source_state == "fresh"
 
-        if self._output_id is not None and not self._source_auto_update:
-            # Output-bound child ImageTools may be expensive to regenerate. When live
-            # updates are disabled, defer the recomputation until the user explicitly
-            # refreshes instead of resolving the payload just to mark the child stale.
+        if self._output_id is not None and (
+            not self._source_auto_update or self.imagetool is None
+        ):
+            # Output-bound child ImageTools may be expensive or currently deferred.
+            # Defer recomputation until the user explicitly refreshes or opens them
+            # instead of resolving payloads through a missing/hidden slicer.
             self._set_source_state("stale")
             return False
 
         if self.imagetool is None and self.has_source_binding:
-            self._set_source_state("unavailable")
+            self._set_source_state("stale")
             return False
 
         try:
@@ -1582,6 +2100,10 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _handle_source_data_replaced(self, parent_data: object) -> None:
+        if self.pending_workspace_memory_payload is not None:
+            if self.manager._workspace_state.loading_depth > 0:
+                return
+            self.clear_pending_workspace_payload()
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token()
         if self._suspend_descendant_signal_propagation:
@@ -1603,7 +2125,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         manager: ImageToolManager,
         index: int,
         uid: str,
-        tool: ImageTool,
+        tool: ImageTool | None,
         watched_var: tuple[str, str] | None = None,
         watched_workspace_link_id: str | None = None,
         watched_source_label: str | None = None,
@@ -1620,6 +2142,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
+        name: str | None = None,
     ) -> None:
         self._index = index
         self._watched_varname: str | None = None
@@ -1646,6 +2169,8 @@ class _ImageToolWrapper(_ManagedWindowNode):
             uid,
             None,
             tool,
+            window_kind="imagetool",
+            name=name,
             provenance_spec=provenance_spec,
             source_spec=source_spec,
             source_binding=source_binding,

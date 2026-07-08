@@ -166,6 +166,10 @@ class _ActionsController:
         node = self._manager._child_node(uid)
         if not node.is_imagetool:
             raise KeyError(f"Target {uid!r} is not an ImageTool")
+        if not node.materialize_pending_workspace_payload():
+            raise RuntimeError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -235,18 +239,45 @@ class _ActionsController:
         if deselect:
             self._manager.tree_view.deselect_all()
 
-    def unlink_selected(self, deselect: bool = True) -> None:
-        """Unlink selected ImageTool windows."""
-        dirty_uids: list[str] = []
-        for index in self._manager._selected_imagetool_targets():
-            node = self._manager._node_for_target(index)
-            slicer_area = self._manager.get_imagetool(index).slicer_area
-            if slicer_area.is_linked:
-                dirty_uids.append(node.uid)
-            slicer_area.unlink()
-        for uid in dirty_uids:
+    def _prune_workspace_link_groups(
+        self, link_keys: Iterable[str], dirty_uids: set[str]
+    ) -> None:
+        dirty_uids.update(
+            self._manager._clear_singleton_workspace_link_groups(link_keys)
+        )
+
+    def unlink_imagetool_nodes(
+        self, nodes: Iterable[_ImageToolWrapper | _ManagedWindowNode]
+    ) -> None:
+        """Unlink ImageTool nodes without materializing pending payloads."""
+        dirty_uids: set[str] = set()
+        touched_link_keys: list[str] = []
+        for node in nodes:
+            if not node.is_imagetool:
+                raise KeyError(f"Node {node.uid!r} is not an ImageTool")
+            link_key = node.workspace_link_key
+            if link_key is not None:
+                touched_link_keys.append(link_key)
+            if node.workspace_linked:
+                dirty_uids.add(node.uid)
+            if node.imagetool is not None:
+                node.slicer_area.unlink()
+            node.clear_workspace_link_state()
+
+        self._prune_workspace_link_groups(touched_link_keys, dirty_uids)
+        for uid in sorted(dirty_uids):
             self._manager._mark_node_state_dirty(uid)
         self._manager._sigReloadLinkers.emit()
+
+    def unlink_selected(self, deselect: bool = True) -> None:
+        """Unlink selected ImageTool windows."""
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+        for index in self._manager._selected_imagetool_targets():
+            node = self._manager._node_for_target(index)
+            if not node.is_imagetool:
+                raise KeyError(f"Target {index!r} is not an ImageTool")
+            nodes.append(node)
+        self.unlink_imagetool_nodes(nodes)
         if deselect:
             self._manager.tree_view.deselect_all()
 
@@ -276,9 +307,7 @@ class _ActionsController:
 
     def batch_target_count(self) -> int:
         return sum(
-            1
-            for node in self._manager._tool_graph.nodes.values()
-            if node.is_imagetool and node.imagetool is not None
+            1 for node in self._manager._tool_graph.nodes.values() if node.is_imagetool
         )
 
     def show_batch_operations(self) -> None:
@@ -786,15 +815,25 @@ class _ActionsController:
         """Link the ImageTool windows corresponding to the given indices."""
         if len(indices) <= 1:
             return
-        linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
-            *[self._manager.get_imagetool(t).slicer_area for t in indices],
-            link_colors=link_colors,
-        )
-        self._manager._link_registry.append(linker)
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+        slicers: list[ImageSlicerArea] = []
         for index in indices:
-            self._manager._mark_node_state_dirty(
-                self._manager._node_for_target(index).uid
+            node = self._manager._node_for_target(index)
+            if not node.is_imagetool:
+                raise KeyError(f"Target {index!r} is not an ImageTool")
+            nodes.append(node)
+            if node.imagetool is not None:
+                slicers.append(node.slicer_area)
+        if len(slicers) > 1:
+            linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
+                *slicers,
+                link_colors=link_colors,
             )
+            self._manager._link_registry.append(linker)
+        link_key = uuid.uuid4().hex
+        for node in nodes:
+            node.set_workspace_link_state(link_key, link_colors=link_colors)
+            self._manager._mark_node_state_dirty(node.uid)
         self._manager._sigReloadLinkers.emit()
 
     def name_of_imagetool(self, index: int) -> str:
@@ -1175,6 +1214,11 @@ class _ActionsController:
         self, queued: list[pathlib.Path], try_workspace: bool = False
     ) -> None:
         """Open multiple files in the manager."""
+        if try_workspace and self._manager._workspace_state.save_in_progress:
+            self._manager._status_bar.showMessage(
+                "Workspace save in progress; open after it finishes", 3000
+            )
+            return
         n_files: int = len(queued)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
@@ -1224,10 +1268,33 @@ class _ActionsController:
                                         delta_save_count,
                                         manifest,
                                     ) = metadata_from_attrs(workspace_dt.attrs)
-                                    if not self._manager._confirm_save_dirty_workspace(
+                                    controller = self._manager._workspace_controller
+                                    dirty_choice = (
+                                        controller._dirty_workspace_save_choice
+                                    )
+                                    save_choice = dirty_choice(
                                         "Opening a workspace replaces the windows "
                                         "currently in this manager."
-                                    ):
+                                    )
+                                    if save_choice == "cancel":
+                                        return
+                                    if save_choice == "save":
+                                        workspace_path = access.path
+
+                                        def _load_after_save(
+                                            save_succeeded: bool,
+                                            *,
+                                            path: pathlib.Path = workspace_path,
+                                            controller=controller,
+                                        ) -> None:
+                                            if save_succeeded and (
+                                                not self._manager.is_workspace_modified
+                                            ):
+                                                controller._open_workspace_after_dirty_prompt(
+                                                    path
+                                                )
+
+                                        controller.save(on_finished=_load_after_save)
                                         return
                                     loaded_workspace = self._manager._from_datatree(
                                         workspace_dt,
@@ -1635,6 +1702,11 @@ class _ActionsController:
             The index of the parent ImageTool window.
         """
         node = self._manager._child_node(uid)
+        if (
+            node.pending_workspace_tool_payload is not None
+            and not node.materialize_pending_workspace_payload()
+        ):
+            raise KeyError(f"No child tool with UID {uid} found")
         tool = node.tool_window
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
             self._manager._remove_childtool(uid)
@@ -1673,6 +1745,7 @@ class _ActionsController:
         if uid not in self._manager._tool_graph.nodes:
             return
         was_figure = self._manager._is_figure_uid(uid)
+        removed_link_keys = self._manager._workspace_link_keys_for_subtree(uid)
         self._manager._mark_removed_subtree_dirty(uid)
         closing_document = self._manager._workspace_state.closing_document
         if not closing_document:
@@ -1680,6 +1753,7 @@ class _ActionsController:
         self._manager._remove_uid_target(uid)
         if closing_document:
             return
+        self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
         if was_figure:
             self._manager._sync_figures_ui()
         self._manager._update_actions()

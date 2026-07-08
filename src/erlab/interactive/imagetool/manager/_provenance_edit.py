@@ -1397,7 +1397,14 @@ class _ProvenanceEditController:
     def _node_editable(
         node: _ImageToolWrapper | _ManagedWindowNode | None,
     ) -> bool:
-        return node is not None and node.is_imagetool and node.imagetool is not None
+        return (
+            node is not None
+            and node.is_imagetool
+            and (
+                node.imagetool is not None
+                or node.pending_workspace_memory_payload is not None
+            )
+        )
 
     @staticmethod
     def _source_child_parent_row(
@@ -2118,6 +2125,10 @@ class _ProvenanceEditController:
         operation: provenance.ToolProvenanceOperation,
         dialog_cls: type[dialogs._DataManipulationDialog],
     ) -> None:
+        if not node.materialize_pending_workspace_payload():
+            raise RuntimeError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
         if node.imagetool is None or not issubclass(
             dialog_cls,
             dialogs.DataFilterDialog,
@@ -2253,8 +2264,7 @@ class _ProvenanceEditController:
         for peer_node in self._manager._tool_graph.nodes.values():
             if (
                 peer_node.uid == node.uid
-                or not peer_node.is_imagetool
-                or peer_node.imagetool is None
+                or not self._node_editable(peer_node)
                 or (
                     peer_node.parent_uid is not None
                     and peer_node.source_spec is not None
@@ -2407,6 +2417,12 @@ class _ProvenanceEditController:
         spec: provenance.ToolProvenanceSpec,
         filter_operation: provenance.ToolProvenanceOperation | None,
     ) -> None:
+        if not node.materialize_pending_workspace_payload():
+            raise RuntimeError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
+        if node.imagetool is None:
+            raise RuntimeError("ImageTool is not available for editing")
         preserve_filter = filter_operation is not None
         if scope == "source":
             live_spec = provenance.require_live_source_spec(spec)

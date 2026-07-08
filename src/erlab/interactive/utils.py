@@ -49,6 +49,7 @@ if typing.TYPE_CHECKING:
     import pydantic
     import pyperclip
     import qtawesome
+    import varname
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
     from erlab.interactive.imagetool import provenance
@@ -57,6 +58,7 @@ else:
 
     pyperclip = _lazy.load("pyperclip")
     qtawesome = _lazy.load("qtawesome")
+    varname = _lazy.load("varname")
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -106,6 +108,36 @@ _TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
     contextvars.ContextVar("_TOOL_WINDOW_RESTORE_DEFER", default=None)
 )
+_WAIT_DIALOG_DEPTH = 0
+
+
+def _tool_window_restore_in_progress() -> bool:
+    return _TOOL_WINDOW_RESTORE_DEFER.get() is not None
+
+
+def _tool_window_argname(
+    value: str | None,
+    argument: str,
+    *,
+    func: Callable[..., object],
+    fallback: str,
+) -> str:
+    """Return a deterministic ToolWindow argument name.
+
+    ToolWindow constructors call this directly for optional display/source names
+    that historically used :mod:`varname`. Saved workspace restore uses the stable
+    fallback without inspecting Python caller frames. Normal live construction still
+    infers the caller's argument expression, falling back to the same stable default
+    when inference fails.
+    """
+    if value is not None:
+        return value
+    if _tool_window_restore_in_progress():
+        return fallback
+    try:
+        return str(varname.argname(argument, func=func, frame=2, vars_only=False))
+    except (varname.ImproperUseError, varname.VarnameRetrievingError):
+        return fallback
 
 
 def _manager_perf_timing_enabled() -> bool:
@@ -572,16 +604,28 @@ class _WaitDialog(QtWidgets.QDialog):
         self.setModal(True)
         self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(QtWidgets.QLabel(message))
+        self._label = QtWidgets.QLabel(message)
+        layout.addWidget(self._label)
         self.setLayout(layout)
         self.setWindowFlags(
             QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
 
+    def set_message(self, message: str) -> None:
+        self._label.setText(message)
+        self.adjustSize()
+
+
+class _SuppressedWaitDialog:
+    def set_message(self, message: str) -> None:
+        del message
+
 
 @contextlib.contextmanager
-def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog]:
+def wait_dialog(
+    parent: QtWidgets.QWidget, message: str
+) -> Iterator[_WaitDialog | _SuppressedWaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -600,13 +644,24 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
     >>>    some_long_running_code()
 
     """
+    global _WAIT_DIALOG_DEPTH
+    if _WAIT_DIALOG_DEPTH > 0:
+        yield _SuppressedWaitDialog()
+        return
+
     dialog = _WaitDialog(parent, message)
+    _WAIT_DIALOG_DEPTH += 1
     try:
         dialog.open()
         yield dialog
     finally:
-        dialog.close()
-        dialog.deleteLater()
+        try:
+            try:
+                dialog.close()
+            finally:
+                dialog.deleteLater()
+        finally:
+            _WAIT_DIALOG_DEPTH -= 1
 
 
 def _format_traceback(exc_text: str) -> str:
@@ -3857,7 +3912,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the callback used to resolve provenance for future source refreshes."""
         self._input_provenance_parent_fetcher = fetcher
-        if fetcher is not None and self._source_state == "fresh":
+        if (
+            fetcher is not None
+            and self.has_source_binding
+            and self._source_state == "fresh"
+        ):
             self._sync_input_provenance_snapshot()
 
     def _parent_input_provenance(
@@ -4532,10 +4591,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
-        if fetcher is not None and self._source_spec is None:
+        if fetcher is not None and self._source_binding is not None:
             with contextlib.suppress(Exception):
                 self._materialized_source_spec(fetcher())
-        if fetcher is not None and self._source_state == "fresh":
+        if (
+            fetcher is not None
+            and self.has_source_binding
+            and self._source_state == "fresh"
+        ):
             self._sync_input_provenance_snapshot()
 
     def _set_managed_source_update_dialog(
@@ -4978,6 +5041,27 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Restore named data artifacts saved by `_persistence_data_items()`."""
         del data_items, ds
 
+    def _replace_persistence_data_items(
+        self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+    ) -> None:
+        """Replace saved data artifacts in an already constructed tool window."""
+        primary_data = data_items.get(_SAVED_TOOL_DATA_NAME)
+        if primary_data is not None:
+            update_overridden = type(self).update_data is not ToolWindow.update_data
+            restore_overridden = (
+                type(self)._restore_persistence_data_items
+                is not ToolWindow._restore_persistence_data_items
+            )
+            if update_overridden:
+                current_name = self.tool_data.name
+                self.update_data(primary_data.rename(current_name))
+            elif not restore_overridden:
+                raise NotImplementedError(
+                    f"{type(self).__name__} must implement update_data() or "
+                    "_restore_persistence_data_items() to replace saved data."
+                )
+        self._restore_persistence_data_items(data_items, ds)
+
     def _flush_restore_work_for_save(self) -> None:
         """Materialize deferred restore work required before serialization."""
         self._flush_restore_work()
@@ -5214,6 +5298,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             data_items[_SAVED_TOOL_DATA_NAME] = ds[_SAVED_TOOL_DATA_NAME]
         return data_items
 
+    @staticmethod
+    def _saved_tool_class_from_dataset(ds: xr.Dataset) -> type[ToolWindow]:
+        qualname = ds.attrs.get("tool_cls_qualname")
+        if not isinstance(qualname, str):
+            raise TypeError("Saved tool dataset is missing a valid tool class")
+        try:
+            mod_name, qual = qualname.split(":", maxsplit=1)
+        except ValueError as exc:
+            raise TypeError("Saved tool dataset is missing a valid tool class") from exc
+        if not mod_name or not qual:
+            raise TypeError("Saved tool dataset is missing a valid tool class")
+
+        mod = importlib.import_module(mod_name)
+        cls_obj: object = mod
+        for attr in qual.split("."):
+            cls_obj = getattr(cls_obj, attr)
+        if not isinstance(cls_obj, type) or not issubclass(cls_obj, ToolWindow):
+            raise TypeError("Saved tool class is not a ToolWindow subclass")
+        return cls_obj
+
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
         """Restore a tool window from a :class:`xarray.Dataset`.
@@ -5251,13 +5355,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 f"({erlab.__version__}). Some features may not be supported.",
             )
 
-        # Get the class object from the saved qualname
-        mod_name, qual = ds.attrs["tool_cls_qualname"].split(":")
-        mod = importlib.import_module(mod_name)
-        cls_obj = mod
-        for attr in qual.split("."):
-            cls_obj = getattr(cls_obj, attr)
-        cls_obj = typing.cast("type[typing.Self]", cls_obj)
+        cls_obj = typing.cast(
+            "type[typing.Self]", cls._saved_tool_class_from_dataset(ds)
+        )
         data_items = cls_obj._tool_data_items_from_dataset(
             ds,
             source_parent_data=source_parent_data,
@@ -5279,6 +5379,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         previous_defer_restore = False
         tool._restoring_from_dataset = True
         tool._defer_restored_tool_work = defer_restore_work
+        restore_succeeded = False
         try:
             with tool._history_suppressed():
                 tool.tool_status = cls_obj.StateModel.model_validate_json(
@@ -5356,11 +5457,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             ):
                 tool.setGeometry(*ds.attrs["tool_rect"])
             tool._reset_history_stack()
+            if not defer_restore_work:
+                tool._flush_restore_work()
+            restore_succeeded = True
         finally:
             tool._restoring_from_dataset = previous_restoring
             tool._defer_restored_tool_work = previous_defer_restore
-        if not defer_restore_work:
-            tool._flush_restore_work()
+            if not restore_succeeded:
+                tool._deferred_restore_work.clear()
+                with contextlib.suppress(Exception):
+                    tool._cancel_background_work(timeout_ms=0)
+                if qt_is_valid(tool):
+                    tool.hide()
+                    tool.deleteLater()
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:

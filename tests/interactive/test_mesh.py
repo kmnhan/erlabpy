@@ -185,7 +185,7 @@ def test_meshtool_autofind_and_persistence(
 def test_meshtool_deferred_restore_queues_initial_preview(
     qtbot, meshy_data, monkeypatch
 ) -> None:
-    win: MeshTool = meshtool(meshy_data, execute=False)
+    win: MeshTool = meshtool(meshy_data, data_name="mesh_input", execute=False)
     qtbot.addWidget(win)
     saved = win.to_dataset()
     calls: list[tuple[MeshTool, bool]] = []
@@ -199,6 +199,13 @@ def test_meshtool_deferred_restore_queues_initial_preview(
         MeshTool,
         "set_data_beforecalc",
         _tracked_set_data_beforecalc,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.varname,
+        "argname",
+        lambda *_args, **_kwargs: pytest.fail(
+            "deferred meshtool restore should not inspect the caller frame"
+        ),
     )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(

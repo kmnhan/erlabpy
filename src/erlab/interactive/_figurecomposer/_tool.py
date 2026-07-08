@@ -161,6 +161,8 @@ _COMBO_POPUP_REBUILD_GRACE_MS = 150
 _COMBO_INTERACTION_REBUILD_GRACE_MS = 250
 _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
+_RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
+_RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
 _SOURCE_LIST_SOURCE_COLUMN = 0
 _SOURCE_LIST_ALIAS_COLUMN = 1
 _SOURCE_LIST_SHAPE_COLUMN = 2
@@ -1830,7 +1832,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_operation_list()
             if self.operation_list.count() and self.operation_list.currentRow() < 0:
                 self.operation_list.setCurrentRow(0)
-            self._update_operation_editor()
+            self._refresh_operation_editor()
         finally:
             self._updating_controls = False
 
@@ -3546,6 +3548,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._set_selected_operation_ids_silent({operation_id})
         self._source_inspector_target = None
         self._sync_axes_selector()
+        self._refresh_operation_editor()
+
+    def _refresh_operation_editor(self) -> None:
+        if self._defer_restore_work(
+            self._update_operation_editor,
+            key=_RESTORE_OPERATION_EDITOR_KEY,
+            run_on_show=True,
+        ):
+            return
         self._update_operation_editor()
 
     def eventFilter(
@@ -5662,7 +5673,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_data = dict(self._source_data)
         primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
         changed = False
-        if primary_data is not None and self._recipe.primary_source not in source_data:
+        if primary_data is not None:
+            current_primary = source_data.get(self._recipe.primary_source)
+            if current_primary is not None:
+                primary_data = primary_data.rename(current_primary.name)
             source_data[self._recipe.primary_source] = primary_data
             changed = True
         for source in self._recipe.sources:
@@ -5694,6 +5708,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         if self._defer_restore_work(
             self._redraw_restored_plot,
+            key=_RESTORE_REDRAW_KEY,
             run_on_show=True,
         ):
             return
@@ -5705,6 +5720,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _redraw_restored_plot(self) -> None:
         self._redraw_plot(show_window=True)
+
+    def _flush_restore_work_for_save(self) -> None:
+        self._flush_restore_work(
+            skip=(_RESTORE_OPERATION_EDITOR_KEY, _RESTORE_REDRAW_KEY)
+        )
 
     def _persisted_preview_cache_pixmap(self) -> QtGui.QPixmap | None:
         preview = self._preview_pixmap_cache

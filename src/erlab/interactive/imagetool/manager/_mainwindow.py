@@ -7,6 +7,7 @@ import logging
 import re
 import sys
 import typing
+from collections.abc import Callable
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -61,7 +62,15 @@ if typing.TYPE_CHECKING:
     import datetime
     import os
     import pathlib
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import (
+        Callable,
+        Collection,
+        Hashable,
+        Iterable,
+        Iterator,
+        Mapping,
+        Sequence,
+    )
 
     import numpy as np
     import xarray as xr
@@ -80,7 +89,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._widgets import (
         _ScriptRebuildResult,
         _WorkspaceDocumentAccess,
-        _WorkspacePropertiesState,
     )
     from erlab.interactive.imagetool.manager._workspace_state import (
         _WorkspaceStateSnapshot,
@@ -869,8 +877,10 @@ class ImageToolManager(_ImageToolManagerBase):
         open_recent_action.setObjectName("manager_open_recent_menu_action")
         open_recent_action.setIcon(QtGui.QIcon.fromTheme("document-open-recent"))
         self.open_recent_menu.setToolTipsVisible(True)
-        self.open_recent_menu.aboutToShow.connect(self._populate_open_recent_menu)
-        self._refresh_open_recent_menu_action()
+        self.open_recent_menu.aboutToShow.connect(
+            self._workspace_controller._populate_open_recent_menu
+        )
+        self._workspace_controller._refresh_open_recent_menu_action()
 
         self.import_workspace_action = QtWidgets.QAction(
             "Add Windows From &Workspace…", self
@@ -910,14 +920,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self.reindex_action.setToolTip("Reset indices of all windows")
 
         self.link_action = QtWidgets.QAction("Link", self)
-        self.link_action.triggered.connect(lambda _checked=False: self.link_selected())
+        self.link_action.triggered.connect(self._link_selected_from_action)
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
         self.link_action.setToolTip("Link selected windows")
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
-        self.unlink_action.triggered.connect(
-            lambda _checked=False: self.unlink_selected()
-        )
+        self.unlink_action.triggered.connect(self._unlink_selected_from_action)
         self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
         self.unlink_action.setToolTip("Unlink selected windows")
 
@@ -1034,7 +1042,9 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self._file_menu_action = self.file_menu.menuAction()
         self.file_menu.setObjectName("manager_file_menu")
-        self.file_menu.aboutToShow.connect(self._refresh_open_recent_menu_action)
+        self.file_menu.aboutToShow.connect(
+            self._workspace_controller._refresh_open_recent_menu_action
+        )
         self.file_menu.addAction(self.load_action)
         self.file_menu.addMenu(self.open_recent_menu)
         self.file_menu.addAction(self.save_action)
@@ -1142,9 +1152,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         # Initialize GUI
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        self.main_splitter.splitterMoved.connect(
-            lambda _pos, _index: self._mark_workspace_layout_dirty()
-        )
+        self.main_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
         self.setCentralWidget(self.main_splitter)
 
         # Construct left side of splitter
@@ -1195,9 +1203,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.right_splitter.setChildrenCollapsible(False)
-        self.right_splitter.splitterMoved.connect(
-            lambda _pos, _index: self._mark_workspace_layout_dirty()
-        )
+        self.right_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
         right_layout.addWidget(self.right_splitter, 1)
 
         self.text_box = QtWidgets.QTextEdit(self)
@@ -1205,6 +1211,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.right_splitter.addWidget(self.text_box)
 
         self.preview_widget = _SingleImagePreview(self)
+        self.preview_widget.load_requested.connect(self._load_selected_preview_data)
         self.right_splitter.addWidget(self.preview_widget)
 
         self.metadata_group = QtWidgets.QFrame(self)
@@ -1304,7 +1311,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._show_metadata_derivation_menu
         )
         self.metadata_derivation_list.itemActivated.connect(
-            lambda _item, _column: self._activate_selected_derivation_step()
+            self._activate_selected_derivation_step
         )
         self.metadata_derivation_list.setVisible(False)
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
@@ -1466,15 +1473,33 @@ class ImageToolManager(_ImageToolManagerBase):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         logger.debug("Closing ImageTool Manager...")
+        if self._workspace_state.save_in_progress:
+            self._status_bar.showMessage(
+                "Workspace save in progress; close after it finishes", 3000
+            )
+            if event is not None:
+                event.ignore()
+            return
         self._commit_note_editor()
         previous_closing_workspace_document = self._workspace_state.closing_document
         self._workspace_state.closing_document = True
         try:
-            if not self._confirm_save_dirty_workspace(
+            save_choice = self._workspace_controller._dirty_workspace_save_choice(
                 "Closing this manager will discard unsaved workspace changes."
-            ):
+            )
+            if save_choice == "cancel":
                 if event:
                     event.ignore()
+                return
+            if save_choice == "save":
+                if event:
+                    event.ignore()
+
+                def _close_after_save(save_succeeded: bool) -> None:
+                    if save_succeeded and not self.is_workspace_modified:
+                        self.close()
+
+                self._workspace_controller.save(on_finished=_close_after_save)
                 return
 
             logger.debug("Waiting for file handlers to finish...")
@@ -1493,7 +1518,15 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     return
 
-            self._compact_workspace_before_shutdown()
+            def _close_after_compaction() -> None:
+                self.close()
+
+            if self._workspace_controller._compact_workspace_before_shutdown(
+                on_finished=_close_after_compaction
+            ):
+                if event:
+                    event.ignore()
+                return
 
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
@@ -1540,7 +1573,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console.deleteLater()
 
             logger.debug("Releasing workspace lock...")
-            self._release_workspace_lock()
+            self._workspace_controller._release_workspace_lock()
 
             logger.debug("Closing dask client (if any)...")
             self._dask_menu.close_client()
@@ -1587,6 +1620,16 @@ class ImageToolManager(_ImageToolManagerBase):
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
+    def _configure_materialized_figure_tool(
+        self, node: _ManagedWindowNode, tool: erlab.interactive.utils.ToolWindow
+    ) -> None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        tool._refresh_reload_data_action()
+        if isinstance(tool, FigureComposerTool):
+            tool.set_options_getter(lambda: self.effective_interactive_options)
+            self._install_figure_source_refresh_callbacks(node.uid, tool)
+
     def _unregister_node(self, uid: str) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
@@ -1622,6 +1665,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 child.tool_window.set_source_parent_fetcher(None)
                 child.tool_window.set_input_provenance_parent_fetcher(None)
             child.dispose()
+
+    def _workspace_link_keys_for_subtree(self, uid: str) -> set[str]:
+        link_keys: set[str] = set()
+        for node_uid in self._tool_graph.subtree_uids(uid):
+            node = self._tool_graph.nodes.get(node_uid)
+            if node is not None and node.workspace_link_key is not None:
+                link_keys.add(node.workspace_link_key)
+        return link_keys
 
     def _figure_uids(self) -> list[str]:
         return [
@@ -1951,6 +2002,11 @@ class ImageToolManager(_ImageToolManagerBase):
         node = self._child_node(uid)
         tool_window = node.tool_window
         if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
+            pending_preview = node.pending_workspace_tool_preview_image()
+            if pending_preview is not None:
+                return QtGui.QIcon(
+                    self._figure_gallery_thumbnail_pixmap(pending_preview[1])
+                )
             return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
         thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
         if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
@@ -2372,9 +2428,8 @@ class ImageToolManager(_ImageToolManagerBase):
         for index, target in enumerate(targets):
             if index >= len(source_names):
                 break
-            node = self._node_for_target(target)
-            tool = node.imagetool
-            if tool is None or not tool.slicer_area.axes:
+            tool = self.get_imagetool(target)
+            if not tool.slicer_area.axes:
                 return None
             plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
             if not plot.is_image:
@@ -3157,6 +3212,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if index not in self._tool_graph.root_wrappers:
             return
         wrapper = self._tool_graph.root_wrappers[index]
+        removed_link_keys = self._workspace_link_keys_for_subtree(wrapper.uid)
         self._mark_removed_subtree_dirty(wrapper.uid)
         descendant_uids = list(wrapper._childtool_indices)
         if update_view:
@@ -3167,6 +3223,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._tool_graph.unregister_root(index)
         if not self._workspace_state.closing_document:
+            self._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
             self._refresh_dependency_dependents(wrapper.uid)
             self._refresh_figure_source_controls()
         wrapper.dispose()
@@ -3268,6 +3325,53 @@ class ImageToolManager(_ImageToolManagerBase):
         idx = self._link_registry.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
+    def color_for_workspace_link_key(self, link_key: str) -> QtGui.QColor:
+        """Get the color that should represent a restored structural link group."""
+        for linker in self._link_registry.linkers:
+            for slicer_area in linker.children:
+                node = self.node_from_slicer_area(slicer_area)
+                if node is not None and node.workspace_link_key == link_key:
+                    return self.color_for_linker(linker)
+
+        link_keys: list[str] = []
+        for node in self._tool_graph.nodes.values():
+            node_link_key = node.workspace_link_key
+            if node_link_key is not None and node_link_key not in link_keys:
+                link_keys.append(node_link_key)
+        try:
+            idx = link_keys.index(link_key)
+        except ValueError:
+            idx = 0
+        return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
+
+    def _clear_singleton_workspace_link_groups(
+        self, link_keys: Iterable[str]
+    ) -> set[str]:
+        dirty_uids: set[str] = set()
+        for link_key in set(link_keys):
+            linked_nodes = [
+                node
+                for node in self._tool_graph.nodes.values()
+                if node.is_imagetool and node.workspace_link_key == link_key
+            ]
+            if len(linked_nodes) >= 2:
+                continue
+            for node in linked_nodes:
+                if node.imagetool is not None:
+                    node.slicer_area.unlink()
+                node.clear_workspace_link_state()
+                dirty_uids.add(node.uid)
+        return dirty_uids
+
+    def _mark_singleton_workspace_link_groups_dirty(
+        self, link_keys: Iterable[str]
+    ) -> None:
+        dirty_uids = self._clear_singleton_workspace_link_groups(link_keys)
+        for uid in sorted(dirty_uids):
+            self._mark_node_state_dirty(uid)
+        if dirty_uids:
+            self._sigReloadLinkers.emit()
+
     def linker_index(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
     ) -> int:
@@ -3340,7 +3444,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel._edit_selected_derivation_step()
 
     def _activate_selected_derivation_step(
-        self, _item: QtWidgets.QTreeWidgetItem | None = None
+        self, _item: QtWidgets.QTreeWidgetItem | None = None, _column: int = 0
     ) -> None:
         self._details_panel._activate_selected_derivation_step()
 
@@ -3364,6 +3468,10 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _commit_note_editor(self) -> None:
         self._details_panel._commit_note_editor()
+
+    @QtCore.Slot()
+    def _load_selected_preview_data(self) -> None:
+        self._details_panel._load_selected_preview_data()
 
     def _update_info(self, *, uid: str | None = None) -> None:
         if self._workspace_ui_refresh_defer_depth > 0:
@@ -3481,26 +3589,6 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> list[pathlib.Path]:
         return _WorkspaceIOController._normalize_recent_workspace_paths(paths)
 
-    def _recent_workspace_paths(self) -> list[pathlib.Path]:
-        return self._workspace_controller._recent_workspace_paths()
-
-    def _set_recent_workspace_paths(
-        self, paths: Iterable[str | os.PathLike[str]]
-    ) -> None:
-        self._workspace_controller._set_recent_workspace_paths(paths)
-
-    def _record_recent_workspace(self, fname: str | os.PathLike[str]) -> None:
-        self._workspace_controller._record_recent_workspace(fname)
-
-    def _clear_recent_workspaces(self) -> None:
-        self._workspace_controller._clear_recent_workspaces()
-
-    def _refresh_open_recent_menu_action(self) -> None:
-        self._workspace_controller._refresh_open_recent_menu_action()
-
-    def _populate_open_recent_menu(self) -> None:
-        self._workspace_controller._populate_open_recent_menu()
-
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         return self._workspace_controller.open_recent_workspace(fname)
 
@@ -3510,9 +3598,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def show_workspace_properties(self) -> None:
         self._workspace_controller.show_workspace_properties()
-
-    def _workspace_properties_state(self) -> _WorkspacePropertiesState:
-        return self._workspace_controller._workspace_properties_state()
 
     @property
     def is_workspace_modified(self) -> bool:
@@ -3528,14 +3613,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _update_workspace_window_title(self, *, force: bool = True) -> None:
         self._workspace_controller._update_workspace_window_title(force=force)
-
-    def _release_workspace_lock(self) -> None:
-        self._workspace_controller._release_workspace_lock()
-
-    def _workspace_document_access(
-        self, fname: str | os.PathLike[str]
-    ) -> _WorkspaceDocumentAccess:
-        return self._workspace_controller._workspace_document_access(fname)
 
     @contextlib.contextmanager
     def _workspace_document_access_context(
@@ -3572,11 +3649,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _set_node_window_modified(self, uid: str, modified: bool) -> None:
         self._workspace_controller._set_node_window_modified(uid, modified)
-
-    def _apply_workspace_dirty_event(
-        self, event: _manager_workspace._WorkspaceDirtyEvent
-    ) -> bool:
-        return self._workspace_controller._apply_workspace_dirty_event(event)
 
     def _mark_workspace_dirty(
         self,
@@ -3615,11 +3687,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def _mark_workspace_clean(self) -> None:
         self._workspace_controller._mark_workspace_clean()
 
-    def _restore_workspace_dirty_events(
-        self, events: Iterable[_manager_workspace._WorkspaceDirtyEvent]
-    ) -> None:
-        self._workspace_controller._restore_workspace_dirty_events(events)
-
     @contextlib.contextmanager
     def _workspace_load_context(self) -> Iterator[None]:
         with self._workspace_controller._workspace_load_context():
@@ -3634,24 +3701,8 @@ class ImageToolManager(_ImageToolManagerBase):
     def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
         return self._workspace_controller._workspace_state_snapshot()
 
-    def _restore_workspace_state_snapshot(
-        self, snapshot: _WorkspaceStateSnapshot
-    ) -> None:
-        self._workspace_controller._restore_workspace_state_snapshot(snapshot)
-
     def _install_workspace_save_shortcut(self, widget: QtWidgets.QWidget) -> None:
         self._workspace_controller._install_workspace_save_shortcut(widget)
-
-    def _annotate_workspace_dataset(
-        self,
-        ds: xr.Dataset,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        *,
-        kind: typing.Literal["imagetool", "tool"],
-    ) -> xr.Dataset:
-        return self._workspace_controller._annotate_workspace_dataset(
-            ds, node, kind=kind
-        )
 
     def _serialize_workspace_node(
         self,
@@ -3662,7 +3713,10 @@ class ImageToolManager(_ImageToolManagerBase):
         include_children: bool,
     ) -> None:
         self._workspace_controller._serialize_workspace_node(
-            constructor, node, path, include_children=include_children
+            constructor,
+            node,
+            path,
+            include_children=include_children,
         )
 
     def _to_datatree(
@@ -3695,6 +3749,8 @@ class ImageToolManager(_ImageToolManagerBase):
         node_path: str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         profiler: typing.Any | None = None,
+        pending_workspace_memory_payload: tuple[os.PathLike[str] | str, str]
+        | None = None,
     ) -> int | str:
         return self._workspace_controller._load_workspace_imagetool_dataset(
             ds,
@@ -3702,6 +3758,76 @@ class ImageToolManager(_ImageToolManagerBase):
             node_path=node_path,
             loaded_targets_by_uid=loaded_targets_by_uid,
             profiler=profiler,
+            pending_workspace_memory_payload=pending_workspace_memory_payload,
+        )
+
+    def _materialize_pending_workspace_payload(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> bool:
+        return self._workspace_controller._materialize_pending_workspace_payload(node)
+
+    def _pending_workspace_info_text(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        return self._workspace_controller._pending_workspace_info_text(node)
+
+    def _pending_workspace_imagetool_preview_image(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._workspace_controller._pending_workspace_imagetool_preview_image(
+            node
+        )
+
+    def _pending_workspace_imagetool_preview_curve(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        return self._workspace_controller._pending_workspace_imagetool_preview_curve(
+            node
+        )
+
+    def _pending_workspace_tool_preview_image(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[float, QtGui.QPixmap] | None:
+        return self._workspace_controller._pending_workspace_tool_preview_image(node)
+
+    def _has_pending_workspace_linked_slicers(
+        self, source: ImageSlicerArea, *, color: bool
+    ) -> bool:
+        return self._workspace_controller._has_pending_workspace_linked_slicers(
+            source, color=color
+        )
+
+    def _sync_pending_workspace_linked_slicers(
+        self,
+        source: ImageSlicerArea,
+        funcname: str,
+        arguments: dict[str, typing.Any],
+        source_dims: tuple[Hashable, ...],
+        indices: bool,
+        steps: bool,
+        color: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
+    ) -> None:
+        self._workspace_controller._sync_pending_workspace_linked_slicers(
+            source,
+            funcname,
+            arguments,
+            source_dims,
+            indices,
+            steps,
+            color,
+            transaction_id,
+            keep_pending,
+        )
+
+    def _sync_pending_workspace_linked_manual_limits(
+        self,
+        source: ImageSlicerArea,
+        manual_limits: Mapping[str, Sequence[typing.Any]],
+    ) -> None:
+        self._workspace_controller._sync_pending_workspace_linked_manual_limits(
+            source, manual_limits
         )
 
     def _load_workspace_tool_dataset(
@@ -3711,46 +3837,20 @@ class ImageToolManager(_ImageToolManagerBase):
         parent_target: int | str | None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         profiler: typing.Any | None = None,
+        pending_workspace_tool_payload: tuple[os.PathLike[str] | str, str]
+        | None = None,
     ) -> int | str:
         return self._workspace_controller._load_workspace_tool_dataset(
             ds,
             parent_target=parent_target,
             loaded_targets_by_uid=loaded_targets_by_uid,
             profiler=profiler,
+            pending_workspace_tool_payload=pending_workspace_tool_payload,
         )
 
     @staticmethod
     def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
         return _WorkspaceIOController._workspace_saved_uid_from_dataset(ds)
-
-    def _record_workspace_loaded_imagetool_target(
-        self,
-        ds: xr.Dataset,
-        target: int | str,
-        loaded_targets_by_uid: dict[str, int | str] | None,
-    ) -> None:
-        self._workspace_controller._record_workspace_loaded_imagetool_target(
-            ds, target, loaded_targets_by_uid
-        )
-
-    def _record_workspace_loaded_tool_target(
-        self,
-        ds: xr.Dataset,
-        target: int | str,
-        loaded_targets_by_uid: dict[str, int | str] | None,
-    ) -> None:
-        self._workspace_controller._record_workspace_loaded_tool_target(
-            ds, target, loaded_targets_by_uid
-        )
-
-    def _restore_workspace_link_groups(
-        self,
-        manifest: Mapping[str, typing.Any] | None,
-        loaded_targets_by_uid: Mapping[str, int | str],
-    ) -> None:
-        self._workspace_controller._restore_workspace_link_groups(
-            manifest, loaded_targets_by_uid
-        )
 
     def _load_workspace_node(
         self,
@@ -3769,46 +3869,6 @@ class ImageToolManager(_ImageToolManagerBase):
             selection_item=selection_item,
             manifest=manifest,
             node_path=node_path,
-            workspace_file_path=workspace_file_path,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-        )
-
-    def _load_workspace_node_or_warn(
-        self,
-        node_tree: xr.DataTree,
-        *,
-        parent_target: int | str | None = None,
-        selection_item: QtWidgets.QTreeWidgetItem | None = None,
-        manifest: dict[str, typing.Any] | None = None,
-        node_path: str | None = None,
-        workspace_file_path: str | os.PathLike[str] | None = None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> int | str | None:
-        return self._workspace_controller._load_workspace_node_or_warn(
-            node_tree,
-            parent_target=parent_target,
-            selection_item=selection_item,
-            manifest=manifest,
-            node_path=node_path,
-            workspace_file_path=workspace_file_path,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-        )
-
-    def _load_workspace_roots(
-        self,
-        tree: xr.DataTree,
-        root_keys: Iterable[str],
-        *,
-        root_item: QtWidgets.QTreeWidgetItem | None = None,
-        manifest: dict[str, typing.Any] | None = None,
-        workspace_file_path: str | os.PathLike[str] | None = None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> int:
-        return self._workspace_controller._load_workspace_roots(
-            tree,
-            root_keys,
-            root_item=root_item,
-            manifest=manifest,
             workspace_file_path=workspace_file_path,
             loaded_targets_by_uid=loaded_targets_by_uid,
         )
@@ -3835,11 +3895,6 @@ class ImageToolManager(_ImageToolManagerBase):
             profiler=profiler,
         )
 
-    def _restore_replaced_workspace(
-        self, backup_tree: xr.DataTree, snapshot: _WorkspaceStateSnapshot
-    ) -> None:
-        self._workspace_controller._restore_replaced_workspace(backup_tree, snapshot)
-
     def _from_datatree(
         self,
         tree: xr.DataTree,
@@ -3859,26 +3914,14 @@ class ImageToolManager(_ImageToolManagerBase):
             profiler=profiler,
         )
 
-    def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
-        return self._workspace_controller._parse_datatree_compat_v1(tree)
-
-    def _parse_datatree_compat_v2(self, tree: xr.DataTree) -> xr.DataTree:
-        return self._workspace_controller._parse_datatree_compat_v2(tree)
-
     def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
         return self._workspace_controller._is_datatree_workspace(tree)
-
-    def _workspace_node_path(self, uid: str) -> str:
-        return self._workspace_controller._workspace_node_path(uid)
 
     def _workspace_payload_path(self, uid: str) -> str:
         return self._workspace_controller._workspace_payload_path(uid)
 
     def _workspace_root_indices(self) -> tuple[int, ...]:
         return self._workspace_controller._workspace_root_indices()
-
-    def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
-        return self._workspace_controller._workspace_link_metadata_by_uid()
 
     def _workspace_node_manifest_entries(self) -> list[dict[str, typing.Any]]:
         return self._workspace_controller._workspace_node_manifest_entries()
@@ -3942,6 +3985,7 @@ class ImageToolManager(_ImageToolManagerBase):
         document_access: _WorkspaceDocumentAccess | None = None,
         reuse_unchanged_groups: bool = True,
         require_matching_compression: bool = False,
+        mark_clean: bool = True,
     ) -> None:
         self._workspace_controller._save_workspace_document(
             fname,
@@ -3949,6 +3993,7 @@ class ImageToolManager(_ImageToolManagerBase):
             document_access=document_access,
             reuse_unchanged_groups=reuse_unchanged_groups,
             require_matching_compression=require_matching_compression,
+            mark_clean=mark_clean,
         )
 
     def _workspace_save_dialog(
@@ -3961,9 +4006,6 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._workspace_save_dialog(
             native=native, caption=caption, selected_file=selected_file
         )
-
-    def _confirm_save_dirty_workspace(self, action_text: str) -> bool:
-        return self._workspace_controller._confirm_save_dirty_workspace(action_text)
 
     def _show_legacy_workspace_upgrade_message(
         self, fname: str | os.PathLike[str]
@@ -4026,6 +4068,7 @@ class ImageToolManager(_ImageToolManagerBase):
         chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
         old_workspace_path: str | os.PathLike[str] | None = None,
+        exclude_uids: Collection[str] = frozenset(),
     ) -> None:
         self._workspace_controller._rebind_workspace_backed_imagetools(
             fname,
@@ -4033,6 +4076,7 @@ class ImageToolManager(_ImageToolManagerBase):
             chunks=chunks,
             backing_snapshot=backing_snapshot,
             old_workspace_path=old_workspace_path,
+            exclude_uids=exclude_uids,
         )
 
     def offload_to_workspace(
@@ -4042,11 +4086,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
         return self._workspace_controller._workspace_requires_full_save(fname)
-
-    def _workspace_rewrite_group_snapshot(
-        self, uid: str
-    ) -> tuple[str, dict[str, xr.Dataset]]:
-        return self._workspace_controller._workspace_rewrite_group_snapshot(uid)
 
     def _workspace_attr_update_snapshot(
         self, uid: str
@@ -4068,72 +4107,15 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
         return self._workspace_controller._workspace_save_snapshot(fname)
 
-    def _workspace_full_save_snapshot(
-        self, generation: int
-    ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        return self._workspace_controller._workspace_full_save_snapshot(generation)
-
-    def _workspace_full_save_copy_groups(
-        self,
-        tree: xr.DataTree,
-        *,
-        compression_mode: WorkspaceCompressionMode | None = None,
-        require_matching_compression: bool = False,
-    ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
-        return self._workspace_controller._workspace_full_save_copy_groups(
-            tree,
-            compression_mode=compression_mode,
-            require_matching_compression=require_matching_compression,
-        )
-
-    def _open_workspace_save_wait_dialog(
-        self,
-        parent: QtWidgets.QWidget,
-        *,
-        title: str = "Saving Workspace",
-        label_text: str = "Saving workspace...",
-    ) -> QtWidgets.QDialog:
-        return self._workspace_controller._open_workspace_save_wait_dialog(
-            parent, title=title, label_text=label_text
-        )
-
-    def _set_workspace_save_actions_enabled(
-        self, enabled: bool
-    ) -> tuple[bool, bool, bool]:
-        return self._workspace_controller._set_workspace_save_actions_enabled(enabled)
-
-    def _restore_workspace_save_actions_enabled(
-        self, previous: tuple[bool, bool, bool]
-    ) -> None:
-        self._workspace_controller._restore_workspace_save_actions_enabled(previous)
-
-    def _run_workspace_save_worker(
-        self,
-        fname: str | os.PathLike[str],
-        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
-        origin: QtWidgets.QWidget | None,
-        *,
-        wait_dialog_title: str = "Saving Workspace",
-        wait_dialog_text: str = "Saving workspace...",
-    ) -> tuple[bool, float, str]:
-        return self._workspace_controller._run_workspace_save_worker(
-            fname,
-            snapshot,
-            origin,
-            wait_dialog_title=wait_dialog_title,
-            wait_dialog_text=wait_dialog_text,
-        )
-
-    def save(self, *, native: bool = True) -> bool:
+    @QtCore.Slot()
+    def save(self, *, native: bool = True) -> None:
         self._commit_note_editor()
-        return self._workspace_controller.save(native=native)
+        self._workspace_controller.save(native=native)
 
-    def save_as(self, *, native: bool = True) -> bool:
+    @QtCore.Slot()
+    def save_as(self, *, native: bool = True) -> None:
         self._commit_note_editor()
-        return self._workspace_controller.save_as(native=native)
-
-    def _compact_workspace_before_shutdown(self) -> None:
-        self._workspace_controller._compact_workspace_before_shutdown()
+        self._workspace_controller.save_as(native=native)
 
     def compact_workspace(self) -> bool:
         self._commit_note_editor()
@@ -4530,8 +4512,16 @@ class ImageToolManager(_ImageToolManagerBase):
             link_colors=link_colors, deselect=deselect
         )
 
+    @QtCore.Slot()
+    def _link_selected_from_action(self) -> None:
+        self.link_selected()
+
     def unlink_selected(self, deselect: bool = True) -> None:
         self._actions_controller.unlink_selected(deselect=deselect)
+
+    @QtCore.Slot()
+    def _unlink_selected_from_action(self) -> None:
+        self.unlink_selected()
 
     def offload_selected_to_workspace(self) -> None:
         self._actions_controller.offload_selected_to_workspace()
@@ -4742,8 +4732,6 @@ class ImageToolManager(_ImageToolManagerBase):
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),
@@ -4756,9 +4744,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool._tool_display_name:
             tool._tool_display_name = self._next_figure_display_name()
         self._register_figure_node(node)
-        if isinstance(tool, FigureComposerTool):
-            tool.set_options_getter(lambda: self.effective_interactive_options)
-            self._install_figure_source_refresh_callbacks(node.uid, tool)
+        self._configure_materialized_figure_tool(node, tool)
         self._mark_node_added(node.uid)
         self._sync_figures_ui(select_uid=node.uid if show else None)
         if show:

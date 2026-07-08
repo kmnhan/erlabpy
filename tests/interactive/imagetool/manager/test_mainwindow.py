@@ -1071,6 +1071,65 @@ def test_batch_action_updates_when_child_imagetool_count_changes(
         assert not manager.batch_action.isEnabled()
 
 
+def test_batch_action_counts_pending_memory_imagetools_without_materializing(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        for offset in (0.0, 100.0):
+            tool = typing.cast(
+                "erlab.interactive.imagetool.ImageTool",
+                itool(
+                    xr.DataArray(
+                        np.arange(25, dtype=np.float64).reshape((5, 5)) + offset,
+                        dims=["x", "y"],
+                        name=f"pending_batch_{int(offset)}",
+                    ),
+                    manager=False,
+                    execute=False,
+                ),
+            )
+            manager.add_imagetool(tool, show=False)
+            tool.hide()
+
+        workspace_path = tmp_path / "pending-batch-targets.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        assert manager._load_workspace_file(
+            workspace_path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        assert all(
+            wrapper.pending_workspace_memory_payload is not None for wrapper in wrappers
+        )
+
+        def _fail_materialize_pending_payload(_node) -> bool:
+            pytest.fail("opening the batch dialog should not materialize pending data")
+
+        monkeypatch.setattr(
+            manager,
+            "_materialize_pending_workspace_payload",
+            _fail_materialize_pending_payload,
+        )
+
+        select_tools(manager, [0, 1])
+        manager._update_actions()
+        assert manager.batch_target_count() == 2
+        assert manager.batch_action.isEnabled()
+
+        manager.show_batch_operations()
+        dialog = manager._actions_controller._batch_dialog
+        qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
+        assert set(dialog._target_items) == {0, 1}
+        assert all(
+            wrapper.pending_workspace_memory_payload is not None for wrapper in wrappers
+        )
+
+
 def test_batch_dialog_expands_child_targets(
     qtbot,
     manager_context: Callable[

@@ -1387,6 +1387,7 @@ def test_manager_console_tree_namespace_helper_branches() -> None:
             self.window = object()
             self.calls: list[str] = []
             self.non_callable = "value"
+            self.manager = None
 
         def show(self) -> None:
             self.calls.append("show")
@@ -1403,6 +1404,9 @@ def test_manager_console_tree_namespace_helper_branches() -> None:
     class FakeManager:
         def __init__(self) -> None:
             self._tool_graph = types.SimpleNamespace(root_wrappers={}, nodes={})
+
+        def get_imagetool(self, uid: str) -> object:
+            return self._tool_graph.nodes[uid].imagetool
 
     manager = FakeManager()
     root = FakeNode("root", is_imagetool=True, name="root-data")
@@ -1433,6 +1437,8 @@ def test_manager_console_tree_namespace_helper_branches() -> None:
             "omitted": omitted,
         }
     )
+    for node in manager._tool_graph.nodes.values():
+        node.manager = manager
     tools = manager_console.ToolsNamespace(manager)
 
     root_handle = manager_console.ToolNamespace(root, tools)
@@ -3902,8 +3908,32 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         closed_imagetool_node = types.SimpleNamespace(
             is_imagetool=True,
             imagetool=None,
+            pending_workspace_memory_payload=None,
         )
         assert lineage._node_reload_unavailable_reason(closed_imagetool_node)
+        pending_memory_node = types.SimpleNamespace(
+            uid="pending-memory",
+            is_imagetool=True,
+            imagetool=None,
+            pending_workspace_memory_payload=(
+                tmp_path / "workspace.itws",
+                "0/imagetool",
+            ),
+            provenance_spec=provenance.full_data(),
+            _load_source_details=lambda: None,
+        )
+        assert lineage._node_reload_unavailable_reason(pending_memory_node)
+        pending_file_node = types.SimpleNamespace(
+            uid="pending-file",
+            is_imagetool=True,
+            imagetool=None,
+            pending_workspace_memory_payload=(
+                tmp_path / "workspace.itws",
+                "0/imagetool",
+            ),
+            provenance_spec=file_spec,
+        )
+        assert lineage._node_reload_unavailable_reason(pending_file_node) is None
         script_no_inputs_node = types.SimpleNamespace(
             uid="script-no-inputs",
             is_imagetool=True,

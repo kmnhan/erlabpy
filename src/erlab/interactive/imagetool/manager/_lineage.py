@@ -621,6 +621,8 @@ class _LineageController:
                 "reloadable ImageTool input to enable reload."
             )
         if node.imagetool is None:
+            if node.pending_workspace_memory_payload is not None:
+                return self._pending_imagetool_reload_unavailable_reason(node)
             return (
                 "This ImageTool window is not open. Show or reopen the data, "
                 "then try again."
@@ -659,6 +661,50 @@ class _LineageController:
             return None
 
         return node.slicer_area._local_reload_unavailable_reason()
+
+    def _pending_imagetool_reload_unavailable_reason(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        spec = node.provenance_spec
+        if spec is not None and provenance.can_reload_without_trust(spec):
+            return None
+        if spec is not None and (
+            spec.kind == "file" or provenance.has_file_load_source(spec)
+        ):
+            reason = self._file_load_source_unavailable_reason(spec, "This result")
+            if reason is not None:
+                return reason
+        if spec is not None and spec.kind == "script":
+            if provenance.script_provenance_requires_trust(spec):
+                return (
+                    "This data includes recorded script code that needs trust "
+                    "confirmation before replay. Open the ImageTool, then reload it."
+                )
+            return (
+                "This data was created from recorded script steps that cannot be "
+                "reloaded automatically from the saved provenance. Reopen or recreate "
+                "it from reloadable inputs to enable reload."
+            )
+        details = node._load_source_details()
+        if details is not None:
+            if not details.path.exists():
+                return (
+                    "The source file for this data is not available:\n"
+                    f"{details.path}\n\n"
+                    "Reconnect the drive or restore the file, then try again."
+                )
+            if details.load_code is not None:
+                return None
+            return (
+                "This data has file metadata, but the loader information needed "
+                "to read it is missing. Reopen the input from its file with an "
+                "available loader."
+            )
+        return (
+            "This data was not opened from a reloadable file or recorded input. "
+            "Reopen it from a file, or recreate it from reloadable ImageTool inputs, "
+            "to enable reload."
+        )
 
     def _script_reload_from_slicer_area(
         self,
@@ -774,7 +820,10 @@ class _LineageController:
                 parent = self._manager._parent_node(current)
             except KeyError:
                 break
-            if parent.is_imagetool and parent.reloadable:
+            if (
+                parent.is_imagetool
+                and self._node_reload_unavailable_reason(parent) is None
+            ):
                 reload_target = (
                     parent.index
                     if isinstance(parent, _ImageToolWrapper)
@@ -816,8 +865,7 @@ class _LineageController:
         reload_target = self._manager._reload_target_for_child(uid)
         if reload_target is None:
             return False
-        node = self._manager._node_for_target(reload_target)
-        if node.imagetool is None or not node.slicer_area._reload():
+        if not self._manager.get_imagetool(reload_target).slicer_area._reload():
             return False
         return self._manager._refresh_source_chain_to_uid(uid)
 
@@ -965,8 +1013,7 @@ class _LineageController:
 
         reloaded_targets: set[int | str] = set()
         for target in reload_targets:
-            node = self._manager._node_for_target(target)
-            if node.imagetool is not None and node.slicer_area._reload():
+            if self._manager.get_imagetool(target).slicer_area._reload():
                 reloaded_targets.add(target)
 
         for target, child_uids in child_targets.items():

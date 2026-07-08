@@ -43,6 +43,7 @@ from __future__ import annotations
 import base64
 import collections.abc
 import contextlib
+import ctypes
 import errno
 import json
 import logging
@@ -50,6 +51,8 @@ import math
 import numbers
 import os
 import pathlib
+import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -58,7 +61,9 @@ import typing
 import uuid
 from dataclasses import dataclass
 
+import numpy as np
 import pydantic
+import xarray as xr
 from qtpy import QtCore
 
 import erlab
@@ -70,9 +75,18 @@ logger = logging.getLogger(__name__)
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 
-    import xarray as xr
+    import h5py
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
+else:
+    import lazy_loader as _lazy
+
+    h5py = _lazy.load("h5py")
+
+_WorkspaceCopyGroup: typing.TypeAlias = tuple[str, str, dict[str, typing.Any] | None]
+_WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
+    str, str, str, dict[str, typing.Any] | None
+]
 
 _WORKSPACE_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
@@ -141,7 +155,8 @@ class _WorkspaceSaveSnapshot:
     file_repack: bool = False
     full_tree: xr.DataTree | None = None
     copy_source: str | None = None
-    copy_groups: tuple[tuple[str, str, dict[str, typing.Any] | None], ...] = ()
+    copy_groups: tuple[_WorkspaceCopyGroup, ...] = ()
+    copy_group_sources: tuple[_WorkspaceCopyGroupWithSource, ...] = ()
     rewrite_groups: tuple[tuple[str, dict[str, xr.Dataset]], ...] = ()
     attr_updates: tuple[
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]], ...
@@ -179,20 +194,17 @@ class _WorkspaceSaveWorkerSignals(QtCore.QObject):
 class _WorkspaceSaveResultReceiver(QtCore.QObject):
     def __init__(
         self,
-        loop: QtCore.QEventLoop,
-        result: dict[str, typing.Any],
+        *,
+        callback: collections.abc.Callable[[bool, float, str], None] | None = None,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self._loop = loop
-        self._result = result
+        self._callback = callback
 
     @QtCore.Slot(bool, float, str)
     def finish(self, ok: bool, elapsed: float, error_text: str) -> None:
-        self._result["ok"] = ok
-        self._result["elapsed"] = elapsed
-        self._result["error"] = error_text
-        self._loop.quit()
+        if self._callback is not None:
+            self._callback(ok, elapsed, error_text)
 
 
 class _WorkspaceSaveWorker(QtCore.QRunnable):
@@ -218,6 +230,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
                 )
             elif self._snapshot.full_tree is None:
@@ -235,6 +248,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.root_attrs,
                     copy_source=self._snapshot.copy_source,
                     copy_groups=self._snapshot.copy_groups,
+                    copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
                 )
             ok = True
@@ -250,8 +264,6 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
 def _open_workspace_h5_file_for_update(
     fname: str | os.PathLike[str],
 ) -> Iterator[typing.Any]:
-    import h5py
-
     with _xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
         yield h5_file
 
@@ -299,8 +311,6 @@ def _workspace_lock_path(fname: str | os.PathLike[str]) -> str:
 def _hide_workspace_lock_file(lock_path: str) -> None:
     if sys.platform == "darwin":
         with contextlib.suppress(AttributeError, OSError):
-            import stat
-
             if not stat.S_ISREG(os.lstat(lock_path).st_mode):
                 return
             os.chflags(lock_path, stat.UF_HIDDEN)
@@ -309,8 +319,6 @@ def _hide_workspace_lock_file(lock_path: str) -> None:
         return
 
     with contextlib.suppress(Exception):
-        import ctypes
-
         windll = getattr(ctypes, "windll", None)
         if windll is None:
             return
@@ -732,8 +740,6 @@ def _workspace_serializable_attrs(
 
 
 def _workspace_attr_value_writes_natively(value: typing.Any) -> bool:
-    import numpy as np
-
     if isinstance(value, str):
         return True
     if isinstance(value, bytes):
@@ -775,8 +781,6 @@ def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
 
 
 def _workspace_attr_numeric_scalar_writes_natively(value: typing.Any) -> bool:
-    import numpy as np
-
     if isinstance(value, np.generic):
         return isinstance(value, (np.number, np.bool_))
     return isinstance(value, bool | int | float | complex)
@@ -791,8 +795,6 @@ def _workspace_bytes_are_utf8(value: bytes) -> bool:
 
 
 def _workspace_encode_attr_key(value: typing.Any) -> dict[str, typing.Any]:
-    import numpy as np
-
     if isinstance(value, np.generic):
         value = value.item()
     if value is None:
@@ -832,8 +834,6 @@ def _workspace_decode_attr_key(value: typing.Any) -> typing.Hashable:
 
 
 def _workspace_encode_attr_value(value: typing.Any) -> dict[str, typing.Any]:
-    import numpy as np
-
     if isinstance(value, np.ndarray):
         return _workspace_encode_array(value, kind="ndarray")
     if isinstance(value, np.generic):
@@ -941,8 +941,6 @@ def _workspace_decode_float(value: Mapping[str, typing.Any]) -> float:
 
 
 def _workspace_encode_array(value, *, kind: str) -> dict[str, typing.Any]:
-    import numpy as np
-
     array = np.asarray(value)
     payload: dict[str, typing.Any] = {
         "kind": kind,
@@ -958,8 +956,6 @@ def _workspace_encode_array(value, *, kind: str) -> dict[str, typing.Any]:
 
 
 def _workspace_decode_array(value: Mapping[str, typing.Any]):
-    import numpy as np
-
     dtype = np.dtype(typing.cast("str", value["dtype"]))
     shape = tuple(int(size) for size in typing.cast("list[typing.Any]", value["shape"]))
     if "items" in value:
@@ -1182,8 +1178,6 @@ def _cleanup_orphan_workspace_internal_groups(h5_file) -> None:
 
 
 def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
-    import h5py
-
     if not pathlib.Path(fname).exists():
         return
     if not _workspace_path_is_itws(fname):
@@ -1238,8 +1232,6 @@ def _h5py_attrs_to_dict(
 def _read_workspace_root_attrs_h5py(
     fname: str | os.PathLike[str],
 ) -> dict[typing.Hashable, typing.Any]:
-    import h5py
-
     _xarray.ensure_workspace_hdf5_filters_registered()
     with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
@@ -1250,8 +1242,6 @@ def _read_workspace_root_attrs_h5py(
 def _workspace_live_root_group_copy_groups(
     fname: str | os.PathLike[str],
 ) -> tuple[tuple[str, str, dict[str, typing.Any] | None], ...]:
-    import h5py
-
     _xarray.ensure_workspace_hdf5_filters_registered()
     with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
@@ -1265,8 +1255,6 @@ def _workspace_live_root_group_copy_groups(
 
 
 def _workspace_h5_object_storage_size(obj: typing.Any) -> int:
-    import h5py
-
     if isinstance(obj, h5py.Dataset):
         return max(0, int(obj.id.get_storage_size()))
     if isinstance(obj, h5py.Group):
@@ -1278,8 +1266,6 @@ def _workspace_h5_paths_storage_size(
     fname: str | os.PathLike[str],
     paths: Iterable[str],
 ) -> tuple[int, int]:
-    import h5py
-
     total = 0
     existing_count = 0
     _xarray.ensure_workspace_hdf5_filters_registered()
@@ -1296,8 +1282,6 @@ def _workspace_h5_paths_storage_size(
 
 
 def _workspace_live_h5_storage_size(fname: str | os.PathLike[str]) -> int:
-    import h5py
-
     total = 0
     _xarray.ensure_workspace_hdf5_filters_registered()
     with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
@@ -1336,8 +1320,6 @@ def _workspace_file_repack_payload(
 
 
 def _workspace_h5py_dataset_storage_supported(dataset: typing.Any) -> bool:
-    import h5py
-
     return dataset.dtype.kind in "biufcS" or (
         dataset.dtype.kind == "O" and h5py.check_string_dtype(dataset.dtype) is not None
     )
@@ -1355,10 +1337,6 @@ def _workspace_h5py_coord_dims_fit(
 def _workspace_h5py_variable_payload(
     variable: xr.Variable, name: typing.Hashable
 ) -> tuple[typing.Any, dict[typing.Hashable, typing.Any], typing.Any] | None:
-    import h5py
-    import numpy as np
-    import xarray as xr
-
     try:
         if variable.dtype.kind == "M":
             variable = xr.coders.CFDatetimeCoder().encode(variable, name=str(name))
@@ -1387,9 +1365,6 @@ def _workspace_h5py_dataarray_can_write(data_array: xr.DataArray) -> bool:
 
 
 def _workspace_h5py_read_values(dataset: typing.Any) -> typing.Any:
-    import h5py
-    import numpy as np
-
     string_info = h5py.check_string_dtype(dataset.dtype)
     if dataset.dtype.kind == "O" and string_info is not None:
         values = np.asarray(dataset.asstr()[()])
@@ -1402,8 +1377,6 @@ def _workspace_h5py_read_values(dataset: typing.Any) -> typing.Any:
 def _workspace_h5py_decode_coord_variable(
     variable: xr.Variable, name: str
 ) -> xr.Variable | None:
-    import xarray as xr
-
     attrs = variable.attrs
     dtype_attr = attrs.get("dtype")
     units_attr = attrs.get("units")
@@ -1429,8 +1402,6 @@ def _workspace_h5py_dataset_variable(
     name: str,
     exclude_attrs: Iterable[typing.Hashable],
 ) -> xr.Variable | None:
-    import xarray as xr
-
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
     variable = xr.Variable(
@@ -1463,6 +1434,16 @@ def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, 
     }
 
 
+def _workspace_h5py_blosc2_options_match(
+    actual_options: tuple[int, ...], expected_options: tuple[int, ...]
+) -> bool:
+    if actual_options == expected_options:
+        return True
+    if len(actual_options) < 7 or len(expected_options) < 7:
+        return False
+    return actual_options[4:7] == expected_options[4:7]
+
+
 def _workspace_h5py_dataset_matches_encoding(
     dataset: typing.Any,
     encoding: Mapping[typing.Any, typing.Any],
@@ -1475,7 +1456,12 @@ def _workspace_h5py_dataset_matches_encoding(
     if actual_options is None:
         return False
     expected_options = encoding.get("compression_opts")
-    return expected_options is None or actual_options == tuple(expected_options)
+    if expected_options is None:
+        return True
+    expected_options = tuple(expected_options)
+    if int(expected_filter) == _xarray.hdf5plugin.Blosc2.filter_id:
+        return _workspace_h5py_blosc2_options_match(actual_options, expected_options)
+    return actual_options == expected_options
 
 
 def _workspace_h5_group_matches_compression_mode(
@@ -1516,9 +1502,37 @@ def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
     return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
 
 
-def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
-    import h5py
+def _h5_group_matches_compression(
+    h5_file: typing.Any,
+    group_path: str,
+    compression_mode: WorkspaceCompressionMode,
+) -> bool:
+    group_path = group_path.strip("/")
+    if group_path not in h5_file:
+        return False
+    group = h5_file[group_path]
+    if not isinstance(group, h5py.Group):
+        return False
+    compression_encoding = _xarray._workspace_blosc2_encoding(compression_mode)
+    for item in group.values():
+        if not isinstance(item, h5py.Dataset):
+            continue
+        if _workspace_h5py_dataset_is_dimension_scale(item):
+            continue
+        encoding = {}
+        if (
+            compression_encoding
+            and item.dtype.kind in "iufc"
+            and int(item.size) * int(item.dtype.itemsize)
+            >= _xarray._WORKSPACE_COMPRESSION_MIN_BYTES
+        ):
+            encoding = compression_encoding
+        if not _workspace_h5py_dataset_matches_encoding(item, encoding):
+            return False
+    return True
 
+
+def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
     type_class = type_id.get_class()
     if type_class == h5py.h5t.REFERENCE:
         return True
@@ -1569,9 +1583,6 @@ def _workspace_h5py_rebuild_dimension_scales(
     source_group: typing.Any,
     target_group: typing.Any,
 ) -> None:
-    import h5py
-    import numpy as np
-
     _workspace_h5py_copy_regular_attrs(
         source_group.attrs,
         target_group.attrs,
@@ -1628,8 +1639,6 @@ def _copy_workspace_h5_group_to_open_file(
     target_path: str,
     attrs: Mapping[str, typing.Any] | None,
 ) -> bool:
-    import h5py
-
     source_path = source_path.strip("/")
     target_path = target_path.strip("/")
     if source_path not in source_file:
@@ -1700,8 +1709,6 @@ def _workspace_h5py_dataset_independent_tool_variable(
     *,
     exclude_attrs: Iterable[typing.Hashable],
 ) -> xr.Variable | None:
-    import xarray as xr
-
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
     attrs = _h5py_attrs_to_dict(dataset.attrs, exclude=exclude_attrs)
@@ -1746,10 +1753,6 @@ def _read_workspace_dataset_group_h5py(
     *,
     preferred_data_name: str | None = None,
 ) -> xr.Dataset | None:
-    import h5py
-    import numpy as np
-    import xarray as xr
-
     _xarray.ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
     internal_attrs = (
@@ -1888,10 +1891,11 @@ def _read_workspace_dataset_group_h5py(
                 coords[coord_name] = coord_variable
 
         data_attrs = _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs)
+        data_values = np.asarray(data_dataset[()])
         data_vars: dict[typing.Hashable, typing.Any] = {
             data_name: (
                 tuple(dims),
-                np.asarray(data_dataset[()]),
+                data_values,
                 data_attrs,
             )
         }
@@ -2051,9 +2055,6 @@ def _write_workspace_dataset_group_h5py(
     *,
     encoding: Mapping[typing.Hashable, Mapping[str, typing.Any]] | None = None,
 ) -> bool:
-    import h5py
-    import numpy as np
-
     if not _workspace_dataset_can_write_h5py(ds):
         return False
     ds = _sanitize_workspace_attr_names(ds)
@@ -2468,13 +2469,10 @@ def _write_full_workspace_tree_file(
     root_attrs: Mapping[str, typing.Any],
     *,
     copy_source: str | os.PathLike[str] | None = None,
-    copy_groups: Iterable[tuple[str, str, dict[str, typing.Any] | None]] = (),
+    copy_groups: Iterable[_WorkspaceCopyGroup] = (),
+    copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
-    import shutil
-
-    import h5py
-
     fname = os.fsdecode(fname)
     use_scratch = _workspace_path_is_high_risk(fname)
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -2488,6 +2486,10 @@ def _write_full_workspace_tree_file(
         copied_paths: set[str] = set()
         _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
+        copy_group_sources_tuple = tuple(
+            (os.fsdecode(source_file), source_path, destination_path, attrs)
+            for source_file, source_path, destination_path, attrs in copy_group_sources
+        )
         if use_scratch and _workspace_path_is_likely_network_path(fname):
             if tree is None and copy_source is not None and copy_groups_tuple:
                 raise ValueError(
@@ -2496,16 +2498,35 @@ def _write_full_workspace_tree_file(
                 )
             copy_source = None
             copy_groups_tuple = ()
+
+        copy_jobs_by_source: dict[
+            str, list[tuple[str, str, dict[str, typing.Any] | None, bool]]
+        ] = {}
         if copy_source is not None and copy_groups_tuple:
+            copy_jobs_by_source[os.fsdecode(copy_source)] = [
+                (source_path, destination_path, attrs, False)
+                for source_path, destination_path, attrs in copy_groups_tuple
+            ]
+        for (
+            source_file,
+            source_path,
+            destination_path,
+            attrs,
+        ) in copy_group_sources_tuple:
+            copy_jobs_by_source.setdefault(source_file, []).append(
+                (source_path, destination_path, attrs, True)
+            )
+
+        with h5py.File(tmp_fname, "w") as tmp_file:
+            _write_root_attrs_to_open_workspace_file(tmp_file, root_attrs, replace=True)
+
+        for source_fname, copy_jobs in copy_jobs_by_source.items():
             with (
-                _xarray._workspace_file_lock(copy_source),
-                h5py.File(copy_source, "r") as source_file,
-                h5py.File(tmp_fname, "w") as tmp_file,
+                _xarray._workspace_file_lock(source_fname),
+                h5py.File(source_fname, "r") as source_file,
+                h5py.File(tmp_fname, "a") as tmp_file,
             ):
-                _write_root_attrs_to_open_workspace_file(
-                    tmp_file, root_attrs, replace=True
-                )
-                for source_path, destination_path, attrs in copy_groups_tuple:
+                for source_path, destination_path, attrs, required in copy_jobs:
                     destination_path = destination_path.strip("/")
                     if _copy_workspace_h5_group_to_open_file(
                         source_file,
@@ -2515,11 +2536,11 @@ def _write_full_workspace_tree_file(
                         attrs,
                     ):
                         copied_paths.add(destination_path)
-        else:
-            with h5py.File(tmp_fname, "w") as tmp_file:
-                _write_root_attrs_to_open_workspace_file(
-                    tmp_file, root_attrs, replace=True
-                )
+                    elif required:
+                        raise ValueError(
+                            "Required workspace payload group "
+                            f"{source_path!r} was not found in {source_fname!r}"
+                        )
 
         if tree is not None:
             for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
@@ -2562,8 +2583,6 @@ def _write_full_workspace_tree_file(
 
 
 def _validate_workspace_h5_file(fname: str | os.PathLike[str]) -> None:
-    import h5py
-
     with h5py.File(fname, "r") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
             raise ValueError(f"Temporary workspace file is not valid: {fname}")

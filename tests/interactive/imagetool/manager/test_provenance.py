@@ -1083,12 +1083,14 @@ def _fake_edit_node(
         display_text=display_text,
         is_imagetool=True,
         imagetool=object(),
+        pending_workspace_memory_payload=None,
         parent_uid=parent_uid,
         detached_live_parent_data=None,
         source_spec=source_spec,
         displayed_provenance_spec=spec,
         displayed_source_spec=source_display_spec,
         source_auto_update=True,
+        materialize_pending_workspace_payload=lambda: True,
         slicer_area=types.SimpleNamespace(
             _accepted_filter_provenance_operation=active_filter
         ),
@@ -1777,6 +1779,16 @@ def test_manager_provenance_file_load_batch_peer_matching(
         uid="matching",
         display_text="Matching",
     )
+    pending_matching = _fake_edit_node(
+        _manager_replay_file_spec(old_dir / "pending.h5"),
+        uid="pending-matching",
+        display_text="Pending Matching",
+    )
+    pending_matching.imagetool = None
+    pending_matching.pending_workspace_memory_payload = (
+        pathlib.Path("workspace.itws"),
+        "1/imagetool",
+    )
     other_folder = _fake_edit_node(
         _manager_replay_file_spec(other_dir / "c.h5"),
         uid="other-folder",
@@ -1833,6 +1845,7 @@ def test_manager_provenance_file_load_batch_peer_matching(
             for node in (
                 current,
                 matching,
+                pending_matching,
                 other_folder,
                 different_kwargs,
                 source_bound,
@@ -1851,8 +1864,9 @@ def test_manager_provenance_file_load_batch_peer_matching(
         current.displayed_provenance_spec,
     )
 
-    assert [peer.node.uid for peer in peers] == ["matching"]
+    assert [peer.node.uid for peer in peers] == ["matching", "pending-matching"]
     assert peers[0].original_path == old_dir / "b.h5"
+    assert peers[1].original_path == old_dir / "pending.h5"
 
     assert (
         controller._file_load_batch_peers(
@@ -11042,12 +11056,19 @@ def test_manager_paste_steps_validation_error_branches(
 
 def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
     editable = _fake_edit_node(provenance.full_data(), uid="editable")
+    pending = _fake_edit_node(provenance.full_data(), uid="pending")
+    pending.imagetool = None
+    pending.pending_workspace_memory_payload = (
+        pathlib.Path("workspace.itws"),
+        "0/imagetool",
+    )
     unavailable = _fake_edit_node(provenance.full_data(), uid="unavailable")
     unavailable.imagetool = None
     non_imagetool = _fake_edit_node(provenance.full_data(), uid="non-imagetool")
     non_imagetool.is_imagetool = False
     graph_nodes = {
         editable.uid: editable,
+        pending.uid: pending,
         unavailable.uid: unavailable,
         non_imagetool.uid: non_imagetool,
     }
@@ -11058,7 +11079,7 @@ def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
     )
     controller._manager._selected_imagetool_targets = lambda: tuple(graph_nodes)
 
-    assert controller._paste_target_nodes() == [editable]
+    assert controller._paste_target_nodes() == [editable, pending]
     assert controller.can_paste_steps(
         (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
     ) == (True, "")
@@ -11545,6 +11566,73 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
         xr.testing.assert_identical(tool_b.slicer_area._data, expected_b)
         assert manager._tool_graph.root_wrappers[index_a].displayed_provenance_spec
         assert manager._tool_graph.root_wrappers[index_b].displayed_provenance_spec
+
+
+def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("pending_dest").assign_coords(z=np.arange(5))
+    operations = (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
+    expected = provenance.full_data(*operations).apply(data)
+
+    with manager_context() as manager:
+        tool = itool(data.copy(deep=True), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=provenance.full_data(),
+        )
+        tool.hide()
+
+        workspace_path = tmp_path / "pending-provenance-paste.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        assert manager._load_workspace_file(
+            workspace_path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        node = manager._tool_graph.root_wrappers[index]
+        assert node.pending_workspace_memory_payload is not None
+        assert node.imagetool is None
+
+        materialize_calls = 0
+        materialize = manager._materialize_pending_workspace_payload
+
+        def _record_materialize(
+            target: manager_wrapper._ImageToolWrapper
+            | manager_wrapper._ManagedWindowNode,
+        ) -> bool:
+            nonlocal materialize_calls
+            materialize_calls += 1
+            return materialize(target)
+
+        monkeypatch.setattr(
+            manager,
+            "_materialize_pending_workspace_payload",
+            _record_materialize,
+        )
+
+        _set_provenance_steps_clipboard(operations)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [index])
+        manager._update_info()
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_paste_steps_action in menu.actions()
+        assert manager._metadata_paste_steps_action.isEnabled()
+        assert materialize_calls == 0
+        assert node.pending_workspace_memory_payload is not None
+
+        manager._paste_provenance_steps_from_clipboard()
+
+        assert materialize_calls == 1
+        assert node.pending_workspace_memory_payload is None
+        assert node.imagetool is not None
+        xr.testing.assert_identical(node.slicer_area._data, expected)
+        assert node.displayed_provenance_spec is not None
 
 
 def test_manager_paste_structured_provenance_steps_reports_partial_failures(

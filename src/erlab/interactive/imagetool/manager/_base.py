@@ -231,6 +231,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         return msg_box
 
+    @QtCore.Slot()
     def _mark_workspace_layout_dirty(self) -> None:
         self._workspace_controller._mark_workspace_layout_dirty()
 
@@ -311,7 +312,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return node.is_imagetool
 
     def _is_figure_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
-        return (
+        return node.uid in self._tool_graph.figure_uids or (
             node.tool_window is not None
             and node.tool_window.manager_collection == "figures"
         )
@@ -391,10 +392,18 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return self.__reindex_lock
 
     def get_imagetool(self, index: int | str) -> ImageTool:
-        """Get the ImageTool object corresponding to the given target."""
+        """Get a usable ImageTool object, materializing pending workspace data.
+
+        Cheap UI or structural state paths that do not need array values should use
+        node-level access instead of this method.
+        """
         node = self._node_for_target(index)
         if not node.is_imagetool:
             raise KeyError(f"Target {index!r} is not an ImageTool")
+        if not node.materialize_pending_workspace_payload():
+            raise ValueError(
+                "Could not read this ImageTool's saved data from the workspace file."
+            )
 
         tool = node.imagetool
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):

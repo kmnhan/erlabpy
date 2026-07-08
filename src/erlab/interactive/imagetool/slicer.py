@@ -227,6 +227,65 @@ def _display_safe_float(value, limit: float | None = None) -> float:
     return float(np.nanmean(arr))
 
 
+def _center_index_for_size(size: int) -> int:
+    return size // 2 - (1 if size % 2 == 0 else 0)
+
+
+def _center_indices_for_shape(shape: Sequence[int]) -> list[int]:
+    return [_center_index_for_size(int(size)) for size in shape]
+
+
+def _normalized_axis_index(index: int, size: int) -> int:
+    if 0 <= index < size:
+        return index
+    return _center_index_for_size(size)
+
+
+def _bin_slice_for_axis(center: int, window: int, size: int) -> slice:
+    start = center - window // 2
+    stop = center + (window - 1) // 2 + 1
+    start = max(0, start)
+    stop = min(size, stop)
+    selected_size = stop - start
+    if selected_size < window:
+        missing = window - selected_size
+        if start == 0:
+            stop = min(size, stop + missing)
+        elif stop == size:
+            start = max(0, start - missing)
+    return slice(start, stop)
+
+
+def _hidden_axes_for_display(ndim: int, display_axes: Sequence[int]) -> tuple[int, ...]:
+    key_set = set(display_axes)
+    return tuple(ax for ax in range(ndim) if ax not in key_set)
+
+
+def _reduced_axes_selection(
+    shape: Sequence[int],
+    reduced_axes: Sequence[int],
+    indices: Sequence[int],
+    bins: Sequence[int],
+    binned: Sequence[bool],
+) -> tuple[tuple[slice | int, ...], tuple[int, ...], bool, bool]:
+    ndim = len(shape)
+    selection: list[slice | int] = [slice(None)] * ndim
+    any_binned = False
+    all_binned = True
+    dropped = 0
+    selected_axes: list[int] = []
+    for ax in reduced_axes:
+        if binned[ax]:
+            any_binned = True
+            selection[ax] = _bin_slice_for_axis(indices[ax], bins[ax], int(shape[ax]))
+            selected_axes.append(ax - dropped)
+        else:
+            all_binned = False
+            selection[ax] = indices[ax]
+            dropped += 1
+    return tuple(selection), tuple(selected_axes), any_binned, all_binned
+
+
 def _display_safe_minmax(
     data: xr.DataArray,
     raw_limits: tuple[float, float] | None = None,
@@ -944,7 +1003,7 @@ class ArraySlicer(QtCore.QObject):
         self._binned[cursor] = tuple(b != 1 for b in self._bins[cursor])
 
     def _normalize_cursor_axis_state(self) -> None:
-        center_indices = [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
+        center_indices = _center_indices_for_shape(self._obj.shape)
         if not self._bins:
             self._bins.append([1] * self._obj.ndim)
         cursor_count = len(self._bins)
@@ -971,9 +1030,9 @@ class ArraySlicer(QtCore.QObject):
                 normalized_bins.append(int(bins[axis]) if axis < len(bins) else 1)
                 index_missing = axis >= len(indices)
                 index = center_indices[axis] if index_missing else int(indices[axis])
-                index_clamped = not 0 <= index < self._obj.shape[axis]
-                if index_clamped:
-                    index = center_indices[axis]
+                normalized_index = _normalized_axis_index(index, self._obj.shape[axis])
+                index_clamped = normalized_index != index
+                index = normalized_index
                 normalized_indices.append(index)
                 if index_missing or index_clamped or axis >= len(values):
                     normalized_values.append(self.coords[axis][index])
@@ -992,8 +1051,7 @@ class ArraySlicer(QtCore.QObject):
         if hidden is None:
             # Display-axis combinations repeat frequently during cursor motion, so keep
             # a tiny per-layout memo instead of rebuilding these tuples every time.
-            key_set = set(key)
-            hidden = tuple(ax for ax in self._all_axes if ax not in key_set)
+            hidden = _hidden_axes_for_display(self._obj.ndim, key)
             self._hidden_axes_cache[key] = hidden
             self._hidden_axes_has_nonuniform_cache[key] = any(
                 ax in self._nonuniform_axes_set for ax in hidden
@@ -1425,19 +1483,9 @@ class ArraySlicer(QtCore.QObject):
     ) -> slice | int:
         center = self._indices[cursor][axis]
         if self._binned[cursor][axis]:
-            window = self._bins[cursor][axis]
-            start = center - window // 2
-            stop = center + (window - 1) // 2 + 1
-            start = max(0, start)
-            stop = min(self._obj.shape[axis], stop)
-            size = stop - start
-            if size < window:
-                missing = window - size
-                if start == 0:
-                    stop = min(self._obj.shape[axis], stop + missing)
-                elif stop == self._obj.shape[axis]:
-                    start = max(0, start - missing)
-            return slice(start, stop)
+            return _bin_slice_for_axis(
+                center, self._bins[cursor][axis], self._obj.shape[axis]
+            )
         if int_if_one:
             return center
         return slice(center, center + 1)
@@ -1478,24 +1526,13 @@ class ArraySlicer(QtCore.QObject):
         """
         # Internal callers pass sorted, unique axes.
         reduced_axes: Sequence[int] = axis
-        binned = self._binned[cursor]
-        indices = self._indices[cursor]
-        selection: list[slice | int] = [slice(None)] * self._obj.ndim
-        any_binned: bool = False
-        all_binned: bool = True
-        dropped: int = 0
-        selected_axis: list[int] = []
-        for ax in reduced_axes:
-            if binned[ax]:
-                # Keep binned axes in the view and track their positions after any
-                # earlier unbinned axes have been removed by integer indexing.
-                any_binned = True
-                selection[ax] = self._bin_slice(cursor, ax)
-                selected_axis.append(ax - dropped)
-            else:
-                all_binned = False
-                selection[ax] = indices[ax]
-                dropped += 1
+        selection, selected_axis, any_binned, all_binned = _reduced_axes_selection(
+            self._obj.shape,
+            reduced_axes,
+            self._indices[cursor],
+            self._bins[cursor],
+            self._binned[cursor],
+        )
 
         selected = self._obj.data[tuple(selection)]
         if not any_binned:

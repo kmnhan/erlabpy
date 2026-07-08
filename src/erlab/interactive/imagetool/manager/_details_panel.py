@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import logging
@@ -28,6 +29,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
     _MetadataField,
+    _preview_curve_for_node,
     _preview_image_for_node,
 )
 
@@ -1087,7 +1089,7 @@ class _DetailsPanelController:
         """Update the information text box.
 
         If a string ``uid`` is provided, the function will update the info box only if
-        the given ``uid`` is the only selected child tool.
+        the given ``uid`` is the only selected node.
         """
         selected_imagetools = self._manager._selected_imagetool_targets()
         selected_childtools = self._manager._selected_tool_uids()
@@ -1095,13 +1097,14 @@ class _DetailsPanelController:
         n_itool: int = len(selected_imagetools)
         n_total: int = n_itool + len(selected_childtools)
 
-        selected_child_ids = list(selected_childtools)
+        selected_node_uids = list(selected_childtools)
         if uid is not None and n_itool == 1:
-            target = selected_imagetools[0]
-            if isinstance(target, str):
-                selected_child_ids.append(target)
+            with contextlib.suppress(KeyError):
+                selected_node_uids.append(
+                    self._manager._node_for_target(selected_imagetools[0]).uid
+                )
 
-        if (uid is not None) and ((n_total != 1) or (uid not in selected_child_ids)):
+        if (uid is not None) and ((n_total != 1) or (uid not in selected_node_uids)):
             return
 
         match n_total:
@@ -1124,6 +1127,22 @@ class _DetailsPanelController:
                 self._manager._set_metadata_node(node)
 
                 if node.is_imagetool:
+                    if node.pending_workspace_memory_payload is not None:
+                        pending_curve = node.pending_workspace_preview_curve()
+                        if pending_curve is not None:
+                            self._manager.preview_widget.setCurve(*pending_curve)
+                        elif (
+                            pending_preview := node.pending_workspace_preview_image()
+                        ) is None:
+                            self._manager.preview_widget.setLoadPrompt()
+                        else:
+                            self._manager.preview_widget.setPixmap(pending_preview[1])
+                        self._manager.preview_widget.setVisible(True)
+                        return
+                    if (curve := _preview_curve_for_node(node)) is not None:
+                        self._manager.preview_widget.setCurve(*curve)
+                        self._manager.preview_widget.setVisible(True)
+                        return
                     self._manager.preview_widget.setPixmap(
                         _preview_image_for_node(node)[1]
                     )
@@ -1131,6 +1150,20 @@ class _DetailsPanelController:
                     return
 
                 tool_window = node.tool_window
+                if (
+                    tool_window is None
+                    and node.pending_workspace_tool_payload is not None
+                ):
+                    pending_preview = node.pending_workspace_tool_preview_image()
+                    if pending_preview is None:
+                        self._manager.preview_widget.setLoadPrompt()
+                    else:
+                        self._manager.preview_widget.setPixmap(
+                            pending_preview[1],
+                            aspect_ratio_mode=QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                        )
+                    self._manager.preview_widget.setVisible(True)
+                    return
                 preview_pixmap = (
                     None if tool_window is None else tool_window.preview_pixmap
                 )
@@ -1232,6 +1265,25 @@ class _DetailsPanelController:
         for uid in sorted(pending):
             self._manager._update_info(uid=uid)
 
+    @QtCore.Slot()
+    def _load_selected_preview_data(self) -> None:
+        selected_imagetools = self._manager._selected_imagetool_targets()
+        selected_tools = self._manager._selected_tool_uids()
+        if len(selected_imagetools) == 1 and not selected_tools:
+            node = self._manager._node_for_target(selected_imagetools[0])
+            if node.pending_workspace_memory_payload is None:
+                return
+            if node.materialize_pending_workspace_payload():
+                self._manager._update_info(uid=node.uid)
+            return
+        if selected_imagetools or len(selected_tools) != 1:
+            return
+        node = self._manager._child_node(selected_tools[0])
+        if node.pending_workspace_tool_payload is None:
+            return
+        if node.materialize_pending_workspace_payload():
+            self._manager._update_info(uid=node.uid)
+
     def _update_actions(self) -> None:
         """Update the state of the actions based on the current selection."""
         selection_children = self._manager._selected_tool_uids()
@@ -1275,6 +1327,7 @@ class _DetailsPanelController:
             bool(imagetool_targets)
             and len(selection_children) == 0
             and len(selection_offloadable) == len(imagetool_targets)
+            and not self._manager._workspace_state.save_in_progress
         )
         self._manager.concat_action.setEnabled(
             multiple_selected and len(selection_children) == 0
@@ -1316,17 +1369,28 @@ class _DetailsPanelController:
             self._manager.unlink_action.setDisabled(True)
             return
 
-        self._manager.link_action.setDisabled(len(imagetool_targets) <= 1)
-        is_linked = [
-            self._manager.get_imagetool(index).slicer_area.is_linked
-            for index in imagetool_targets
-        ]
+        nodes = []
+        for index in imagetool_targets:
+            node = self._manager._node_for_target(index)
+            if node.is_imagetool:
+                nodes.append(node)
+        self._manager.link_action.setDisabled(len(nodes) <= 1)
+        is_linked = [node.workspace_linked for node in nodes]
         self._manager.unlink_action.setEnabled(any(is_linked))
 
-        if len(imagetool_targets) > 1 and all(is_linked):
+        if len(nodes) > 1 and all(is_linked):
+            link_keys = [node.workspace_link_key for node in nodes]
             proxies = [
-                self._manager.get_imagetool(index).slicer_area._linking_proxy
-                for index in imagetool_targets
+                node.slicer_area._linking_proxy
+                for node in nodes
+                if node.imagetool is not None
             ]
-            if all(p == proxies[0] for p in proxies):  # pragma: no branch
+            if (
+                link_keys[0] is not None
+                and all(key == link_keys[0] for key in link_keys)
+            ) or (
+                proxies
+                and len(proxies) == len(nodes)
+                and all(proxy == proxies[0] for proxy in proxies)
+            ):
                 self._manager.link_action.setEnabled(False)

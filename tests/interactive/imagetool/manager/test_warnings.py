@@ -2,6 +2,7 @@ import logging
 import pathlib
 import sys
 import tempfile
+import types
 import typing
 from collections.abc import Callable
 
@@ -443,6 +444,7 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
     )
 
     manager = QtWidgets.QWidget()
+    manager._workspace_state = types.SimpleNamespace(save_in_progress=False)
     qtbot.addWidget(manager)
     controller = manager_actions._ActionsController(manager)
     controller.open_multiple_files([fname], try_workspace=True)

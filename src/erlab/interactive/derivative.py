@@ -190,16 +190,9 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         return self.data
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
-        if data_name is None:
-            try:
-                data_name = typing.cast(
-                    "str",
-                    varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
-                )
-            except varname.VarnameRetrievingError:
-                data_name = "data"
-
-        self.data_name = data_name
+        self.data_name = erlab.interactive.utils._tool_window_argname(
+            data_name, "data", func=DerivativeTool.__init__, fallback="data"
+        )
 
         # Initialize UI
         super().__init__()

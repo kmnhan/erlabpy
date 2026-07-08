@@ -674,6 +674,122 @@ def test_figure_composer_deferred_restore_delays_visible_redraw(
     assert render_calls == [((restored,), {"show_window": True})]
 
 
+def _line_figure_composer_restore_dataset(qtbot):
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"line": data},
+        sources=(FigureSourceState(name="line", label="line"),),
+        operations=(FigureOperationState.line(label="line", source="line"),),
+        primary_source="line",
+    )
+    qtbot.addWidget(tool)
+    return tool.to_dataset(), data, tool.tool_status
+
+
+def _record_figure_composer_editor_updates(monkeypatch) -> list[FigureComposerTool]:
+    editor_calls: list[FigureComposerTool] = []
+    original = FigureComposerTool._update_operation_editor
+
+    def record_editor_update(self: FigureComposerTool) -> None:
+        editor_calls.append(self)
+        original(self)
+
+    monkeypatch.setattr(
+        FigureComposerTool, "_update_operation_editor", record_editor_update
+    )
+    return editor_calls
+
+
+def _materialized_figure_tool(
+    manager: erlab.interactive.imagetool.manager.ImageToolManager, figure_uid: str
+) -> FigureComposerTool:
+    node = manager._child_node(figure_uid)
+    assert node.materialize_pending_workspace_payload()
+    tool = node.tool_window
+    assert isinstance(tool, FigureComposerTool)
+    return tool
+
+
+def test_figure_composer_deferred_restore_delays_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, _data, _status = _line_figure_composer_restore_dataset(qtbot)
+    editor_calls = _record_figure_composer_editor_updates(monkeypatch)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert editor_calls == []
+
+    restored.show()
+
+    qtbot.wait_until(lambda: editor_calls == [restored], timeout=5000)
+
+
+def test_figure_composer_generated_code_flushes_deferred_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, _data, _status = _line_figure_composer_restore_dataset(qtbot)
+    editor_calls = _record_figure_composer_editor_updates(monkeypatch)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        ds,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    assert editor_calls == []
+
+    code = restored.generated_code()
+
+    assert "line" in code
+    assert editor_calls == [restored]
+
+
+def test_figure_composer_save_skips_deferred_operation_editor(
+    qtbot,
+    monkeypatch,
+) -> None:
+    ds, data, status = _line_figure_composer_restore_dataset(qtbot)
+
+    with monkeypatch.context() as patch:
+
+        def fail_editor_update(_self: FigureComposerTool) -> None:
+            pytest.fail(
+                "saving hidden deferred Figure Composer should not build editor"
+            )
+
+        patch.setattr(
+            FigureComposerTool, "_update_operation_editor", fail_editor_update
+        )
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(
+            ds,
+            _defer_restore_work=True,
+        )
+        qtbot.addWidget(restored)
+        assert isinstance(restored, FigureComposerTool)
+        saved = restored.to_dataset()
+        restored._discard_restore_work(
+            key=figurecomposer_tool_module._RESTORE_OPERATION_EDITOR_KEY
+        )
+
+    loaded = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(loaded)
+    assert isinstance(loaded, FigureComposerTool)
+    assert loaded.tool_status.model_dump(mode="json") == status.model_dump(mode="json")
+    xr.testing.assert_identical(loaded.source_data()["line"], data)
+
+
 def test_figure_composer_flushes_restore_work_before_user_outputs(
     qtbot, monkeypatch
 ) -> None:
@@ -781,10 +897,11 @@ def test_manager_workspace_restores_figure_gallery_preview_cache(
             mark_dirty=False,
             select=False,
         )
-        loaded_tool = manager._child_node(figure_uid).tool_window
-        assert isinstance(loaded_tool, FigureComposerTool)
-        assert loaded_tool.preview_pixmap is not None
-        assert not loaded_tool.preview_pixmap_stale
+        loaded_node = manager._child_node(figure_uid)
+        assert loaded_node.tool_window is None
+        pending_preview = loaded_node.pending_workspace_tool_preview_image()
+        assert pending_preview is not None
+        assert not pending_preview[1].isNull()
 
         manager.figure_view_gallery_button.click()
         item = manager._figure_list_item_for_uid(figure_uid)
@@ -1689,15 +1806,12 @@ def test_manager_workspace_figure_sources_save_as_references(
                 mark_dirty=False,
                 select=False,
             )
-            loaded_tool = manager._tool_graph.nodes[figure_uid].tool_window
-            assert isinstance(loaded_tool, FigureComposerTool)
+            loaded_tool = _materialized_figure_tool(manager, figure_uid)
             xr.testing.assert_identical(loaded_tool._source_data["data_1"], second)
         finally:
             tree.close()
 
-        restored = typing.cast(
-            "FigureComposerTool", manager._child_node(figure_uid).tool_window
-        )
+        restored = _materialized_figure_tool(manager, figure_uid)
         source_data = restored.source_data()
         xr.testing.assert_identical(source_data["data_0"], first)
         xr.testing.assert_identical(source_data["data_1"], second)
@@ -1890,7 +2004,10 @@ def test_manager_figure_image_target_helpers_cover_plot_slices_edges() -> None:
     }
     manager = typing.cast(
         "manager_mainwindow.ImageToolManager",
-        types.SimpleNamespace(_node_for_target=lambda target: nodes[target]),
+        types.SimpleNamespace(
+            _node_for_target=lambda target: nodes[target],
+            get_imagetool=lambda target: nodes[target].imagetool,
+        ),
     )
 
     assert (
@@ -2138,6 +2255,7 @@ def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source
         assert dialog._figure_source_count("missing") == 0
 
         class EmptyFigureNode:
+            uid = "empty-figure"
             tool_window = None
 
         with monkeypatch.context() as context:
@@ -3310,8 +3428,7 @@ def test_manager_figure_remove_unused_source_persists_workspace(
             mark_dirty=False,
             select=False,
         )
-        loaded_tool = manager._child_node(figure_uid).tool_window
-        assert isinstance(loaded_tool, FigureComposerTool)
+        loaded_tool = _materialized_figure_tool(manager, figure_uid)
         assert source.name not in loaded_tool.source_data()
         assert source.name not in {
             source.name for source in loaded_tool.source_states()

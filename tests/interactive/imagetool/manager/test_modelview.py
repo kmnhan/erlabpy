@@ -158,6 +158,7 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
         source_state="fresh",
         source_auto_update=False,
         imagetool=None,
+        pending_workspace_tool_payload=None,
         tool_window=types.SimpleNamespace(
             preview_pixmap=None,
             preview_imageitem=_FakeImageItem(),
@@ -877,7 +878,9 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _workspace_link_keys_for_subtree=lambda _uid: set(),
         _mark_removed_subtree_dirty=lambda _uid: None,
+        _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
         _refresh_figure_source_controls=lambda: refresh_calls.append(None),

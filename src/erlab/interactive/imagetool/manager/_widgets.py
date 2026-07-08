@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import itertools
 import logging
 import os
 import pathlib
@@ -845,7 +846,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
                 ),
             )
             self.copy_path_button.setObjectName("manager_copy_workspace_path_button")
-            self.copy_path_button.clicked.connect(lambda: self._copy_path())
+            self.copy_path_button.clicked.connect(self._copy_path)
 
             self.reveal_button = typing.cast(
                 "QtWidgets.QAbstractButton",
@@ -855,7 +856,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
                 ),
             )
             self.reveal_button.setObjectName("manager_reveal_workspace_path_button")
-            self.reveal_button.clicked.connect(lambda: self._reveal_path())
+            self.reveal_button.clicked.connect(self._reveal_path)
 
         close_button = typing.cast(
             "QtWidgets.QAbstractButton",
@@ -911,11 +912,13 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.value_labels[key] = value_label
         return row + 1
 
+    @QtCore.Slot()
     def _copy_path(self) -> None:
         if self._workspace_path is None:
             return
         erlab.interactive.utils.copy_to_clipboard(str(self._workspace_path))
 
+    @QtCore.Slot()
     def _reveal_path(self) -> None:
         if self._workspace_path is None:
             return
@@ -1074,6 +1077,7 @@ _WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
 _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME = "managerWorkspaceSaveShortcut"
 _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS = 0.5
 _WORKSPACE_REBIND_KEEP_CHUNKS = object()
+_CURVE_PREVIEW_MAX_POINTS = 4096
 
 
 def _workspace_lock_owner_text(
@@ -1163,6 +1167,54 @@ class ItoolManagerParseError(Exception):
     """Raised when the data received from the client cannot be parsed."""
 
 
+def _curve_preview_data(
+    x_values: np.ndarray, y_values: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    x = np.asarray(x_values, dtype=np.float64).reshape(-1)
+    y = np.asarray(y_values, dtype=np.float64).reshape(-1)
+    if x.size != y.size or x.size == 0:
+        return None
+    y = erlab.interactive.imagetool.slicer._display_safe_values(y)
+    finite = np.isfinite(x) & np.isfinite(y)
+    if not finite.any():
+        return None
+    if x.size <= _CURVE_PREVIEW_MAX_POINTS:
+        return x, y
+
+    bucket_count = max(1, _CURVE_PREVIEW_MAX_POINTS // 2)
+    edges = np.linspace(0, x.size, bucket_count + 1, dtype=np.intp)
+    point_indices: list[int] = []
+    for start, stop in itertools.pairwise(edges):
+        if stop <= start:
+            continue
+        local_valid = np.flatnonzero(finite[start:stop])
+        if local_valid.size == 0:
+            continue
+        local_y = y[start + local_valid]
+        min_index = int(start) + int(local_valid[int(np.nanargmin(local_y))])
+        max_index = int(start) + int(local_valid[int(np.nanargmax(local_y))])
+        if min_index == max_index:
+            point_indices.append(min_index)
+        elif min_index < max_index:
+            point_indices.extend((min_index, max_index))
+        else:
+            point_indices.extend((max_index, min_index))
+    if not point_indices:
+        return None
+    return x[point_indices], y[point_indices]
+
+
+def _summary_accent_color() -> QtGui.QColor:
+    color = QtGui.QColor(
+        erlab.interactive.utils._apply_qt_accent_color(
+            erlab.utils.formatting._DEFAULT_ACCENT_COLOR
+        )
+    )
+    if color.isValid():
+        return color
+    return QtWidgets.QApplication.palette().color(QtGui.QPalette.ColorRole.Highlight)
+
+
 @dataclass(frozen=True)
 class _StandaloneAppSpec:
     key: str
@@ -1175,6 +1227,8 @@ class _StandaloneAppSpec:
 
 
 class _SingleImagePreview(QtWidgets.QGraphicsView):
+    load_requested = QtCore.Signal()
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         _scene = QtWidgets.QGraphicsScene(self)
@@ -1182,14 +1236,30 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
 
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        self.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
 
         self._pixmapitem = typing.cast(
             "QtWidgets.QGraphicsPixmapItem", _scene.addPixmap(QtGui.QPixmap())
         )
+        self._curve_axes_item = QtWidgets.QGraphicsPathItem()
+        self._curve_item = QtWidgets.QGraphicsPathItem()
+        _scene.addItem(self._curve_axes_item)
+        _scene.addItem(self._curve_item)
+        self._curve_axes_item.hide()
+        self._curve_item.hide()
+        self._curve_data: tuple[np.ndarray, np.ndarray] | None = None
         self._aspect_ratio_mode = QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.setToolTip("Main image preview")
+        self._load_button = QtWidgets.QPushButton("Load Data for Preview", self)
+        self._load_button.setObjectName("manager_pending_preview_load_button")
+        self._load_button.setToolTip(
+            "Load this ImageTool's saved data and build its preview."
+        )
+        self._load_button.clicked.connect(self.load_requested)
+        self._load_button.hide()
         self.hide()
 
     def setPixmap(
@@ -1201,37 +1271,88 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         ),
     ) -> None:
         self._aspect_ratio_mode = aspect_ratio_mode
+        self._clear_curve()
+        self._load_button.hide()
         if pixmap.isNull():
             self._pixmapitem.setPixmap(QtGui.QPixmap())
+            scene = self.scene()
+            if scene is not None:
+                scene.setSceneRect(QtCore.QRectF())
             self.hide()
             self.updateGeometry()
             return
         self._pixmapitem.setPixmap(pixmap)
+        scene = self.scene()
+        if scene is not None:
+            scene.setSceneRect(self._pixmapitem.boundingRect())
         self._fit_pixmap_in_view()
 
+    def setCurve(self, x_values: np.ndarray, y_values: np.ndarray) -> None:
+        curve = _curve_preview_data(x_values, y_values)
+        self._pixmapitem.setPixmap(QtGui.QPixmap())
+        self._load_button.hide()
+        if curve is None:
+            self._clear_curve()
+            self.hide()
+            self.updateGeometry()
+            return
+        self._curve_data = curve
+        self._rebuild_curve_paths()
+        super().setVisible(True)
+        self.updateGeometry()
+
+    def setLoadPrompt(self) -> None:
+        self._pixmapitem.setPixmap(QtGui.QPixmap())
+        self._clear_curve()
+        self._load_button.adjustSize()
+        self._load_button.show()
+        self._position_load_button()
+        super().setVisible(True)
+        self.updateGeometry()
+
+    def clearLoadPrompt(self) -> None:
+        self._load_button.hide()
+
     def setVisible(self, visible: bool) -> None:
-        if visible and self._pixmapitem.pixmap().isNull():
+        if not visible:
+            self.clearLoadPrompt()
+        if (
+            visible
+            and self._pixmapitem.pixmap().isNull()
+            and self._load_button.isHidden()
+            and self._curve_data is None
+        ):
             visible = False
         super().setVisible(visible)
 
     def show(self) -> None:
-        if self._pixmapitem.pixmap().isNull():
+        if (
+            self._pixmapitem.pixmap().isNull()
+            and self._load_button.isHidden()
+            and self._curve_data is None
+        ):
             return
         super().show()
 
     def minimumSizeHint(self) -> QtCore.QSize:
-        if self._pixmapitem.pixmap().isNull():
+        if not self._load_button.isHidden():
+            return self._load_prompt_size_hint()
+        if self._pixmapitem.pixmap().isNull() and self._curve_data is None:
             return QtCore.QSize(0, 0)
         return super().minimumSizeHint()
 
     def sizeHint(self) -> QtCore.QSize:
-        if self._pixmapitem.pixmap().isNull():
+        if not self._load_button.isHidden():
+            return self._load_prompt_size_hint()
+        if self._pixmapitem.pixmap().isNull() and self._curve_data is None:
             return QtCore.QSize(0, 0)
         return super().sizeHint()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)
+        self._position_load_button()
         self._fit_pixmap_in_view()
+        self._fit_curve_in_view()
 
     def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
         # Disable scrolling by ignoring wheel events
@@ -1242,6 +1363,100 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         if self._pixmapitem.pixmap().isNull():
             return
         self.fitInView(self._pixmapitem, self._aspect_ratio_mode)
+
+    def _fit_curve_in_view(self) -> None:
+        if self._curve_data is None:
+            return
+        self.fitInView(self.sceneRect(), QtCore.Qt.AspectRatioMode.IgnoreAspectRatio)
+
+    def _clear_curve(self) -> None:
+        self._curve_data = None
+        self._curve_axes_item.setPath(QtGui.QPainterPath())
+        self._curve_item.setPath(QtGui.QPainterPath())
+        self._curve_axes_item.hide()
+        self._curve_item.hide()
+
+    def _rebuild_curve_paths(self) -> None:
+        if self._curve_data is None:
+            self._clear_curve()
+            return
+        x, y = self._curve_data
+        finite = np.isfinite(x) & np.isfinite(y)
+        if not finite.any():
+            self._clear_curve()
+            return
+        x_min = float(np.nanmin(x[finite]))
+        x_max = float(np.nanmax(x[finite]))
+        y_min = float(np.nanmin(y[finite]))
+        y_max = float(np.nanmax(y[finite]))
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+        if y_min == y_max:
+            y_pad = abs(y_min) * 0.05 if y_min != 0.0 else 0.5
+            y_min -= y_pad
+            y_max += y_pad
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+
+        curve_path = QtGui.QPainterPath()
+        drawing = False
+        for x_value, y_value in zip(x, y, strict=True):
+            if not np.isfinite(x_value) or not np.isfinite(y_value):
+                drawing = False
+                continue
+            point_x = (float(x_value) - x_min) / x_span
+            point_y = 1.0 - ((float(y_value) - y_min) / y_span)
+            if drawing:
+                curve_path.lineTo(point_x, point_y)
+            else:
+                curve_path.moveTo(point_x, point_y)
+                drawing = True
+
+        axes_path = QtGui.QPainterPath()
+        if y_min <= 0.0 <= y_max:
+            zero_y = 1.0 - ((0.0 - y_min) / y_span)
+            axes_path.moveTo(0.0, zero_y)
+            axes_path.lineTo(1.0, zero_y)
+
+        palette = self.palette()
+        curve_pen = QtGui.QPen(_summary_accent_color())
+        curve_pen.setWidthF(1.6)
+        curve_pen.setCosmetic(True)
+        axes_color = palette.color(QtGui.QPalette.ColorRole.Mid)
+        axes_color.setAlpha(170)
+        axes_pen = QtGui.QPen(axes_color)
+        axes_pen.setWidthF(1.0)
+        axes_pen.setCosmetic(True)
+
+        self._curve_item.setPath(curve_path)
+        self._curve_item.setPen(curve_pen)
+        self._curve_axes_item.setPath(axes_path)
+        self._curve_axes_item.setPen(axes_pen)
+        self._curve_axes_item.show()
+        self._curve_item.show()
+        scene = self.scene()
+        if scene is not None:
+            scene.setSceneRect(QtCore.QRectF(0.0, 0.0, 1.0, 1.0))
+        self._fit_curve_in_view()
+
+    def _load_prompt_size_hint(self) -> QtCore.QSize:
+        button_hint = self._load_button.sizeHint()
+        return QtCore.QSize(button_hint.width() + 24, button_hint.height() + 24)
+
+    def _position_load_button(self) -> None:
+        if self._load_button.isHidden():
+            return
+        viewport = self.viewport()
+        viewport_rect = self.rect() if viewport is None else viewport.geometry()
+        button_size = self._load_button.sizeHint()
+        x = viewport_rect.x() + max(
+            0, (viewport_rect.width() - button_size.width()) // 2
+        )
+        y = viewport_rect.y() + max(
+            0, (viewport_rect.height() - button_size.height()) // 2
+        )
+        self._load_button.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), button_size))
 
 
 class _WidgetsController:
@@ -1563,8 +1778,3 @@ class _WidgetsController:
 
         updater = AutoUpdater()
         updater.check_for_updates(self._manager)
-
-
-__all__ = [
-    name for name in globals() if name.startswith("_") and not name.startswith("__")
-]
