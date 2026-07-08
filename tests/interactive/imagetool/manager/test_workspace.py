@@ -15918,6 +15918,7 @@ def test_manager_live_1d_preview_reuses_rendered_dask_curve_without_computing(
 
 def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     qtbot,
+    monkeypatch,
 ) -> None:
     preview = manager_widgets._SingleImagePreview()
     qtbot.addWidget(preview)
@@ -15945,6 +15946,12 @@ def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     assert decimated is not None
     assert decimated[0].size <= manager_widgets._CURVE_PREVIEW_MAX_POINTS
 
+    sparse_y = np.full_like(long_x, np.nan)
+    sparse_y[::1000] = 1.0
+    sparse_decimated = manager_widgets._curve_preview_data(long_x, sparse_y)
+    assert sparse_decimated is not None
+    assert sparse_decimated[0].size <= manager_widgets._CURVE_PREVIEW_MAX_POINTS
+
     assert manager_widgets._curve_preview_data(np.arange(2.0), np.arange(3.0)) is None
     assert (
         manager_widgets._curve_preview_data(
@@ -15955,6 +15962,18 @@ def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     preview.setCurve(np.arange(2.0), np.arange(3.0))
     assert preview._curve_data is None
     assert not preview.isVisible()
+
+    preview.setCurve(np.ones(4, dtype=np.float64), np.arange(4, dtype=np.float64))
+    assert preview._curve_data is not None
+    assert not preview._curve_item.path().isEmpty()
+
+    preview._curve_data = None
+    preview._rebuild_curve_paths()
+    assert preview._curve_data is None
+
+    preview._curve_data = (np.array([np.nan]), np.array([1.0]))
+    preview._rebuild_curve_paths()
+    assert preview._curve_data is None
 
     pixmap = QtGui.QPixmap(32, 16)
     pixmap.fill(QtCore.Qt.GlobalColor.white)
@@ -15969,6 +15988,10 @@ def test_manager_curve_preview_widget_handles_constant_nonfinite_and_decimation(
     assert preview.scene() is not None
     assert preview.scene().sceneRect() == QtCore.QRectF()
 
+    with monkeypatch.context() as patch:
+        patch.setattr(erlab.interactive.utils, "_apply_qt_accent_color", lambda _c: "")
+        assert manager_widgets._summary_accent_color().isValid()
+
 
 def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     monkeypatch,
@@ -15981,10 +16004,16 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     )
 
     class _FakeArea:
-        def __init__(self, main_image: object | None) -> None:
+        def __init__(
+            self,
+            main_image: object | None,
+            coord_values: np.ndarray | None = None,
+        ) -> None:
             self._main_image = main_image
+            if coord_values is None:
+                coord_values = np.arange(3.0)
             self.array_slicer = types.SimpleNamespace(
-                values_of_dim=lambda _dim: np.arange(3.0)
+                values_of_dim=lambda _dim: coord_values
             )
 
         def _update_if_delayed(self) -> None:
@@ -15998,6 +16027,11 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
 
     def _tool(main_image: object | None) -> types.SimpleNamespace:
         return types.SimpleNamespace(slicer_area=_FakeArea(main_image))
+
+    def _tool_with_coords(
+        main_image: object | None, coord_values: np.ndarray
+    ) -> types.SimpleNamespace:
+        return types.SimpleNamespace(slicer_area=_FakeArea(main_image, coord_values))
 
     assert manager_wrapper._preview_curve_from_imagetool(None) is None
     assert manager_wrapper._preview_curve_from_imagetool(_tool(None)) is None
@@ -16046,6 +16080,20 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     np.testing.assert_allclose(curve[0], np.arange(3.0))
     np.testing.assert_allclose(curve[1], np.arange(3.0))
 
+    image_with_mismatched_coords = types.SimpleNamespace(
+        is_image=True,
+        slicer_data_items=[one_dimensional_image_item],
+        axis_dims=("energy",),
+        display_axis=(),
+    )
+    valid_objects.add(id(image_with_mismatched_coords))
+    curve = manager_wrapper._preview_curve_from_imagetool(
+        _tool_with_coords(image_with_mismatched_coords, np.arange(2.0))
+    )
+    assert curve is not None
+    np.testing.assert_allclose(curve[0], np.arange(3.0))
+    np.testing.assert_allclose(curve[1], np.arange(3.0))
+
     class _RaisingCurveItem:
         def getData(self) -> tuple[np.ndarray, np.ndarray]:
             raise RuntimeError
@@ -16068,6 +16116,34 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     )
     valid_objects.update({id(none_data_image), id(none_data_item)})
     assert manager_wrapper._preview_curve_from_imagetool(_tool(none_data_image)) is None
+
+    valid_curve_item = types.SimpleNamespace(
+        getData=lambda: (np.arange(3.0), np.arange(3.0))
+    )
+    valid_curve_image = types.SimpleNamespace(
+        is_image=False,
+        slicer_data_items=[valid_curve_item],
+    )
+    valid_objects.update({id(valid_curve_image), id(valid_curve_item)})
+    curve = manager_wrapper._preview_curve_from_imagetool(_tool(valid_curve_image))
+    assert curve is not None
+    np.testing.assert_allclose(curve[0], np.arange(3.0))
+    np.testing.assert_allclose(curve[1], np.arange(3.0))
+
+    class _RaisingPendingCurve:
+        pending_workspace_memory_payload = object()
+
+        def pending_workspace_preview_curve(self) -> None:
+            raise RuntimeError
+
+    assert manager_wrapper._preview_curve_for_node(_RaisingPendingCurve()) is None
+
+    class _RaisingImageToolNode:
+        @property
+        def imagetool(self) -> None:
+            raise RuntimeError
+
+    assert manager_wrapper._preview_curve_for_node(_RaisingImageToolNode()) is None
 
 
 def test_pending_toolwindow_metadata_and_preview_helpers(
