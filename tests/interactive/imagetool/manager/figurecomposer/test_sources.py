@@ -682,6 +682,367 @@ def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
     tool._source_context_menu.close()
 
 
+def test_figure_composer_source_list_edge_events(qtbot) -> None:
+    source_list = figurecomposer_tool_module._FigureComposerSourceList()
+    qtbot.addWidget(source_list)
+    emitted: list[tuple[object, object, object]] = []
+    source_list.rows_reordered.connect(
+        lambda names, selected, current: emitted.append((names, selected, current))
+    )
+
+    source_list.addTopLevelItem(QtWidgets.QTreeWidgetItem(["missing-role"]))
+    source_list._emit_rows_reordered()
+    source_list._model_rows_moved()
+    source_list.keyPressEvent(None)
+    source_list.dropEvent(None)
+
+    assert emitted == []
+
+
+def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
+    qtbot,
+) -> None:
+    data = _figure_composer_profile_source("data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    figure_window = figurecomposer_widgets._FigureComposerDisplayWindow(
+        FigureSubplotsState()
+    )
+    qtbot.addWidget(figure_window)
+    tool._figure_window = figure_window
+    mime = QtCore.QMimeData()
+    calls: list[str] = []
+
+    tool._set_source_add_callbacks(
+        add_sources=lambda: calls.append("add") or True,
+        can_drop_sources=lambda data: data is mime,
+        drop_sources=lambda data: calls.append("drop") or data is mime,
+    )
+    assert tool._source_add_available()
+    tool._request_add_sources_from_button()
+    assert calls == ["add"]
+    assert not tool._source_drop_available(None)
+    assert tool._source_drop_available(mime)
+    assert not tool._add_sources_from_mime(None)
+    assert tool._add_sources_from_mime(mime)
+    assert calls == ["add", "drop"]
+
+    def raise_value() -> bool:
+        raise ValueError("unavailable")
+
+    def raise_lookup(_mime: QtCore.QMimeData) -> bool:
+        raise LookupError("unavailable")
+
+    tool._set_source_add_callbacks(
+        add_sources=lambda: True,
+        can_add_sources=raise_value,
+        can_drop_sources=raise_lookup,
+        drop_sources=raise_lookup,
+    )
+    assert not tool._source_add_available()
+    tool._request_add_sources_from_button()
+    tool._figure_window = None
+    assert not tool._source_drop_available(mime)
+    assert not tool._add_sources_from_mime(mime)
+
+    tool._set_source_add_callbacks()
+    assert not tool._source_add_available()
+    tool._request_add_sources_from_button()
+
+
+def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
+    data = {name: _figure_composer_profile_source(name) for name in ("first", "second")}
+    tool = FigureComposerTool.from_sources(
+        data,
+        sources=tuple(FigureSourceState(name=name) for name in data),
+        setup=FigureSubplotsState(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    def clear_source_current() -> None:
+        tool.source_list.clearSelection()
+        tool.source_list.setCurrentIndex(QtCore.QModelIndex())
+
+    clear_source_current()
+    tool._remove_selected_sources()
+    clear_source_current()
+    tool._duplicate_selected_sources()
+    clear_source_current()
+    tool._move_selected_sources(1)
+    assert not tool._source_move_possible(1)
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second",
+    )
+
+    tool._set_selected_source_names_silent({"first"}, "first")
+    tool._move_selected_sources(-1)
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second",
+    )
+    tool._rename_source_alias("missing", "renamed")
+    assert tuple(source.name for source in tool.source_states()) == (
+        "first",
+        "second",
+    )
+
+    assert tool._source_alias_error("") is not None
+    assert tool._source_alias_error("bad name") is not None
+    assert tool._source_alias_error(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
+    assert tool._source_alias_error("fig") is not None
+    assert tool._source_alias_error("second", current="first") is not None
+    reserved = {"first_copy"}
+    assert tool._source_unique_alias("first", reserved) == "first_copy_2"
+
+    tool._refresh_source_selection_editor()
+    alias_edit = tool.source_selection_controls.findChild(
+        QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
+    )
+    assert alias_edit is not None
+    tool._focus_source_alias_editor()
+    first_item = tool.source_list.topLevelItem(0)
+    assert first_item is not None
+    tool._source_list_item_double_clicked(first_item, 0)
+    tool._rename_source_alias("first", "renamed")
+    assert tuple(source.name for source in tool.source_states()) == (
+        "renamed",
+        "second",
+    )
+
+    tool._set_selected_source_names_silent({"renamed", "second"}, "renamed")
+    tool._focus_source_alias_editor()
+    tool._source_list_reordered("not-a-sequence", set(), None)
+    tool._source_list_reordered(("renamed", "renamed"), set(), None)
+    tool._source_list_reordered(("renamed", "second"), set(), None)
+    tool._source_list_reordered(("second", "renamed"), (), None)
+    assert tuple(source.name for source in tool.source_states()) == (
+        "second",
+        "renamed",
+    )
+
+
+def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    other = data.rename("other")
+    scalar = xr.DataArray(1.0, name="scalar")
+    tool = FigureComposerTool.from_sources(
+        {"data": data, "other": other, "scalar": scalar},
+        sources=(
+            FigureSourceState(name="data", isel={"x": 0}),
+            FigureSourceState(name="other", qsel={"x": 1.0}),
+            FigureSourceState(name="scalar"),
+        ),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    def flush_deferred_editor_deletes() -> None:
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        QtWidgets.QApplication.processEvents()
+
+    tool.source_list.clearSelection()
+    tool.source_list.setCurrentIndex(QtCore.QModelIndex())
+    tool._refresh_source_selection_editor()
+    flush_deferred_editor_deletes()
+    item = tool.source_selection_controls_layout.itemAt(0)
+    assert item is not None
+    assert isinstance(item.widget(), QtWidgets.QLabel)
+
+    tool._set_selected_source_names_silent({"scalar"}, "scalar")
+    tool._refresh_source_selection_editor()
+    flush_deferred_editor_deletes()
+    item = tool.source_selection_controls_layout.itemAt(
+        tool.source_selection_controls_layout.rowCount() - 1,
+        QtWidgets.QFormLayout.ItemRole.FieldRole,
+    )
+    assert item is not None
+    assert isinstance(item.widget(), QtWidgets.QLabel)
+
+    tool.source_list.clearSelection()
+    first_item = tool.source_list.topLevelItem(0)
+    second_item = tool.source_list.topLevelItem(1)
+    assert first_item is not None
+    assert second_item is not None
+    tool.source_list.setCurrentItem(first_item)
+    first_item.setSelected(True)
+    second_item.setSelected(True)
+    tool._refresh_source_selection_editor()
+    flush_deferred_editor_deletes()
+    combo = None
+    for row in range(tool.source_selection_controls_layout.rowCount()):
+        item = tool.source_selection_controls_layout.itemAt(
+            row, QtWidgets.QFormLayout.ItemRole.FieldRole
+        )
+        widget = None if item is None else item.widget()
+        if widget is None or not widget.objectName().startswith(
+            "figureComposerSourceSelectionDimRow"
+        ):
+            continue
+        combo = widget.findChild(
+            QtWidgets.QComboBox, "figureComposerSourceSelectionModeCombo0"
+        )
+        if combo is not None:
+            break
+    assert combo is not None
+    assert combo.currentData() is _editor_controls.MIXED_VALUE
+
+    tool._source_data.clear()
+    tool._update_selected_source_dimension("x", "isel", "0", "")
+    assert tool._source_data == {}
+
+
+def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(
+            FigureSourceState(name="data"),
+            FigureSourceState(name="derived", selection_source="data"),
+        ),
+        setup=FigureSubplotsState(),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    assert (
+        tool._source_selection_input_data("derived", tool._source_by_name()["derived"])
+        is data
+    )
+
+    operation = FigureOperationState.plot_slices(
+        label="slice",
+        sources=("data",),
+        slice_dim="eV",
+    )
+    normalized = FigureComposerTool._plot_slices_operation_with_legacy_qsel(
+        operation,
+        {"eV": 1.0, "eV_width": 0.5},
+    )
+    assert normalized.slice_values == (1.0,)
+    assert normalized.slice_width == 0.5
+    assert normalized.slice_kwargs == {}
+
+    assert (
+        FigureComposerTool._legacy_selection_fallback_source(
+            FigureOperationState.line(label="line", source="data"),
+            "data",
+        )
+        is None
+    )
+    assert FigureComposerTool._operation_without_map_selections(
+        operation,
+        "data",
+    ).sources == ("data",)
+    assert (
+        FigureComposerTool._operation_without_map_selections(
+            FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            None,
+        ).map_selections
+        == ()
+    )
+
+    tool.add_sources((FigureSourceState(name="missing"),), {})
+    assert tuple(source.name for source in tool.source_states()) == ("data", "derived")
+    tool.add_sources((FigureSourceState(name="data"),), {"data": data})
+    assert tuple(source.name for source in tool.source_states()) == (
+        "data",
+        "derived",
+        "data_copy",
+    )
+
+
+def test_figure_composer_legacy_source_selection_normalization_edges(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    selected = data.qsel(eV=1.0)
+    selected.name = data.name
+    reused = FigureSourceState(
+        name="data_selected",
+        selection_source="data",
+        qsel={"eV": 1.0},
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"), reused),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="array",
+                    source="data",
+                    map_selections=(
+                        FigureDataSelectionState(source="data", qsel={"eV": 1.0}),
+                    ),
+                ),
+                FigureOperationState.plot_array(
+                    label="array_empty",
+                    source="data",
+                    map_selections=(FigureDataSelectionState(source="data"),),
+                ),
+                FigureOperationState.plot_array(
+                    label="array_multi",
+                    source="data",
+                    map_selections=(
+                        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
+                        FigureDataSelectionState(source="missing", qsel={"eV": 0.0}),
+                    ),
+                ),
+                FigureOperationState.plot_slices(
+                    label="slice",
+                    sources=("data",),
+                    map_selections=(
+                        FigureDataSelectionState(source="data", qsel={"eV": 1.0}),
+                    ),
+                    slice_dim="eV",
+                ),
+                FigureOperationState.plot_slices(
+                    label="slice_alias",
+                    sources=("data",),
+                    map_selections=(
+                        FigureDataSelectionState(source="data", isel={"kx": 1}),
+                    ),
+                    slice_dim="eV",
+                ),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    sources = {source.name: source for source in tool.source_states()}
+    assert "data_selected" in sources
+    xr.testing.assert_identical(tool.source_data()["data_selected"], selected)
+    assert tool.tool_status.operations[0].sources == ("data_selected",)
+    assert tool.tool_status.operations[0].map_selections == ()
+    assert tool.tool_status.operations[1].sources == ("data",)
+    assert tool.tool_status.operations[1].map_selections == ()
+    assert tool.tool_status.operations[2].sources == ("data",)
+    assert tool.tool_status.operations[2].map_selections == ()
+    assert tool.tool_status.operations[3].slice_values == (1.0,)
+    assert tool.tool_status.operations[3].map_selections == ()
+    assert tool.tool_status.operations[4].sources == ("data_selected_2",)
+    assert tool.tool_status.operations[4].map_selections == ()
+    assert sources["data_selected_2"].isel == {"kx": 1}
+
+
 def test_figure_composer_source_display_helpers_use_alias_only() -> None:
     source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
     assert figurecomposer_sources._source_display_label(source, "data_0") == "data_0"
