@@ -153,8 +153,8 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert shape_widget.text() == "<p>formatted shape</p>"
     assert tool.source_list.toolTip() == ""
-    assert first_item.toolTip(0) == ""
-    assert first_item.toolTip(1) == ""
+    assert first_item.toolTip(0)
+    assert first_item.toolTip(1) == first_item.toolTip(0)
     assert first_item.toolTip(2) == ""
     assert shape_widget.toolTip() == ""
     assert (tuple(str(dim) for dim in data.dims), False, None) in calls
@@ -794,7 +794,9 @@ def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
     assert tool._source_alias_error("fig") is not None
     assert tool._source_alias_error("second", current="first") is not None
     reserved = {"first_copy"}
-    assert tool._source_unique_alias("first", reserved) == "first_copy_2"
+    assert tool._source_copy_alias("first", reserved) == "first_copy_2"
+    reserved = {"first"}
+    assert tool._source_unique_alias("first", reserved) == "first_2"
 
     tool._refresh_source_selection_editor()
     alias_edit = tool.source_selection_controls.findChild(
@@ -959,7 +961,7 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
     assert tuple(source.name for source in tool.source_states()) == (
         "data",
         "derived",
-        "data_copy",
+        "data_2",
     )
 
 
@@ -1285,11 +1287,34 @@ def test_figure_composer_batch_source_selection_skips_incompatible_sources(
 def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     unnamed = xr.DataArray(np.arange(2.0), dims=("x",), name=None)
     invalid_name = xr.DataArray(np.arange(2.0), dims=("x",), name="bad name")
+    punct_name = xr.DataArray(np.arange(2.0), dims=("x",), name=" !!! ")
+    keyword_name = xr.DataArray(np.arange(2.0), dims=("x",), name="class")
+    leading_digit_name = xr.DataArray(np.arange(2.0), dims=("x",), name="2 sample")
+    mixed_name = xr.DataArray(np.arange(2.0), dims=("x",), name="Sample-Map")
     assert figurecomposer_sources._source_name(unnamed) == "data"
     assert figurecomposer_sources._source_label(unnamed) == "data"
-    assert figurecomposer_sources._source_name(invalid_name) == "data"
+    assert figurecomposer_sources._source_name(invalid_name) == "bad_name"
+    assert figurecomposer_sources._source_name(punct_name) == "data"
+    assert figurecomposer_sources._source_name(keyword_name) == "class_"
+    assert figurecomposer_sources._source_name(leading_digit_name) == "_2_sample"
+    assert figurecomposer_sources._source_name(mixed_name) == "sample_map"
+    reserved = {"sample_map"}
+    assert figurecomposer_sources._source_unique_name("sample_map", reserved) == (
+        "sample_map_2"
+    )
+    assert "sample_map_2" in reserved
+    reserved = set()
+    assert figurecomposer_sources._source_unique_name("fig", reserved) == "fig_2"
     assert figurecomposer_sources._source_display_tooltip(None, "data_0") == (
         "Alias: data_0"
+    )
+    assert (
+        "Original name: bad name"
+        in figurecomposer_source_inspector.source_metadata_tooltip(
+            FigureSourceState(name="bad_name"),
+            "bad_name",
+            invalid_name,
+        )
     )
     with pytest.raises(ValueError, match="not a valid variable"):
         figurecomposer_sources._valid_source_variable("bad name")

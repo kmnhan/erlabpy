@@ -116,17 +116,19 @@ from erlab.interactive._figurecomposer._source_inspector import (
     source_metadata_tooltip,
 )
 from erlab.interactive._figurecomposer._sources import (
+    _FIGURE_CODE_RESERVED_NAMES,
     _default_plot_operation,
     _default_setup_for_data,
     _public_source_data,
     _selected_data,
     _selected_source_data,
+    _source_alias_error,
     _source_display_label,
     _source_has_selection,
     _source_name,
     _source_selection,
+    _source_unique_name,
     _source_with_selection,
-    _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -197,17 +199,6 @@ _SOURCE_LIST_ACTION_COLUMN = 2
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
-_FIGURE_CODE_RESERVED_NAMES = frozenset(
-    {
-        "axs",
-        "eplt",
-        "fig",
-        "np",
-        "plt",
-        "xr",
-        "xarray",
-    }
-)
 logger = logging.getLogger(__name__)
 
 
@@ -2191,6 +2182,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             [display, "missing" if data is None else "", ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
+        tooltip = self._source_tooltip(name)
+        item.setToolTip(_SOURCE_LIST_SOURCE_COLUMN, tooltip)
+        item.setToolTip(_SOURCE_LIST_SHAPE_COLUMN, tooltip)
         item.setFlags(
             QtCore.Qt.ItemFlag.ItemIsEnabled
             | QtCore.Qt.ItemFlag.ItemIsSelectable
@@ -2562,16 +2556,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_alias_error(
         self, alias: str, *, current: str | None = None
     ) -> str | None:
-        if not alias:
-            return "Source alias must not be empty."
-        try:
-            _valid_source_variable(alias)
-        except ValueError:
-            return f"{alias!r} is not a valid Python variable name."
-        if alias == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
-            return "This alias is reserved for saved tool data."
-        if alias in _FIGURE_CODE_RESERVED_NAMES:
-            return f"{alias!r} is reserved for generated figure code."
+        if error := _source_alias_error(alias):
+            return error
         if alias != current and (
             alias in {source.name for source in self._recipe.sources}
             or alias in self._source_data
@@ -2580,6 +2566,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return None
 
     def _source_unique_alias(self, source_name: str, reserved: set[str]) -> str:
+        return _source_unique_name(source_name, reserved)
+
+    def _source_copy_alias(self, source_name: str, reserved: set[str]) -> str:
         stem = f"{source_name}_copy"
         alias = stem
         suffix = 2
@@ -2701,7 +2690,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         duplicated_names: set[str] = set()
         for index in indices:
             source = sources[index]
-            alias = self._source_unique_alias(source.name, reserved)
+            alias = self._source_copy_alias(source.name, reserved)
             duplicates.append(source.model_copy(update={"name": alias}))
             duplicated_names.add(alias)
             if source.name in self._source_data:

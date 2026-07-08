@@ -1690,10 +1690,10 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         second_tool.slicer_area.set_colormap("viridis", gamma=0.25)
         vmin, vmax = first_tool.slicer_area.colormap_properties["levels"]
         expected_first = first_tool.slicer_area.images[0].figure_composer_operation(
-            source_name="data_0"
+            source_name="first"
         )
         expected_second = second_tool.slicer_area.images[0].figure_composer_operation(
-            source_name="data_1"
+            source_name="second"
         )
 
         figure_uid = manager.create_figure_from_targets((0, 1), show=False)
@@ -1702,12 +1702,12 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
             "FigureComposerTool", manager._child_node(figure_uid).tool_window
         )
         operation = figure_tool.tool_status.operations[0]
-        assert operation.sources == ("data_0_selected", "data_1_selected")
+        assert operation.sources == ("first_selected", "second_selected")
         sources = {source.name: source for source in figure_tool.source_states()}
-        assert sources["data_0_selected"].selection_source == "data_0"
-        assert sources["data_0_selected"].qsel == expected_first.map_selections[0].qsel
-        assert sources["data_1_selected"].selection_source == "data_1"
-        assert sources["data_1_selected"].qsel == expected_second.map_selections[0].qsel
+        assert sources["first_selected"].selection_source == "first"
+        assert sources["first_selected"].qsel == expected_first.map_selections[0].qsel
+        assert sources["second_selected"].selection_source == "second"
+        assert sources["second_selected"].qsel == expected_second.map_selections[0].qsel
         assert operation.order == "F"
         assert figure_tool.tool_status.setup.nrows == 1
         assert figure_tool.tool_status.setup.ncols == 2
@@ -1821,18 +1821,18 @@ def test_manager_workspace_figure_sources_save_as_references(
             )
 
             assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
-            assert "data_1" in references
+            assert "second" in references
             assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
-            assert ds["data_1"].size == 0
+            assert ds["second"].size == 0
             assert manager_workspace._workspace_dataset_can_write_h5py(ds)
 
             source_data_by_uid = {
                 references[erlab.interactive.utils._SAVED_TOOL_DATA_NAME][
                     "node_uid"
                 ]: first,
-                references["data_1"]["node_uid"]: second,
+                references["second"]["node_uid"]: second,
             }
-            corrupt_ds = ds.drop_vars("data_1")
+            corrupt_ds = ds.drop_vars("second")
             restored_from_reference = erlab.interactive.utils.ToolWindow.from_dataset(
                 corrupt_ds,
                 _tool_data_reference_resolver=lambda reference: source_data_by_uid.get(
@@ -1842,7 +1842,7 @@ def test_manager_workspace_figure_sources_save_as_references(
             qtbot.addWidget(restored_from_reference)
             assert isinstance(restored_from_reference, FigureComposerTool)
             xr.testing.assert_identical(
-                restored_from_reference.source_data()["data_1"], second
+                restored_from_reference.source_data()["second"], second
             )
 
             fname = tmp_path / "figure-source-references.itws"
@@ -1853,7 +1853,7 @@ def test_manager_workspace_figure_sources_save_as_references(
                 preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
             )
             assert saved_ds is not None
-            assert "data_1" in saved_ds
+            assert "second" in saved_ds
 
             manager.remove_all_tools()
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -1873,14 +1873,14 @@ def test_manager_workspace_figure_sources_save_as_references(
             loaded_node = manager._tool_graph.nodes[figure_uid]
             assert loaded_node.pending_workspace_tool_payload is not None
             loaded_tool = _materialized_figure_tool(manager, figure_uid)
-            xr.testing.assert_identical(loaded_tool._source_data["data_1"], second)
+            xr.testing.assert_identical(loaded_tool._source_data["second"], second)
         finally:
             tree.close()
 
         restored = _materialized_figure_tool(manager, figure_uid)
         source_data = restored.source_data()
-        xr.testing.assert_identical(source_data["data_0"], first)
-        xr.testing.assert_identical(source_data["data_1"], second)
+        xr.testing.assert_identical(source_data["first"], first)
+        xr.testing.assert_identical(source_data["second"], second)
 
 
 def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
@@ -1993,8 +1993,8 @@ def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_reference
             saved_refs = json.loads(
                 saved_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
             )
-            assert "data_1" in saved_refs
-            assert saved_ds["data_1"].size == 0
+            assert "second" in saved_refs
+            assert saved_ds["second"].size == 0
         finally:
             tree.close()
 
@@ -2004,7 +2004,7 @@ def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_reference
             update={
                 "sources": tuple(
                     source.model_copy(update={"node_uid": stale_uid})
-                    if source.name == "data_1"
+                    if source.name == "second"
                     else source
                     for source in current_recipe.sources
                 )
@@ -2028,13 +2028,13 @@ def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_reference
                 reference.get("node_uid") != stale_uid
                 for reference in rewritten_refs.values()
             )
-            assert "data_1" not in rewritten_refs
-            assert rewritten_ds["data_1"].size > 0
+            assert "second" not in rewritten_refs
+            assert rewritten_ds["second"].size > 0
             rewritten_state = FigureRecipeState.model_validate_json(
                 rewritten_ds.attrs["tool_state"]
             )
             rewritten_source = next(
-                source for source in rewritten_state.sources if source.name == "data_1"
+                source for source in rewritten_state.sources if source.name == "second"
             )
             assert rewritten_source.node_uid is None
             assert rewritten_source.node_snapshot_token is None
@@ -3083,7 +3083,7 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
                 return figure_uid
 
             def selected_source_alias(self) -> str:
-                return "data_0"
+                return "first"
 
         monkeypatch.setattr(
             manager_mainwindow, "_AppendFigureTargetDialog", FakeReplaceDialog
@@ -3092,11 +3092,11 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
         manager.create_figure_action.trigger()
 
         assert len(figure_tool.tool_status.operations) == operation_count
-        xr.testing.assert_identical(figure_tool.source_data()["data_0"], second)
+        xr.testing.assert_identical(figure_tool.source_data()["first"], second)
         [source] = figure_tool.source_states()
-        assert source.name == "data_0"
+        assert source.name == "first"
         assert source.node_uid == manager._node_for_target(1).uid
-        assert "data_1" not in figure_tool.source_data()
+        assert "second" not in figure_tool.source_data()
 
 
 def test_manager_figure_source_row_refresh_updates_only_selected_source(
@@ -3126,7 +3126,7 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
         assert figure_uid is not None
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
-        original_second = figure_tool.source_data()["data_1"]
+        original_second = figure_tool.source_data()["second"]
         operations = figure_tool.tool_status.operations
         manager._mark_workspace_clean()
 
@@ -3140,25 +3140,25 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
             itool(updated_second, manager=True, replace=1)
 
         buttons = _source_refresh_buttons(figure_tool)
-        assert buttons["data_0"].isEnabled()
-        assert buttons["data_1"].isEnabled()
+        assert buttons["first"].isEnabled()
+        assert buttons["second"].isEnabled()
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            buttons["data_0"].click()
+            buttons["first"].click()
 
         source_data = figure_tool.source_data()
-        xr.testing.assert_identical(source_data["data_0"], updated_first)
-        xr.testing.assert_identical(source_data["data_1"], original_second)
+        xr.testing.assert_identical(source_data["first"], updated_first)
+        xr.testing.assert_identical(source_data["second"], original_second)
         [source_0, source_1] = figure_tool.source_states()
-        assert source_0.name == "data_0"
+        assert source_0.name == "first"
         assert source_0.node_uid == manager._node_for_target(0).uid
-        assert source_1.name == "data_1"
+        assert source_1.name == "second"
         assert figure_tool.tool_status.operations == operations
-        assert "data_0" in figure_tool.generated_code()
+        assert "first" in figure_tool.generated_code()
 
         _render_figure_composer_rgba(figure_tool)
         namespace = _exec_generated_code(
             figure_tool.generated_code(),
-            {"data_0": updated_first, "data_1": original_second},
+            {"first": updated_first, "second": original_second},
         )
         assert isinstance(namespace["fig"], Figure)
         snapshot = manager._workspace_state_snapshot()
@@ -3167,9 +3167,9 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
 
         manager.remove_imagetool(0)
         buttons = _source_refresh_buttons(figure_tool)
-        assert not buttons["data_0"].isEnabled()
+        assert not buttons["first"].isEnabled()
         assert (
-            buttons["data_0"].toolTip()
+            buttons["first"].toolTip()
             == "This source is not linked to an open ImageTool"
         )
 
@@ -3224,15 +3224,15 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
             itool(updated_second, manager=True, replace=1)
 
         buttons = _source_refresh_buttons(figure_tool)
-        assert buttons["data_0"].isEnabled()
-        assert buttons["data_1"].isEnabled()
+        assert buttons["first"].isEnabled()
+        assert buttons["second"].isEnabled()
         assert not buttons["detached"].isEnabled()
         assert figure_tool.refresh_sources_button.isEnabled()
         figure_tool.refresh_sources_button.click()
 
         source_data = figure_tool.source_data()
-        xr.testing.assert_identical(source_data["data_0"], updated_first)
-        xr.testing.assert_identical(source_data["data_1"], updated_second)
+        xr.testing.assert_identical(source_data["first"], updated_first)
+        xr.testing.assert_identical(source_data["second"], updated_second)
         xr.testing.assert_identical(source_data["detached"], detached)
         assert figure_tool.tool_status.operations == operations
         assert figure_tool.source_status_label.text() == ""
@@ -3241,6 +3241,88 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
         assert figure_uid in snapshot["dirty_state"]
+
+
+def test_manager_figure_sources_use_readable_unique_aliases(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    arrays = (
+        xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="sample_map"),
+        xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            name="reference map",
+        ),
+        xr.DataArray(
+            np.arange(8.0, 12.0).reshape(2, 2),
+            dims=("x", "y"),
+            name="sample_map",
+        ),
+        xr.DataArray(
+            np.arange(12.0, 16.0).reshape(2, 2),
+            dims=("x", "y"),
+            name=" !!! ",
+        ),
+    )
+
+    with manager_context() as manager:
+        for data in arrays:
+            itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == len(arrays), timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets(range(len(arrays)), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+
+        source_names = tuple(source.name for source in figure_tool.source_states())
+        assert source_names == (
+            "sample_map",
+            "reference_map",
+            "sample_map_2",
+            "data_3",
+        )
+        assert tuple(figure_tool.source_data()) == source_names
+        reference_item = figure_tool.source_list.topLevelItem(1)
+        assert reference_item is not None
+        assert reference_item.text(0) == "reference_map"
+        assert "Original name: reference map" in reference_item.toolTip(0)
+
+
+def test_manager_figure_source_only_append_uses_readable_conflict_suffix(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    first = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="map")
+    second = xr.DataArray(
+        np.arange(4.0, 8.0).reshape(2, 2), dims=("x", "y"), name="map"
+    )
+
+    with manager_context() as manager:
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+
+        _resolved_targets, sources, source_data = manager._figure_sources_from_targets(
+            (1,)
+        )
+        manager._add_sources_to_figure(figure_uid, sources, source_data, show=False)
+
+        assert tuple(source.name for source in figure_tool.source_states()) == (
+            "map",
+            "map_2",
+        )
+        xr.testing.assert_identical(figure_tool.source_data()["map_2"], second)
 
 
 def test_manager_figure_source_helper_edge_contracts(
@@ -3273,6 +3355,7 @@ def test_manager_figure_source_helper_edge_contracts(
 
         source_states = figure_tool.source_states()
         source_data = figure_tool.source_data()
+        source_alias = source_states[0].name
         replacement_source = FigureSourceState(
             name="replacement",
             label="replacement",
@@ -3285,18 +3368,18 @@ def test_manager_figure_source_helper_edge_contracts(
             show=False,
         )
         assert manager._figure_source_state(figure_tool, "missing") is None
-        assert manager._figure_source_live_node("missing", "data_0") is None
+        assert manager._figure_source_live_node("missing", source_alias) is None
         assert not manager._refresh_figure_source(figure_uid, "missing")
         assert not manager._replace_figure_source(
             figure_uid,
-            "data_0",
+            source_alias,
             (),
             {},
             show=False,
         )
         assert not manager._replace_figure_source(
             figure_uid,
-            "data_0",
+            source_alias,
             (replacement_source,),
             {},
             show=False,
@@ -3316,24 +3399,24 @@ def test_manager_figure_source_helper_edge_contracts(
             )
             assert not manager._replace_figure_source(
                 child_uid,
-                "data_0",
+                source_alias,
                 (replacement_source,),
                 {"replacement": data},
                 show=False,
             )
-            assert manager._figure_source_live_node(child_uid, "data_0") is None
-            assert not manager._refresh_figure_source(child_uid, "data_0")
+            assert manager._figure_source_live_node(child_uid, source_alias) is None
+            assert not manager._refresh_figure_source(child_uid, source_alias)
 
         with monkeypatch.context() as context:
             context.setattr(figure_tool, "replace_source", lambda *_args: False)
             assert not manager._replace_figure_source(
                 figure_uid,
-                "data_0",
+                source_alias,
                 (replacement_source,),
                 {"replacement": data},
                 show=False,
             )
-            assert not manager._refresh_figure_source(figure_uid, "data_0")
+            assert not manager._refresh_figure_source(figure_uid, source_alias)
 
         with monkeypatch.context() as context:
             context.setattr(
@@ -3342,7 +3425,7 @@ def test_manager_figure_source_helper_edge_contracts(
                 lambda *_args: manager._node_for_target(0),
             )
             context.setattr(manager, "_is_figure_uid", lambda uid: uid == child_uid)
-            assert not manager._refresh_figure_source(child_uid, "data_0")
+            assert not manager._refresh_figure_source(child_uid, source_alias)
 
         with monkeypatch.context() as context:
             context.setattr(manager, "_figure_uids", lambda: ("missing",))
@@ -3474,10 +3557,10 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
         manager.create_figure_action.trigger()
 
         assert len(figure_tool.tool_status.operations) == operation_count
-        xr.testing.assert_identical(figure_tool.source_data()["data_1"], second)
+        xr.testing.assert_identical(figure_tool.source_data()["second"], second)
         assert {source.name for source in figure_tool.source_states()} == {
-            "data_0",
-            "data_1",
+            "first",
+            "second",
         }
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
@@ -3498,7 +3581,7 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
             loaded_node.show()
             loaded_tool = loaded_node.tool_window
         assert isinstance(loaded_tool, FigureComposerTool)
-        xr.testing.assert_identical(loaded_tool.source_data()["data_1"], second)
+        xr.testing.assert_identical(loaded_tool.source_data()["second"], second)
 
 
 def test_manager_figure_source_picker_selects_imagetool_rows_only(
@@ -3613,7 +3696,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
         figure_tool.add_source_button.click()
 
         assert len(figure_tool.tool_status.operations) == operation_count
-        assert {source.name for source in figure_tool.source_states()} == {"data_0"}
+        assert {source.name for source in figure_tool.source_states()} == {"first"}
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid not in snapshot["dirty_data"]
         assert figure_uid not in snapshot["dirty_state"]
@@ -3633,7 +3716,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
 
         assert len(figure_tool.tool_status.operations) == operation_count
         xr.testing.assert_identical(
-            figure_tool.source_data()["data_1"], second.rename("second")
+            figure_tool.source_data()["second"], second.rename("second")
         )
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
@@ -3679,7 +3762,7 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
         assert figure_tool._source_drop_available(second_mime)
         assert figure_tool._add_sources_from_mime(second_mime)
         xr.testing.assert_identical(
-            figure_tool.source_data()["data_1"], second.rename("second")
+            figure_tool.source_data()["second"], second.rename("second")
         )
 
         child_mime = model.mimeData([model._row_index(child_uid)])
@@ -3848,8 +3931,8 @@ def test_manager_figure_action_multi_source_append_preserves_image_colormaps(
             FigureOperationKind.PLOT_ARRAY,
         ]
         assert [operation.sources for operation in appended] == [
-            ("data_0",),
-            ("data_1",),
+            ("first",),
+            ("second",),
         ]
         assert [operation.axes.axes for operation in appended] == [
             ((0, 0),),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import typing
 
@@ -22,6 +23,13 @@ if typing.TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _original_source_name(data: xr.DataArray | None, alias: str) -> str | None:
+    if data is None or data.name is None:
+        return None
+    original = str(data.name)
+    return original if original and original != alias else None
 
 
 def _dims_text(dims: Sequence[typing.Hashable]) -> str:
@@ -46,6 +54,8 @@ def source_metadata_tooltip(
     if data is None:
         lines.append("DataArray: unavailable")
         return "\n".join(lines)
+    if original := _original_source_name(data, name):
+        lines.append(f"Original name: {original}")
     public = _public_source_data(data)
     lines.extend(
         (
@@ -247,6 +257,10 @@ class SourceInspectorWidget(QtWidgets.QWidget):
             public.rename(None),
             show_size=True,
         )
+        if original := _original_source_name(data, source_name):
+            summary_html = (
+                f"Original name: <code>{html.escape(original)}</code><br>{summary_html}"
+            )
         self.subtitle_label.setText(
             erlab.interactive.utils._apply_qt_accent_color(summary_html)
         )

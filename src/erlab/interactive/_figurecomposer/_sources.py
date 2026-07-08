@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-import keyword
+import re
 import typing
 
 if typing.TYPE_CHECKING:
@@ -12,6 +12,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 import erlab.interactive.imagetool.slicer
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -21,11 +22,39 @@ from erlab.interactive._figurecomposer._state import (
     FigureSubplotsState,
 )
 
+_FIGURE_CODE_RESERVED_NAMES = frozenset(
+    {
+        "axs",
+        "eplt",
+        "fig",
+        "np",
+        "plt",
+        "xr",
+        "xarray",
+    }
+)
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _source_alias_candidate(data: xr.DataArray) -> str | None:
+    if data.name is None:
+        return None
+    text = str(data.name).strip()
+    if not text:
+        return None
+    if erlab.interactive.utils._is_kwarg_name(text):
+        return text
+    if not any(character.isalnum() for character in text):
+        return None
+    snake_text = _CAMEL_CASE_BOUNDARY.sub("_", text).lower()
+    alias = erlab.interactive.utils.IdentifierValidator().fixup(snake_text)
+    if not erlab.interactive.utils._is_kwarg_name(alias):
+        return None
+    return alias
+
 
 def _source_name(data: xr.DataArray) -> str:
-    if isinstance(data.name, str) and data.name.isidentifier():
-        return data.name
-    return "data"
+    return _source_alias_candidate(data) or "data"
 
 
 def _source_label(data: xr.DataArray) -> str:
@@ -48,9 +77,33 @@ def _source_display_tooltip(source: FigureSourceState | None, name: str) -> str:
 
 
 def _valid_source_variable(name: str) -> str:
-    if not name.isidentifier() or keyword.iskeyword(name):
+    if not erlab.interactive.utils._is_kwarg_name(name):
         raise ValueError(f"Figure source name {name!r} is not a valid variable name")
     return name
+
+
+def _source_alias_error(alias: str) -> str | None:
+    if not alias:
+        return "Source alias must not be empty."
+    try:
+        _valid_source_variable(alias)
+    except ValueError:
+        return f"{alias!r} is not a valid Python variable name."
+    if alias == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
+        return "This alias is reserved for saved tool data."
+    if alias in _FIGURE_CODE_RESERVED_NAMES:
+        return f"{alias!r} is reserved for generated figure code."
+    return None
+
+
+def _source_unique_name(source_name: str, reserved: set[str]) -> str:
+    alias = source_name
+    suffix = 2
+    while _source_alias_error(alias) is not None or alias in reserved:
+        alias = f"{source_name}_{suffix}"
+        suffix += 1
+    reserved.add(alias)
+    return alias
 
 
 def _public_source_data(data: xr.DataArray) -> xr.DataArray:

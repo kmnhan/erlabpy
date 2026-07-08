@@ -2731,20 +2731,38 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
 
-    def _figure_sources_from_targets(
-        self, targets: Iterable[int | str]
-    ) -> tuple[tuple[int | str, ...], tuple[typing.Any, ...], dict[str, xr.DataArray]]:
+    def _figure_source_from_node(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        data: xr.DataArray,
+        reserved: set[str],
+    ) -> typing.Any:
         from erlab.interactive._figurecomposer import FigureSourceState
+        from erlab.interactive._figurecomposer._sources import (
+            _source_alias_candidate,
+            _source_unique_name,
+        )
 
+        source = FigureSourceState.from_script_input(self._script_input_for_node(node))
+        alias = _source_unique_name(
+            _source_alias_candidate(data) or source.name, reserved
+        )
+        return source.model_copy(update={"name": alias})
+
+    def _figure_sources_from_targets(
+        self,
+        targets: Iterable[int | str],
+        *,
+        reserved_sources: Iterable[str] = (),
+    ) -> tuple[tuple[int | str, ...], tuple[typing.Any, ...], dict[str, xr.DataArray]]:
         resolved_targets = self._figure_imagetool_targets(targets)
         source_data: dict[str, xr.DataArray] = {}
         sources = []
+        reserved = set(reserved_sources)
         for target in resolved_targets:
             node = self._node_for_target(target)
             data = node.current_source_data()
-            source = FigureSourceState.from_script_input(
-                self._script_input_for_node(node)
-            )
+            source = self._figure_source_from_node(node, data, reserved)
             source_data[source.name] = data
             sources.append(source)
         return resolved_targets, tuple(sources), source_data
@@ -3068,25 +3086,15 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureComposerTool,
             FigureOperationKind,
             FigureOperationState,
-            FigureSourceState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
 
-        resolved_targets = self._figure_imagetool_targets(targets)
+        resolved_targets, sources, source_data = self._figure_sources_from_targets(
+            targets
+        )
         if not resolved_targets:
             return None
-
-        source_data: dict[str, xr.DataArray] = {}
-        sources: list[FigureSourceState] = []
-
-        for target in resolved_targets:
-            node = self._node_for_target(target)
-            data = node.current_source_data()
-            script_input = self._script_input_for_node(node)
-            source = FigureSourceState.from_script_input(script_input)
-            source_data[source.name] = data
-            sources.append(source)
 
         primary_source = sources[0].name
         source_names = tuple(source.name for source in sources)
@@ -3310,7 +3318,6 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureAxesSelectionState,
             FigureComposerTool,
             FigureOperationState,
-            FigureSourceState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
         from erlab.interactive._figurecomposer._sources import _public_source_data
@@ -3319,15 +3326,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not resolved_targets:
             return False
 
-        source_data: dict[str, xr.DataArray] = {}
-        sources = []
-        for target in resolved_targets:
-            source_node = self._node_for_target(target)
-            data = source_node.current_source_data()
-            source = self._script_input_for_node(source_node)
-            source_model = FigureSourceState.from_script_input(source)
-            source_data[source_model.name] = data
-            sources.append(source_model)
+        _, sources, source_data = self._figure_sources_from_targets(resolved_targets)
 
         source_names = tuple(source.name for source in sources)
         auto_operations: tuple[FigureOperationState, ...] = ()
@@ -3370,6 +3369,35 @@ class ImageToolManager(_ImageToolManagerBase):
         tool = node.tool_window
         if not isinstance(tool, FigureComposerTool):
             return False
+
+        existing_source_names = tuple(tool.source_data()) + tuple(
+            source.name for source in tool.source_states()
+        )
+        _, sources, source_data = self._figure_sources_from_targets(
+            resolved_targets,
+            reserved_sources=existing_source_names,
+        )
+        source_names = tuple(source.name for source in sources)
+        auto_operations = ()
+        if operation is None and all(
+            _public_source_data(data).squeeze(drop=True).ndim > 1
+            for data in source_data.values()
+        ):
+            from erlab.interactive._figurecomposer._exceptions import (
+                FigureComposerPlotSlicesSelectionError,
+            )
+
+            try:
+                auto_operations = typing.cast(
+                    "tuple[FigureOperationState, ...]",
+                    self._figure_operations_from_image_targets(
+                        resolved_targets, source_names
+                    )
+                    or (),
+                )
+            except FigureComposerPlotSlicesSelectionError as exc:
+                self._show_figure_plot_slices_selection_error(exc)
+                return False
 
         tool.add_sources(tuple(sources), source_data)
         with figure_options_context(self.effective_interactive_options):
