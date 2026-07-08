@@ -915,6 +915,60 @@ def test_wait_dialog_constructor_failure_does_not_suppress_later_dialogs(
         assert isinstance(dialog, erlab.interactive.utils._WaitDialog)
 
 
+def test_set_widget_cursor_skips_native_cursor_updates_on_macos(
+    qtbot, monkeypatch
+) -> None:
+    class CursorWidget(QtWidgets.QWidget):
+        def setCursor(self, cursor: object) -> None:
+            del cursor
+            raise AssertionError("setCursor should not be called on macOS")
+
+        def unsetCursor(self) -> None:
+            raise AssertionError("unsetCursor should not be called on macOS")
+
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "darwin")
+    widget = CursorWidget()
+    qtbot.addWidget(widget)
+
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+
+    assert not widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor)
+
+
+def test_set_widget_cursor_keeps_idempotent_native_updates(qtbot, monkeypatch) -> None:
+    calls: list[object | None] = []
+
+    class CursorWidget(QtWidgets.QWidget):
+        def setCursor(self, cursor: object) -> None:
+            calls.append(cursor)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor, True)
+
+        def unsetCursor(self) -> None:
+            calls.append(None)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor, False)
+
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "linux")
+    widget = CursorWidget()
+    qtbot.addWidget(widget)
+
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+
+    assert calls == [QtCore.Qt.CursorShape.SizeAllCursor, None]
+
+
 def test_single_shot_ignores_pyside_deleted_wrapper_error(qtbot) -> None:
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)
