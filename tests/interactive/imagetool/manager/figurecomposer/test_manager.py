@@ -2772,6 +2772,79 @@ def test_manager_append_operation_to_existing_figure(
         assert figure.tool_status.operations[-1].kind.value == "line"
 
 
+def test_manager_explicit_figure_operations_use_readable_source_aliases(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(8.0).reshape(2, 4),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": np.arange(4.0)},
+            name="sample map",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        script_name = manager._script_input_name_for_node(manager._node_for_target(0))
+        assert script_name != "sample_map"
+        figure_uid = manager.create_figure_from_targets(
+            (0,),
+            operation=FigureOperationState.plot_array(label="plot", source=script_name),
+            show=False,
+        )
+
+        assert figure_uid is not None
+        figure = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure, FigureComposerTool)
+        assert tuple(figure.source_data()) == ("sample_map",)
+        assert figure.tool_status.operations[-1].sources == ("sample_map",)
+
+
+def test_manager_append_explicit_operation_uses_conflict_free_source_alias(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        for offset in (0.0, 10.0):
+            itool(
+                xr.DataArray(
+                    np.arange(8.0).reshape(2, 4) + offset,
+                    dims=("x", "y"),
+                    coords={"x": [0.0, 1.0], "y": np.arange(4.0)},
+                    name="sample map",
+                ),
+                manager=True,
+            )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure, FigureComposerTool)
+        assert tuple(figure.source_data()) == ("sample_map",)
+
+        script_name = manager._script_input_name_for_node(manager._node_for_target(1))
+        assert script_name != "sample_map_2"
+        appended = manager.append_figure_from_targets(
+            (1,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            operation=FigureOperationState.plot_array(
+                label="overlay", source=script_name
+            ),
+            show=False,
+        )
+
+        assert appended is True
+        assert tuple(figure.source_data()) == ("sample_map", "sample_map_2")
+        assert figure.tool_status.operations[-1].sources == ("sample_map_2",)
+
+
 def test_manager_append_momentum_source_seeds_bz_overlay(
     qtbot,
     manager_context: Callable[

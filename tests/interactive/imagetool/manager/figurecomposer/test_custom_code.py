@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+
 from ._common import *
 
 
@@ -392,6 +394,44 @@ def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
     exec(code, namespace)  # noqa: S102
     assert namespace["fig"].axes[0].get_title() == "1"
     assert namespace["fig"].__dict__["_eplt_name"] == "erlab.plotting"
+
+
+def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="sample_map",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data_0", label="sample map"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="custom",
+                    code=("data_0 = 1\nfig.__dict__['custom_data_0'] = data_0"),
+                    trusted=True,
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": data},
+    )
+    qtbot.addWidget(tool)
+
+    code = figurecomposer_codegen.generated_code(
+        tool, source_name_map={"data_0": "sample_map"}
+    )
+
+    assert "data_0 = sample_map" in code
+    assert "fig.__dict__['custom_data_0'] = data_0" in code
+    assert "fig.__dict__['custom_data_0'] = sample_map" not in code
+    namespace: dict[str, typing.Any] = {"sample_map": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].__dict__["custom_data_0"] == 1
 
 
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:

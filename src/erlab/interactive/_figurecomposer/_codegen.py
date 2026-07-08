@@ -15,7 +15,10 @@ from erlab.interactive._figurecomposer._sources import (
     _source_has_selection,
     _valid_source_variable,
 )
-from erlab.interactive._figurecomposer._state import FigureDataSelectionState
+from erlab.interactive._figurecomposer._state import (
+    FigureDataSelectionState,
+    FigureOperationKind,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,23 +67,42 @@ def generated_code(
     style_lines = _style_code_lines()
     if style_lines:
         lines.extend(["", *style_lines])
+    source_name_replacements = (
+        _normalized_source_load_replacements(source_name_map) if source_name_map else {}
+    )
+    operation_line_groups: list[list[str]] = []
+    has_custom_code_lines = False
+    for operation in tool._recipe.operations:
+        if not operation.enabled:
+            continue
+        operation_lines = _registry.spec_for(operation.kind).code_lines(tool, operation)
+        if source_name_replacements and operation.kind != FigureOperationKind.CUSTOM:
+            operation_lines = _replace_source_load_names_in_lines(
+                operation_lines, source_name_replacements
+            )
+        elif operation.kind == FigureOperationKind.CUSTOM and operation_lines:
+            has_custom_code_lines = True
+        operation_line_groups.append(operation_lines)
+
+    if source_name_replacements and has_custom_code_lines:
+        lines.extend(["", *_source_alias_assignment_lines(source_name_replacements)])
+
     source_lines = _source_selection_code_lines(
         tool,
         skip_source_names=skip_source_selection_names,
     )
+    if source_name_replacements:
+        source_lines = _replace_source_load_names_in_lines(
+            source_lines, source_name_replacements
+        )
     if source_lines:
         lines.extend(["", *source_lines])
     lines.extend(["", _setup_code(tool)])
 
-    for operation in tool._recipe.operations:
-        if not operation.enabled:
-            continue
-        lines.extend(_registry.spec_for(operation.kind).code_lines(tool, operation))
+    for operation_lines in operation_line_groups:
+        lines.extend(operation_lines)
 
-    code = "\n".join(lines)
-    if source_name_map:
-        return _replace_source_load_names(code, source_name_map)
-    return code
+    return "\n".join(lines)
 
 
 def _source_selection_code_lines(
@@ -104,17 +126,35 @@ def _source_selection_code_lines(
     return lines
 
 
+def _normalized_source_load_replacements(
+    replacements: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        source: target
+        for source, target in replacements.items()
+        if source != target and source.isidentifier() and target.isidentifier()
+    }
+
+
+def _replace_source_load_names_in_lines(
+    lines: list[str], replacements: Mapping[str, str]
+) -> list[str]:
+    if not lines or not replacements:
+        return lines
+    return _replace_source_load_names("\n".join(lines), replacements).splitlines()
+
+
+def _source_alias_assignment_lines(replacements: Mapping[str, str]) -> list[str]:
+    return [f"{source} = {target}" for source, target in replacements.items()]
+
+
 def _replace_source_load_names(code: str, replacements: Mapping[str, str]) -> str:
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
 
-    normalized = {
-        source: target
-        for source, target in replacements.items()
-        if source != target and source.isidentifier() and target.isidentifier()
-    }
+    normalized = _normalized_source_load_replacements(replacements)
     if not normalized:
         return code
 

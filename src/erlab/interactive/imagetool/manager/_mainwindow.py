@@ -2767,6 +2767,57 @@ class ImageToolManager(_ImageToolManagerBase):
             sources.append(source)
         return resolved_targets, tuple(sources), source_data
 
+    def _figure_source_name_map_for_targets(
+        self, targets: Iterable[int | str], sources: Iterable[typing.Any]
+    ) -> dict[str, str]:
+        source_name_map: dict[str, str] = {}
+        for target, source in zip(targets, sources, strict=True):
+            old_name = self._script_input_name_for_node(self._node_for_target(target))
+            if old_name != source.name:
+                source_name_map[old_name] = source.name
+        return source_name_map
+
+    @staticmethod
+    def _figure_operation_with_source_names(
+        operation: typing.Any, source_name_map: Mapping[str, str]
+    ) -> typing.Any:
+        if not source_name_map:
+            return operation
+
+        def mapped(source: str | None) -> str | None:
+            return None if source is None else source_name_map.get(source, source)
+
+        updates: dict[str, typing.Any] = {}
+        sources = tuple(mapped(source) for source in operation.sources)
+        if sources != operation.sources:
+            updates["sources"] = sources
+        map_selections = tuple(
+            selection.model_copy(update={"source": new_source})
+            if (new_source := mapped(selection.source)) != selection.source
+            else selection
+            for selection in operation.map_selections
+        )
+        if map_selections != operation.map_selections:
+            updates["map_selections"] = map_selections
+        for field in ("line_source", "hv_overlay_source"):
+            value = getattr(operation, field)
+            new_value = mapped(value)
+            if new_value != value:
+                updates[field] = new_value
+        for field in (
+            "method_plot_x",
+            "method_plot_y",
+            "method_plot_xerr",
+            "method_plot_yerr",
+        ):
+            value = getattr(operation, field)
+            if value is None:
+                continue
+            new_source = mapped(value.source)
+            if new_source != value.source:
+                updates[field] = value.model_copy(update={"source": new_source})
+        return operation if not updates else operation.model_copy(update=updates)
+
     def _figure_source_uid_for_target(self, target: int | str) -> str | None:
         try:
             node = self._node_for_target(target)
@@ -3095,6 +3146,11 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         if not resolved_targets:
             return None
+        if operation is not None:
+            operation = self._figure_operation_with_source_names(
+                operation,
+                self._figure_source_name_map_for_targets(resolved_targets, sources),
+            )
 
         primary_source = sources[0].name
         source_names = tuple(source.name for source in sources)
@@ -3327,6 +3383,14 @@ class ImageToolManager(_ImageToolManagerBase):
             return False
 
         _, sources, source_data = self._figure_sources_from_targets(resolved_targets)
+        prompt_operation = (
+            None
+            if operation is None
+            else self._figure_operation_with_source_names(
+                operation,
+                self._figure_source_name_map_for_targets(resolved_targets, sources),
+            )
+        )
 
         source_names = tuple(source.name for source in sources)
         auto_operations: tuple[FigureOperationState, ...] = ()
@@ -3349,7 +3413,6 @@ class ImageToolManager(_ImageToolManagerBase):
             except FigureComposerPlotSlicesSelectionError as exc:
                 self._show_figure_plot_slices_selection_error(exc)
                 return False
-        prompt_operation = operation
         if prompt_operation is None and len(auto_operations) == 1:
             prompt_operation = auto_operations[0]
 
@@ -3377,6 +3440,14 @@ class ImageToolManager(_ImageToolManagerBase):
             resolved_targets,
             reserved_sources=existing_source_names,
         )
+        append_operation = (
+            None
+            if operation is None
+            else self._figure_operation_with_source_names(
+                operation,
+                self._figure_source_name_map_for_targets(resolved_targets, sources),
+            )
+        )
         source_names = tuple(source.name for source in sources)
         auto_operations = ()
         if operation is None and all(
@@ -3402,8 +3473,8 @@ class ImageToolManager(_ImageToolManagerBase):
         tool.add_sources(tuple(sources), source_data)
         with figure_options_context(self.effective_interactive_options):
             operations = (
-                (operation,)
-                if operation is not None
+                (append_operation,)
+                if append_operation is not None
                 else auto_operations
                 or self._make_figure_operations_for_sources(
                     source_data, setup=tool.tool_status.setup
