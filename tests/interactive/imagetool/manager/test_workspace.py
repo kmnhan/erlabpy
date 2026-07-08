@@ -15449,6 +15449,109 @@ def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
         loaded_ds.close()
 
 
+def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    data = xr.DataArray(
+        np.arange(6, dtype=np.float64).reshape((2, 3)),
+        dims=("x", "y"),
+    )
+    valid_state = {"slice": {"dims": ["y", "x"]}}
+
+    reordered = controller_cls._pending_workspace_data_with_saved_dim_order(
+        data, {"itool_state": json.dumps(valid_state).encode()}
+    )
+    assert reordered.dims == ("y", "x")
+    np.testing.assert_array_equal(reordered.values, data.transpose("y", "x").values)
+
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": b"\xff"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": "{"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": "[]"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps({"slice": []})}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps({"slice": {"dims": "xy"}})}
+        )
+        is data
+    )
+
+    def _raise_transpose(self: xr.DataArray, *_args, **_kwargs) -> xr.DataArray:
+        raise ValueError("bad dim order")
+
+    monkeypatch.setattr(xr.DataArray, "transpose", _raise_transpose)
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps(valid_state)}
+        )
+        is data
+    )
+
+
+def test_pending_workspace_filter_validation(monkeypatch) -> None:
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    data = xr.DataArray(
+        np.arange(6, dtype=np.float64).reshape((2, 3)),
+        dims=("x", "y"),
+    )
+
+    assert controller_cls._apply_pending_workspace_filter(data, None) is data
+    with pytest.raises(TypeError, match="Invalid pending filter operation"):
+        controller_cls._apply_pending_workspace_filter(data, object())
+
+    class _FakeOperation:
+        def __init__(self, result: xr.DataArray) -> None:
+            self._result = result
+
+        def apply(
+            self, _data: xr.DataArray, *, parent_data: xr.DataArray
+        ) -> xr.DataArray:
+            assert parent_data is data
+            return self._result
+
+    def _set_filter_result(result: xr.DataArray) -> None:
+        monkeypatch.setattr(
+            manager_workspace_io.provenance,
+            "parse_tool_provenance_operation",
+            lambda _payload: _FakeOperation(result),
+        )
+
+    _set_filter_result(data.mean("x"))
+    with pytest.raises(ValueError, match="changed data dimensions"):
+        controller_cls._apply_pending_workspace_filter(data, {})
+
+    _set_filter_result(
+        xr.DataArray(
+            np.arange(8, dtype=np.float64).reshape((2, 4)),
+            dims=("x", "y"),
+        )
+    )
+    with pytest.raises(ValueError, match="changed data shape"):
+        controller_cls._apply_pending_workspace_filter(data, {})
+
+    _set_filter_result(data.transpose("y", "x"))
+    filtered = controller_cls._apply_pending_workspace_filter(data, {})
+    xr.testing.assert_identical(filtered, data)
+
+
 def test_pending_workspace_metadata_coord_load_failure_falls_back(
     tmp_path, monkeypatch
 ) -> None:
