@@ -1,5 +1,11 @@
 codecov:
   branch: main
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.25%
 comment:
   behavior: once
   require_changes: true
