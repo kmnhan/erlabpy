@@ -16,6 +16,43 @@ def _source_context_action(
     return tool._source_context_menu, action
 
 
+def test_figure_composer_source_alias_candidate_rejects_unusable_names(
+    monkeypatch,
+) -> None:
+    assert (
+        figurecomposer_sources._source_alias_candidate(
+            xr.DataArray(np.arange(2), dims=("x",), name=" ")
+        )
+        is None
+    )
+    assert (
+        figurecomposer_sources._source_alias_candidate(
+            xr.DataArray(np.arange(2), dims=("x",), name="!!!")
+        )
+        is None
+    )
+    assert (
+        figurecomposer_sources._source_alias_error(
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+        )
+        is not None
+    )
+
+    class InvalidIdentifierValidator:
+        def fixup(self, _text: str) -> str:
+            return "bad name"
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "IdentifierValidator", InvalidIdentifierValidator
+    )
+    assert (
+        figurecomposer_sources._source_alias_candidate(
+            xr.DataArray(np.arange(2), dims=("x",), name="bad name")
+        )
+        is None
+    )
+
+
 def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     qtbot, monkeypatch
 ) -> None:

@@ -434,6 +434,19 @@ def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
     assert namespace["fig"].__dict__["custom_data_0"] == 1
 
 
+def test_figure_composer_source_name_replacement_fallback_edges() -> None:
+    assert (
+        figurecomposer_codegen._replace_source_load_names("bad code !", {"data": "map"})
+        == "bad code !"
+    )
+    assert (
+        figurecomposer_codegen._replace_source_load_names(
+            "value = data", {"data": "not valid"}
+        )
+        == "value = data"
+    )
+
+
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
