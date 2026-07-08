@@ -86,7 +86,14 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
     _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+    _effective_extra_kwargs,
+    _effective_slice_kwargs,
+    _is_slice_kwarg_key,
+    _operation_dim_names,
     _plot_slices_panel_keys,
+    _selection_updates_from_kwargs,
+    _selection_values,
+    _selection_width,
 )
 from erlab.interactive._figurecomposer._operations._source_selection import (
     selection_dim_mode,
@@ -96,6 +103,7 @@ from erlab.interactive._figurecomposer._operations._source_selection import (
     selection_value_from_text,
     selection_width_from_text,
     selection_with_dimension,
+    shared_selection,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _live_layout_axes,
@@ -3324,33 +3332,157 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if not operation.map_selections:
                 operations.append(operation)
                 continue
-            if len(operation.map_selections) != 1:
-                updated = self._operation_without_map_selections(operation, None)
-                operations.append(updated)
-                changed = changed or updated != operation
-                continue
-            selection = operation.map_selections[0]
-            source_name = selection.source
-            if not selection_has_effect(selection):
-                updated = self._operation_without_map_selections(
-                    operation,
-                    self._legacy_selection_fallback_source(operation, source_name),
-                )
-                operations.append(updated)
-                changed = changed or updated != operation
-                continue
-            alias = self._source_alias_for_legacy_selection(
-                selection,
+            updated = self._operation_with_legacy_source_selections(
+                operation,
                 source_list=source_list,
                 source_by_name=source_by_name,
                 reserved=reserved,
             )
-            operations.append(self._operation_without_map_selections(operation, alias))
-            changed = True
+            operations.append(updated)
+            changed = changed or updated != operation
         if not changed:
             return
         self._recipe = self._recipe.model_copy(
             update={"sources": tuple(source_list), "operations": tuple(operations)}
+        )
+
+    def _operation_with_legacy_source_selections(
+        self,
+        operation: FigureOperationState,
+        *,
+        source_list: list[FigureSourceState],
+        source_by_name: dict[str, FigureSourceState],
+        reserved: set[str],
+    ) -> FigureOperationState:
+        if operation.kind == FigureOperationKind.PLOT_SLICES:
+            updated = self._plot_slices_operation_with_shared_legacy_selection(
+                operation
+            )
+            if updated is not None:
+                return updated
+            return self._plot_slices_operation_with_legacy_source_aliases(
+                operation,
+                source_list=source_list,
+                source_by_name=source_by_name,
+                reserved=reserved,
+            )
+
+        if len(operation.map_selections) != 1:
+            return self._operation_without_map_selections(operation, None)
+
+        selection = operation.map_selections[0]
+        source_name = selection.source
+        if not selection_has_effect(selection):
+            return self._operation_without_map_selections(
+                operation,
+                self._legacy_selection_fallback_source(operation, source_name),
+            )
+        alias = self._source_alias_for_legacy_selection(
+            selection,
+            source_list=source_list,
+            source_by_name=source_by_name,
+            reserved=reserved,
+        )
+        return self._operation_without_map_selections(operation, alias)
+
+    def _plot_slices_operation_with_shared_legacy_selection(
+        self, operation: FigureOperationState
+    ) -> FigureOperationState | None:
+        selection = shared_selection(operation.map_selections)
+        if selection is None:
+            return None
+        if not selection_has_effect(selection):
+            fallback = (
+                self._legacy_selection_fallback_source(
+                    operation, operation.map_selections[0].source
+                )
+                if operation.map_selections
+                else None
+            )
+            return self._operation_without_map_selections(operation, fallback)
+        if selection.isel or selection.mean_dims:
+            return None
+
+        dims = _operation_dim_names(self, operation)
+        if not dims:
+            return self._plot_slices_operation_with_legacy_qsel(
+                operation, selection.qsel
+            )
+        if any(not _is_slice_kwarg_key(key, dims) for key in selection.qsel):
+            return None
+        updates = _selection_updates_from_kwargs(
+            self,
+            operation,
+            {**_effective_slice_kwargs(self, operation), **selection.qsel},
+            _effective_extra_kwargs(self, operation),
+        )
+        updates["map_selections"] = ()
+        return operation.model_copy(update=updates)
+
+    @staticmethod
+    def _plot_slices_operation_with_legacy_qsel(
+        operation: FigureOperationState, qsel: Mapping[str, typing.Any]
+    ) -> FigureOperationState:
+        slice_kwargs = {**operation.slice_kwargs, **qsel}
+        updates: dict[str, typing.Any] = {"map_selections": ()}
+        slice_dim = operation.slice_dim
+        if slice_dim is not None:
+            values = _selection_values(slice_kwargs.get(slice_dim))
+            if values:
+                updates["slice_values"] = values
+                slice_kwargs.pop(slice_dim, None)
+            width = _selection_width(slice_kwargs.get(f"{slice_dim}_width"))
+            if width is not None:
+                updates["slice_width"] = width
+                slice_kwargs.pop(f"{slice_dim}_width", None)
+        else:
+            candidates = [
+                (key, values)
+                for key, value in slice_kwargs.items()
+                if (not key.endswith("_width") and (values := _selection_values(value)))
+            ]
+            if len(candidates) == 1:
+                slice_dim, values = candidates[0]
+                updates["slice_dim"] = slice_dim
+                updates["slice_values"] = values
+                slice_kwargs.pop(slice_dim, None)
+                width = _selection_width(slice_kwargs.get(f"{slice_dim}_width"))
+                if width is not None:
+                    updates["slice_width"] = width
+                    slice_kwargs.pop(f"{slice_dim}_width", None)
+        updates["slice_kwargs"] = slice_kwargs
+        return operation.model_copy(update=updates)
+
+    def _plot_slices_operation_with_legacy_source_aliases(
+        self,
+        operation: FigureOperationState,
+        *,
+        source_list: list[FigureSourceState],
+        source_by_name: dict[str, FigureSourceState],
+        reserved: set[str],
+    ) -> FigureOperationState:
+        selection_by_source = {
+            selection.source: selection for selection in operation.map_selections
+        }
+        sources = operation.sources or tuple(
+            selection.source for selection in operation.map_selections
+        )
+        updated_sources: list[str] = []
+        for source_name in sources:
+            selection = selection_by_source.get(source_name)
+            if selection is None or not selection_has_effect(selection):
+                updated_sources.append(source_name)
+                continue
+            updated_sources.append(
+                self._source_alias_for_legacy_selection(
+                    selection,
+                    source_list=source_list,
+                    source_by_name=source_by_name,
+                    reserved=reserved,
+                )
+            )
+        return operation.model_copy(
+            update={"map_selections": (), "sources": tuple(updated_sources)}
         )
 
     @staticmethod
@@ -6957,6 +7089,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if source.name == self._recipe.primary_source:
                 continue
             source_data_item = data_items.get(source.name)
+            if source_data_item is None:
+                continue
+            source_data[source.name] = restored_source_data(source, source_data_item)
+            changed = True
+        for source in self._recipe.sources:
+            if source.name in source_data or not _source_has_selection(source):
+                continue
+            if source.selection_source is None:
+                continue
+            source_data_item = source_data.get(source.selection_source)
             if source_data_item is None:
                 continue
             source_data[source.name] = restored_source_data(source, source_data_item)

@@ -12,7 +12,7 @@ def _plot_slices_selection_migration_data() -> xr.DataArray:
     )
 
 
-def test_figure_composer_plot_slices_migrates_single_map_selection_to_source_alias(
+def test_figure_composer_plot_slices_migrates_shared_map_selection_to_slice_state(
     qtbot,
 ) -> None:
     data = _plot_slices_selection_migration_data()
@@ -31,12 +31,12 @@ def test_figure_composer_plot_slices_migrates_single_map_selection_to_source_ali
     qtbot.addWidget(tool)
 
     [loaded_operation] = tool.tool_status.operations
-    assert loaded_operation.sources == ("first_selected",)
+    assert loaded_operation.sources == ("first",)
     assert loaded_operation.map_selections == ()
-    source_by_name = {source.name: source for source in tool.source_states()}
-    assert source_by_name["first_selected"].selection_source == "first"
-    assert source_by_name["first_selected"].qsel == {"y": 0.0}
-    xr.testing.assert_identical(tool.source_data()["first_selected"], data.qsel(y=0.0))
+    assert loaded_operation.slice_dim == "y"
+    assert loaded_operation.slice_values == (0.0,)
+    assert loaded_operation.slice_kwargs == {}
+    assert figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation).valid
 
     tool.operation_list.setCurrentRow(0)
     tool._select_step_section("selection")
@@ -49,7 +49,85 @@ def test_figure_composer_plot_slices_migrates_single_map_selection_to_source_ali
     )
 
 
-def test_figure_composer_plot_slices_clears_unsupported_multi_map_selections(
+def test_figure_composer_plot_slices_migrates_shared_multi_map_selection_to_slice_state(
+    qtbot,
+) -> None:
+    first = _plot_slices_selection_migration_data()
+    second = first + 100.0
+    second.name = "second"
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=("first", "second"),
+                map_selections=(
+                    FigureDataSelectionState(source="first", qsel={"y": 0.0}),
+                    FigureDataSelectionState(source="second", qsel={"y": 0.0}),
+                ),
+                axes=FigureAxesSelectionState(),
+            ),
+        ),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.sources == ("first", "second")
+    assert loaded_operation.map_selections == ()
+    assert loaded_operation.slice_dim == "y"
+    assert loaded_operation.slice_values == (0.0,)
+    assert loaded_operation.slice_kwargs == {}
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    assert shape.valid
+    assert shape.plot_ndim == 2
+
+
+def test_figure_composer_plot_slices_migrates_shared_selection_before_sources_restore(
+    qtbot,
+) -> None:
+    first = _plot_slices_selection_migration_data()
+    second = first + 100.0
+    second.name = "second"
+    primary = first.rename("primary")
+    tool = FigureComposerTool.from_sources(
+        {"primary": primary},
+        sources=(
+            FigureSourceState(name="primary", label="primary"),
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=("first", "second"),
+                map_selections=(
+                    FigureDataSelectionState(source="first", qsel={"y": 0.0}),
+                    FigureDataSelectionState(source="second", qsel={"y": 0.0}),
+                ),
+                axes=FigureAxesSelectionState(),
+            ),
+        ),
+        primary_source="primary",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.sources == ("first", "second")
+    assert loaded_operation.map_selections == ()
+    assert loaded_operation.slice_dim == "y"
+    assert loaded_operation.slice_values == (0.0,)
+    tool.set_source_data({"primary": primary, "first": first, "second": second})
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    assert shape.valid
+    assert shape.plot_ndim == 2
+
+
+def test_figure_composer_plot_slices_migrates_per_source_map_selections_to_aliases(
     qtbot,
 ) -> None:
     first = xr.DataArray(
@@ -82,11 +160,65 @@ def test_figure_composer_plot_slices_clears_unsupported_multi_map_selections(
     qtbot.addWidget(tool)
 
     [loaded_operation] = tool.tool_status.operations
-    assert loaded_operation.sources == ("first", "second")
+    assert loaded_operation.sources == ("first_selected", "second_selected")
     assert loaded_operation.map_selections == ()
+    source_by_name = {source.name: source for source in tool.source_states()}
+    assert source_by_name["first_selected"].selection_source == "first"
+    assert source_by_name["first_selected"].qsel == {"y": 0.0}
+    assert source_by_name["second_selected"].selection_source == "second"
+    assert source_by_name["second_selected"].qsel == {"y": 2.0}
+    xr.testing.assert_identical(tool.source_data()["first_selected"], first.qsel(y=0.0))
+    xr.testing.assert_identical(
+        tool.source_data()["second_selected"], second.qsel(y=2.0)
+    )
 
 
-def test_figure_composer_plot_slices_source_selector_updates_alias_sources(
+def test_figure_composer_plot_slices_restores_deferred_source_alias_data(
+    qtbot,
+) -> None:
+    first = _plot_slices_selection_migration_data()
+    second = first + 100.0
+    second.name = "second"
+    primary = first.rename("primary")
+    tool = FigureComposerTool.from_sources(
+        {"primary": primary},
+        sources=(
+            FigureSourceState(name="primary", label="primary"),
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(
+            FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=("first", "second"),
+                map_selections=(
+                    FigureDataSelectionState(source="first", qsel={"y": 0.0}),
+                    FigureDataSelectionState(source="second", qsel={"y": 2.0}),
+                ),
+                axes=FigureAxesSelectionState(),
+            ),
+        ),
+        primary_source="primary",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.sources == ("first_selected", "second_selected")
+    assert "first_selected" not in tool.source_data()
+    tool._restore_persistence_data_items(
+        {"first": first, "second": second},
+        xr.Dataset(),
+    )
+    xr.testing.assert_identical(tool.source_data()["first_selected"], first.qsel(y=0.0))
+    xr.testing.assert_identical(
+        tool.source_data()["second_selected"], second.qsel(y=2.0)
+    )
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    assert shape.valid
+    assert shape.plot_ndim == 2
+
+
+def test_figure_composer_plot_slices_source_selector_updates_sliced_sources(
     qtbot,
 ) -> None:
     first = _figure_composer_image_source("first")
@@ -116,7 +248,7 @@ def test_figure_composer_plot_slices_source_selector_updates_alias_sources(
     checks["second"].setCheckState(QtCore.Qt.CheckState.Checked)
 
     updated = tool.tool_status.operations[0]
-    assert updated.sources == ("first_selected", "second")
+    assert updated.sources == ("first", "second")
     assert updated.map_selections == ()
 
     qtbot.waitUntil(
@@ -129,14 +261,14 @@ def test_figure_composer_plot_slices_source_selector_updates_alias_sources(
             tool.tool_status.operations[0].sources
             == (
                 "second",
-                "first_selected",
+                "first",
             )
         ),
         timeout=1000,
     )
 
     updated = tool.tool_status.operations[0]
-    assert updated.sources == ("second", "first_selected")
+    assert updated.sources == ("second", "first")
     assert updated.map_selections == ()
 
 
