@@ -249,7 +249,7 @@ and right-click context menus:
 - {guilabel}`Add to Figure…`
 
   Create a new {ref}`Figure Composer <figure-composer>` figure from the selected rows.
-  When figures already exist, this action can also add a new plotting step, add data
+  When figures already exist, this action can also append a plotting step, add data
   sources without changing the recipe, or replace a source in the selected figure.
 
 - {guilabel}`Reload Data`
@@ -293,6 +293,9 @@ ImageTool rows to send their data to {ref}`Figure Composer <figure-composer>`. W
 figures exist, the manager creates a new figure immediately. When figures already exist,
 choose whether to create another figure, append a new recipe step, add the selected data
 as sources only, or replace one source in the selected figure.
+
+You can also drag ImageTool rows from the manager tree into an open Figure Composer
+window to add them as sources.
 
 New figures appear in a {guilabel}`Figures` tab in the manager.
 

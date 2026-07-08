@@ -23,19 +23,43 @@ Open data in ImageTool Manager, then use one of these entry points:
   existing figure.
 - From ImageTool Manager, select one or more ImageTool rows and click
   {guilabel}`Add to Figure…` in the right-click context menu of the selection.
+- Drag ImageTool rows from the manager into an open Figure Composer window to add them
+  as sources.
 
 Figures are listed in the manager's {guilabel}`Figures` tab, which appears after a
 figure is created.
+
+(figure-composer-sources)=
+
+## Sources
+
+The {guilabel}`Sources` tab lists the named data variables stored with the figure. Data
+must be added to this list before it can be plotted.
+
+Use {guilabel}`Add…` to choose ImageTool rows from the manager. You can also drag
+ImageTool rows from the manager into the composer controls or figure window.
+
+Use {guilabel}`Refresh Sources` to fetch latest data from the linked ImageTool.
+
+When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the corresponding
+ImageTool rows are added to the figure sources. In that dialog, different choices for
+{guilabel}`Action` determine how the selected data is added to the figure:
+
+- {guilabel}`New Figure` creates another Figure Composer window.
+- {guilabel}`Add New Step` adds the selected ImageTool data and appends a plotting step.
+- {guilabel}`Add Source Only` adds the selected ImageTool data to the figure without
+  creating or changing recipe steps.
+- {guilabel}`Replace Source` keeps the existing figure recipe intact but swaps one
+  source to use data from the selected ImageTool. This is useful when you have formatted
+  a figure and want to reuse the same recipe, axes, styles, and generated variable names
+  with updated or comparable data.
 
 (figure-composer-layout)=
 
 ## Layout
 
-In the controls window of the Figure Composer, the layout shows tabs for the global
-figure structure and the recipe steps.
-
-The {guilabel}`Layout` tab controls the global figure structure, where you can define
-the size and DPI of the figure, and the number of axes and their arrangement.
+The {guilabel}`Layout` tab controls the global figure structure. You can define the size
+and DPI of the figure, and the number of axes and their arrangement.
 
 - Use {guilabel}`Subplots` mode for regular grids created with
   {func}`matplotlib.pyplot.subplots`.
@@ -58,8 +82,7 @@ the figure state created by earlier steps.
 Every step has a type, a target (axes or figure), and a set of controls for the
 arguments of the plotting or styling calls it generates.
 
-There are several step types, each with a different set of controls for the generated
-code:
+There are several step types:
 
 - {guilabel}`Set Palette` to set the line color cycle with {func}`seaborn.set_palette`.
 - {guilabel}`Image Plot` for one two-dimensional image on one axes. Uses
@@ -94,34 +117,15 @@ method.
 
 :::
 
-Steps can be enabled, disabled, duplicated, reordered, cut, copied, pasted, or removed.
+Steps can be enabled, disabled, cut, copied, pasted, or removed from the toolbar.
+Reorder steps by dragging them in the list. Use the right-click context menu to
+duplicate steps or move them.
 
 By selecting multiple steps, you can edit them simultaneously to apply the same change
 to all selected steps. Copied or cut steps can be pasted into another Figure Composer.
 
 When the source and destination composers are open in the same app process, pasted steps
 also bring the data sources they use.
-
-(figure-composer-sources)=
-
-### Step sources
-
-Because data sources are selected and updated per recipe step, the step controls include
-a {guilabel}`Sources` view. It lists the data stored with the figure, indicates which
-sources are used by the selected step, and lets you update the data available to recipe
-steps without rebuilding the rest of the figure.
-
-When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the
-{guilabel}`Action` menu updates this same source set:
-
-- {guilabel}`New Figure` creates another Figure Composer window.
-- {guilabel}`Add New Step` adds the selected ImageTool data and appends a plotting step.
-- {guilabel}`Add Source Only` adds the selected ImageTool data to the figure without
-  creating or changing recipe steps.
-- {guilabel}`Replace Source` keeps the existing figure recipe intact but swaps one
-  source to use data from the selected ImageTool. This is useful when you have formatted
-  a figure and want to reuse the same recipe, axes, styles, and generated variable names
-  with updated or comparable data.
 
 (figure-composer-toolbar)=
 
