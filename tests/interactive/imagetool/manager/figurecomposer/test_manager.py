@@ -52,6 +52,45 @@ def _source_picker_item(
     raise AssertionError(f"missing picker row for {uid!r}")
 
 
+def test_manager_figure_operation_source_name_mapping_updates_all_fields() -> None:
+    method_x = FigureMethodPlotValueState(source="old", kind="data")
+    method_y = FigureMethodPlotValueState(source="other", kind="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+    ).model_copy(
+        update={
+            "sources": ("old", "other"),
+            "map_selections": (
+                FigureDataSelectionState(source="old", qsel={"x": 0.0}),
+            ),
+            "line_source": "old",
+            "hv_overlay_source": "old",
+            "method_plot_x": method_x,
+            "method_plot_y": method_y,
+        }
+    )
+
+    assert (
+        manager_mainwindow.ImageToolManager._figure_operation_with_source_names(
+            operation, {}
+        )
+        is operation
+    )
+    renamed = manager_mainwindow.ImageToolManager._figure_operation_with_source_names(
+        operation, {"old": "new"}
+    )
+
+    assert renamed.sources == ("new", "other")
+    assert renamed.map_selections == (
+        FigureDataSelectionState(source="new", qsel={"x": 0.0}),
+    )
+    assert renamed.line_source == "new"
+    assert renamed.hv_overlay_source == "new"
+    assert renamed.method_plot_x == method_x.model_copy(update={"source": "new"})
+    assert renamed.method_plot_y is method_y
+
+
 def test_manager_default_figure_seed_uses_public_nonuniform_dims(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3798,6 +3837,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
 
 def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
     qtbot,
+    monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -3853,6 +3893,31 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
         )
         xr.testing.assert_identical(
             figure_tool.source_data()[child_source_name], child_data.rename("child")
+        )
+
+        assert not manager._add_imagetool_sources_to_figure(
+            figure_uid, (figure_uid,), show=False
+        )
+        assert not manager._request_add_sources_to_figure("missing-figure")
+        assert not manager._add_figure_sources_from_mime(figure_uid, QtCore.QMimeData())
+
+        original_add_sources = manager._add_sources_to_figure
+        monkeypatch.setattr(
+            manager,
+            "_add_sources_to_figure",
+            lambda *_args, **_kwargs: False,
+        )
+        assert not manager._add_imagetool_sources_to_figure(
+            figure_uid, (second_uid,), show=False
+        )
+        monkeypatch.setattr(manager, "_add_sources_to_figure", original_add_sources)
+
+        assert manager._add_imagetool_sources_to_figure(
+            figure_uid, (second_uid, figure_uid), show=False
+        )
+        assert "Updated 1 ImageTool source" in figure_tool.source_status_label.text()
+        assert (
+            "Skipped 1 unsupported selection" in figure_tool.source_status_label.text()
         )
 
 

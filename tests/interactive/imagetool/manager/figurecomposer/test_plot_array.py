@@ -94,6 +94,27 @@ def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
     assert updated.map_selections == ()
 
 
+def test_figure_composer_plot_array_source_code_handles_missing_primary(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(FigureOperationState.plot_array(label="array", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    operation = tool.tool_status.operations[0].model_copy(update={"sources": ()})
+    monkeypatch.setattr(
+        figurecomposer_plot_array,
+        "_selected_plot_array_data",
+        lambda *_args, **_kwargs: data,
+    )
+
+    assert figurecomposer_plot_array._plot_array_source_code(tool, operation) is None
+
+
 def test_figure_composer_source_selection_editor_updates_source_snapshot(
     qtbot,
 ) -> None:

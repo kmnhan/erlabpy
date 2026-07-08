@@ -25,6 +25,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import (
+    _FIGURE_SOURCE_MIME,
     _MIME,
     _ImageToolWrapperItemDelegate,
     _RowBadge,
@@ -248,6 +249,10 @@ def test_drop_mimedata(
 
         # Check mimedata
         model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        assert (
+            model.supportedDragActions()
+            == QtCore.Qt.DropAction.MoveAction | QtCore.Qt.DropAction.CopyAction
+        )
 
         # Drop None
         assert not model.canDropMimeData(None, 0, 0, 0, QtCore.QModelIndex())
@@ -399,6 +404,26 @@ def test_drop_mimedata(
             QtCore.QByteArray(json.dumps("not a dict").encode("utf-8")),
         )
         assert model._decode_mime(invalid_mime) is None
+
+        logger.info("Testing invalid Figure Composer source mimedata decoding")
+        assert model.decode_figure_source_mime(None) == ()
+        invalid_source_mime = QtCore.QMimeData()
+        invalid_source_mime.setData(_FIGURE_SOURCE_MIME, QtCore.QByteArray(b"not json"))
+        assert model.decode_figure_source_mime(invalid_source_mime) == ()
+        invalid_source_mime.setData(
+            _FIGURE_SOURCE_MIME,
+            QtCore.QByteArray(json.dumps("not a dict").encode("utf-8")),
+        )
+        assert model.decode_figure_source_mime(invalid_source_mime) == ()
+        invalid_source_mime.setData(
+            _FIGURE_SOURCE_MIME,
+            QtCore.QByteArray(json.dumps({"uids": "not a list"}).encode("utf-8")),
+        )
+        assert model.decode_figure_source_mime(invalid_source_mime) == ()
+
+        missing_child_index = model.createIndex(0, 0, "missing-child")
+        missing_child_mime = model.mimeData([missing_child_index])
+        assert _MIME not in missing_child_mime.formats()
 
 
 def test_treeview(qtbot, accept_dialog, test_data) -> None:

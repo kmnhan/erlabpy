@@ -113,7 +113,9 @@ class _FakeEditorTool:
         layout.addRow(label, widget)
 
 
-def test_source_selection_state_helpers_cover_shared_and_per_source_paths() -> None:
+def test_source_selection_state_helpers_cover_shared_and_per_source_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     empty = FigureDataSelectionState(source="data")
     first = FigureDataSelectionState(source="a", qsel={"eV": 0.0})
     first_for_b = first.model_copy(update={"source": "b"})
@@ -187,6 +189,22 @@ def test_source_selection_state_helpers_cover_shared_and_per_source_paths() -> N
         keep_source_only=False,
     )
     assert empty_tool.operation.map_selections == ()
+
+    monkeypatch.setattr(source_selection, "shared_selection", lambda _selections: None)
+    fallback_tool = _FakeSelectionTool(no_selection_operation)
+    source_selection.set_source_selection_per_source_enabled(
+        fallback_tool,
+        no_selection_operation,
+        False,
+        attr_name="_enabled_ids",
+        source_getter=lambda target: target.sources,
+        operation_factory=_operation_factory,
+        keep_source_only=True,
+    )
+    assert fallback_tool.operation.map_selections == (
+        FigureDataSelectionState(source="a"),
+        FigureDataSelectionState(source="b"),
+    )
 
 
 def test_source_selection_operation_helpers_cover_empty_and_effective_paths() -> None:

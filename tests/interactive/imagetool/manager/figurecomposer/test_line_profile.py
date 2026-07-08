@@ -128,6 +128,18 @@ def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None
     assert line_items[0].dims == ("alpha",)
 
 
+def test_figure_composer_line_offset_coords_empty_without_iter_dim() -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("cut", "kx"),
+        coords={"cut": [0.0, 1.0], "kx": [0.0, 0.5, 1.0]},
+        name="profiles",
+    )
+    operation = FigureOperationState.line(label="line", source="profiles")
+
+    assert figurecomposer_line_profile._line_offset_coord_names(data, operation) == []
+
+
 def test_figure_composer_line_profile_operation_uses_semantic_sections(
     qtbot,
 ) -> None:

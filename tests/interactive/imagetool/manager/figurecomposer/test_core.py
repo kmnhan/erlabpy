@@ -214,6 +214,23 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     )
 
 
+def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._set_preview_draw_error(tool, RuntimeError("boom"))
+
+    assert tool._operation_render_errors == {}
+
+
 def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 2, 2),

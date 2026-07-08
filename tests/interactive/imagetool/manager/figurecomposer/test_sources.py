@@ -735,6 +735,68 @@ def test_figure_composer_source_list_edge_events(qtbot) -> None:
 
     assert emitted == []
 
+    event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_A,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    source_list.keyPressEvent(event)
+
+
+def test_figure_composer_source_alias_editor_commit_paths(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = {name: _figure_composer_profile_source(name) for name in ("first", "second")}
+    tool = FigureComposerTool.from_sources(
+        data,
+        sources=tuple(FigureSourceState(name=name) for name in data),
+        setup=FigureSubplotsState(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"first"}, "first")
+    tool._refresh_source_selection_editor()
+    alias_edit = tool.source_selection_controls.findChild(
+        QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
+    )
+    assert alias_edit is not None
+
+    monkeypatch.setattr(tool, "sender", lambda: alias_edit)
+    alias_edit.setText("first")
+    tool._commit_source_alias_edit()
+    assert tuple(source.name for source in tool.source_states()) == ("first", "second")
+
+    alias_edit.setText("second")
+    tool._commit_source_alias_edit()
+    assert "already in use" in tool.source_status_label.text()
+    assert alias_edit.text() == "first"
+
+    alias_edit.setText("renamed")
+    tool._commit_source_alias_edit()
+    assert tuple(source.name for source in tool.source_states()) == (
+        "renamed",
+        "second",
+    )
+    assert "renamed" in tool._source_data
+
+
+def test_figure_composer_remove_selected_sources_removes_available_rows(qtbot) -> None:
+    data = {name: _figure_composer_profile_source(name) for name in ("first", "second")}
+    tool = FigureComposerTool.from_sources(
+        data,
+        sources=tuple(FigureSourceState(name=name) for name in data),
+        operations=(FigureOperationState.line(label="line", source="first"),),
+        setup=FigureSubplotsState(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"second"}, "second")
+
+    tool._remove_selected_sources()
+
+    assert tuple(source.name for source in tool.source_states()) == ("first",)
+    assert "second" not in tool._source_data
+
 
 def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     qtbot,
@@ -1277,6 +1339,53 @@ def test_figure_composer_source_refresh_applies_saved_selection(
     assert tool.source_status_label.text() == ""
 
 
+def test_figure_composer_refresh_from_sources_covers_edge_paths(qtbot) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "alpha"),
+        coords={"eV": [-1.0, 0.0], "alpha": [0.0, 1.0, 2.0]},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(3.0),
+        dims=("alpha",),
+        coords={"alpha": [0.0, 1.0, 2.0]},
+        name="second",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(
+                name="first",
+                qsel={"eV": 0.0},
+                selection_source="first",
+            ),
+            FigureSourceState(name="second"),
+        ),
+        operations=(FigureOperationState.plot_array(label="array", source="first"),),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    tool.refresh_from_sources({})
+    assert tool.source_status_label.text() == ""
+
+    incompatible = second + 10.0
+    tool.refresh_from_sources({"first": incompatible})
+    assert "Could not refresh source data for: first" in tool.source_status_label.text()
+
+    refreshed_second = second + 20.0
+    tool._source_selection_base_data["second"] = second
+    tool.refresh_from_sources({"second": refreshed_second})
+    xr.testing.assert_identical(tool.source_data()["second"], refreshed_second)
+    assert "second" not in tool._source_selection_base_data
+    assert tool.source_status_label.text() == ""
+
+    extra = xr.DataArray(np.arange(2.0), dims=("x",), name="extra")
+    tool.refresh_from_sources({"extra": extra})
+    xr.testing.assert_identical(tool.source_data()["extra"], extra)
+
+
 def test_figure_composer_batch_source_selection_skips_incompatible_sources(
     qtbot,
 ) -> None:
@@ -1319,6 +1428,104 @@ def test_figure_composer_batch_source_selection_skips_incompatible_sources(
     xr.testing.assert_identical(tool.source_data()["first"], first.isel(x=1))
     xr.testing.assert_identical(tool.source_data()["second"], second)
     assert "second" in tool.source_status_label.text()
+
+
+def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
+    base_data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "alpha"),
+        coords={"eV": [-1.0, 0.0], "alpha": [0.0, 1.0, 2.0]},
+        name="base",
+    )
+    base_spec = provenance.public_data().model_dump(mode="json")
+    base_source = FigureSourceState(
+        name="base",
+        node_uid="base-node",
+        provenance_spec=base_spec,
+    )
+    selected_source = FigureSourceState(
+        name="base_selected",
+        selection_source="base",
+        qsel={"eV": 0.0},
+        mean_dims=("alpha",),
+        provenance_spec=base_spec,
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": base_data, "base_selected": base_data.qsel(eV=0.0).mean("alpha")},
+        sources=(base_source, selected_source),
+        operations=(
+            FigureOperationState.plot_array(label="array", source="base_selected"),
+        ),
+        setup=FigureSubplotsState(),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    operation_types = tuple(
+        type(operation)
+        for operation in tool._source_selection_replay_operations(
+            selected_source.model_copy(update={"isel": {"alpha": 1}})
+        )
+    )
+    assert operation_types == (
+        provenance.IselOperation,
+        provenance.QSelOperation,
+        provenance.QSelAggregationOperation,
+    )
+    assert tool._source_code_name_candidate("ImageTool 3: data_5") == "source_5"
+    assert tool._source_code_name_candidate("2 sample map") == "source_2_sample_map"
+    assert tool._source_code_name_candidate("class") is None
+    assert tool._source_code_name_candidate(" !!! ") is None
+
+    used_names = {"source"}
+    assert (
+        tool._source_display_code_name(
+            FigureSourceState(name=" !!! "), used_names=used_names
+        )
+        == "source_2"
+    )
+    assert "source_2" in used_names
+
+    script_input = provenance.ScriptInput(name="base", provenance_spec=base_spec)
+    assert tool._script_input_with_name(script_input, "base") is script_input
+    assert tool._script_input_with_name(script_input, "renamed").name == "renamed"
+
+    renamed_input = tool._selected_source_script_input(
+        base_source,
+        display_name="display_base",
+        source_by_name={"base": base_source},
+    )
+    assert renamed_input is not None
+    assert renamed_input.name == "display_base"
+
+    selected_input = tool._selected_source_script_input(
+        selected_source,
+        display_name="display_selected",
+        source_by_name={"base": base_source, "base_selected": selected_source},
+    )
+    assert selected_input is not None
+    assert selected_input.name == "display_selected"
+    selected_spec = selected_input.parsed_provenance_spec()
+    assert selected_spec is not None
+    assert len(selected_spec.replay_stages) == 1
+    assert len(selected_spec.replay_stages[0].operations) == 2
+
+    assert (
+        tool._selected_source_script_input(
+            FigureSourceState(name="live_selected", selection_source="missing"),
+            display_name="live_selected",
+            source_by_name={},
+        )
+        is None
+    )
+    assert (
+        tool._selected_source_script_input(
+            FigureSourceState(name="invalid", node_uid="node"),
+            display_name="invalid",
+            source_by_name={},
+        )
+        is None
+    )
 
 
 def test_figure_composer_source_helpers_cover_selection_contract() -> None:
