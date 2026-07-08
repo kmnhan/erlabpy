@@ -15552,6 +15552,38 @@ def test_pending_workspace_filter_validation(monkeypatch) -> None:
     xr.testing.assert_identical(filtered, data)
 
 
+def test_pending_workspace_source_data_decodes_saved_state_attrs(monkeypatch) -> None:
+    controller = manager_workspace_io._WorkspaceIOController.__new__(
+        manager_workspace_io._WorkspaceIOController
+    )
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    payload = xr.Dataset(
+        {data_name: xr.DataArray(np.arange(3.0), dims=("x",), name=data_name)}
+    )
+
+    monkeypatch.setattr(
+        controller,
+        "_workspace_imagetool_reference_dataset",
+        lambda *_args, **_kwargs: payload,
+    )
+
+    node = types.SimpleNamespace(
+        name="restored",
+        pending_workspace_payload_attrs={
+            "itool_state": json.dumps({"filter_operation": None}).encode()
+        },
+    )
+    loaded = controller._pending_workspace_lazy_source_data(node)
+    assert loaded.name == "restored"
+    np.testing.assert_array_equal(loaded.values, np.arange(3.0))
+
+    node.pending_workspace_payload_attrs = {"itool_state": "{"}
+    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+
+    node.pending_workspace_payload_attrs = {"itool_state": "[]"}
+    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+
+
 def test_pending_workspace_metadata_coord_load_failure_falls_back(
     tmp_path, monkeypatch
 ) -> None:

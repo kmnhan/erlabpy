@@ -175,6 +175,19 @@ def test_source_selection_state_helpers_cover_shared_and_per_source_paths() -> N
     assert tool.update_flags == (True, True)
     assert tool.operation.map_selections == (first, first_for_b)
 
+    no_selection_operation = operation.model_copy(update={"map_selections": ()})
+    empty_tool = _FakeSelectionTool(no_selection_operation)
+    source_selection.set_source_selection_per_source_enabled(
+        empty_tool,
+        no_selection_operation,
+        False,
+        attr_name="_enabled_ids",
+        source_getter=lambda target: target.sources,
+        operation_factory=_operation_factory,
+        keep_source_only=False,
+    )
+    assert empty_tool.operation.map_selections == ()
+
 
 def test_source_selection_operation_helpers_cover_empty_and_effective_paths() -> None:
     operation = FigureOperationState.plot_slices(
@@ -336,6 +349,22 @@ def test_source_selection_combo_and_dimension_controls(qtbot) -> None:
     assert combo.currentData() == "qsel"
     assert tool.marked == [combo]
 
+    default_combo = source_selection.selection_mode_combo(
+        cast("Any", tool),
+        current=None,
+        mixed=False,
+        parent=parent,
+    )
+    assert default_combo.currentData() == "keep"
+
+    unknown_combo = source_selection.selection_mode_combo(
+        cast("Any", tool),
+        current="unknown",
+        mixed=False,
+        parent=parent,
+    )
+    assert unknown_combo.currentData() == "keep"
+
     mixed_combo = source_selection.selection_mode_combo(
         cast("Any", tool),
         current=None,
@@ -366,6 +395,11 @@ def test_source_selection_combo_and_dimension_controls(qtbot) -> None:
     assert not value_edit.isHidden()
     assert not width_edit.isHidden()
 
+    update_count = len(updates)
+    value_edit.setText("")
+    combo.activated.emit(combo.currentIndex())
+    assert len(updates) == update_count
+
     value_edit.setText("1.0")
     value_edit.editingFinished.emit()
     assert updates[-1] == ("eV", "qsel", "1.0", "0.1")
@@ -383,6 +417,11 @@ def test_source_selection_combo_and_dimension_controls(qtbot) -> None:
     assert not value_edit.isVisible()
     assert not width_edit.isVisible()
     assert tool.cleared[-2:] == [value_edit, width_edit]
+
+    update_count = len(updates)
+    value_edit.editingFinished.emit()
+    width_edit.editingFinished.emit()
+    assert len(updates) == update_count
 
 
 def test_add_selection_dimension_rows_builds_empty_and_dimensional_rows(qtbot) -> None:

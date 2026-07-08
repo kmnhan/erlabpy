@@ -1271,6 +1271,12 @@ def test_figure_composer_line_profile_helper_edges() -> None:
     )
     assert figurecomposer_line_profile._line_color_mode_from_text("Manual") == "manual"
     assert (
+        figurecomposer_line_profile._line_selection_sources(
+            operation.model_copy(update={"line_source": None})
+        )
+        == ()
+    )
+    assert (
         figurecomposer_line_profile._available_line_value_names(
             tool, operation.model_copy(update={"line_source": None})
         )
@@ -1288,6 +1294,12 @@ def test_figure_composer_line_profile_helper_edges() -> None:
     assert figurecomposer_line_profile._available_line_offset_coords(
         tool, operation
     ) == ["offset"]
+    assert (
+        figurecomposer_line_profile._available_line_offset_coords(
+            tool, operation.model_copy(update={"line_iter_dim": None})
+        )
+        == []
+    )
 
     updates: list[dict[str, object]] = []
     cmap_tool = types.SimpleNamespace(
