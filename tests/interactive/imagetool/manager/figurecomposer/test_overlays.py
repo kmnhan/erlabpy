@@ -9,7 +9,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     )
     tool = _bz_tool(operation)
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     tool._select_step_section("slice")
     page = tool.step_editor_stack.currentWidget()
@@ -360,7 +360,7 @@ def test_figure_composer_bz_overlay_helper_edges(qtbot, monkeypatch) -> None:
     )
     figurecomposer_bz_overlay._render_bz_overlay(tool, operation, None)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     created = figurecomposer_bz_overlay._create_operation(tool)
     assert created.kind == FigureOperationKind.BZ_OVERLAY
     assert figurecomposer_bz_overlay._section_summary(tool, "unknown", operation) == ""
@@ -593,7 +593,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
         extra_source_data={"other_kconv": other_data},
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     source_combo = next(
         (
@@ -1065,7 +1065,7 @@ def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding
         primary_source="hvdep_kconv",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     action = next(
         action
@@ -1117,7 +1117,7 @@ def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
         primary_source="hvdep_kconv",
     )
     qtbot.addWidget(line_tool)
-    line_tool.operation_list.setCurrentRow(0)
+    line_tool.operation_list.setCurrentItem(line_tool.operation_list.topLevelItem(0))
 
     assert figurecomposer_photon_energy._seed_source(line_tool) == "hvdep_kconv"
     assert figurecomposer_photon_energy._seed_binding_energy(line_tool) is None

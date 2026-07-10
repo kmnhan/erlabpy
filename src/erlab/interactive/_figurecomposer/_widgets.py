@@ -140,7 +140,7 @@ def _selector_colors(widget: QtWidgets.QWidget) -> _SelectorColors:
 
 def _draw_selector_rect(
     painter: QtGui.QPainter,
-    rect: QtCore.QRect,
+    rect: QtCore.QRect | QtCore.QRectF,
     *,
     facecolor: QtGui.QColor,
     edgecolor: QtGui.QColor,
@@ -174,6 +174,313 @@ def _centered_rect(
     rect = QtCore.QRect(0, 0, width, height)
     rect.moveCenter(available.center())
     return rect
+
+
+def _ratio_edges(
+    start: float, size: float, count: int, ratios: Sequence[float]
+) -> tuple[float, ...]:
+    if count <= 0:
+        return (start,)
+    if len(ratios) != count or sum(ratios) <= 0:
+        ratios = tuple(1.0 for _index in range(count))
+    total = float(sum(ratios))
+    edges = [start]
+    current = start
+    for ratio in ratios:
+        current += size * float(ratio) / total
+        edges.append(current)
+    return tuple(edges)
+
+
+def _grid_span_within(
+    grid: FigureGridSpecGridState, span: FigureGridSpecSpanState
+) -> bool:
+    return (
+        0 <= span.row_start < span.row_stop <= grid.nrows
+        and 0 <= span.col_start < span.col_stop <= grid.ncols
+    )
+
+
+def _grid_span_rect(
+    grid: FigureGridSpecGridState,
+    grid_rect: QtCore.QRectF,
+    span: FigureGridSpecSpanState,
+    *,
+    gap: float,
+) -> QtCore.QRectF:
+    x_edges = _ratio_edges(
+        grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
+    )
+    y_edges = _ratio_edges(
+        grid_rect.top(), grid_rect.height(), grid.nrows, grid.height_ratios
+    )
+    left = x_edges[span.col_start] + (gap / 2 if span.col_start else 0)
+    right = x_edges[span.col_stop] - (gap / 2 if span.col_stop < grid.ncols else 0)
+    top = y_edges[span.row_start] + (gap / 2 if span.row_start else 0)
+    bottom = y_edges[span.row_stop] - (gap / 2 if span.row_stop < grid.nrows else 0)
+    return QtCore.QRectF(left, top, max(0.0, right - left), max(0.0, bottom - top))
+
+
+def _subplot_target_preview_descriptor(
+    nrows: int,
+    ncols: int,
+    selected_axes: Sequence[tuple[int, int]],
+    *,
+    unresolved: bool = False,
+) -> tuple[object, ...]:
+    selected = set(selected_axes)
+    if nrows == ncols == 1 and selected == {(0, 0)} and not unresolved:
+        return ("single_axes",)
+    entries = [
+        (
+            "axis",
+            col / ncols,
+            row / nrows,
+            1 / ncols,
+            1 / nrows,
+            (row, col) in selected,
+        )
+        for row in range(nrows)
+        for col in range(ncols)
+    ]
+    return ("layout", 1.55 * ncols / nrows, tuple(entries), unresolved)
+
+
+def _gridspec_target_preview_descriptor(
+    root: FigureGridSpecGridState,
+    selected_axes_ids: Sequence[str],
+) -> tuple[object, ...]:
+    selected = set(selected_axes_ids)
+    entries: list[tuple[object, ...]] = []
+
+    def add_grid(
+        grid: FigureGridSpecGridState,
+        rect: QtCore.QRectF,
+    ) -> None:
+        occupied: set[tuple[int, int]] = set()
+        for child in grid.child_grids:
+            if child.span is None or not _grid_span_within(grid, child.span):
+                continue
+            occupied.update(
+                (row, col)
+                for row in range(child.span.row_start, child.span.row_stop)
+                for col in range(child.span.col_start, child.span.col_stop)
+            )
+        for axis in grid.axes:
+            if not _grid_span_within(grid, axis.span):
+                continue
+            occupied.update(
+                (row, col)
+                for row in range(axis.span.row_start, axis.span.row_stop)
+                for col in range(axis.span.col_start, axis.span.col_stop)
+            )
+        for row in range(grid.nrows):
+            for col in range(grid.ncols):
+                if (row, col) in occupied:
+                    continue
+                cell = _grid_span_rect(
+                    grid,
+                    rect,
+                    FigureGridSpecSpanState(
+                        row_start=row,
+                        row_stop=row + 1,
+                        col_start=col,
+                        col_stop=col + 1,
+                    ),
+                    gap=0.01,
+                )
+                entries.append(
+                    (
+                        "empty",
+                        cell.x(),
+                        cell.y(),
+                        cell.width(),
+                        cell.height(),
+                        False,
+                    )
+                )
+        for child in grid.child_grids:
+            if child.span is None or not _grid_span_within(grid, child.span):
+                continue
+            child_rect = _grid_span_rect(grid, rect, child.span, gap=0.01)
+            entries.append(
+                (
+                    "grid",
+                    child_rect.x(),
+                    child_rect.y(),
+                    child_rect.width(),
+                    child_rect.height(),
+                    False,
+                )
+            )
+            inset = min(child_rect.width(), child_rect.height()) * 0.08
+            nested_rect = child_rect.adjusted(inset, inset, -inset, -inset)
+            if nested_rect.width() > 0 and nested_rect.height() > 0:
+                add_grid(child, nested_rect)
+        for axis in grid.axes:
+            if not _grid_span_within(grid, axis.span):
+                continue
+            axis_rect = _grid_span_rect(grid, rect, axis.span, gap=0.01)
+            entries.append(
+                (
+                    "axis",
+                    axis_rect.x(),
+                    axis_rect.y(),
+                    axis_rect.width(),
+                    axis_rect.height(),
+                    axis.axes_id in selected,
+                )
+            )
+
+    add_grid(root, QtCore.QRectF(0.0, 0.0, 1.0, 1.0))
+    axis_entries = tuple(entry for entry in entries if entry[0] == "axis")
+    if len(axis_entries) == 1 and axis_entries[0][-1]:
+        return ("single_axes",)
+    width_units = sum(root.width_ratios) if root.width_ratios else root.ncols
+    height_units = sum(root.height_ratios) if root.height_ratios else root.nrows
+    aspect = 1.55 * float(width_units) / float(height_units)
+    return ("layout", aspect, tuple(entries), False)
+
+
+class _AxesTargetItemDelegate(QtWidgets.QStyledItemDelegate):
+    """Paint a compact, read-only target layout in an item-view cell."""
+
+    def __init__(
+        self,
+        descriptor_role: int,
+        parent: QtCore.QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._descriptor_role = descriptor_role
+
+    def sizeHint(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ) -> QtCore.QSize:
+        size = super().sizeHint(option, index)
+        size.setHeight(max(22, size.height()))
+        return size
+
+    def paint(
+        self,
+        painter: QtGui.QPainter | None,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ) -> None:
+        if painter is None:  # pragma: no cover - Qt always supplies a painter.
+            return
+        display_option = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(display_option, index)
+        display_option.text = ""
+        display_option.icon = QtGui.QIcon()
+        widget = typing.cast("QtWidgets.QWidget | None", display_option.widget)
+        if widget is None:  # pragma: no cover - item-view paints always own a widget.
+            return
+        style = widget.style()
+        if style is None:  # pragma: no cover - QWidget.style() is populated by Qt.
+            return
+        style.drawControl(
+            QtWidgets.QStyle.ControlElement.CE_ItemViewItem,
+            display_option,
+            painter,
+            widget,
+        )
+        descriptor = index.data(self._descriptor_role)
+        if not isinstance(descriptor, tuple) or not descriptor:
+            return
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        try:
+            if descriptor[0] in {"single_axes", "text"}:
+                text = "Axes" if descriptor[0] == "single_axes" else str(descriptor[1])
+                self._draw_text(painter, display_option, text)
+                return
+            _, aspect_value, entries_value, unresolved = descriptor
+            entries = typing.cast(
+                "tuple[tuple[str, float, float, float, float, bool], ...]",
+                entries_value,
+            )
+            target = self._target_rect(
+                display_option.rect, typing.cast("float", aspect_value)
+            )
+            if target.isEmpty():
+                return
+            colors = _selector_colors(widget)
+            _draw_selector_rect(
+                painter,
+                target,
+                facecolor=colors.panel,
+                edgecolor=colors.border,
+                linewidth=0.8,
+                radius=1.5,
+            )
+            for entry in entries:
+                kind, x, y, width, height, selected = entry
+                rect = QtCore.QRectF(
+                    target.left() + float(x) * target.width(),
+                    target.top() + float(y) * target.height(),
+                    float(width) * target.width(),
+                    float(height) * target.height(),
+                )
+                inset = min(0.25, rect.width() / 4, rect.height() / 4)
+                rect.adjust(inset, inset, -inset, -inset)
+                if rect.width() <= 0 or rect.height() <= 0:
+                    continue
+                is_selected = bool(selected)
+                if kind == "grid":
+                    face = colors.nested_face
+                elif kind == "empty":
+                    face = colors.face
+                else:
+                    face = colors.selection_face if is_selected else colors.face
+                edge = colors.selection if is_selected else colors.border
+                _draw_selector_rect(
+                    painter,
+                    rect,
+                    facecolor=face,
+                    edgecolor=edge,
+                    linewidth=1.4 if is_selected else 0.7,
+                    radius=1.2,
+                )
+            if unresolved:
+                painter.setPen(colors.muted_text)
+                painter.drawText(target, QtCore.Qt.AlignmentFlag.AlignCenter, "?")
+        finally:
+            painter.restore()
+
+    @staticmethod
+    def _target_rect(rect: QtCore.QRect, aspect: float) -> QtCore.QRect:
+        available = rect.adjusted(4, 2, -4, -2)
+        if available.width() <= 0 or available.height() <= 0:
+            return QtCore.QRect()
+        aspect = min(max(aspect, 0.4), 4.5)
+        width = min(float(available.width()), available.height() * aspect)
+        height = min(float(available.height()), width / aspect)
+        target = QtCore.QRect(0, 0, max(1, round(width)), max(1, round(height)))
+        target.moveCenter(available.center())
+        return target
+
+    @staticmethod
+    def _draw_text(
+        painter: QtGui.QPainter,
+        option: QtWidgets.QStyleOptionViewItem,
+        text: str,
+    ) -> None:
+        selected = bool(option.state & QtWidgets.QStyle.StateFlag.State_Selected)
+        role = (
+            QtGui.QPalette.ColorRole.HighlightedText
+            if selected
+            else QtGui.QPalette.ColorRole.Text
+        )
+        painter.save()
+        painter.setPen(option.palette.color(role))
+        painter.drawText(
+            option.rect.adjusted(5, 0, -5, 0),
+            QtCore.Qt.AlignmentFlag.AlignCenter,
+            text,
+        )
+        painter.restore()
 
 
 def _step_toolbar_button(
@@ -2391,38 +2698,13 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         grid_rect: QtCore.QRect,
         span: FigureGridSpecSpanState,
     ) -> QtCore.QRect:
-        x_edges = self._axis_edges(
-            grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
-        )
-        y_edges = self._axis_edges(
-            grid_rect.top(), grid_rect.height(), grid.nrows, grid.height_ratios
-        )
-        gap = self._CELL_GAP
-        left = x_edges[span.col_start] + (gap / 2 if span.col_start else 0)
-        right = x_edges[span.col_stop] - (gap / 2 if span.col_stop < grid.ncols else 0)
-        top = y_edges[span.row_start] + (gap / 2 if span.row_start else 0)
-        bottom = y_edges[span.row_stop] - (gap / 2 if span.row_stop < grid.nrows else 0)
+        rect = _grid_span_rect(grid, QtCore.QRectF(grid_rect), span, gap=self._CELL_GAP)
         return QtCore.QRect(
-            round(left),
-            round(top),
-            max(1, round(right - left)),
-            max(1, round(bottom - top)),
+            round(rect.x()),
+            round(rect.y()),
+            max(1, round(rect.width())),
+            max(1, round(rect.height())),
         )
-
-    def _axis_edges(
-        self, start: int, size: int, count: int, ratios: Sequence[float]
-    ) -> tuple[float, ...]:
-        if count <= 0:
-            return (float(start),)
-        if len(ratios) != count or sum(ratios) <= 0:
-            ratios = tuple(1.0 for _index in range(count))
-        total = float(sum(ratios))
-        edges = [float(start)]
-        current = float(start)
-        for ratio in ratios:
-            current += size * float(ratio) / total
-            edges.append(current)
-        return tuple(edges)
 
     def _axis_at(self, pos: QtCore.QPoint) -> str | None:
         for axes_id, rect in reversed(self._axis_rect_items()):
@@ -2769,10 +3051,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
     def _span_within_grid(
         grid: FigureGridSpecGridState, span: FigureGridSpecSpanState
     ) -> bool:
-        return (
-            0 <= span.row_start < span.row_stop <= grid.nrows
-            and 0 <= span.col_start < span.col_stop <= grid.ncols
-        )
+        return _grid_span_within(grid, span)
 
     @staticmethod
     def _has_toggle_modifier(modifiers: QtCore.Qt.KeyboardModifier) -> bool:

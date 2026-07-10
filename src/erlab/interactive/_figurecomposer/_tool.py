@@ -26,6 +26,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from matplotlib.figure import Figure
 # isort: on
 
+import numpy as np
 import pydantic
 
 import erlab
@@ -33,7 +34,7 @@ import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._toolbar_dialogs
 import erlab.interactive._qt_state as _qt_state
-from erlab.interactive._figurecomposer._axes import _all_axes
+from erlab.interactive._figurecomposer._axes import _all_axes, _axes_expression_value
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
     _figure_draw_context,
@@ -156,10 +157,13 @@ from erlab.interactive._figurecomposer._text import (
 )
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
+    _AxesTargetItemDelegate,
     _FigureComposerDisplayWindow,
+    _gridspec_target_preview_descriptor,
     _GridSpecRegionInfo,
     _GridSpecViewWidget,
     _step_toolbar_button,
+    _subplot_target_preview_descriptor,
 )
 from erlab.interactive.imagetool import provenance
 
@@ -198,13 +202,25 @@ _COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
 _COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
 _RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
+_OPERATION_LIST_STEP_COLUMN = 0
+_OPERATION_LIST_TARGET_COLUMN = 1
+_OPERATION_LIST_STATUS_COLUMN = 2
+_OPERATION_LIST_TARGET_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+_OPERATION_LIST_STATUS_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
 _SOURCE_LIST_SOURCE_COLUMN = 0
 _SOURCE_LIST_SHAPE_COLUMN = 1
-_SOURCE_LIST_ACTION_COLUMN = 2
+_SOURCE_LIST_USED_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
 logger = logging.getLogger(__name__)
+
+_OPERATION_STATUS_LABELS = {
+    "invalid_target": "Invalid target",
+    "missing_source": "Missing source",
+    "invalid_input": "Invalid input",
+    "render_error": "Render error",
+}
 
 
 class _FigureComposerStepMimeData(QtCore.QMimeData):
@@ -232,39 +248,176 @@ def _event_requests_context_menu(event: QtGui.QKeyEvent) -> bool:
     )
 
 
-class _FigureComposerOperationList(QtWidgets.QListWidget):
-    copy_requested = QtCore.Signal()
-    cut_requested = QtCore.Signal()
-    paste_requested = QtCore.Signal()
-    context_menu_requested = QtCore.Signal(QtCore.QPoint)
+class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
+    """Scroll vertically without allowing the editor content to clip horizontally."""
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        content = self.widget()
+        if content is None:
+            return hint
+        width = content.minimumSizeHint().width() + 2 * self.frameWidth()
+        if (
+            self.verticalScrollBarPolicy()
+            != QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ):
+            scrollbar = self.verticalScrollBar()
+            if scrollbar is not None:  # pragma: no branch
+                width += scrollbar.sizeHint().width()
+        return QtCore.QSize(max(hint.width(), width), hint.height())
+
+
+class _FigureComposerStepEditorPage(QtWidgets.QWidget):
+    """Editor page that clears itself with the enclosing tab pane background."""
+
+    def __init__(
+        self,
+        editor_tabs: QtWidgets.QTabWidget,
+        parent: QtWidgets.QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self._editor_tabs = editor_tabs
+        self._background_color = self.palette().color(QtGui.QPalette.ColorRole.Window)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    def _refresh_background(self) -> None:
+        source = self._editor_tabs
+        sample_point = source.rect().center()
+        background = QtGui.QPixmap(1, 1)
+        background.fill(self._background_color)
+        source.render(
+            background,
+            QtCore.QPoint(),
+            QtGui.QRegion(QtCore.QRect(sample_point, QtCore.QSize(1, 1))),
+            QtWidgets.QWidget.RenderFlag.DrawWindowBackground,
+        )
+        color = background.toImage().pixelColor(0, 0)
+        if color.isValid() and color.alpha() != 0:
+            self._background_color = color
+            self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        painter = QtGui.QPainter(self)
+        try:
+            painter.fillRect(self.rect(), self._background_color)
+        finally:
+            painter.end()
+        if event is not None:
+            super().paintEvent(event)
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if event is not None:
+            super().changeEvent(event)
+        if event is not None and event.type() in {
+            QtCore.QEvent.Type.ApplicationPaletteChange,
+            QtCore.QEvent.Type.PaletteChange,
+            QtCore.QEvent.Type.StyleChange,
+        }:
+            self._background_color = self.palette().color(
+                QtGui.QPalette.ColorRole.Window
+            )
+            erlab.interactive.utils.single_shot(self, 0, self._refresh_background)
+
+
+class _FigureComposerReorderList(QtWidgets.QTreeWidget):
     rows_reordered = QtCore.Signal(object, object, object)
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, id_column: int, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.context_menu_requested)
+        self._reorder_id_column = id_column
+        self._rows_reordered_pending = False
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.setDragDropOverwriteMode(False)
-        model = self.model()
-        if model is None:
-            raise RuntimeError("Figure Composer operation list has no item model")
-        model.rowsMoved.connect(self._model_rows_moved)
+
+    def _row_ids(self) -> tuple[str, ...]:
+        row_ids: list[str] = []
+        for row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(row)
+            row_id = (
+                None
+                if item is None
+                else item.data(
+                    self._reorder_id_column,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            if not isinstance(row_id, str):
+                return ()
+            row_ids.append(row_id)
+        return tuple(row_ids)
+
+    def _queue_rows_reordered(self, *_args: object) -> None:
+        if self._rows_reordered_pending:
+            return
+        self._rows_reordered_pending = True
+        # Let QTreeWidget finish transferring ownership of the dragged items before
+        # the recipe refreshes this view.
+        erlab.interactive.utils.single_shot(self, 0, self._emit_rows_reordered)
+
+    def _emit_rows_reordered(self) -> None:
+        self._rows_reordered_pending = False
+        row_ids = self._row_ids()
+        if not row_ids or len(set(row_ids)) != len(row_ids):
+            return
+        current_id = None
+        current_item = self.currentItem()
+        if current_item is not None:
+            candidate = current_item.data(
+                self._reorder_id_column,
+                QtCore.Qt.ItemDataRole.UserRole,
+            )
+            if isinstance(candidate, str):
+                current_id = candidate
+        selected_ids = frozenset(
+            row_id
+            for item in self.selectedItems()
+            if isinstance(
+                row_id := item.data(
+                    self._reorder_id_column,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                ),
+                str,
+            )
+        )
+        self.rows_reordered.emit(row_ids, selected_ids, current_id)
+
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
+        if event is None:
+            return
+        if event.source() is not self:
+            event.ignore()
+            return
+        super().dropEvent(event)
+        if event.isAccepted():
+            self._queue_rows_reordered()
+
+
+class _FigureComposerOperationList(_FigureComposerReorderList):
+    copy_requested = QtCore.Signal()
+    cut_requested = QtCore.Signal()
+    paste_requested = QtCore.Signal()
+    context_menu_requested = QtCore.Signal(QtCore.QPoint)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(_OPERATION_LIST_STEP_COLUMN, parent)
+        self.setColumnCount(3)
+        self.setHeaderLabels(("Step", "Target", "Status"))
+        self.setRootIsDecorated(False)
+        self.setItemsExpandable(False)
+        self.setIndentation(0)
+        self.setUniformRowHeights(True)
+        self.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.context_menu_requested)
 
     def _operation_ids(self) -> tuple[str, ...]:
-        operation_ids: list[str] = []
-        for row in range(self.count()):
-            item = self.item(row)
-            operation_id = (
-                None if item is None else item.data(QtCore.Qt.ItemDataRole.UserRole)
-            )
-            if not isinstance(operation_id, str):
-                return ()
-            operation_ids.append(operation_id)
-        return tuple(operation_ids)
+        return self._row_ids()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
@@ -289,66 +442,17 @@ class _FigureComposerOperationList(QtWidgets.QListWidget):
             return
         super().keyPressEvent(event)
 
-    def _model_rows_moved(self, *_args: object) -> None:
-        operation_ids = self._operation_ids()
-        if not operation_ids or len(set(operation_ids)) != len(operation_ids):
-            return
-        current_item = self.currentItem()
-        current_id = (
-            None
-            if current_item is None
-            else current_item.data(QtCore.Qt.ItemDataRole.UserRole)
-        )
-        selected_ids = frozenset(
-            operation_id
-            for item in self.selectedItems()
-            if isinstance(
-                operation_id := item.data(QtCore.Qt.ItemDataRole.UserRole),
-                str,
-            )
-        )
-        self.rows_reordered.emit(
-            operation_ids,
-            selected_ids,
-            current_id if isinstance(current_id, str) else None,
-        )
 
-
-class _FigureComposerSourceList(QtWidgets.QTreeWidget):
+class _FigureComposerSourceList(_FigureComposerReorderList):
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
-    rows_reordered = QtCore.Signal(object, object, object)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(_SOURCE_LIST_SOURCE_COLUMN, parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
-        self.setDragDropOverwriteMode(False)
-        model = self.model()
-        if model is None:
-            raise RuntimeError("Figure Composer source list has no item model")
-        model.rowsMoved.connect(self._model_rows_moved)
 
     def _source_names(self) -> tuple[str, ...]:
-        source_names: list[str] = []
-        for row in range(self.topLevelItemCount()):
-            item = self.topLevelItem(row)
-            source_name = (
-                None
-                if item is None
-                else item.data(
-                    _SOURCE_LIST_SOURCE_COLUMN,
-                    QtCore.Qt.ItemDataRole.UserRole,
-                )
-            )
-            if not isinstance(source_name, str):
-                return ()
-            source_names.append(source_name)
-        return tuple(source_names)
+        return self._row_ids()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
@@ -360,43 +464,6 @@ class _FigureComposerSourceList(QtWidgets.QTreeWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-
-    def _model_rows_moved(self, *_args: object) -> None:
-        self._emit_rows_reordered()
-
-    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
-        if event is None:
-            return
-        before = self._source_names()
-        super().dropEvent(event)
-        if self._source_names() != before:
-            self._emit_rows_reordered()
-
-    def _emit_rows_reordered(self) -> None:
-        source_names = self._source_names()
-        if not source_names or len(set(source_names)) != len(source_names):
-            return
-        current_name = None
-        current_item = self.currentItem()
-        if current_item is not None:
-            candidate = current_item.data(
-                _SOURCE_LIST_SOURCE_COLUMN,
-                QtCore.Qt.ItemDataRole.UserRole,
-            )
-            if isinstance(candidate, str):
-                current_name = candidate
-        selected_names = frozenset(
-            source_name
-            for item in self.selectedItems()
-            if isinstance(
-                source_name := item.data(
-                    _SOURCE_LIST_SOURCE_COLUMN,
-                    QtCore.Qt.ItemDataRole.UserRole,
-                ),
-                str,
-            )
-        )
-        self.rows_reordered.emit(source_names, selected_names, current_name)
 
 
 def _step_clipboard_payload_text(
@@ -518,6 +585,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rendering = False
         self._auto_redraw_dirty = False
         self._operation_editor_update_pending = False
+        self._operation_axes_sync_pending = False
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
         self._step_tab_order_update_pending = False
@@ -526,6 +594,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._next_combo_popup_guard_token = 0
         self._tracked_combo_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
         self._operation_multi_select_event = False
+        self._operation_selection_input_event = False
+        self._operation_selection_state: tuple[str | None, frozenset[str]] | None = None
         self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
@@ -563,7 +633,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_selection_base_data: dict[str, xr.DataArray] = {}
         self._source_refresh_available_callback: Callable[[str], bool] | None = None
         self._source_refresh_callback: Callable[[str], bool] | None = None
-        self._source_refresh_many_callback: Callable[[Sequence[str]], int] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
         self._source_add_available_callback: Callable[[], bool] | None = None
         self._source_add_callback: Callable[[], bool] | None = None
@@ -933,7 +1002,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         self._update_source_status(current_operation[1] if current_operation else None)
-        self._refresh_source_inspector()
+        self._refresh_source_detail_panel()
         if current_operation is not None and (
             current_operation[1].operation_id in changed_operation_ids
         ):
@@ -1185,6 +1254,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         if event is not None:
             super().showEvent(event)
+        current_page = self.step_editor_stack.currentWidget()
+        if isinstance(current_page, _FigureComposerStepEditorPage):
+            current_page._refresh_background()
         self._request_show_figure_window(activate=False)
 
     def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
@@ -1360,10 +1432,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._show_operation_context_menu
         )
         self.operation_list.rows_reordered.connect(self._operation_list_reordered)
+        self.operation_target_delegate = _AxesTargetItemDelegate(
+            int(_OPERATION_LIST_TARGET_ROLE), self.operation_list
+        )
+        self.operation_list.setItemDelegateForColumn(
+            _OPERATION_LIST_TARGET_COLUMN, self.operation_target_delegate
+        )
         self._operation_list_viewport = self.operation_list.viewport()
         if self._operation_list_viewport is not None:
             self._operation_list_viewport.installEventFilter(self)
-        self.operation_list.currentRowChanged.connect(self._operation_selection_changed)
+        self.operation_list.currentItemChanged.connect(
+            self._operation_current_item_changed
+        )
         self.operation_list.itemSelectionChanged.connect(
             self._operation_selection_changed
         )
@@ -1371,24 +1451,43 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        self.operation_list.setMinimumHeight(72)
+        self.operation_list.setMinimumHeight(140)
         self.operation_list.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.operation_list.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        operation_header = self.operation_list.header()
+        if operation_header is not None:  # pragma: no branch
+            operation_header.setStretchLastSection(False)
+            operation_header.setMinimumSectionSize(48)
+            operation_header.setSectionResizeMode(
+                _OPERATION_LIST_STEP_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Stretch,
+            )
+            operation_header.setSectionResizeMode(
+                _OPERATION_LIST_TARGET_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Interactive,
+            )
+            operation_header.setSectionResizeMode(
+                _OPERATION_LIST_STATUS_COLUMN,
+                QtWidgets.QHeaderView.ResizeMode.Interactive,
+            )
+            operation_header.resizeSection(_OPERATION_LIST_TARGET_COLUMN, 72)
+            operation_header.resizeSection(_OPERATION_LIST_STATUS_COLUMN, 88)
         self.recipe_splitter.addWidget(self.operation_list)
 
         self.step_inspector = QtWidgets.QWidget(recipe_page)
         self.step_inspector.setObjectName("figureComposerStepInspector")
+        self.step_inspector.setAutoFillBackground(False)
         step_inspector_layout = QtWidgets.QHBoxLayout(self.step_inspector)
         step_inspector_layout.setContentsMargins(0, 0, 0, 0)
         step_inspector_layout.setSpacing(6)
         self.recipe_splitter.addWidget(self.step_inspector)
         self.recipe_splitter.setStretchFactor(0, 0)
         self.recipe_splitter.setStretchFactor(1, 1)
-        self.recipe_splitter.setSizes((130, 420))
+        self.recipe_splitter.setSizes((140, 410))
 
         self.step_navigator = QtWidgets.QWidget(self.step_inspector)
         self.step_navigator.setObjectName("figureComposerStepNavigator")
@@ -1400,12 +1499,32 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_section_keys: list[str] = []
         step_inspector_layout.addWidget(self.step_navigator)
 
-        self.step_editor_stack = QtWidgets.QStackedWidget(self.step_inspector)
+        self.step_editor_scroll = _FigureComposerStepEditorScroll(self.step_inspector)
+        self.step_editor_scroll.setObjectName("figureComposerStepEditorScroll")
+        self.step_editor_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.step_editor_scroll.setWidgetResizable(True)
+        self.step_editor_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.step_editor_scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.step_editor_scroll.setAutoFillBackground(False)
+        step_editor_viewport = self.step_editor_scroll.viewport()
+        if step_editor_viewport is not None:  # pragma: no branch
+            step_editor_viewport.setObjectName("figureComposerStepEditorViewport")
+            step_editor_viewport.setAutoFillBackground(False)
+        step_inspector_layout.addWidget(self.step_editor_scroll, 1)
+
+        self.step_editor_stack = QtWidgets.QStackedWidget()
         self.step_editor_stack.setObjectName("figureComposerStepSectionStack")
-        step_inspector_layout.addWidget(self.step_editor_stack, 1)
+        self.step_editor_scroll.setWidget(self.step_editor_stack)
+        self.step_editor_stack.setAutoFillBackground(False)
         self._operation_editor_pages: list[QtWidgets.QWidget] = []
 
-        self.step_sources_page = QtWidgets.QWidget(self.step_editor_stack)
+        self.step_sources_page = _FigureComposerStepEditorPage(
+            self.editor_tabs, self.step_editor_stack
+        )
         self.step_sources_page.setObjectName("figureComposerStepSourcesPage")
         step_sources_layout = QtWidgets.QVBoxLayout(self.step_sources_page)
         step_sources_layout.setContentsMargins(6, 6, 6, 6)
@@ -1461,21 +1580,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_actions_layout.addStretch(1)
         self.refresh_sources_button = QtWidgets.QToolButton(self.source_actions)
         self.refresh_sources_button.setObjectName("figureComposerRefreshSourcesButton")
-        self.refresh_sources_button.setText("Refresh Sources")
-        self.refresh_sources_button.setAccessibleName("Refresh Sources")
+        self.refresh_sources_button.setText("Refresh")
+        self.refresh_sources_button.setAccessibleName("Refresh Selected Sources")
         self.refresh_sources_button.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
         self.refresh_sources_button.setToolButtonStyle(
             QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
         self.refresh_sources_button.setAutoRaise(True)
-        self.refresh_sources_button.clicked.connect(self._refresh_sources_from_button)
+        self.refresh_sources_button.clicked.connect(
+            self._refresh_selected_sources_from_button
+        )
         source_actions_layout.addWidget(self.refresh_sources_button)
         sources_layout.addWidget(self.source_actions)
         sources_layout.addWidget(self.source_status_label)
-        self.source_list = _FigureComposerSourceList(self.sources_page)
+
+        self.source_splitter = QtWidgets.QSplitter(
+            QtCore.Qt.Orientation.Horizontal, self.sources_page
+        )
+        self.source_splitter.setObjectName("figureComposerSourceSplitter")
+        self.source_splitter.setChildrenCollapsible(False)
+        self.source_list = _FigureComposerSourceList(self.source_splitter)
         self.source_list.setObjectName("figureComposerSourceList")
-        self.source_list.setColumnCount(3)
-        self.source_list.setHeaderLabels(("Alias", "Shape", ""))
+        self.source_list.setAccessibleName("Figure Sources")
+        self.source_list.setColumnCount(2)
+        self.source_list.setHeaderLabels(("Alias", "Shape"))
         self.source_list.context_menu_requested.connect(self._show_source_context_menu)
         self.source_list.rows_reordered.connect(self._source_list_reordered)
         self.source_list.setRootIsDecorated(False)
@@ -1511,23 +1639,57 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_header = self.source_list.header()
         if source_header is not None:
             source_header.setStretchLastSection(False)
+            source_header.setMinimumSectionSize(80)
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SOURCE_COLUMN,
                 QtWidgets.QHeaderView.ResizeMode.Stretch,
             )
             source_header.setSectionResizeMode(
                 _SOURCE_LIST_SHAPE_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+                QtWidgets.QHeaderView.ResizeMode.Interactive,
             )
-            source_header.setSectionResizeMode(
-                _SOURCE_LIST_ACTION_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
-            )
-        sources_layout.addWidget(self.source_list, 1)
-        self.source_inspector = SourceInspectorWidget(self.sources_page)
+            source_header.resizeSection(_SOURCE_LIST_SHAPE_COLUMN, 150)
+        self.source_splitter.addWidget(self.source_list)
+
+        self.source_detail_scroll = QtWidgets.QScrollArea(self.source_splitter)
+        self.source_detail_scroll.setObjectName("figureComposerSourceDetailScroll")
+        self.source_detail_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.source_detail_scroll.setWidgetResizable(True)
+        self.source_detail_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.source_detail_content = QtWidgets.QWidget(self.source_detail_scroll)
+        self.source_detail_content.setObjectName("figureComposerSourceDetailContent")
+        source_detail_layout = QtWidgets.QVBoxLayout(self.source_detail_content)
+        source_detail_layout.setContentsMargins(8, 0, 0, 0)
+        source_detail_layout.setSpacing(6)
+
+        self.source_editor_state_label = QtWidgets.QLabel(
+            "Select a source to inspect or edit it.", self.source_detail_content
+        )
+        self.source_editor_state_label.setObjectName("figureComposerSourceEditorState")
+        self.source_editor_state_label.setWordWrap(True)
+        source_detail_layout.addWidget(self.source_editor_state_label)
+
+        self.source_alias_controls = QtWidgets.QWidget(self.source_detail_content)
+        self.source_alias_controls.setObjectName("figureComposerSourceAliasControls")
+        source_alias_layout = QtWidgets.QFormLayout(self.source_alias_controls)
+        source_alias_layout.setContentsMargins(0, 0, 0, 0)
+        source_alias_layout.setSpacing(4)
+        source_alias_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        self.source_alias_edit = QtWidgets.QLineEdit(self.source_alias_controls)
+        self.source_alias_edit.setObjectName("figureComposerSourceAliasEdit")
+        self.source_alias_edit.setToolTip("Rename this source variable.")
+        self.source_alias_edit.editingFinished.connect(self._commit_source_alias_edit)
+        source_alias_layout.addRow("Alias", self.source_alias_edit)
+        source_detail_layout.addWidget(self.source_alias_controls)
+
+        self.source_inspector = SourceInspectorWidget(self.source_detail_content)
         self.source_inspector.setAcceptDrops(True)
-        sources_layout.addWidget(self.source_inspector)
-        self.source_selection_controls = QtWidgets.QWidget(self.sources_page)
+        source_detail_layout.addWidget(self.source_inspector)
+        self.source_selection_controls = QtWidgets.QWidget(self.source_detail_content)
         self.source_selection_controls.setObjectName(
             "figureComposerSourceSelectionControls"
         )
@@ -1540,11 +1702,32 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
         self.source_selection_controls.setAcceptDrops(True)
-        sources_layout.addWidget(self.source_selection_controls)
+        source_detail_layout.addWidget(self.source_selection_controls)
+        self.source_validation_label = QtWidgets.QLabel(self.source_detail_content)
+        self.source_validation_label.setObjectName(
+            "figureComposerSourceValidationStatus"
+        )
+        self.source_validation_label.setWordWrap(True)
+        self.source_validation_label.setVisible(False)
+        source_detail_layout.addWidget(self.source_validation_label)
+        source_detail_layout.addStretch(1)
+        self.source_detail_scroll.setWidget(self.source_detail_content)
+        self.source_detail_content.setAutoFillBackground(False)
+        source_detail_viewport = self.source_detail_scroll.viewport()
+        if source_detail_viewport is not None:  # pragma: no branch
+            source_detail_viewport.setAutoFillBackground(False)
+        self.source_splitter.addWidget(self.source_detail_scroll)
+        self.source_splitter.setStretchFactor(0, 2)
+        self.source_splitter.setStretchFactor(1, 3)
+        self.source_splitter.setSizes((400, 600))
+        sources_layout.addWidget(self.source_splitter, 1)
         for drop_target in (
             self.sources_page,
             self.source_list,
             self.source_list.viewport(),
+            self.source_detail_scroll,
+            self.source_detail_scroll.viewport(),
+            self.source_detail_content,
             self.source_inspector,
             self.source_selection_controls,
         ):
@@ -1552,7 +1735,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 drop_target.setAcceptDrops(True)
                 drop_target.installEventFilter(self)
 
-        self.target_axes_page = QtWidgets.QWidget(self.step_editor_stack)
+        self.target_axes_page = _FigureComposerStepEditorPage(
+            self.editor_tabs, self.step_editor_stack
+        )
         self.target_axes_page.setObjectName("figureComposerTargetAxesPage")
         target_axes_layout = QtWidgets.QVBoxLayout(self.target_axes_page)
         target_axes_layout.setContentsMargins(6, 6, 6, 6)
@@ -2015,8 +2200,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_source_list()
             self._rebuild_axes_grid()
             self._refresh_operation_list()
-            if self.operation_list.count() and self.operation_list.currentRow() < 0:
-                self.operation_list.setCurrentRow(0)
+            if (
+                self.operation_list.topLevelItemCount()
+                and self.operation_list.currentItem() is None
+            ):
+                self.operation_list.setCurrentItem(self.operation_list.topLevelItem(0))
             self._refresh_operation_editor()
         finally:
             self._updating_controls = False
@@ -2031,14 +2219,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         can_refresh_source: Callable[[str], bool] | None = None,
         refresh_source: Callable[[str], bool] | None = None,
-        refresh_sources: Callable[[Sequence[str]], int] | None = None,
         source_label: Callable[[str], str | None] | None = None,
     ) -> None:
         self._source_refresh_available_callback = can_refresh_source
         self._source_refresh_callback = refresh_source
-        self._source_refresh_many_callback = refresh_sources
         self._source_refresh_label_callback = source_label
-        self._refresh_source_controls()
+        self.refresh_source_controls()
 
     def _set_source_add_callbacks(
         self,
@@ -2126,6 +2312,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return values
 
     def _refresh_source_list(self) -> None:
+        inspector = getattr(self, "source_inspector", None)
+        if isinstance(inspector, SourceInspectorWidget):
+            inspector.invalidate_details()
+        selected_names = set(self._selected_source_names())
+        current_name = self._source_name_from_list_item(self.source_list.currentItem())
         self._clear_source_list_widgets()
         source_by_name = {source.name: source for source in self._recipe.sources}
         used_sources = self._sources_used_by_recipe()
@@ -2153,10 +2344,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 missing=name not in source_by_name,
                 used=name in used_sources,
             )
-        self.source_list.resizeColumnToContents(_SOURCE_LIST_SHAPE_COLUMN)
-        self.source_list.resizeColumnToContents(_SOURCE_LIST_ACTION_COLUMN)
+        available_names = set(self._source_names())
+        selected_names.intersection_update(available_names)
+        if current_name not in available_names:
+            current_name = (
+                self._source_inspector_target
+                if self._source_inspector_target in available_names
+                else self._default_source_inspector_target()
+            )
+        if not selected_names and current_name is not None:
+            selected_names.add(current_name)
+        self._set_selected_source_names_silent(selected_names, current_name)
+        self._source_inspector_target = current_name
         self._refresh_source_controls()
-        self._refresh_source_inspector()
+        self._refresh_source_detail_panel()
         self._refresh_source_selection_editor()
 
     def _clear_source_list_widgets(self) -> None:
@@ -2184,12 +2385,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         used: bool = False,
     ) -> None:
         item = QtWidgets.QTreeWidgetItem(
-            [display, "missing" if data is None else "", ""]
+            [display, "Data unavailable" if data is None else ""]
         )
         item.setData(_SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, name)
-        tooltip = self._source_tooltip(name)
-        item.setToolTip(_SOURCE_LIST_SOURCE_COLUMN, tooltip)
-        item.setToolTip(_SOURCE_LIST_SHAPE_COLUMN, tooltip)
+        item.setData(_SOURCE_LIST_SOURCE_COLUMN, _SOURCE_LIST_USED_ROLE, used)
         item.setFlags(
             QtCore.Qt.ItemFlag.ItemIsEnabled
             | QtCore.Qt.ItemFlag.ItemIsSelectable
@@ -2203,10 +2402,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _SOURCE_LIST_SHAPE_COLUMN, QtGui.QBrush(QtGui.QColor("darkRed"))
             )
         self.source_list.addTopLevelItem(item)
-        self._set_source_list_row_used(item, used)
-        action_widget = self._source_action_widget(name, display)
-        item.setSizeHint(_SOURCE_LIST_ACTION_COLUMN, action_widget.sizeHint())
-        self.source_list.setItemWidget(item, _SOURCE_LIST_ACTION_COLUMN, action_widget)
+        self._update_source_list_item(item)
         if data is None:
             return
 
@@ -2236,6 +2432,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         item.setSizeHint(_SOURCE_LIST_SHAPE_COLUMN, shape_label.sizeHint())
         self.source_list.setItemWidget(item, _SOURCE_LIST_SHAPE_COLUMN, shape_label)
 
+    def _update_source_list_item(self, item: QtWidgets.QTreeWidgetItem) -> None:
+        name = self._source_name_from_list_item(item)
+        if name is None:
+            return
+        item.setIcon(_SOURCE_LIST_SOURCE_COLUMN, QtGui.QIcon())
+        tooltip = self._source_tooltip(name)
+        item.setToolTip(_SOURCE_LIST_SOURCE_COLUMN, tooltip)
+        item.setToolTip(_SOURCE_LIST_SHAPE_COLUMN, tooltip)
+        item.setData(
+            _SOURCE_LIST_SOURCE_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+            tooltip,
+        )
+
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, QtWidgets.QTreeWidgetItem)
     def _source_list_current_item_changed(
         self,
@@ -2245,17 +2455,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_source_selection:
             return
         source_name = self._source_name_from_list_item(current)
-        if source_name is None:
-            return
         self._source_inspector_target = source_name
-        self._refresh_source_inspector()
+        self._set_source_validation_text(None)
+        self._refresh_source_detail_panel()
         self._refresh_source_selection_editor()
 
     @QtCore.Slot()
     def _source_list_selection_changed(self) -> None:
         if self._updating_source_selection:
             return
+        self._set_source_validation_text(None)
         self._refresh_source_controls()
+        self._refresh_source_detail_panel()
         self._refresh_source_selection_editor()
 
     @staticmethod
@@ -2275,9 +2486,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_name = self._source_name_from_list_item(item)
             if source_name is not None and source_name not in names:
                 names.append(source_name)
-        current = self._source_name_from_list_item(self.source_list.currentItem())
-        if not names and current is not None:
-            names.append(current)
         return tuple(names)
 
     def _selected_source_indices(self) -> tuple[int, ...]:
@@ -2309,6 +2517,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._updating_source_selection = True
         try:
             self.source_list.clearSelection()
+            if current_name is None:
+                self.source_list.setCurrentIndex(QtCore.QModelIndex())
             current_item: QtWidgets.QTreeWidgetItem | None = None
             for row in range(self.source_list.topLevelItemCount()):
                 item = self.source_list.topLevelItem(row)
@@ -2329,53 +2539,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         finally:
             self._updating_source_selection = False
 
-    def _source_refresh_button(self, name: str) -> QtWidgets.QToolButton:
-        button = QtWidgets.QToolButton(self.source_list)
-        button.setObjectName("figureComposerRefreshSourceButton")
-        button.setProperty("figure_source_name", name)
-        button.setAccessibleName("Refresh Source")
-        button.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
-        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setAutoRaise(True)
-        button.clicked.connect(
-            functools.partial(self._refresh_source_from_button, name)
-        )
-        return button
-
-    def _source_remove_button(self, name: str) -> QtWidgets.QToolButton:
-        button = QtWidgets.QToolButton(self.source_list)
-        button.setObjectName("figureComposerRemoveSourceButton")
-        button.setProperty("figure_source_name", name)
-        button.setAccessibleName("Remove Source")
-        button.setIcon(QtGui.QIcon.fromTheme("edit-delete"))
-        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setAutoRaise(True)
-        button.clicked.connect(functools.partial(self._remove_source_from_button, name))
-        return button
-
-    def _source_action_widget(self, name: str, display: str) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget(self.source_list)
-        layout = QtWidgets.QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        refresh_button = self._source_refresh_button(name)
-        remove_button = self._source_remove_button(name)
-        layout.addWidget(refresh_button)
-        layout.addWidget(remove_button)
-        self._set_source_refresh_button_state(refresh_button, name, display)
-        self._set_source_remove_button_state(remove_button, name, display)
-        return widget
-
-    def _source_list_row_button(
-        self, item: QtWidgets.QTreeWidgetItem, object_name: str
-    ) -> QtWidgets.QToolButton | None:
-        widget = self.source_list.itemWidget(item, _SOURCE_LIST_ACTION_COLUMN)
-        if isinstance(widget, QtWidgets.QToolButton):
-            return widget if widget.objectName() == object_name else None
-        if isinstance(widget, QtWidgets.QWidget):
-            return widget.findChild(QtWidgets.QToolButton, object_name)
-        return None
-
     def _source_refresh_available(self, name: str) -> bool:
         if (
             self._source_refresh_available_callback is None
@@ -2394,24 +2557,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return label or None
         return None
 
-    def _set_source_refresh_button_state(
-        self, button: QtWidgets.QToolButton, name: str, display: str
-    ) -> bool:
-        enabled = self._source_refresh_available(name)
-        button.setEnabled(enabled)
-        if enabled:
-            source_label = self._source_refresh_label(name)
-            tooltip = (
-                f"Refresh “{display}” from {source_label}"
-                if source_label
-                else f"Refresh “{display}”"
-            )
-        else:
-            tooltip = "This source is not linked to an open ImageTool"
-        button.setToolTip(tooltip)
-        button.setStatusTip(tooltip)
-        return enabled
-
     def _refreshable_source_names(self) -> tuple[str, ...]:
         return tuple(
             name
@@ -2420,7 +2565,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _refresh_source_controls(self) -> None:
-        has_refreshable_source = False
         selected_names = self._selected_source_names()
         add_enabled = self._source_add_available()
         self.add_source_button.setEnabled(add_enabled)
@@ -2431,43 +2575,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.add_source_button.setToolTip(add_tip)
         self.add_source_button.setStatusTip(add_tip)
-        for row in range(self.source_list.topLevelItemCount()):
-            item = self.source_list.topLevelItem(row)
-            if item is None:  # pragma: no cover
-                # Qt can report stale rows during teardown.
-                continue
-            source_name = item.data(
-                _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
-            )
-            if not isinstance(source_name, str):
-                continue
-            display = item.text(_SOURCE_LIST_SOURCE_COLUMN)
-            refresh_button = self._source_list_row_button(
-                item, "figureComposerRefreshSourceButton"
-            )
-            if refresh_button is not None:
-                has_refreshable_source |= self._set_source_refresh_button_state(
-                    refresh_button, source_name, display
-                )
-            remove_button = self._source_list_row_button(
-                item, "figureComposerRemoveSourceButton"
-            )
-            if remove_button is not None:
-                self._set_source_remove_button_state(
-                    remove_button, source_name, display
-                )
-
-        enabled = (
-            has_refreshable_source and self._source_refresh_many_callback is not None
+        selected_refreshable = tuple(
+            name for name in selected_names if self._source_refresh_available(name)
         )
-        self.refresh_sources_button.setEnabled(enabled)
-        tooltip = (
-            "Refresh all sources linked to open ImageTools"
-            if enabled
-            else "No sources are linked to open ImageTools"
+        selected_tip = (
+            "Refresh selected sources from their ImageTools"
+            if selected_refreshable
+            else "No selected sources can be refreshed"
         )
-        self.refresh_sources_button.setToolTip(tooltip)
-        self.refresh_sources_button.setStatusTip(tooltip)
+        self.refresh_sources_button.setEnabled(bool(selected_refreshable))
+        self.refresh_sources_button.setToolTip(selected_tip)
+        self.refresh_sources_button.setStatusTip(self.refresh_sources_button.toolTip())
 
         removable_selected = [
             name for name in selected_names if self._source_removable(name)
@@ -2483,35 +2601,100 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.remove_selected_source_button.setStatusTip(remove_tip)
 
     def refresh_source_controls(self) -> None:
+        for row in range(self.source_list.topLevelItemCount()):
+            item = self.source_list.topLevelItem(row)
+            if item is not None:
+                self._update_source_list_item(item)
         self._refresh_source_controls()
+        self._refresh_source_detail_panel()
 
     def _set_source_status_text(self, text: str | None) -> None:
         self.source_status_label.setText("" if text is None else text)
         self.source_status_label.setVisible(bool(text))
 
+    def _set_source_validation_text(self, text: str | None) -> None:
+        self.source_validation_label.setText("" if text is None else text)
+        self.source_validation_label.setVisible(bool(text))
+
     def _set_step_source_status_text(self, text: str | None) -> None:
         self.step_source_status_label.setText("" if text is None else text)
         self.step_source_status_label.setVisible(bool(text))
 
-    def _refresh_source_from_button(self, name: str, _checked: bool = False) -> None:
-        callback = self._source_refresh_callback
-        if callback is None or not self._source_refresh_available(name):
-            self._refresh_source_controls()
-            return
-        callback(name)
-        self._refresh_source_controls()
+    @QtCore.Slot()
+    def _refresh_selected_sources_from_button(self) -> None:
+        self._refresh_source_names(self._selected_source_names())
 
-    def _refresh_sources_from_button(self, _checked: bool = False) -> None:
-        callback = self._source_refresh_many_callback
-        source_names = self._refreshable_source_names()
-        if callback is None or not source_names:
+    @QtCore.Slot()
+    def _refresh_all_sources_from_button(self) -> None:
+        self._refresh_source_names(self._source_names())
+
+    def _refresh_source_names(self, source_names: Sequence[str]) -> None:
+        callback = self._source_refresh_callback
+        requested = tuple(dict.fromkeys(source_names))
+        refreshable = tuple(
+            name for name in requested if self._source_refresh_available(name)
+        )
+        unavailable = tuple(name for name in requested if name not in refreshable)
+        if callback is None or not refreshable:
+            if unavailable:
+                self._set_source_status_text(
+                    "Unavailable: " + ", ".join(unavailable) + "."
+                )
             self._refresh_source_controls()
             return
-        callback(source_names)
+
+        refreshed: list[str] = []
+        failed: list[str] = []
+        failure_messages: list[str] = []
+        self._set_source_status_text(None)
+        for name in refreshable:
+            self._set_source_status_text(None)
+            try:
+                refreshed_source = callback(name)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to refresh Figure Composer source %r",
+                    name,
+                    extra={"suppress_ui_alert": True},
+                )
+                failed.append(name)
+                message = str(exc) or exc.__class__.__name__
+                failure_messages.append(f"Could not refresh {name}: {message}.")
+                continue
+            if refreshed_source:
+                refreshed.append(name)
+                continue
+            failed.append(name)
+            if message := self.source_status_label.text().strip():
+                failure_messages.append(message)
+
+        if len(failed) == 1 and not refreshed and not unavailable and failure_messages:
+            status = failure_messages[0]
+        else:
+            parts: list[str] = []
+            if refreshed:
+                suffix = "source" if len(refreshed) == 1 else "sources"
+                parts.append(f"Refreshed {len(refreshed)} {suffix}.")
+            if failed:
+                if failure_messages:
+                    parts.extend(dict.fromkeys(failure_messages))
+                else:
+                    parts.append("Could not refresh: " + ", ".join(failed) + ".")
+            if unavailable:
+                parts.append("Unavailable: " + ", ".join(unavailable) + ".")
+            status = " ".join(parts)
+        self._set_source_status_text(status or None)
         self._refresh_source_controls()
+        self._refresh_source_detail_panel()
 
     def _source_used_by_operation(self, name: str) -> bool:
         return any(
+            name in self._operation_source_names(operation)
+            for operation in self._recipe.operations
+        )
+
+    def _source_usage_count(self, name: str) -> int:
+        return sum(
             name in self._operation_source_names(operation)
             for operation in self._recipe.operations
         )
@@ -2529,25 +2712,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             and len(self._recipe.sources) > 1
             and not self._source_used_by_operation(name)
         )
-
-    def _set_source_remove_button_state(
-        self, button: QtWidgets.QToolButton, name: str, display: str
-    ) -> bool:
-        enabled = self._source_removable(name)
-        button.setEnabled(enabled)
-        if enabled:
-            tooltip = f"Remove “{display}” from this figure"
-        elif self._source_used_by_operation(name):
-            tooltip = "This source is used by one or more steps"
-        else:
-            tooltip = "This source cannot be removed"
-        button.setToolTip(tooltip)
-        button.setStatusTip(tooltip)
-        return enabled
-
-    def _remove_source_from_button(self, name: str, _checked: bool = False) -> None:
-        if not self.remove_source(name):
-            self._refresh_source_controls()
 
     @QtCore.Slot()
     def _remove_selected_sources(self) -> None:
@@ -2594,12 +2758,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         alias = edit.text().strip()
         if alias == original:
             edit.setText(original)
+            self._set_source_validation_text(None)
             return
         error = self._source_alias_error(alias, current=original)
         if error is not None:
-            self._set_source_status_text(error)
-            edit.setText(original)
+            self._set_source_validation_text(error)
             return
+        self._set_source_validation_text(None)
         if not self._rename_source_alias(original, alias):
             edit.setText(original)
 
@@ -2607,18 +2772,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _focus_source_alias_editor(self) -> None:
         if len(self._selected_source_names()) != 1:
             return
-        editor = self.source_selection_controls.findChild(
-            QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
-        )
-        if editor is None:
-            self._refresh_source_selection_editor()
-            editor = self.source_selection_controls.findChild(
-                QtWidgets.QLineEdit, "figureComposerSourceAliasEdit"
-            )
-        if editor is None:
+        if not self.source_alias_edit.isEnabled():
             return
-        editor.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-        editor.selectAll()
+        self.source_alias_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.source_alias_edit.selectAll()
 
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
     def _source_list_item_double_clicked(
@@ -2636,7 +2793,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._set_selected_source_names_silent(selected_names, current_name)
         self._refresh_source_controls()
         self._source_inspector_target = current_name
-        self._refresh_source_inspector()
+        self._refresh_source_detail_panel()
         self._refresh_source_selection_editor()
         self._update_source_section()
         self._maybe_redraw_plot()
@@ -2681,7 +2838,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     )
                 operations.append(updated)
         except ValueError as exc:
-            self._set_source_status_text(
+            self._set_source_validation_text(
                 f"Could not rename source “{old_name}”: {operation.label}: {exc}."
             )
             self._refresh_source_selection_editor()
@@ -2860,18 +3017,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         menu.addAction(move_down_action)
 
         menu.addSeparator()
-        refresh_action = QtGui.QAction("Refresh", menu)
+        refresh_action = QtGui.QAction("Refresh Selected", menu)
         refresh_action.setObjectName("figureComposerContextRefreshSourceAction")
         selected_names = self._selected_source_names()
         refresh_action.setEnabled(
-            len(selected_names) == 1
-            and self._source_refresh_available(selected_names[0])
+            any(self._source_refresh_available(name) for name in selected_names)
         )
-        if len(selected_names) == 1:
-            refresh_action.triggered.connect(
-                functools.partial(self._refresh_source_from_button, selected_names[0])
-            )
+        refresh_action.triggered.connect(self._refresh_selected_sources_from_button)
         menu.addAction(refresh_action)
+
+        refresh_all_action = QtGui.QAction("Refresh All", menu)
+        refresh_all_action.setObjectName("figureComposerContextRefreshAllSourcesAction")
+        refresh_all_action.setEnabled(bool(self._refreshable_source_names()))
+        refresh_all_action.triggered.connect(self._refresh_all_sources_from_button)
+        menu.addAction(refresh_all_action)
 
         remove_action = QtGui.QAction("Remove", menu)
         remove_action.setObjectName("figureComposerContextRemoveSourceAction")
@@ -2886,23 +3045,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _set_source_list_row_used(
         self, item: QtWidgets.QTreeWidgetItem, used: bool
     ) -> None:
-        item.setData(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole + 1, used
-        )
-        font = item.font(_SOURCE_LIST_SOURCE_COLUMN)
-        font.setBold(used)
-        item.setFont(_SOURCE_LIST_SOURCE_COLUMN, font)
-        source_name = item.data(
-            _SOURCE_LIST_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole
-        )
-        if isinstance(source_name, str):
-            remove_button = self._source_list_row_button(
-                item, "figureComposerRemoveSourceButton"
-            )
-            if remove_button is not None:
-                self._set_source_remove_button_state(
-                    remove_button, source_name, item.text(_SOURCE_LIST_SOURCE_COLUMN)
-                )
+        item.setData(_SOURCE_LIST_SOURCE_COLUMN, _SOURCE_LIST_USED_ROLE, used)
+        self._update_source_list_item(item)
 
     def _sync_source_list_used_state(self) -> None:
         used_sources = self._sources_used_by_recipe()
@@ -2926,27 +3070,76 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return self._recipe.sources[0].name
         return next(iter(self._source_data), None)
 
-    def _refresh_source_inspector(self) -> None:
+    def _refresh_source_detail_panel(self) -> None:
         inspector = getattr(self, "source_inspector", None)
         if not isinstance(inspector, SourceInspectorWidget):
             return
+        selected_names = self._selected_source_names()
+        if not selected_names:
+            self.source_detail_content.setProperty(
+                "figureComposerSourceEditorMode", "empty"
+            )
+            self.source_detail_content.setProperty(
+                "figureComposerSourceSelectionCount", 0
+            )
+            self.source_detail_content.setProperty("figureComposerSourceUsageCount", 0)
+            self.source_detail_content.setProperty("figureComposerSourceOrigin", "")
+            self.source_editor_state_label.setText(
+                "Select a source to inspect or edit it."
+            )
+            self.source_editor_state_label.setVisible(True)
+            self.source_alias_controls.setVisible(False)
+            inspector.setVisible(False)
+            self.source_selection_controls.setVisible(False)
+            inspector.set_context(source_name=None, data=None)
+            return
+        if len(selected_names) > 1:
+            self.source_detail_content.setProperty(
+                "figureComposerSourceEditorMode", "multiple"
+            )
+            self.source_detail_content.setProperty(
+                "figureComposerSourceSelectionCount", len(selected_names)
+            )
+            self.source_detail_content.setProperty("figureComposerSourceUsageCount", 0)
+            self.source_detail_content.setProperty("figureComposerSourceOrigin", "")
+            self.source_editor_state_label.setText(
+                f"{len(selected_names)} sources selected\n"
+                "Selection changes apply to all compatible selected sources."
+            )
+            self.source_editor_state_label.setVisible(True)
+            self.source_alias_controls.setVisible(False)
+            inspector.setVisible(False)
+            self.source_selection_controls.setVisible(True)
+            inspector.set_context(source_name=None, data=None)
+            return
+
+        target = selected_names[0]
         source_states = self._source_by_name()
-        target = self._source_inspector_target
-        if target is None:
-            target = self._default_source_inspector_target()
-        if (
-            target is not None
-            and target not in self._source_data
-            and target not in source_states
-        ):
-            target = self._default_source_inspector_target()
         self._source_inspector_target = target
-        if target not in self._selected_source_names():
-            self._select_source_list_row_silent(target)
+        source = source_states.get(target)
+        self.source_detail_content.setProperty(
+            "figureComposerSourceEditorMode", "single"
+        )
+        self.source_detail_content.setProperty("figureComposerSourceSelectionCount", 1)
+        self.source_detail_content.setProperty(
+            "figureComposerSourceUsageCount", self._source_usage_count(target)
+        )
+        self.source_detail_content.setProperty(
+            "figureComposerSourceOrigin", self._source_refresh_label(target) or ""
+        )
+        self.source_editor_state_label.setVisible(False)
+        self.source_alias_controls.setVisible(True)
+        self.source_alias_edit.setEnabled(source is not None)
+        self.source_alias_edit.setText(target)
+        self.source_alias_edit.setProperty(
+            "figure_composer_source_alias_original", target
+        )
+        inspector.setVisible(True)
+        self.source_selection_controls.setVisible(True)
         inspector.set_context(
             source_name=target,
-            source_state=None if target is None else source_states.get(target),
-            data=None if target is None else self._source_data.get(target),
+            data=self._source_data.get(target),
+            context_lines=self._source_detail_context_lines(target),
         )
 
     def _refresh_source_selection_editor(self) -> None:
@@ -2956,13 +3149,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._clear_form_layout(layout)
         selected_names = self._selected_source_names()
         if not selected_names:
-            label = QtWidgets.QLabel("Select a source to edit its selection.", self)
-            label.setWordWrap(True)
-            layout.addRow(label)
             return
 
         source_by_name = self._source_by_name()
-        self._add_source_alias_editor(layout, selected_names, source_by_name)
         available_names = tuple(
             name
             for name in selected_names
@@ -2998,6 +3187,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
 
         for dim_index, dim_name in enumerate(dimensions):
+            dimension_context = self._source_selection_dimension_tooltip(
+                dim_name, available_names
+            )
             selections = tuple(
                 _source_selection(source_by_name[name]) for name in available_names
             )
@@ -3033,7 +3225,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             mode_combo.setProperty("figure_composer_source_selection_dim", dim_name)
             mode_combo.setToolTip(
-                "Choose whether this source dimension stays, is selected, or averaged."
+                f"{dimension_context}\n\nChoose None, isel, qsel, or Mean for this "
+                "dimension."
             )
             value_edit = QtWidgets.QLineEdit(row)
             value_edit.setObjectName(
@@ -3043,8 +3236,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             value_edit.setProperty("figure_composer_source_selection_field", "value")
             value_edit.setPlaceholderText("value")
             value_edit.setToolTip(
-                "Selection value. Use integer positions or slices for isel; use "
-                "coordinate values or slices for qsel."
+                f"{dimension_context}\n\nisel accepts integer positions and index "
+                "slices. qsel accepts coordinate values and coordinate slices."
             )
             value_edit.setText("" if value_mixed else value_texts[0])
             self._apply_mixed_line_edit(value_edit, value_mixed)
@@ -3056,8 +3249,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             width_edit.setProperty("figure_composer_source_selection_field", "width")
             width_edit.setPlaceholderText("width")
             width_edit.setToolTip(
-                "Optional qsel width centered on the value. Leave blank for nearest "
-                "coordinate selection."
+                f"{dimension_context}\n\nOptional qsel width for centered averaging. "
+                "Leave blank to select the nearest coordinate."
             )
             width_edit.setText("" if width_mixed else width_texts[0])
             self._apply_mixed_line_edit(width_edit, width_mixed)
@@ -3076,55 +3269,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 layout,
                 dim_name,
                 row,
-                "Choose how this source variable is selected before plotting.",
+                dimension_context,
             )
-
-    def _add_source_alias_editor(
-        self,
-        layout: QtWidgets.QFormLayout,
-        selected_names: Sequence[str],
-        source_by_name: Mapping[str, FigureSourceState],
-    ) -> None:
-        self._add_form_section(
-            layout,
-            "Source",
-            object_name="figureComposerSourceAliasSection",
-        )
-        if len(selected_names) != 1:
-            label = QtWidgets.QLabel("Select one source to rename its alias.", self)
-            label.setObjectName("figureComposerSourceAliasMessage")
-            label.setWordWrap(True)
-            self._add_form_row(
-                layout,
-                "Alias",
-                label,
-                "Source aliases are edited one at a time.",
-            )
-            return
-        source_name = selected_names[0]
-        if source_name not in source_by_name:
-            label = QtWidgets.QLabel("This source is missing from the recipe.", self)
-            label.setObjectName("figureComposerSourceAliasMessage")
-            label.setWordWrap(True)
-            self._add_form_row(
-                layout,
-                "Alias",
-                label,
-                "Missing recipe sources cannot be renamed.",
-            )
-            return
-        edit = QtWidgets.QLineEdit(self.source_selection_controls)
-        edit.setObjectName("figureComposerSourceAliasEdit")
-        edit.setText(source_name)
-        edit.setProperty("figure_composer_source_alias_original", source_name)
-        edit.setToolTip("Rename this source variable.")
-        edit.editingFinished.connect(self._commit_source_alias_edit)
-        self._add_form_row(
-            layout,
-            "Alias",
-            edit,
-            "Rename this source variable.",
-        )
 
     def _source_selection_mode_combo(
         self,
@@ -3136,13 +3282,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         combo = QtWidgets.QComboBox(parent)
         if mixed:
             combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
-        for mode, label in (
-            ("keep", "None"),
-            ("isel", "isel"),
-            ("qsel", "qsel"),
-            ("mean", "Mean"),
+        for mode, label, tooltip in (
+            ("keep", "None", "Leave this dimension unchanged."),
+            (
+                "isel",
+                "isel",
+                "Select this dimension by integer position or index slice.",
+            ),
+            (
+                "qsel",
+                "qsel",
+                "Select this dimension by coordinate value or coordinate slice.",
+            ),
+            ("mean", "Mean", "Average over and remove this dimension."),
         ):
             combo.addItem(label, mode)
+            combo.setItemData(
+                combo.count() - 1, tooltip, QtCore.Qt.ItemDataRole.ToolTipRole
+            )
         if mixed:
             item = typing.cast("typing.Any", combo.model()).item(0)
             if item is not None:
@@ -3153,6 +3310,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             combo.setCurrentIndex(max(index, 0))
         self._track_combo_interaction(combo)
         return combo
+
+    def _source_selection_dimension_tooltip(
+        self, dim: str, source_names: Sequence[str]
+    ) -> str:
+        source_by_name = self._source_by_name()
+        sizes: set[int] = set()
+        dtypes: set[str] = set()
+        endpoints: set[tuple[str, str]] = set()
+        for source_name in source_names:
+            data = self._source_selection_input_data(
+                source_name, source_by_name.get(source_name)
+            )
+            if data is None:
+                continue
+            public = _public_source_data(data)
+            if dim not in public.dims:
+                continue
+            sizes.add(public.sizes[dim])
+            coord = public.coords.get(dim)
+            if coord is None:
+                continue
+            dtypes.add(str(coord.dtype))
+            if coord.ndim != 1 or coord.size == 0 or coord.dims != (dim,):
+                continue
+            with contextlib.suppress(Exception):
+                first = erlab.utils.formatting.format_value(coord.isel({dim: 0}).item())
+                last = erlab.utils.formatting.format_value(coord.isel({dim: -1}).item())
+                endpoints.add((first, last))
+
+        lines = [f"Dimension {dim!r}."]
+        if sizes:
+            sizes_text = ", ".join(str(size) for size in sorted(sizes))
+            lines.append(f"Size: {sizes_text}.")
+        if dtypes:
+            lines.append(f"Coordinate dtype: {', '.join(sorted(dtypes))}.")
+        if len(endpoints) == 1:
+            first, last = next(iter(endpoints))
+            lines.append(f"Coordinate range: {first} to {last}.")
+        return " ".join(lines)
 
     def _connect_source_selection_dimension_controls(
         self,
@@ -3251,7 +3447,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             width = selection_width_from_text(width_text) if mode == "qsel" else None
         except FigureComposerInputError as exc:
-            self._set_source_status_text(str(exc))
+            self._set_source_validation_text(str(exc))
             return
 
         changed = False
@@ -3300,7 +3496,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Selection was not applied to: " + ", ".join(skipped) if skipped else None
         )
         if not changed:
-            self._set_source_status_text(status_text)
+            self._set_source_validation_text(status_text)
             self._refresh_source_selection_editor()
             return
         self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
@@ -3309,7 +3505,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
-        self._set_source_status_text(status_text)
+        self._set_source_validation_text(status_text)
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -3847,8 +4043,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.axes_selector.setVisible(not grid_mode)
             self.axes_expression_edit.setVisible(not grid_mode)
             self.gridspec_axes_selector.setVisible(grid_mode)
-            self.axes_selector.set_selected_axes(tuple(sorted(selected_axes)))
-            self._refresh_gridspec_axes_selector()
+            if grid_mode:
+                self._refresh_gridspec_axes_selector()
+            else:
+                self.axes_selector.set_selected_axes(tuple(sorted(selected_axes)))
             if self.axes_expression_edit.text() != expression:
                 blocker = QtCore.QSignalBlocker(self.axes_expression_edit)
                 self.axes_expression_edit.setText(expression)
@@ -3904,49 +4102,111 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_ids = self._selected_operation_ids()
         if not selected_ids and current_id is not None:
             selected_ids = {current_id}
+        operation_ids = tuple(
+            operation.operation_id for operation in self._recipe.operations
+        )
+        current_item_ids = self.operation_list._operation_ids()
+        reuse_items = current_item_ids == operation_ids
         self.operation_list.blockSignals(True)
         try:
-            self.operation_list.clear()
-            for operation in self._recipe.operations:
-                render_error = self._operation_render_errors.get(operation.operation_id)
-                input_error = self._operation_input_error_text(operation)
-                text = self._operation_display_text(operation)
-                if input_error is not None:
-                    text = f"{text} (invalid input)"
-                if render_error is not None:
-                    text = f"{text} (render error)"
-                item = QtWidgets.QListWidgetItem(text)
-                item.setFlags(
-                    item.flags()
-                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
-                    | QtCore.Qt.ItemFlag.ItemIsDragEnabled
-                    | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+            if not reuse_items:
+                self.operation_list.clear()
+                self.operation_list.addTopLevelItems(
+                    [
+                        QtWidgets.QTreeWidgetItem()
+                        for _operation in self._recipe.operations
+                    ]
                 )
-                item.setCheckState(
-                    QtCore.Qt.CheckState.Checked
-                    if operation.enabled
-                    else QtCore.Qt.CheckState.Unchecked
-                )
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, operation.operation_id)
-                tooltip = self._operation_tooltip(operation)
-                if input_error is not None:
-                    tooltip = f"{tooltip}\n\nInvalid input: {input_error}"
-                if render_error is not None:
-                    tooltip = f"{tooltip}\n\nRender error: {render_error}"
-                item.setToolTip(tooltip)
-                if (
-                    self._operation_has_invalid_axes(operation)
-                    or input_error is not None
-                    or render_error is not None
-                ):
-                    item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
-                self.operation_list.addItem(item)
-                if operation.operation_id in selected_ids:
-                    item.setSelected(True)
-                if operation.operation_id == current_id:
-                    self.operation_list.setCurrentItem(item)
+            for row, operation in enumerate(self._recipe.operations):
+                item = self.operation_list.topLevelItem(row)
+                if item is not None:  # pragma: no branch
+                    self._update_operation_list_item(item, operation)
+            if not reuse_items:
+                self._set_selected_operation_ids_silent(selected_ids)
+                if current_id is not None:
+                    for row, operation in enumerate(self._recipe.operations):
+                        if operation.operation_id == current_id:
+                            self.operation_list.setCurrentItem(
+                                self.operation_list.topLevelItem(row)
+                            )
+                            break
         finally:
             self.operation_list.blockSignals(False)
+        self._sync_source_list_used_state()
+
+    def _update_operation_list_item(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        operation: FigureOperationState,
+    ) -> None:
+        issues = self._operation_issues(operation)
+        item.setText(
+            _OPERATION_LIST_STEP_COLUMN, self._operation_display_text(operation)
+        )
+        item.setText(
+            _OPERATION_LIST_STATUS_COLUMN,
+            self._operation_status_text(issues),
+        )
+        item.setFlags(
+            (
+                item.flags()
+                | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            )
+            & ~QtCore.Qt.ItemFlag.ItemIsDropEnabled
+        )
+        item.setCheckState(
+            _OPERATION_LIST_STEP_COLUMN,
+            QtCore.Qt.CheckState.Checked
+            if operation.enabled
+            else QtCore.Qt.CheckState.Unchecked,
+        )
+        item.setData(
+            _OPERATION_LIST_STEP_COLUMN,
+            QtCore.Qt.ItemDataRole.UserRole,
+            operation.operation_id,
+        )
+        item.setData(
+            _OPERATION_LIST_TARGET_COLUMN,
+            _OPERATION_LIST_TARGET_ROLE,
+            self._operation_target_preview_descriptor(operation),
+        )
+        item.setData(
+            _OPERATION_LIST_STATUS_COLUMN,
+            _OPERATION_LIST_STATUS_ROLE,
+            tuple(code for code, _detail in issues),
+        )
+        item.setSizeHint(_OPERATION_LIST_STEP_COLUMN, QtCore.QSize(0, 22))
+        tooltip = self._operation_tooltip(operation)
+        item.setToolTip(_OPERATION_LIST_STEP_COLUMN, tooltip)
+        item.setData(
+            _OPERATION_LIST_STEP_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+            tooltip,
+        )
+        target_text = _registry.spec_for(operation.kind).target_text(self, operation)
+        target_description = (
+            "No target" if target_text.casefold() == "none" else target_text
+        )
+        item.setToolTip(_OPERATION_LIST_TARGET_COLUMN, target_description)
+        item.setData(
+            _OPERATION_LIST_TARGET_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+            target_description,
+        )
+        status_tooltip = "\n".join(
+            f"{_OPERATION_STATUS_LABELS[code]}: {detail}" for code, detail in issues
+        )
+        item.setToolTip(_OPERATION_LIST_STATUS_COLUMN, status_tooltip)
+        item.setData(
+            _OPERATION_LIST_STATUS_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+            status_tooltip,
+        )
+        item.setForeground(
+            _OPERATION_LIST_STATUS_COLUMN,
+            QtGui.QBrush(QtGui.QColor("darkRed")) if issues else QtGui.QBrush(),
+        )
 
     def _set_current_operation_row_silent(
         self, index: int, *, preserve_selection: bool = True
@@ -3954,14 +4214,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_ids = self._selected_operation_ids() if preserve_selection else set()
         was_blocked = self.operation_list.blockSignals(True)
         try:
-            self.operation_list.setCurrentRow(index)
+            item = self.operation_list.topLevelItem(index)
+            if item is None:
+                self.operation_list.setCurrentIndex(QtCore.QModelIndex())
+            else:
+                self.operation_list.setCurrentItem(item)
             if preserve_selection and selected_ids:
                 self._set_selected_operation_ids_silent(selected_ids)
         finally:
             self.operation_list.blockSignals(was_blocked)
 
-    def _operation_id_for_item(self, item: QtWidgets.QListWidgetItem) -> str | None:
-        operation_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+    @staticmethod
+    def _operation_id_for_item(
+        item: QtWidgets.QTreeWidgetItem,
+    ) -> str | None:
+        operation_id = item.data(
+            _OPERATION_LIST_STEP_COLUMN,
+            QtCore.Qt.ItemDataRole.UserRole,
+        )
         return operation_id if isinstance(operation_id, str) else None
 
     def _selected_operation_ids(self) -> set[str]:
@@ -3974,8 +4244,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _set_selected_operation_ids_silent(self, operation_ids: set[str]) -> None:
         was_blocked = self.operation_list.blockSignals(True)
         try:
-            for row in range(self.operation_list.count()):
-                item = self.operation_list.item(row)
+            for row in range(self.operation_list.topLevelItemCount()):
+                item = self.operation_list.topLevelItem(row)
                 if item is None:
                     continue
                 item.setSelected(self._operation_id_for_item(item) in operation_ids)
@@ -3987,6 +4257,90 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _operation_tooltip(self, operation: FigureOperationState) -> str:
         return _registry.spec_for(operation.kind).tooltip(self, operation)
+
+    def _operation_target_preview_descriptor(
+        self, operation: FigureOperationState
+    ) -> tuple[object, ...]:
+        spec = _registry.spec_for(operation.kind)
+        if not spec.uses_axes(operation):
+            target_text = spec.target_text(self, operation)
+            return (
+                "text",
+                "—" if target_text.casefold() == "none" else target_text,
+            )
+        setup = self._recipe.setup
+        if setup.layout_mode == "gridspec":
+            return _gridspec_target_preview_descriptor(
+                setup.gridspec.root,
+                _gridspec_valid_axes_ids(setup, operation.axes.axes_ids),
+            )
+        unresolved = False
+        selected_axes = operation.axes.valid_axes(setup)
+        if operation.axes.expression:
+            try:
+                tokens = np.arange(setup.nrows * setup.ncols).reshape(
+                    setup.nrows, setup.ncols
+                )
+                resolved = np.asarray(
+                    _axes_expression_value(operation.axes.expression, tokens)
+                )
+                flat_indices = tuple(
+                    dict.fromkeys(int(value) for value in resolved.flat)
+                )
+            except (TypeError, ValueError):
+                selected_axes = ()
+                unresolved = True
+            else:
+                if flat_indices and all(
+                    0 <= value < tokens.size for value in flat_indices
+                ):
+                    selected_axes = tuple(
+                        divmod(value, setup.ncols) for value in flat_indices
+                    )
+                else:
+                    selected_axes = ()
+                    unresolved = True
+        return _subplot_target_preview_descriptor(
+            setup.nrows,
+            setup.ncols,
+            selected_axes,
+            unresolved=unresolved,
+        )
+
+    def _operation_issues(
+        self, operation: FigureOperationState
+    ) -> tuple[tuple[str, str], ...]:
+        issues: list[tuple[str, str]] = []
+        spec = _registry.spec_for(operation.kind)
+        if spec.has_invalid_target(self, operation):
+            issues.append(("invalid_target", spec.target_text(self, operation)))
+        missing_sources = tuple(
+            source
+            for source in spec.source_names(operation)
+            if source not in self._source_data
+        )
+        if missing_sources:
+            issues.append(
+                (
+                    "missing_source",
+                    ", ".join(self._source_display_names(missing_sources)),
+                )
+            )
+        input_error = self._operation_input_error_text(operation)
+        if input_error is not None:
+            issues.append(("invalid_input", input_error))
+        render_error = self._operation_render_errors.get(operation.operation_id)
+        if render_error is not None:
+            issues.append(("render_error", render_error))
+        return tuple(issues)
+
+    @staticmethod
+    def _operation_status_text(issues: Sequence[tuple[str, str]]) -> str:
+        if not issues:
+            return ""
+        if len(issues) == 1:
+            return _OPERATION_STATUS_LABELS[issues[0][0]]
+        return f"{len(issues)} issues"
 
     def _set_operation_render_errors(self, errors: Mapping[str, str]) -> None:
         render_errors = dict(errors)
@@ -4178,7 +4532,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not indices:
             return False
         self.editor_tabs.setCurrentWidget(self.recipe_page)
-        self.operation_list.setCurrentRow(indices[0])
+        self.operation_list.setCurrentItem(self.operation_list.topLevelItem(indices[0]))
         self._select_step_section("axes")
         QtWidgets.QMessageBox.warning(
             self,
@@ -4190,10 +4544,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return True
 
     def _current_operation(self) -> tuple[int, FigureOperationState] | None:
-        row = self.operation_list.currentRow()
+        row = self._current_operation_index()
         if row < 0 or row >= len(self._recipe.operations):
             return None
         return row, self._recipe.operations[row]
+
+    def _current_operation_index(self) -> int:
+        item = self.operation_list.currentItem()
+        return -1 if item is None else self.operation_list.indexOfTopLevelItem(item)
 
     def _selected_operation_indices(self) -> tuple[int, ...]:
         selected_ids = self._selected_operation_ids()
@@ -4837,15 +5195,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, QtWidgets.QTreeWidgetItem)
+    def _operation_current_item_changed(
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None,
+    ) -> None:
+        if current is not None and not self._operation_multi_select_event:
+            operation_id = self._operation_id_for_item(current)
+            if operation_id is not None:
+                self._set_selected_operation_ids_silent({operation_id})
+        self._operation_selection_changed()
+
     @QtCore.Slot()
-    @QtCore.Slot(int)
-    def _operation_selection_changed(self, _row: int | None = None) -> None:
-        if _row is not None and not self._operation_multi_select_event:
-            item = self.operation_list.item(_row)
-            if item is not None:
-                operation_id = self._operation_id_for_item(item)
-                if operation_id is not None:
-                    self._set_selected_operation_ids_silent({operation_id})
+    def _operation_selection_changed(self) -> None:
+        current = self.operation_list.currentItem()
+        current_id = None if current is None else self._operation_id_for_item(current)
+        state = (current_id, frozenset(self._selected_operation_ids()))
+        if state == self._operation_selection_state:
+            return
+        self._operation_selection_state = state
+        if self._operation_selection_input_event:
+            self._operation_axes_sync_pending = True
+            self._queue_operation_editor_update()
+            return
         self._sync_axes_selector()
         self._refresh_operation_editor()
 
@@ -4877,13 +5250,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             }
         ):
             input_event = typing.cast("QtGui.QInputEvent", event)
+            self._operation_selection_input_event = True
             self._operation_multi_select_event = (
                 self._operation_modifiers_enable_multi_selection(
                     input_event.modifiers()
                 )
             )
             erlab.interactive.utils.single_shot(
-                self, 0, self._clear_operation_multi_select_event
+                self, 0, self._clear_operation_selection_input_state
             )
         return super().eventFilter(watched, event)
 
@@ -5034,6 +5408,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         viewport = self._operation_list_viewport
         self._operation_list_viewport = None
         self._operation_multi_select_event = False
+        self._operation_selection_input_event = False
+        self._operation_axes_sync_pending = False
         if viewport is not None and erlab.interactive.utils.qt_is_valid(self, viewport):
             viewport.removeEventFilter(self)
 
@@ -5167,10 +5543,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.tool_status = next_state
         self._update_history_actions()
 
-    def _clear_operation_multi_select_event(self) -> None:
+    def _clear_operation_selection_input_state(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(self):
             return
         self._operation_multi_select_event = False
+        self._operation_selection_input_event = False
 
     @staticmethod
     def _operation_modifiers_enable_multi_selection(
@@ -5183,24 +5560,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         return bool(modifiers & multi_modifiers)
 
-    @QtCore.Slot(QtWidgets.QListWidgetItem)
-    def _operation_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
-        if self._updating_controls:
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _operation_item_changed(
+        self, item: QtWidgets.QTreeWidgetItem, column: int
+    ) -> None:
+        if self._updating_controls or column != _OPERATION_LIST_STEP_COLUMN:
             return
-        operation_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        operation_id = self._operation_id_for_item(item)
         for index, operation in enumerate(self._recipe.operations):
             if operation.operation_id == operation_id:
                 updated = operation.model_copy(
                     update={
-                        "enabled": item.checkState() == QtCore.Qt.CheckState.Checked,
+                        "enabled": item.checkState(_OPERATION_LIST_STEP_COLUMN)
+                        == QtCore.Qt.CheckState.Checked,
                     }
                 )
+                if updated == operation:
+                    return
                 operations = list(self._recipe.operations)
                 operations[index] = updated
                 self._recipe = self._recipe.model_copy(
                     update={"operations": tuple(operations)}
                 )
-                if index == self.operation_list.currentRow():
+                if index == self._current_operation_index():
                     self._sync_axes_selector()
                     self._update_source_status(updated)
                 self._refresh_step_section_button_texts()
@@ -5277,10 +5659,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_display_names(self, names: Sequence[str]) -> tuple[str, ...]:
         return tuple(self._source_display_name(name) for name in names)
 
+    def _source_detail_context_lines(self, name: str) -> tuple[str, ...]:
+        source = self._source_by_name().get(name)
+        lines: list[str] = []
+        if source is None:
+            lines.append("This source is missing from the recipe")
+        else:
+            if source.selection_source is not None and source.selection_source != name:
+                lines.append(f"Selected from {source.selection_source}")
+            if origin := self._source_refresh_label(name):
+                lines.append(f"From ImageTool {origin}")
+            elif source.node_uid is not None:
+                lines.append("Original ImageTool is no longer available")
+        usage_count = self._source_usage_count(name)
+        if usage_count:
+            suffix = "step" if usage_count == 1 else "steps"
+            lines.append(f"Used by {usage_count} recipe {suffix}")
+        else:
+            lines.append("Not used by any recipe steps")
+        return tuple(lines)
+
     def _source_tooltip(self, name: str) -> str:
-        return source_metadata_tooltip(
-            self._source_by_name().get(name), name, self._source_data.get(name)
-        )
+        lines = [
+            source_metadata_tooltip(
+                self._source_by_name().get(name), name, self._source_data.get(name)
+            ),
+            *self._source_detail_context_lines(name),
+        ]
+        if self._source_refresh_available(name):
+            lines.append("Can refresh from the linked ImageTool")
+        return "\n".join(lines)
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
         if self._recipe.setup.layout_mode == "gridspec":
@@ -5577,7 +5985,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operations = (*self._recipe.operations, operation)
         self._recipe = self._recipe.model_copy(update={"operations": operations})
         self._refresh_operation_list()
-        self.operation_list.setCurrentRow(len(operations) - 1)
+        self.operation_list.setCurrentItem(
+            self.operation_list.topLevelItem(len(operations) - 1)
+        )
         self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -5976,7 +6386,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
-        self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
+        self.operation_list.setCurrentItem(
+            self.operation_list.topLevelItem(len(self._recipe.operations) - 1)
+        )
         self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -6269,7 +6681,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _new_step_form_page(
         self, object_name: str
     ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
-        page = QtWidgets.QWidget(self.step_editor_stack)
+        page = _FigureComposerStepEditorPage(self.editor_tabs, self.step_editor_stack)
         page.setObjectName(object_name)
         layout = QtWidgets.QFormLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -6292,7 +6704,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_section_keys = [section.key for section in sections]
 
         while self.step_editor_stack.count():
-            self.step_editor_stack.removeWidget(self.step_editor_stack.widget(0))
+            page = self.step_editor_stack.widget(0)
+            if page is None:  # pragma: no cover - guarded by count()
+                break
+            page.hide()
+            self.step_editor_stack.removeWidget(page)
 
         for index, section in enumerate(sections):
             self.step_editor_stack.addWidget(section.page)
@@ -6324,6 +6740,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if key:
             self._select_step_section(key)
+        self.step_editor_scroll.updateGeometry()
+        self.step_inspector.updateGeometry()
 
     def _select_step_section(self, key: str) -> None:
         if key not in self.step_section_keys:
@@ -6337,6 +6755,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if font.bold() != selected:
                 font.setBold(selected)
                 button.setFont(font)
+        current_page = self.step_editor_stack.currentWidget()
+        if isinstance(current_page, _FigureComposerStepEditorPage):
+            current_page._refresh_background()
         self._queue_step_tab_order_refresh()
 
     def _refresh_step_section_button_texts(self) -> None:
@@ -6442,6 +6863,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if operation is None:
             self._set_step_source_status_text("Select a step to choose data sources.")
             return
+        if not _registry.spec_for(operation.kind).uses_source_section(operation):
+            self._set_step_source_status_text(None)
+            return
         if (input_error := self._operation_input_error_text(operation)) is not None:
             self._set_step_source_status_text(f"Invalid input: {input_error}")
             return
@@ -6465,7 +6889,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_source_section(self) -> None:
         self._clear_step_source_controls()
-        self._sync_source_list_used_state()
         current = self._current_operation()
         if current is None:
             self._update_source_status(None)
@@ -6564,7 +6987,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return any(root is sender or root.isAncestorOf(sender) for root in editor_roots)
 
     def _queue_operation_editor_update(self) -> None:
-        if self._operation_editor_update_pending:
+        if self._operation_editor_update_pending or self._closing:
             return
         self._operation_editor_update_pending = True
         self._schedule_queued_operation_editor_update()
@@ -6579,10 +7002,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _run_queued_operation_editor_update(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(self):
             return
+        if self._closing:
+            self._operation_editor_update_pending = False
+            self._operation_axes_sync_pending = False
+            return
         if self._operation_editor_rebuild_must_wait():
             self._schedule_queued_operation_editor_update()
             return
         self._operation_editor_update_pending = False
+        if self._operation_axes_sync_pending:
+            self._operation_axes_sync_pending = False
+            self._sync_axes_selector()
         self._update_operation_editor()
 
     def _operation_editor_rebuild_must_wait(self) -> bool:

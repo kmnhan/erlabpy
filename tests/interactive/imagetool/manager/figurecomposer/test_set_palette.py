@@ -18,7 +18,7 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     page = tool.step_editor_stack.currentWidget()
     assert page is not None
 
@@ -129,7 +129,7 @@ def test_figure_composer_set_palette_custom_colors_editor_and_codegen(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     page = tool.step_editor_stack.currentWidget()
     assert page is not None
 
@@ -200,7 +200,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     page = tool.step_editor_stack.currentWidget()
     assert page is not None
     mode_combo = page.findChild(
@@ -350,7 +350,7 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     page = tool.step_editor_stack.currentWidget()
     assert page is not None
 
@@ -384,9 +384,9 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     assert not preview.isEnabled()
     assert message is not None
     assert message.property("missing_dependency") == "seaborn"
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert item.text().startswith("Skipped Set Palette:")
+    assert item.text(0).startswith("Skipped Set Palette:")
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert tool._operation_render_errors == {}

@@ -493,13 +493,12 @@ def _create_operation(tool: FigureComposerTool) -> FigureOperationState:
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
-    prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
     source = (
         tool._source_display_name(operation.hv_overlay_source)
         if operation.hv_overlay_source is not None
         else "missing source"
     )
-    return f"{prefix}Photon Energy Overlay: {source}"
+    return f"Photon Energy Overlay: {source}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:

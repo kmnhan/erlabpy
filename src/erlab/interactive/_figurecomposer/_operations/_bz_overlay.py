@@ -768,8 +768,7 @@ def _create_operation(tool: FigureComposerTool) -> FigureOperationState:
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
-    prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    return f"{prefix}BZ Overlay: {_mode_text(operation.bz_mode)}"
+    return f"BZ Overlay: {_mode_text(operation.bz_mode)}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:

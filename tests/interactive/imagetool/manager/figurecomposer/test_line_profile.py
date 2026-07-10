@@ -40,7 +40,7 @@ def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
         tool.source_data()["profile_selected"], data.qsel(cut=0.0)
     )
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("selection")
 
     assert tool.findChild(QtWidgets.QLineEdit, "figureComposerLineSelectionEdit")
@@ -371,7 +371,7 @@ def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     figurecomposer_line_profile._line_limit_update_callback(tool, "xlim")("0, 1")
     assert tool.tool_status.operations[0].xlim == (0.0, 1.0)
@@ -1469,7 +1469,7 @@ def test_figure_composer_line_label_help_button_opens_structured_dialog(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("style")
     editor = tool.step_editor_stack.currentWidget()
     labels_edit = editor.findChild(QtWidgets.QLineEdit, "figureComposerLineLabelsEdit")
@@ -2315,7 +2315,7 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
@@ -2332,7 +2332,7 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     labels_edit.editingFinished.emit()
 
     assert rebuild_calls == []
-    assert tool.operation_list.currentRow() == 0
+    assert tool._current_operation_index() == 0
     assert len(tool.tool_status.operations) == 2
     line_operation, legend_operation = tool.tool_status.operations
     assert line_operation.line_label_text == "profile A"
@@ -2376,7 +2376,7 @@ def test_figure_composer_disabled_line_labels_do_not_add_legend_or_render(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("style")
     labels_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"

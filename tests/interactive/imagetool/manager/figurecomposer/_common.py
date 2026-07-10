@@ -280,25 +280,39 @@ def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
 
 
 def _select_operation_rows(tool: FigureComposerTool, rows: tuple[int, ...]) -> None:
-    if not rows:
+    was_blocked = tool.operation_list.blockSignals(True)
+    try:
         tool.operation_list.clearSelection()
-        tool._operation_selection_changed()
-        return
-    tool.operation_list.setCurrentRow(rows[0])
-    tool.operation_list.clearSelection()
-    for row in rows:
-        item = tool.operation_list.item(row)
-        assert item is not None
-        item.setSelected(True)
+        if rows:
+            tool.operation_list.setCurrentItem(
+                tool.operation_list.topLevelItem(rows[0])
+            )
+            for row in rows:
+                item = tool.operation_list.topLevelItem(row)
+                assert item is not None
+                item.setSelected(True)
+    finally:
+        tool.operation_list.blockSignals(was_blocked)
     tool._operation_selection_changed()
 
 
 def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     return tuple(
         row
-        for row in range(tool.operation_list.count())
-        if tool.operation_list.item(row).isSelected()
+        for row in range(tool.operation_list.topLevelItemCount())
+        if tool.operation_list.topLevelItem(row).isSelected()
     )
+
+
+def _operation_status_codes(tool: FigureComposerTool, row: int) -> tuple[str, ...]:
+    item = tool.operation_list.topLevelItem(row)
+    assert item is not None
+    value = item.data(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_ROLE,
+    )
+    assert isinstance(value, tuple)
+    return value
 
 
 def _clear_clipboard() -> InMemoryClipboard:
@@ -387,30 +401,6 @@ def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckB
         str(source_name): check
         for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
         if (source_name := check.property("figure_source_name")) is not None
-    }
-
-
-def _source_refresh_buttons(
-    tool: FigureComposerTool,
-) -> dict[str, QtWidgets.QToolButton]:
-    return {
-        str(source_name): button
-        for button in tool.source_list.findChildren(
-            QtWidgets.QToolButton, "figureComposerRefreshSourceButton"
-        )
-        if (source_name := button.property("figure_source_name")) is not None
-    }
-
-
-def _source_remove_buttons(
-    tool: FigureComposerTool,
-) -> dict[str, QtWidgets.QToolButton]:
-    return {
-        str(source_name): button
-        for button in tool.source_list.findChildren(
-            QtWidgets.QToolButton, "figureComposerRemoveSourceButton"
-        )
-        if (source_name := button.property("figure_source_name")) is not None
     }
 
 

@@ -641,11 +641,19 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         super().__init__(manager)
         self._manager = manager
         self._prechecked_uids = set(prechecked_uids)
+        self._expanded_before_search: set[str] | None = None
         self.setObjectName("managerFigureSourcePickerDialog")
         self.setWindowTitle("Add Figure Sources")
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
+        self.search_edit = QtWidgets.QLineEdit(self)
+        self.search_edit.setObjectName("managerFigureSourcePickerSearch")
+        self.search_edit.setAccessibleName("Search ImageTools")
+        self.search_edit.setPlaceholderText("Search ImageTools")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._filter_tree)
+        layout.addWidget(self.search_edit)
         self.tree = QtWidgets.QTreeWidget(self)
         self.tree.setObjectName("managerFigureSourcePickerTree")
         self.tree.setColumnCount(1)
@@ -675,7 +683,8 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         layout.addWidget(self.button_box)
 
         self._populate_tree()
-        self.tree.expandAll()
+        self.tree.collapseAll()
+        self._expand_prechecked_ancestors()
         self._refresh_ok_state()
 
     def _populate_tree(self) -> None:
@@ -742,6 +751,68 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
             child = item.child(row)
             if child is not None:
                 self._collect_checked_targets(child, output)
+
+    def _tree_items(self) -> Iterator[QtWidgets.QTreeWidgetItem]:
+        iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
+        while (item := iterator.value()) is not None:
+            yield item
+            iterator += 1
+
+    def _expanded_uids(self) -> set[str]:
+        return {
+            uid
+            for item in self._tree_items()
+            if item.isExpanded()
+            and isinstance(uid := item.data(0, QtCore.Qt.ItemDataRole.UserRole), str)
+        }
+
+    def _restore_expanded_uids(self, expanded_uids: set[str]) -> None:
+        for item in self._tree_items():
+            uid = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            item.setExpanded(isinstance(uid, str) and uid in expanded_uids)
+
+    def _expand_prechecked_ancestors(self) -> None:
+        for item in self._tree_items():
+            if item.checkState(0) != QtCore.Qt.CheckState.Checked:
+                continue
+            parent = item.parent()
+            while parent is not None:
+                parent.setExpanded(True)
+                parent = parent.parent()
+
+    @QtCore.Slot(str)
+    def _filter_tree(self, text: str) -> None:
+        query = text.strip().casefold()
+        root = self.tree.invisibleRootItem()
+        if root is None:  # pragma: no cover
+            return
+        if not query:
+            for item in self._tree_items():
+                item.setHidden(False)
+            if self._expanded_before_search is not None:
+                expanded = self._expanded_before_search
+                self._expanded_before_search = None
+                self.tree.collapseAll()
+                self._restore_expanded_uids(expanded)
+            return
+        if self._expanded_before_search is None:
+            self._expanded_before_search = self._expanded_uids()
+        for row in range(root.childCount()):
+            child = root.child(row)
+            if child is not None:
+                self._filter_tree_item(child, query)
+
+    def _filter_tree_item(self, item: QtWidgets.QTreeWidgetItem, query: str) -> bool:
+        child_match = False
+        for row in range(item.childCount()):
+            child = item.child(row)
+            if child is not None:
+                child_match |= self._filter_tree_item(child, query)
+        matches = query in item.text(0).casefold()
+        visible = matches or child_match
+        item.setHidden(not visible)
+        item.setExpanded(child_match)
+        return visible
 
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
     def _item_changed(self, _item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
@@ -2980,9 +3051,6 @@ class ImageToolManager(_ImageToolManagerBase):
             refresh_source=lambda source_name: self._refresh_figure_source(
                 figure_uid, source_name
             ),
-            refresh_sources=lambda source_names: self._refresh_figure_sources(
-                figure_uid, source_names
-            ),
             source_label=lambda source_name: self._figure_source_refresh_label(
                 figure_uid, source_name
             ),
@@ -3041,7 +3109,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 return source
         return None
 
-    def _figure_source_live_node(
+    def _figure_source_node(
         self, figure_uid: str, source_name: str
     ) -> _ImageToolWrapper | _ManagedWindowNode | None:
         from erlab.interactive._figurecomposer import FigureComposerTool
@@ -3055,7 +3123,12 @@ class ImageToolManager(_ImageToolManagerBase):
         source = self._figure_source_state(tool, source_name)
         if source is None or source.node_uid is None:
             return None
-        node = self._tool_graph.nodes.get(source.node_uid)
+        return self._tool_graph.nodes.get(source.node_uid)
+
+    def _figure_source_live_node(
+        self, figure_uid: str, source_name: str
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        node = self._figure_source_node(figure_uid, source_name)
         if node is None:
             return None
         window = node.window
@@ -3070,7 +3143,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _figure_source_refresh_label(
         self, figure_uid: str, source_name: str
     ) -> str | None:
-        node = self._figure_source_live_node(figure_uid, source_name)
+        node = self._figure_source_node(figure_uid, source_name)
         return None if node is None else node.display_text
 
     def _refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
@@ -3097,16 +3170,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._mark_workspace_dirty(uid=figure_uid, data=True, state=True)
         self._update_figure_gallery_icon(figure_uid)
         return True
-
-    def _refresh_figure_sources(
-        self, figure_uid: str, source_names: Iterable[str]
-    ) -> int:
-        """Refresh all linked figure sources named in ``source_names``."""
-        refreshed = 0
-        for source_name in tuple(source_names):
-            if self._refresh_figure_source(figure_uid, source_name):
-                refreshed += 1
-        return refreshed
 
     def _refresh_figure_source_controls(self) -> None:
         if self._workspace_ui_refresh_defer_depth > 0:

@@ -69,7 +69,7 @@ def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
         primary_source="first_source",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("sources")
 
     combo = next(
@@ -260,13 +260,13 @@ def test_figure_composer_source_keep_clears_stale_qsel_input_error(
     qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("")
     qsel_edit.editingFinished.emit()
-    assert "selection value" in tool.source_status_label.text()
+    assert "selection value" in tool.source_validation_label.text()
 
     _activate_source_selection_mode(tool, "eV", "keep")
 
     [source] = tool.source_states()
     assert source.qsel == {}
-    assert tool.source_status_label.text() == ""
+    assert tool.source_validation_label.text() == ""
 
 
 def test_figure_composer_source_qsel_width_editor_updates_selection(
@@ -471,7 +471,7 @@ def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
         tool, normalized_operation
     )
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     assert "selection" not in tool.step_section_buttons
 
 
@@ -491,7 +491,7 @@ def test_figure_composer_plot_array_has_no_operation_selection_page(qtbot) -> No
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     assert tuple(tool.step_section_buttons) == (
         "sources",
         "axes",
@@ -538,7 +538,7 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("colors")
 
     cmap_combo = next(
@@ -583,7 +583,7 @@ def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("colors")
 
     cmap_combo = next(
@@ -645,7 +645,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
             primary_source="data",
         )
         qtbot.addWidget(tool)
-        tool.operation_list.setCurrentRow(0)
+        tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
         tool._select_step_section("colors")
 
         cmap_combo = next(
@@ -708,7 +708,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("colors")
     cmap_combo = next(
         (
@@ -732,7 +732,9 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
         primary_source="data",
     )
     qtbot.addWidget(missing_cmap_tool)
-    missing_cmap_tool.operation_list.setCurrentRow(0)
+    missing_cmap_tool.operation_list.setCurrentItem(
+        missing_cmap_tool.operation_list.topLevelItem(0)
+    )
     missing_cmap_tool._select_step_section("colors")
     assert (
         missing_cmap_tool.findChild(
@@ -911,7 +913,7 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("view")
 
     aspect_combo = next(
@@ -974,7 +976,7 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("view")
 
     aspect_combo = next(

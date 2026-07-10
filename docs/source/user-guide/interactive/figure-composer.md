@@ -36,10 +36,11 @@ figure is created.
 The {guilabel}`Sources` tab lists the named data variables stored with the figure. Data
 must be added to this list before it can be plotted.
 
-Use {guilabel}`Add…` to choose ImageTool rows from the manager. You can also drag
+Use {guilabel}`Add…` to select ImageTool rows from the manager. You can also drag
 ImageTool rows from the manager into the composer controls or figure window.
 
-Use {guilabel}`Refresh Sources` to fetch latest data from the linked ImageTool.
+Select one or more sources and use {guilabel}`Refresh` to update them from their
+ImageTools.
 
 When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the corresponding
 ImageTool rows are added to the figure sources. In that dialog, different choices for
@@ -82,6 +83,11 @@ the figure state created by earlier steps.
 Every step has a type, a target (axes or figure), and a set of controls for the
 arguments of the plotting or styling calls it generates.
 
+The step table shows each operation, its target, and its current status. For steps that
+act on axes, the {guilabel}`Target` column highlights the affected axes in a miniature
+of the current subplot or GridSpec layout. The {guilabel}`Status` reports missing sources, invalid targets or inputs, and rendering errors
+when they occur. Hover over a reported problem for details.
+
 There are several step types:
 
 - {guilabel}`Set Palette` to set the line color cycle with {func}`seaborn.set_palette`.
@@ -117,9 +123,9 @@ method.
 
 :::
 
-Steps can be enabled, disabled, cut, copied, pasted, or removed from the toolbar.
-Reorder steps by dragging them in the list. Use the right-click context menu to
-duplicate steps or move them.
+Use the checkbox beside a step to enable or disable it. Steps can be cut, copied,
+pasted, or removed from the toolbar. Reorder steps by dragging their rows. Use the
+right-click context menu to duplicate steps or move them.
 
 By selecting multiple steps, you can edit them simultaneously to apply the same change
 to all selected steps. Copied or cut steps can be pasted into another Figure Composer.

@@ -3251,11 +3251,11 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
         with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
             itool(updated_second, manager=True, replace=1)
 
-        buttons = _source_refresh_buttons(figure_tool)
-        assert buttons["first"].isEnabled()
-        assert buttons["second"].isEnabled()
+        figure_tool._set_selected_source_names_silent({"first"}, "first")
+        figure_tool._refresh_source_controls()
+        assert figure_tool.refresh_sources_button.isEnabled()
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            buttons["first"].click()
+            figure_tool.refresh_sources_button.click()
 
         source_data = figure_tool.source_data()
         xr.testing.assert_identical(source_data["first"], updated_first)
@@ -3278,12 +3278,11 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
         assert figure_uid in snapshot["dirty_state"]
 
         manager.remove_imagetool(0)
-        buttons = _source_refresh_buttons(figure_tool)
-        assert not buttons["first"].isEnabled()
-        assert (
-            buttons["first"].toolTip()
-            == "This source is not linked to an open ImageTool"
-        )
+        figure_tool._refresh_source_controls()
+        assert not figure_tool.refresh_sources_button.isEnabled()
+        first_item = figure_tool.source_list.topLevelItem(0)
+        assert first_item is not None
+        assert first_item.icon(0).isNull()
 
 
 def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
@@ -3335,10 +3334,10 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
         with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
             itool(updated_second, manager=True, replace=1)
 
-        buttons = _source_refresh_buttons(figure_tool)
-        assert buttons["first"].isEnabled()
-        assert buttons["second"].isEnabled()
-        assert not buttons["detached"].isEnabled()
+        figure_tool._set_selected_source_names_silent(
+            {"first", "second", "detached"}, "first"
+        )
+        figure_tool._refresh_source_controls()
         assert figure_tool.refresh_sources_button.isEnabled()
         figure_tool.refresh_sources_button.click()
 
@@ -3347,8 +3346,7 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
         xr.testing.assert_identical(source_data["second"], updated_second)
         xr.testing.assert_identical(source_data["detached"], detached)
         assert figure_tool.tool_status.operations == operations
-        assert figure_tool.source_status_label.text() == ""
-        assert figure_tool.source_status_label.isHidden()
+        assert not figure_tool.source_status_label.isHidden()
         assert figure_tool._operation_render_errors == {}
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
@@ -3742,6 +3740,19 @@ def test_manager_figure_source_picker_selects_imagetool_rows_only(
         assert child_item.checkState(0) == QtCore.Qt.CheckState.Checked
         assert dialog.selected_targets() == (root_uid, child_uid)
 
+        assert dummy_item.isExpanded()
+        dummy_item.setExpanded(False)
+        dialog.search_edit.setText("child")
+        assert not root_item.isHidden()
+        assert not dummy_item.isHidden()
+        assert not child_item.isHidden()
+        assert dummy_item.isExpanded()
+        assert dialog.selected_targets() == (root_uid, child_uid)
+        dialog.search_edit.clear()
+        assert not dummy_item.isExpanded()
+        assert root_item.checkState(0) == QtCore.Qt.CheckState.Checked
+        assert child_item.checkState(0) == QtCore.Qt.CheckState.Checked
+
         root_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
         child_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
         ok_button = dialog.button_box.button(
@@ -3957,10 +3968,11 @@ def test_manager_figure_remove_unused_source_persists_workspace(
         assert source.name in figure_tool.source_data()
         manager._mark_workspace_clean()
 
-        buttons = _source_remove_buttons(figure_tool)
-        assert buttons[source.name].isEnabled()
+        figure_tool._set_selected_source_names_silent({source.name}, source.name)
+        figure_tool._refresh_source_controls()
+        assert figure_tool.remove_selected_source_button.isEnabled()
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            buttons[source.name].click()
+            figure_tool.remove_selected_source_button.click()
 
         assert source.name not in figure_tool.source_data()
         assert source.name not in {

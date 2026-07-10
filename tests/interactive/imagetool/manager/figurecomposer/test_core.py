@@ -346,7 +346,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     _select_operation_rows(tool, (3,))
-    assert tool.operation_list.item(3).text() == "eplt.clean_labels"
+    assert tool.operation_list.topLevelItem(3).text(0) == "eplt.clean_labels"
     assert tool.step_section_buttons["method"].text() == "eplt.clean_labels"
     tool._select_step_section("method")
     erlab_method_page = tool.step_editor_stack.currentWidget()

@@ -147,7 +147,7 @@ def test_figure_composer_source_rename_rejects_ambiguous_python(
     assert not tool._rename_source_alias("data", "renamed")
     assert tool.tool_status.sources[0].name == "data"
     assert tool.tool_status.operations[0].code == code
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
@@ -169,7 +169,7 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("code")
 
     current_page = tool.step_editor_stack.currentWidget()
@@ -227,7 +227,7 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("code")
 
     current_page = tool.step_editor_stack.currentWidget()
@@ -291,7 +291,7 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("code")
 
     current_page = tool.step_editor_stack.currentWidget()
@@ -303,7 +303,7 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
 
     new_code = "ax.set_title('pending')\nax.set_ylabel('counts')"
     code_edit.setPlainText(new_code)
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
 
     qtbot.waitUntil(
         lambda: tool.tool_status.operations[0].code == new_code,
@@ -328,7 +328,7 @@ def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> Non
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("code")
 
     current_page = tool.step_editor_stack.currentWidget()
@@ -378,9 +378,9 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
 
     figurecomposer_rendering._render_preview(tool, show_window=False)
 
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "(render error)" not in item.text()
+    assert _operation_status_codes(tool, 0) == ()
 
 
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
@@ -584,28 +584,16 @@ def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> 
     )
     qtbot.addWidget(tool)
     tool._set_selected_source_names_silent({"data"}, "data")
+    tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
-    alias_edit = next(
-        item.widget()
-        for row in range(tool.source_selection_controls_layout.rowCount())
-        if (
-            (
-                item := tool.source_selection_controls_layout.itemAt(
-                    row, QtWidgets.QFormLayout.ItemRole.FieldRole
-                )
-            )
-            is not None
-            and isinstance(item.widget(), QtWidgets.QLineEdit)
-            and item.widget().objectName() == "figureComposerSourceAliasEdit"
-        )
-    )
+    alias_edit = tool.source_alias_edit
 
     alias_edit.setText("renamed")
     alias_edit.editingFinished.emit()
 
     assert alias_edit.text() == "data"
     assert tool.tool_status.sources[0].name == "data"
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
@@ -688,13 +676,15 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
 
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "(render error)" in item.text()
-    assert "Custom code is not trusted" in item.toolTip()
-    assert "Enable Trusted to render it" in tool.step_source_status_label.text()
+    assert _operation_status_codes(tool, 0) == ("render_error",)
+    assert "Custom code is not trusted" in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
+    assert tool.step_source_status_label.isHidden()
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("code")
     trusted_check = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QCheckBox, "figureComposerCustomCodeTrustedCheck"
@@ -706,8 +696,10 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
 
     assert tool.tool_status.operations[0].trusted is True
     qtbot.waitUntil(lambda: not tool._operation_render_errors, timeout=1000)
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "(render error)" not in item.text()
-    assert "Custom code is not trusted" not in item.toolTip()
-    assert "Render error" not in tool.step_source_status_label.text()
+    assert _operation_status_codes(tool, 0) == ()
+    assert "Custom code is not trusted" not in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
+    assert tool.step_source_status_label.isHidden()

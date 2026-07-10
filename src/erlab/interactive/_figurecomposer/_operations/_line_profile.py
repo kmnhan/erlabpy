@@ -2060,10 +2060,9 @@ def _default_profile_x_dim(
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
-    prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
     source_names = _line_selection_sources(operation)
     source = ", ".join(tool._source_display_names(source_names)) or "missing source"
-    return f"{prefix}Line/profile: {source}"
+    return f"Line/profile: {source}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:

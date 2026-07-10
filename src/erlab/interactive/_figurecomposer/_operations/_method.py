@@ -2589,8 +2589,7 @@ def _has_invalid_target(
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
-    prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    return f"{prefix}{_method_display(operation)}"
+    return _method_display(operation)
 
 
 def _method_plain_text_edit(

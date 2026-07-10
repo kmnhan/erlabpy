@@ -158,7 +158,6 @@ def _has_invalid_target(
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
-    prefix = "Needs one axis: " if _has_invalid_target(tool, operation) else ""
     source_name = _primary_source(operation)
     source_text = (
         tool._source_display_name(source_name)
@@ -175,7 +174,7 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
             shape = "2D"
         else:
             shape = f"{data.ndim}D"
-    return f"{prefix}Image plot: {source_text}, {shape}"
+    return f"Image plot: {source_text}, {shape}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:

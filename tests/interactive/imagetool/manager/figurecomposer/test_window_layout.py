@@ -424,7 +424,11 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     assert not selector.axis_rect("main-axis").isNull()
     assert selector.axis_rect("missing").isNull()
     assert selector._range_axes_ids("missing", "child-axis") == ("child-axis",)
-    assert selector._axis_edges(0, 100, 2, ()) == (0.0, 50.0, 100.0)
+    assert figurecomposer_widgets._ratio_edges(0, 100, 2, ()) == (
+        0.0,
+        50.0,
+        100.0,
+    )
 
     selected: list[tuple[str, ...]] = []
     selector.sigSelectionChanged.connect(selected.append)
@@ -511,8 +515,8 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=True) is not None
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=False) is None
     assert editor._occupied_grid_cells(root) >= {(0, 0), (0, 1), (1, 1)}
-    assert editor._axis_edges(0, 100, 0, ()) == (0.0,)
-    assert editor._axis_edges(0, 100, 2, (2.0, 1.0)) == (
+    assert figurecomposer_widgets._ratio_edges(0, 100, 0, ()) == (0.0,)
+    assert figurecomposer_widgets._ratio_edges(0, 100, 2, (2.0, 1.0)) == (
         0.0,
         200.0 / 3.0,
         100.0,
@@ -1650,12 +1654,12 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     tool._target_current_operation_all_axes()
     tool._target_current_operation_valid_axes()
     assert tool.tool_status.operations[0].axes.axes == ()
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert not tool.tool_status.operations[0].enabled
     tool.operation_list.clearSelection()
-    tool.operation_list.setCurrentRow(-1)
+    tool.operation_list.setCurrentIndex(QtCore.QModelIndex())
     tool._update_step_action_buttons()
     assert not tool.remove_operation_button.isEnabled()
 
@@ -1870,7 +1874,7 @@ def test_figure_composer_axes_selection_guards_recipe_updates(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     render_calls: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         figurecomposer_tool_module,
@@ -1904,7 +1908,7 @@ def test_figure_composer_axes_selection_guards_recipe_updates(
     tool.add_operation(
         FigureOperationState.custom(label="code", code="pass", trusted=True)
     )
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._axes_selection_changed(((0, 0),))
     assert tool.tool_status.operations[1].axes.axes == ()
     tool.axes_expression_edit.setText("axs")
@@ -1959,7 +1963,7 @@ def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     render_calls: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         figurecomposer_tool_module,
@@ -1984,7 +1988,7 @@ def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
     tool.add_operation(
         FigureOperationState.custom(label="code", code="pass", trusted=True)
     )
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool.gridspec_axes_selector.set_selected_axes_ids(("left",), emit=False)
     tool._gridspec_axes_selection_changed()
     assert tool.tool_status.operations[1].axes.axes_ids == ()
@@ -2366,22 +2370,28 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
 
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "(render error)" in item.text()
-    assert "RuntimeError: boom" in item.toolTip()
-    assert "Render error: RuntimeError: boom" in tool.step_source_status_label.text()
+    assert _operation_status_codes(tool, 0) == ("render_error",)
+    assert "RuntimeError: boom" in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
+    assert tool.step_source_status_label.text() == ""
+    assert tool.step_source_status_label.isHidden()
 
     tool._replace_operation(
         0,
         operation.model_copy(update={"code": "ax.set_title('ok')"}),
     )
 
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "(render error)" not in item.text()
-    assert "RuntimeError: boom" not in item.toolTip()
-    assert "Render error" not in tool.step_source_status_label.text()
+    assert _operation_status_codes(tool, 0) == ()
+    assert "RuntimeError: boom" not in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
+    assert tool.step_source_status_label.text() == ""
+    assert tool.step_source_status_label.isHidden()
 
 
 def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
@@ -2409,9 +2419,12 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     edit.editingFinished.emit()
 
     assert tool._operation_has_invalid_input(operation)
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "Invalid input:" in item.toolTip()
+    assert _operation_status_codes(tool, 0) == ("invalid_input",)
+    assert "Invalid input:" in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
     assert "Invalid input:" in tool.step_source_status_label.text()
     with pytest.raises(ValueError, match="invalid step inputs"):
         tool.generated_code()
@@ -2431,9 +2444,12 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
 
     assert not tool._operation_has_invalid_input(operation)
     assert tool.tool_status.operations[0].extra_kwargs == {"alpha": 0.5}
-    item = tool.operation_list.item(0)
+    item = tool.operation_list.topLevelItem(0)
     assert item is not None
-    assert "Invalid input:" not in item.toolTip()
+    assert _operation_status_codes(tool, 0) == ()
+    assert "Invalid input:" not in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
     assert "Invalid input:" not in tool.step_source_status_label.text()
 
 
@@ -2538,7 +2554,7 @@ def test_figure_composer_disabled_step_edits_do_not_render_or_queue(
     )
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     render_calls: list[tuple[object, ...]] = []
     info_changed: list[None] = []
@@ -2549,9 +2565,9 @@ def test_figure_composer_disabled_step_edits_do_not_render_or_queue(
         lambda *args, **_kwargs: render_calls.append(args),
     )
 
-    operation_item = tool.operation_list.item(0)
+    operation_item = tool.operation_list.topLevelItem(0)
     assert operation_item is not None
-    operation_item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    operation_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert tool.tool_status.operations[0].enabled is False
     assert render_calls == [(tool,)]
     assert info_changed == [None]
@@ -2578,9 +2594,9 @@ def test_figure_composer_disabled_step_edits_do_not_render_or_queue(
     assert not tool._preview_render_update_pending
     assert info_changed == [None, None]
 
-    operation_item = tool.operation_list.item(0)
+    operation_item = tool.operation_list.topLevelItem(0)
     assert operation_item is not None
-    operation_item.setCheckState(QtCore.Qt.CheckState.Checked)
+    operation_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
     assert tool.tool_status.operations[0].enabled is True
     assert render_calls == [(tool,)]
     assert info_changed == [None, None, None]
@@ -3208,6 +3224,363 @@ def test_figure_composer_preview_suppresses_collapsed_layout_warning(
     )
 
 
+def test_figure_composer_operation_table_presents_targets_and_selects_rows(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2),
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.set_palette(),
+                FigureOperationState.plot_array(
+                    label="image",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+                FigureOperationState.plot_slices(
+                    label="slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(expression="axs[:, 0]"),
+                ),
+                FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    operation_list = tool.operation_list
+    assert isinstance(operation_list, QtWidgets.QTreeWidget)
+    assert operation_list.columnCount() == 3
+    assert (
+        operation_list.selectionBehavior()
+        == QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+    )
+    assert isinstance(
+        operation_list.itemDelegateForColumn(
+            figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN
+        ),
+        figurecomposer_widgets._AxesTargetItemDelegate,
+    )
+    header = operation_list.header()
+    assert (
+        header.sectionSize(figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN)
+        <= 80
+    )
+    assert (
+        header.sectionSize(figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN)
+        <= 96
+    )
+
+    palette_item = operation_list.topLevelItem(0)
+    image_item = operation_list.topLevelItem(1)
+    expression_item = operation_list.topLevelItem(2)
+    custom_item = operation_list.topLevelItem(3)
+    assert all(
+        item is not None
+        for item in (palette_item, image_item, expression_item, custom_item)
+    )
+    palette_descriptor = palette_item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    custom_descriptor = custom_item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    assert palette_descriptor[0] == custom_descriptor[0] == "text"
+    assert palette_descriptor != custom_descriptor
+
+    image_descriptor = image_item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    expression_descriptor = expression_item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    assert image_descriptor[0] == expression_descriptor[0] == "layout"
+    assert [entry[-1] for entry in image_descriptor[2]] == [False, True, False, False]
+    assert [entry[-1] for entry in expression_descriptor[2]] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+    unresolved_descriptor = tool._operation_target_preview_descriptor(
+        tool.tool_status.operations[2].model_copy(
+            update={
+                "axes": FigureAxesSelectionState(expression="axs + axs"),
+            }
+        )
+    )
+    assert unresolved_descriptor[-1] is True
+    expression_item.setData(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+        unresolved_descriptor,
+    )
+    assert (
+        expression_item.data(
+            figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+        )
+        == "axs[:, 0]"
+    )
+    for row in range(operation_list.topLevelItemCount()):
+        item = operation_list.topLevelItem(row)
+        assert item is not None
+        assert item.sizeHint(0).height() <= 24
+        for column in range(operation_list.columnCount()):
+            assert operation_list.itemWidget(item, column) is None
+
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool.show()
+    operation_list.scrollToItem(expression_item)
+    initial_list_height = operation_list.height()
+    for row in range(operation_list.topLevelItemCount()):
+        operation_list.setCurrentItem(operation_list.topLevelItem(row))
+        QtWidgets.QApplication.processEvents()
+        assert operation_list.height() == initial_list_height
+        assert (
+            tool.step_editor_scroll.minimumSizeHint().width()
+            >= tool.step_editor_stack.minimumSizeHint().width()
+        )
+    operation_list.setCurrentItem(palette_item)
+    QtWidgets.QApplication.processEvents()
+    target_index = operation_list.indexFromItem(
+        expression_item,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+    )
+    target_rect = operation_list.visualRect(target_index)
+    assert not target_rect.isEmpty()
+    editor_generation = tool._operation_editor_generation
+    qtbot.mouseClick(
+        operation_list.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=target_rect.center(),
+    )
+    assert operation_list.indexOfTopLevelItem(operation_list.currentItem()) == 2
+    assert expression_item.isSelected()
+    assert tool._operation_editor_generation == editor_generation
+    qtbot.waitUntil(
+        lambda: tool._operation_editor_generation == editor_generation + 1,
+        timeout=1000,
+    )
+    assert operation_list.height() == initial_list_height
+
+
+def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(FigureOperationState.plot_array(label="image", source="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    item = tool.operation_list.topLevelItem(0)
+    assert item is not None
+    assert item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    ) == ("single_axes",)
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool.show()
+    qtbot.wait(1)
+
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="only-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    assert figurecomposer_widgets._gridspec_target_preview_descriptor(
+        root, ("only-axis",)
+    ) == ("single_axes",)
+    assert figurecomposer_widgets._gridspec_target_preview_descriptor(root, ())[0] == (
+        "layout"
+    )
+
+
+def test_figure_composer_operation_table_presents_nested_gridspec_target(
+    qtbot,
+) -> None:
+    child_axis = FigureGridSpecAxesState(
+        axes_id="child-axis",
+        span=FigureGridSpecSpanState(
+            row_start=1,
+            row_stop=2,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="root-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+        child_grids=(
+            FigureGridSpecGridState(
+                grid_id="child",
+                nrows=2,
+                ncols=1,
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+                axes=(child_axis,),
+            ),
+            FigureGridSpecGridState(
+                grid_id="outside-root",
+                nrows=1,
+                ncols=1,
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=2,
+                    col_stop=3,
+                ),
+            ),
+        ),
+    )
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes_ids=("child-axis",)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    item = tool.operation_list.topLevelItem(0)
+    assert item is not None
+    descriptor = item.data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    assert descriptor[0] == "layout"
+    assert any(entry[0] == "grid" for entry in descriptor[2])
+    assert sum(entry[0] == "axis" and entry[-1] for entry in descriptor[2]) == 1
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool.show()
+    qtbot.wait(10)
+
+
+def test_figure_composer_operation_table_centralizes_status_and_layout_refresh(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    operation = FigureOperationState.plot_array(
+        label="image",
+        source="missing",
+        axes=FigureAxesSelectionState(axes=((0, 1),)),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="data"),
+                FigureSourceState(name="missing"),
+            ),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    assert _operation_status_codes(tool, 0) == (
+        "invalid_target",
+        "missing_source",
+    )
+    item = tool.operation_list.topLevelItem(0)
+    assert item is not None
+    assert item.text(
+        figurecomposer_tool_module._OPERATION_LIST_STEP_COLUMN
+    ) == tool._operation_display_text(tool.tool_status.operations[0])
+
+    tool._set_operation_input_errors(
+        {operation.operation_id: {"test": "invalid value"}}
+    )
+    tool._set_operation_render_errors({operation.operation_id: "render failed"})
+    assert _operation_status_codes(tool, 0) == (
+        "invalid_target",
+        "missing_source",
+        "invalid_input",
+        "render_error",
+    )
+    item = tool.operation_list.topLevelItem(0)
+    assert item is not None
+    status_description = item.data(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN,
+        QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+    )
+    assert "invalid value" in status_description
+    assert "render failed" in status_description
+
+    tool._set_operation_input_errors({})
+    tool._set_operation_render_errors({})
+    tool.ncols_spin.setValue(2)
+    assert _operation_status_codes(tool, 0) == ("missing_source",)
+    descriptor = tool.operation_list.topLevelItem(0).data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    assert [entry[-1] for entry in descriptor[2]] == [False, True]
+
+    tool.undo()
+    assert "invalid_target" in _operation_status_codes(tool, 0)
+    descriptor = tool.operation_list.topLevelItem(0).data(
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN,
+        figurecomposer_tool_module._OPERATION_LIST_TARGET_ROLE,
+    )
+    assert [entry[-1] for entry in descriptor[2]] == [False]
+
+
 def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
@@ -3266,7 +3639,7 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     )
     assert delete_button is tool.remove_operation_button
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     menu, move_up_action = _operation_context_action(
         tool, "figureComposerContextMoveStepUpAction"
     )
@@ -3289,7 +3662,7 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     duplicate_action.trigger()
     menu.close()
     duplicate = tool.tool_status.operations[2]
-    assert tool.operation_list.currentRow() == 2
+    assert tool._current_operation_index() == 2
     assert len(tool.tool_status.operations) == 4
     assert duplicate.operation_id != second.operation_id
     assert duplicate.model_dump(exclude={"operation_id"}) == second.model_dump(
@@ -3302,17 +3675,17 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     )
     move_up_action.trigger()
     menu.close()
-    assert tool.operation_list.currentRow() == 1
+    assert tool._current_operation_index() == 1
     assert tool.tool_status.operations[1].operation_id == duplicate_id
     menu, move_down_action = _operation_context_action(
         tool, "figureComposerContextMoveStepDownAction"
     )
     move_down_action.trigger()
     menu.close()
-    assert tool.operation_list.currentRow() == 2
+    assert tool._current_operation_index() == 2
     assert tool.tool_status.operations[2].operation_id == duplicate_id
 
-    tool.operation_list.setCurrentRow(3)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(3))
     menu, move_up_action = _operation_context_action(
         tool, "figureComposerContextMoveStepUpAction"
     )
@@ -3382,7 +3755,7 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
         "e",
     ]
     assert _selected_operation_rows(tool) == (4, 5)
-    assert tool.operation_list.currentRow() == 4
+    assert tool._current_operation_index() == 4
     assert [
         tool.tool_status.operations[index].operation_id for index in (4, 5)
     ] != selected_originals
@@ -3440,7 +3813,7 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
         "e",
     ]
     assert _selected_operation_rows(tool) == (1,)
-    assert tool.operation_list.currentRow() == 1
+    assert tool._current_operation_index() == 1
 
 
 def test_figure_composer_drag_reorders_steps_and_history(qtbot) -> None:
@@ -3467,13 +3840,31 @@ def test_figure_composer_drag_reorders_steps_and_history(qtbot) -> None:
     assert tool.operation_list.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
     assert tool.operation_list.showDropIndicator()
 
+    tool.editor_tabs.setCurrentWidget(tool.recipe_page)
+    tool.show()
+    qtbot.waitUntil(tool.isVisible)
+
     _select_operation_rows(tool, (1, 2))
-    assert tool.operation_list.model().moveRows(
-        QtCore.QModelIndex(),
-        1,
-        2,
-        QtCore.QModelIndex(),
-        4,
+    first_moved = tool.operation_list.takeTopLevelItem(1)
+    second_moved = tool.operation_list.takeTopLevelItem(1)
+    assert first_moved is not None
+    assert second_moved is not None
+    tool.operation_list.insertTopLevelItem(2, first_moved)
+    tool.operation_list.insertTopLevelItem(3, second_moved)
+    tool.operation_list.setCurrentItem(first_moved)
+    first_moved.setSelected(True)
+    second_moved.setSelected(True)
+    tool.operation_list._queue_rows_reordered()
+
+    assert tool.operation_list.topLevelItemCount() == 4
+    assert [operation.label for operation in tool.tool_status.operations] == list(
+        "abcd"
+    )
+    qtbot.waitUntil(
+        lambda: (
+            [operation.label for operation in tool.tool_status.operations]
+            == ["a", "d", "b", "c"]
+        )
     )
 
     assert [operation.label for operation in tool.tool_status.operations] == [
@@ -3482,8 +3873,12 @@ def test_figure_composer_drag_reorders_steps_and_history(qtbot) -> None:
         "b",
         "c",
     ]
+    assert all(
+        tool.operation_list.topLevelItem(row).childCount() == 0
+        for row in range(tool.operation_list.topLevelItemCount())
+    )
     assert _selected_operation_rows(tool) == (2, 3)
-    assert tool.operation_list.currentRow() == 2
+    assert tool._current_operation_index() == 2
 
     namespace: dict[str, typing.Any] = {}
     exec(tool.generated_code(), namespace)  # noqa: S102
@@ -3516,7 +3911,7 @@ def test_figure_composer_operation_list_keyboard_context_menu(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
 
     event = QtGui.QKeyEvent(
         QtCore.QEvent.Type.KeyPress,
@@ -3570,7 +3965,7 @@ def test_figure_composer_copy_paste_steps_preserves_order_and_history(qtbot) -> 
         "d",
     ]
     assert _selected_operation_rows(tool) == (1, 2)
-    assert tool.operation_list.currentRow() == 1
+    assert tool._current_operation_index() == 1
     pasted_ids = {tool.tool_status.operations[index].operation_id for index in (1, 2)}
     assert pasted_ids.isdisjoint(copied_ids)
 
@@ -3619,7 +4014,7 @@ def test_figure_composer_cut_paste_steps_preserves_order_and_history(qtbot) -> N
         "c",
     ]
     assert _selected_operation_rows(tool) == (1,)
-    assert tool.operation_list.currentRow() == 1
+    assert tool._current_operation_index() == 1
     mime = clipboard.mimeData()
     payload_text = bytes(
         mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
@@ -3643,7 +4038,7 @@ def test_figure_composer_cut_paste_steps_preserves_order_and_history(qtbot) -> N
         "d",
     ]
     assert _selected_operation_rows(tool) == (2, 3)
-    assert tool.operation_list.currentRow() == 2
+    assert tool._current_operation_index() == 2
     pasted_ids = {tool.tool_status.operations[index].operation_id for index in (2, 3)}
     assert pasted_ids.isdisjoint(cut_ids)
 
@@ -3917,6 +4312,8 @@ def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
     operation_list.paste_requested.connect(lambda: pasted.append(True))
 
     operation_list.keyPressEvent(None)
+    operation_list.dropEvent(None)
+    operation_list._emit_rows_reordered()
 
     paste_event = QtGui.QKeyEvent(
         QtCore.QEvent.Type.KeyPress,
@@ -3972,7 +4369,7 @@ def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
     qtbot.addWidget(tool)
 
     assert tool._clipboard() is not None
-    tool.operation_list.setCurrentRow(-1)
+    tool.operation_list.setCurrentIndex(QtCore.QModelIndex())
     tool.operation_list.clearSelection()
     tool._copy_selected_operations()
 
@@ -4457,7 +4854,7 @@ def test_figure_composer_axes_status_uses_compact_labels(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("axes")
     assert tool.target_axes_status_label.text() == "Targets: axs[0, :]"
     assert (
@@ -5119,6 +5516,7 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
     tool._setup_controls_changed()
     tool.show()
     qtbot.wait_until(lambda: tool.isVisible(), timeout=5000)
+    qtbot.wait(1)
 
     axis = tool.tool_status.setup.gridspec.root.axes[0]
     widget = tool.gridspec_layout_widget
@@ -5876,7 +6274,7 @@ def test_figure_composer_subplots_adjust_pairs_stay_valid(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     left_spin = method_page.findChild(
@@ -7428,7 +7826,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("selection")
     values_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
@@ -7530,7 +7928,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("selection")
     old_page = tool.step_editor_stack.currentWidget()
     active_popup: list[QtWidgets.QWidget | None] = [None]
@@ -7572,14 +7970,16 @@ def test_figure_composer_operation_list_event_filter_is_removed_on_close(
     assert erlab.interactive.utils.qt_is_valid(viewport)
 
     tool._operation_multi_select_event = True
+    tool._operation_selection_input_event = True
     erlab.interactive.utils.single_shot(
-        tool, 0, tool._clear_operation_multi_select_event
+        tool, 0, tool._clear_operation_selection_input_state
     )
     tool.close()
     qtbot.wait(10)
 
     assert tool._operation_list_viewport is None
     assert tool._operation_multi_select_event is False
+    assert tool._operation_selection_input_event is False
     assert erlab.interactive.utils.qt_is_valid(viewport)
 
 

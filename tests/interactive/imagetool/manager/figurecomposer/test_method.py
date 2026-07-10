@@ -89,7 +89,7 @@ def test_figure_composer_method_docs_button_opens_current_url(
             "#erlab.plotting.clean_labels",
         ),
     ):
-        tool.operation_list.setCurrentRow(row)
+        tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(row))
         tool._select_step_section("method")
         button = tool.step_editor_stack.currentWidget().findChild(
             QtWidgets.QToolButton, "figureComposerMethodDocsButton"
@@ -646,7 +646,7 @@ def test_figure_composer_method_helper_edge_contracts(
     qtbot.addWidget(no_operation_tool)
     figurecomposer_method._update_current_method_name(no_operation_tool, "plot")
 
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._select_step_section("method")
     figure_method_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerFigureMethodCombo"
@@ -692,7 +692,7 @@ def test_figure_composer_method_helper_edge_contracts(
     assert tool.tool_status.operations[1].method_family == FigureMethodFamily.AXES
     figurecomposer_method._update_current_method_family(tool, FigureMethodFamily.FIGURE)
     assert tool.tool_status.operations[1].method_family == FigureMethodFamily.FIGURE
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._select_step_section("method")
     figurecomposer_method._update_current_method_name(tool, "set_layout_engine")
     assert tool.tool_status.operations[1].method_name == "set_layout_engine"
@@ -1178,7 +1178,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     method_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerAxesMethodCombo")
     transform_combo = tool.findChild(
@@ -1199,7 +1199,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert kwargs_edit.text() == 'ha="left", va="top"'
     assert tool.step_section_buttons["method"].text() == "ax.text"
 
-    tool.operation_list.setCurrentRow(4)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(4))
     tool._select_step_section("method")
     grid_visible_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodGridVisibleCombo"
@@ -1219,7 +1219,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
 
     scale_names = tuple(mscale.get_scale_names())
     assert "log" in scale_names
-    tool.operation_list.setCurrentRow(6)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(6))
     tool._select_step_section("method")
     xscale_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodXScaleCombo"
@@ -1232,7 +1232,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert xscale_combo.currentText() == "log"
     assert tool.tool_status.operations[6].method_args == ()
 
-    tool.operation_list.setCurrentRow(7)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(7))
     tool._select_step_section("method")
     yscale_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodYScaleCombo"
@@ -1246,7 +1246,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     _activate_combo_text(yscale_combo, y_scale)
     assert tool.tool_status.operations[7].method_args == (y_scale,)
 
-    tool.operation_list.setCurrentRow(8)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(8))
     tool._select_step_section("method")
     title_edit = tool.findChild(
         QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
@@ -1264,7 +1264,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert title_loc_combo.currentText() == "left"
     assert title_pad_edit.value() == 2.0
 
-    tool.operation_list.setCurrentRow(11)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(11))
     tool._select_step_section("method")
     x_margin_edit = tool.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodXMarginEdit"
@@ -1282,7 +1282,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert y_margin_edit.value() == pytest.approx(0.2)
     assert tight_combo.currentText() == "False"
 
-    tool.operation_list.setCurrentRow(12)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(12))
     tool._select_step_section("method")
     aspect_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodAspectEdit"
@@ -1298,7 +1298,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     aspect_edit.editingFinished.emit()
     assert tool.tool_status.operations[12].method_args == (2.5,)
 
-    tool.operation_list.setCurrentRow(13)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(13))
     tool._select_step_section("method")
     tick_editor = tool.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
@@ -1481,7 +1481,7 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     method_combo = method_page.findChild(
@@ -1557,7 +1557,7 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     assert tool.tool_status.operations[0].method_kwargs["clip_on"] is True
     assert tool.tool_status.operations[0].method_kwargs["transform"] == "ignored"
 
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     custom_transform_edit = method_page.findChild(
@@ -1650,7 +1650,7 @@ def test_figure_composer_axes_errorbar_method_render_and_codegen(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     method_combo = method_page.findChild(
@@ -1814,7 +1814,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     mode_combo = method_page.findChild(
@@ -3006,7 +3006,7 @@ def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> N
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
 
     method_page = tool.step_editor_stack.currentWidget()
@@ -3437,7 +3437,7 @@ def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     label_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QPlainTextEdit, "figureComposerAxesMethodXLabelEdit"
@@ -3618,9 +3618,9 @@ def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     assert "axes" not in tool.step_section_buttons
-    assert tool.operation_list.item(0).text() == "fig.supxlabel"
+    assert tool.operation_list.topLevelItem(0).text(0) == "fig.supxlabel"
     assert tool.step_section_buttons["method"].text() == "fig.supxlabel"
 
     fig = tool.figure
@@ -3666,7 +3666,9 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     )
     qtbot.addWidget(adjust_tool)
 
-    adjust_tool.operation_list.setCurrentRow(0)
+    adjust_tool.operation_list.setCurrentItem(
+        adjust_tool.operation_list.topLevelItem(0)
+    )
     adjust_tool._select_step_section("method")
     adjust_page = adjust_tool.step_editor_stack.currentWidget()
     left_spin = adjust_page.findChild(
@@ -3701,7 +3703,9 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
         ),
     )
     qtbot.addWidget(default_tool)
-    default_tool.operation_list.setCurrentRow(0)
+    default_tool.operation_list.setCurrentItem(
+        default_tool.operation_list.topLevelItem(0)
+    )
     default_tool._select_step_section("method")
     default_page = default_tool.step_editor_stack.currentWidget()
     default_left_spin = default_page.findChild(
@@ -3750,7 +3754,9 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     )
     qtbot.addWidget(engine_tool)
 
-    engine_tool.operation_list.setCurrentRow(0)
+    engine_tool.operation_list.setCurrentItem(
+        engine_tool.operation_list.topLevelItem(0)
+    )
     engine_tool._select_step_section("method")
     engine_page = engine_tool.step_editor_stack.currentWidget()
     engine_combo = engine_page.findChild(
@@ -3955,7 +3961,7 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     assert columns_edit.value() == 1
     assert title_edit.text() == "Axis legend"
 
-    tool.operation_list.setCurrentRow(2)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(2))
     tool._select_step_section("method")
     assert "axes" not in tool.step_section_buttons
     figure_loc_combo = tool.findChild(
@@ -4053,7 +4059,7 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._select_step_section("method")
     policy_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerMethodCallPolicyCombo"
@@ -4153,7 +4159,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     qtbot.addWidget(tool)
 
     def select_method(row: int) -> QtWidgets.QWidget:
-        tool.operation_list.setCurrentRow(row)
+        tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(row))
         tool._select_step_section("method")
         page = tool.step_editor_stack.currentWidget()
         assert page is not None
@@ -4516,7 +4522,7 @@ def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("method")
     title_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QPlainTextEdit
@@ -4525,7 +4531,7 @@ def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
     title_edit.setPlainText("Left\n")
     assert tool.tool_status.operations[0].text_values == ("Left", "")
 
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._select_step_section("method")
     xlabel_edit = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QPlainTextEdit
@@ -4567,17 +4573,19 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
 
     tool._redraw_plot(show_window=True)
 
     render_error = tool._operation_render_errors[title_operation.operation_id]
     assert "ValueError" in render_error
     assert "ParseException" in render_error
-    item = tool.operation_list.item(1)
+    item = tool.operation_list.topLevelItem(1)
     assert item is not None
-    assert "(render error)" in item.text()
-    assert "ParseException" in item.toolTip()
+    assert _operation_status_codes(tool, 1) == ("render_error",)
+    assert "ParseException" in item.toolTip(
+        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+    )
 
     tool._replace_operation(
         1,
@@ -4586,6 +4594,6 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
     tool._redraw_plot(show_window=True)
 
     assert title_operation.operation_id not in tool._operation_render_errors
-    item = tool.operation_list.item(1)
+    item = tool.operation_list.topLevelItem(1)
     assert item is not None
-    assert "(render error)" not in item.text()
+    assert _operation_status_codes(tool, 1) == ()

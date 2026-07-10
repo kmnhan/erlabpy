@@ -4536,7 +4536,6 @@ def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationSt
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     operation = _normalized_selection_operation(tool, operation)
-    prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
     source_text = ", ".join(
         tool._source_display_names(_plot_slices_selection_sources(operation))
     )
@@ -4549,7 +4548,7 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
         selection_text = f"{operation.slice_dim} = {len(slice_values)} values"
     else:
         selection_text = "current selection"
-    return f"{prefix}{plot_kind}: {source_text}, {selection_text}"
+    return f"{plot_kind}: {source_text}, {selection_text}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
