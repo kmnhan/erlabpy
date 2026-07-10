@@ -312,7 +312,10 @@ def _int_arg(
 
 
 def _text_arg(
-    label: str, index: int, object_name: str, tooltip: str
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.TEXT_ARG,
@@ -2590,6 +2593,24 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
     return f"{prefix}{_method_display(operation)}"
 
 
+def _method_plain_text_edit(
+    tool: FigureComposerTool,
+    text: str,
+    *,
+    mixed: bool,
+    object_name: str,
+    parent: QtWidgets.QWidget | None,
+) -> QtWidgets.QPlainTextEdit:
+    edit = QtWidgets.QPlainTextEdit(parent)
+    edit.setPlainText(text)
+    tool._apply_mixed_plain_text_edit(edit, mixed)
+    edit.setMaximumHeight(70)
+    edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    edit.setObjectName(object_name)
+    return edit
+
+
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     spec = _method_spec(operation)
     return f"{spec.tooltip}\nTargets: {_target_text(tool, operation)}"
@@ -2967,10 +2988,14 @@ def _add_method_control_row(
                 lambda target: _method_arg_value(target, spec, index, ""),
                 str,
             )
-            edit = tool._line_edit(text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(edit, mixed)
-            edit.setObjectName(control.object_name)
-            tool._connect_line_edit_finished(
+            edit = _method_plain_text_edit(
+                tool,
+                text,
+                mixed=mixed,
+                object_name=control.object_name,
+                parent=layout.parentWidget(),
+            )
+            tool._connect_plain_text_changed(
                 edit,
                 _method_arg_update_callback(tool, index),
             )

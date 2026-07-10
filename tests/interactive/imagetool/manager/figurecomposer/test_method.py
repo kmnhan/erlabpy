@@ -1184,7 +1184,9 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     transform_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerMethodTransformModeCombo"
     )
-    text_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodTextEdit")
+    text_edit = tool.findChild(
+        QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTextEdit"
+    )
     kwargs_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert method_combo is not None
     assert transform_combo is not None
@@ -1193,7 +1195,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert method_combo.currentText() == "text"
     assert method_combo.currentData() == "text"
     assert transform_combo.currentText() == "axes"
-    assert text_edit.text() == "Panel"
+    assert text_edit.toPlainText() == "Panel"
     assert kwargs_edit.text() == 'ha="left", va="top"'
     assert tool.step_section_buttons["method"].text() == "ax.text"
 
@@ -1247,7 +1249,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     tool.operation_list.setCurrentRow(8)
     tool._select_step_section("method")
     title_edit = tool.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
     )
     title_loc_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodTitleLocCombo"
@@ -1258,7 +1260,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert title_edit is not None
     assert title_loc_combo is not None
     assert title_pad_edit is not None
-    assert title_edit.text() == "Left title"
+    assert title_edit.toPlainText() == "Left title"
     assert title_loc_combo.currentText() == "left"
     assert title_pad_edit.value() == 2.0
 
@@ -3395,23 +3397,67 @@ def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
     title_edit = method_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
     )
     assert title_edit is not None
-    assert title_edit.text() == ""
+    assert title_edit.toPlainText() == ""
     assert title_edit.placeholderText() == "(multiple values)"
 
-    title_edit.editingFinished.emit()
+    title_edit.textChanged.emit()
     assert tool.tool_status.operations[0].method_args == ("left",)
     assert tool.tool_status.operations[1].method_args == ("right",)
 
-    title_edit.setText("shared")
-    title_edit.setModified(True)
-    title_edit.editingFinished.emit()
+    title_edit.setPlainText("shared")
     assert tool.tool_status.operations[0].method_args == ("shared",)
     assert tool.tool_status.operations[1].method_args == ("shared",)
     assert tool.tool_status.operations[2].method_args == ("unchanged",)
     assert _selected_operation_rows(tool) == (0, 1)
+
+
+def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    args=(r"h\nu",),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+    label_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QPlainTextEdit, "figureComposerAxesMethodXLabelEdit"
+    )
+    assert label_edit is not None
+    assert label_edit.toPlainText() == r"h\nu"
+
+    label_edit.setPlainText("Energy\n(eV)")
+    assert tool.tool_status.operations[0].method_args == ("Energy\n(eV)",)
+    restored_status = FigureRecipeState.model_validate_json(
+        tool.tool_status.model_dump_json()
+    )
+    assert restored_status.operations[0].method_args == ("Energy\n(eV)",)
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].get_xlabel() == "Energy\n(eV)"
+
+    label_edit.setPlainText(r"h\nu")
+    assert tool.tool_status.operations[0].method_args == (r"h\nu",)
 
 
 def test_figure_composer_batch_same_plot_method_edits_selected_steps(qtbot) -> None:
@@ -3543,7 +3589,7 @@ def test_figure_composer_batch_incompatible_methods_disable_editor(qtbot) -> Non
     )
     assert (
         tool.step_editor_stack.currentWidget().findChild(
-            QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+            QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
         )
         is None
     )

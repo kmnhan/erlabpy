@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
+import pydantic
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -13,6 +14,8 @@ import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 from erlab.interactive._figurecomposer import (
     FigureDataSelectionState,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
+    FigureSourceState,
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._editor_controls import MIXED_VALUE
@@ -351,6 +354,70 @@ def test_source_selection_dimension_parsing_and_updates() -> None:
         source_selection.selection_with_dimension(
             selection, "eV", "qsel", value=slice(0, 2), width=0.1
         )
+
+
+def test_figure_composer_state_serializes_slice_values() -> None:
+    source = FigureSourceState(
+        name="data",
+        isel={"kx": slice(1, 5, 2)},
+        qsel={"eV": slice(-0.5, 0.5)},
+    )
+    restored_source = FigureSourceState.model_validate_json(source.model_dump_json())
+    assert restored_source.isel["kx"] == slice(1, 5, 2)
+    assert restored_source.qsel["eV"] == slice(-0.5, 0.5)
+
+    selection = FigureDataSelectionState(
+        source="data",
+        isel={"kx": slice(None, 3)},
+        qsel={"eV": slice(-1.0, None)},
+    )
+    restored_selection = FigureDataSelectionState.model_validate_json(
+        selection.model_dump_json()
+    )
+    assert restored_selection.isel["kx"] == slice(None, 3)
+    assert restored_selection.qsel["eV"] == slice(-1.0, None)
+
+    operation = FigureOperationState.plot_slices(
+        label="slice",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "slice_kwargs": {"beta": slice(-0.5, 0.5)},
+            "method_args": (slice(1, 3, 2), [slice(None, 1)]),
+            "method_kwargs": {"region": slice(None, 2)},
+        }
+    )
+    restored_operation = FigureOperationState.model_validate_json(
+        operation.model_dump_json()
+    )
+    assert restored_operation.slice_kwargs["beta"] == slice(-0.5, 0.5)
+    assert restored_operation.method_args == (slice(1, 3, 2), [slice(None, 1)])
+    assert restored_operation.method_kwargs["region"] == slice(None, 2)
+
+    panel_style = FigurePlotSlicesPanelStyleState(
+        map_index=0,
+        slice_index=0,
+        norm_kwargs={"region": slice(1, 2)},
+    )
+    restored_panel_style = FigurePlotSlicesPanelStyleState.model_validate_json(
+        panel_style.model_dump_json()
+    )
+    assert restored_panel_style.norm_kwargs["region"] == slice(1, 2)
+
+    empty_source = FigureSourceState.model_validate({"name": "empty", "isel": None})
+    assert empty_source.isel == {}
+    with pytest.raises(pydantic.ValidationError):
+        FigureSourceState.model_validate({"name": "invalid", "isel": "not-a-mapping"})
+
+    ordinary_kwargs = FigureOperationState.method(
+        family="axes",
+        name="plot",
+        kwargs={"kind": "slice", "start": 1},
+    )
+    restored_kwargs = FigureOperationState.model_validate(
+        ordinary_kwargs.model_dump(mode="json")
+    )
+    assert restored_kwargs.method_kwargs == {"kind": "slice", "start": 1}
 
 
 def test_source_selection_combo_and_dimension_controls(qtbot) -> None:

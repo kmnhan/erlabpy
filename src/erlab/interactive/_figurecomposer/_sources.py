@@ -20,18 +20,63 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationState,
     FigureSourceState,
     FigureSubplotsState,
+    _restore_slice_mapping,
 )
 
-_FIGURE_CODE_RESERVED_NAMES = frozenset(
+# Keep every binding emitted by Figure Composer code generation here. Source aliases
+# share the generated module namespace, so missing one can silently replace source data.
+_FIGURE_CODE_IMPORT_BINDINGS = frozenset(
     {
-        "axs",
+        "_erlab_stylesheets",
         "eplt",
-        "fig",
+        "erlab",
+        "mcolors",
+        "mtransforms",
         "np",
         "plt",
+        "sns",
         "xr",
         "xarray",
     }
+)
+_FIGURE_CODE_SETUP_BINDINGS = frozenset({"ax", "axs", "fig", "gs0"})
+_FIGURE_CODE_OPERATION_BINDINGS = frozenset(
+    {
+        "_",
+        "_line",
+        "avec",
+        "bvec",
+        "color",
+        "i",
+        "index",
+        "kz",
+        "kz_values",
+        "label",
+        "line_color_values",
+        "line_color_values_norm",
+        "line_color_values_vmax",
+        "line_color_values_vmin",
+        "line_colors",
+        "map_index",
+        "offset",
+        "plot_maps",
+        "profile",
+        "profile_data",
+        "profiles",
+        "scale",
+        "slice_index",
+        "slice_value",
+        "source",
+        "target_axes",
+    }
+)
+_FIGURE_CODE_RESERVED_NAMES = (
+    _FIGURE_CODE_IMPORT_BINDINGS
+    | _FIGURE_CODE_SETUP_BINDINGS
+    | _FIGURE_CODE_OPERATION_BINDINGS
+)
+_FIGURE_CODE_RESERVED_NAME_PATTERN = re.compile(
+    r"(?:ax\d+|gs\d+(?:_\d+)*|_line(?:_\d+)?)"
 )
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
@@ -54,7 +99,7 @@ def _source_alias_candidate(data: xr.DataArray) -> str | None:
 
 
 def _source_name(data: xr.DataArray) -> str:
-    return _source_alias_candidate(data) or "data"
+    return _source_unique_name(_source_alias_candidate(data) or "data", set())
 
 
 def _source_label(data: xr.DataArray) -> str:
@@ -89,18 +134,27 @@ def _source_alias_error(alias: str) -> str | None:
         _valid_source_variable(alias)
     except ValueError:
         return f"{alias!r} is not a valid Python variable name."
-    if alias == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
-        return "This alias is reserved for saved tool data."
-    if alias in _FIGURE_CODE_RESERVED_NAMES:
-        return f"{alias!r} is reserved for generated figure code."
+    if (
+        alias in _FIGURE_CODE_RESERVED_NAMES
+        or _FIGURE_CODE_RESERVED_NAME_PATTERN.fullmatch(alias) is not None
+    ):
+        return (
+            f"{alias!r} is used internally by generated Figure Composer code. "
+            "Choose a different source alias."
+        )
     return None
 
 
 def _source_unique_name(source_name: str, reserved: set[str]) -> str:
-    alias = source_name
+    base = (
+        f"{source_name}_source"
+        if _FIGURE_CODE_RESERVED_NAME_PATTERN.fullmatch(source_name) is not None
+        else source_name
+    )
+    alias = base
     suffix = 2
     while _source_alias_error(alias) is not None or alias in reserved:
-        alias = f"{source_name}_{suffix}"
+        alias = f"{base}_{suffix}"
         suffix += 1
     reserved.add(alias)
     return alias
@@ -134,7 +188,7 @@ def _selected_data(
     if selection.isel:
         selected = selected.isel(_decode_indexers(selection.isel))
     if selection.qsel:
-        selected = selected.qsel(selection.qsel)
+        selected = selected.qsel(_decode_indexers(selection.qsel))
     if selection.mean_dims:
         mean_arg: str | tuple[str, ...]
         if len(selection.mean_dims) == 1:
@@ -239,11 +293,5 @@ def _default_setup_for_data(data: xr.DataArray) -> FigureSubplotsState:
     return FigureSubplotsState(nrows=1, ncols=1)
 
 
-def _decode_indexer(value: typing.Any) -> typing.Any:
-    if isinstance(value, dict) and value.get("kind") == "slice":
-        return slice(value.get("start"), value.get("stop"), value.get("step"))
-    return value
-
-
 def _decode_indexers(indexers: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
-    return {key: _decode_indexer(value) for key, value in indexers.items()}
+    return _restore_slice_mapping(indexers, allow_legacy=True)

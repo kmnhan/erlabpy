@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import symtable
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -245,6 +246,90 @@ def _custom_code_names(code: str) -> frozenset[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     )
+
+
+def _renamed_source_loads(code: str, replacements: dict[str, str]) -> str:
+    """Rename unambiguous source-variable reads without reformatting user code."""
+    replacements = {
+        old: new
+        for old, new in replacements.items()
+        if old != new and old.isidentifier()
+    }
+    if not replacements:
+        return code
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(
+            "the Python step does not currently contain valid code"
+        ) from exc
+
+    load_nodes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id in replacements
+    ]
+    destructive_uses = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Del)
+            and node.id in replacements
+        )
+        or (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id in replacements
+        )
+    ]
+    if not load_nodes and not destructive_uses:
+        return code
+
+    tables = [symtable.symtable(code, "<figure-composer-python-step>", "exec")]
+    ambiguous_names: set[str] = set()
+    while tables:
+        table = tables.pop()
+        tables.extend(table.get_children())
+        for name in replacements:
+            try:
+                symbol = table.lookup(name)
+            except KeyError:
+                continue
+            if (
+                symbol.is_assigned()
+                or symbol.is_imported()
+                or symbol.is_parameter()
+                or symbol.is_nonlocal()
+                or symbol.is_declared_global()
+            ):
+                ambiguous_names.add(name)
+    ambiguous = sorted(ambiguous_names)
+    if ambiguous:
+        names = ", ".join(repr(name) for name in ambiguous)
+        raise ValueError(
+            f"the Python step also binds {names}; rename that local binding first"
+        )
+
+    encoded = code.encode("utf-8")
+    line_offsets: list[int] = []
+    offset = 0
+    for line in code.splitlines(keepends=True):
+        line_offsets.append(offset)
+        offset += len(line.encode("utf-8"))
+
+    edits: list[tuple[int, int, bytes]] = []
+    for node in load_nodes:
+        if node.end_lineno is None or node.end_col_offset is None:  # pragma: no cover
+            raise RuntimeError("parsed source name is missing location information")
+        start = line_offsets[node.lineno - 1] + node.col_offset
+        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+        edits.append((start, end, replacements[node.id].encode("utf-8")))
+    for start, end, replacement in sorted(edits, reverse=True):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode("utf-8")
 
 
 def _custom_axes_alias_lines(tool: FigureComposerTool) -> list[str]:

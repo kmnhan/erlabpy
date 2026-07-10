@@ -6600,16 +6600,16 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     tool._show_axes_customize_dialog()
     assert tool._axes_customize_dialog is dialog
     title_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
     )
     xlim_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerToolbarAxesXLimEdit"
     )
     xlabel_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesXLabelEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesXLabelEdit"
     )
     ylabel_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesYLabelEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesYLabelEdit"
     )
     aspect_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerToolbarAxesAspectEdit"
@@ -6651,10 +6651,12 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert scales_row is not None
     assert grid_row is not None
     assert (
-        labels_row.findChild(QtWidgets.QLineEdit, xlabel_edit.objectName()) is not None
+        labels_row.findChild(QtWidgets.QPlainTextEdit, xlabel_edit.objectName())
+        is not None
     )
     assert (
-        labels_row.findChild(QtWidgets.QLineEdit, ylabel_edit.objectName()) is not None
+        labels_row.findChild(QtWidgets.QPlainTextEdit, ylabel_edit.objectName())
+        is not None
     )
     assert limits_row.findChild(QtWidgets.QLineEdit, xlim_edit.objectName()) is not None
     assert (
@@ -6681,24 +6683,17 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
         is None
     )
 
-    title_edit.setText("Peak")
-    title_edit.setModified(True)
-    title_edit.editingFinished.emit()
-    title_edit.editingFinished.emit()
+    title_edit.setPlainText("Peak")
     title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
     assert len(title_ops) == 1
     assert title_ops[0].axes.axes == ((0, 0),)
     assert title_ops[0].method_args == ("Peak",)
 
-    xlabel_edit.setText("Energy")
-    xlabel_edit.setModified(True)
-    xlabel_edit.editingFinished.emit()
-    ylabel_edit.setText("Intensity")
-    ylabel_edit.setModified(True)
-    ylabel_edit.editingFinished.emit()
+    xlabel_edit.setPlainText("Energy\n(eV)")
+    ylabel_edit.setPlainText("Intensity")
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_xlabel")[
         0
-    ].method_args == ("Energy",)
+    ].method_args == ("Energy\n(eV)",)
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_ylabel")[
         0
     ].method_args == ("Intensity",)
@@ -6810,7 +6805,7 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
     title_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
     )
     xlim_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerToolbarAxesXLimEdit"
@@ -6825,7 +6820,7 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert xlim_edit is not None
     assert xscale_combo is not None
     assert grid_check is not None
-    assert title_edit.text() == ""
+    assert title_edit.toPlainText() == ""
     assert title_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xlim_edit.text() == ""
     assert xlim_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
@@ -6847,9 +6842,7 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_yscale") == ()
     assert _method_operations(tool, FigureMethodFamily.AXES, "grid") == ()
 
-    title_edit.setText("Shared")
-    title_edit.setModified(True)
-    title_edit.editingFinished.emit()
+    title_edit.setPlainText("Shared")
 
     title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
     assert len(title_ops) == 1
@@ -6886,7 +6879,7 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
     title_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
     )
     xscale_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarAxesXScaleCombo"
@@ -7351,15 +7344,13 @@ def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> No
     assert isinstance(dialog, QtWidgets.QDialog)
     selector = dialog.findChild(figurecomposer_widgets._GridSpecViewWidget)
     title_edit = dialog.findChild(
-        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
     )
     assert selector is not None
     assert selector.selected_axes_ids() == ("main",)
     assert title_edit is not None
 
-    title_edit.setText("GridSpec title")
-    title_edit.setModified(True)
-    title_edit.editingFinished.emit()
+    title_edit.setPlainText("GridSpec title")
 
     title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
     assert len(title_ops) == 1

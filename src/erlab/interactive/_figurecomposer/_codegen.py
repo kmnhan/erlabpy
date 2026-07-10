@@ -145,7 +145,16 @@ def _replace_source_load_names_in_lines(
 
 
 def _source_alias_assignment_lines(replacements: Mapping[str, str]) -> list[str]:
-    return [f"{source} = {target}" for source, target in replacements.items()]
+    if not replacements:
+        return []
+    sources = tuple(replacements)
+    if len(sources) == 1:
+        source = sources[0]
+        return [f"{source} = {replacements[source]}"]
+    return [
+        f"{', '.join(sources)} = "
+        f"{', '.join(replacements[source] for source in sources)}"
+    ]
 
 
 def _replace_source_load_names(code: str, replacements: Mapping[str, str]) -> str:

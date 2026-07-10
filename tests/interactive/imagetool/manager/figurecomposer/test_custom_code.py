@@ -82,6 +82,74 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
     assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
 
 
+def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    code = (
+        "# Keep source comments and formatting intact.\n"
+        "fig.source_label = 'μ data'; "
+        "fig.renamed_source_mean = float(data.mean())  # data remains in comments\n"
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="summary",
+                    code=code,
+                    trusted=True,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._rename_source_alias("data", "renamed")
+    renamed_code = tool.tool_status.operations[0].code
+    assert renamed_code == code.replace("float(data.mean())", "float(renamed.mean())")
+
+    namespace: dict[str, typing.Any] = {"renamed": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].renamed_source_mean == 1.5
+    assert namespace["fig"].source_label == "μ data"
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "data = data.mean()",
+        "def summarize(data):\n    return data.mean()\nfig.result = summarize(data)",
+        "data += 1",
+        "del data",
+        "fig.result = data.mean(\n",
+    ),
+)
+def test_figure_composer_source_rename_rejects_ambiguous_python(
+    qtbot, code: str
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="summary",
+        code=code,
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert not tool._rename_source_alias("data", "renamed")
+    assert tool.tool_status.sources[0].name == "data"
+    assert tool.tool_status.operations[0].code == code
+    assert not tool.source_status_label.isHidden()
+
+
 def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
     qtbot,
     monkeypatch,
@@ -434,7 +502,46 @@ def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
     assert namespace["fig"].__dict__["custom_data_0"] == 1
 
 
+def test_figure_composer_source_name_map_assigns_custom_aliases_simultaneously(
+    qtbot,
+) -> None:
+    source_a = xr.DataArray(np.array([1.0]), dims=("x",), name="a")
+    source_b = xr.DataArray(np.array([2.0]), dims=("x",), name="b")
+    tool = FigureComposerTool(
+        source_a,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="a", label="a"),
+                FigureSourceState(name="b", label="b"),
+            ),
+            operations=(
+                FigureOperationState.custom(
+                    label="custom",
+                    code=(
+                        "fig.__dict__['custom_values'] = "
+                        "(float(a.values[0]), float(b.values[0]))"
+                    ),
+                    trusted=True,
+                ),
+            ),
+            primary_source="a",
+        ),
+        source_data={"a": source_a, "b": source_b},
+    )
+    qtbot.addWidget(tool)
+
+    code = figurecomposer_codegen.generated_code(
+        tool, source_name_map={"a": "b", "b": "a"}
+    )
+
+    assert "a, b = b, a" in code
+    namespace: dict[str, typing.Any] = {"a": source_b, "b": source_a}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].__dict__["custom_values"] == (1.0, 2.0)
+
+
 def test_figure_composer_source_name_replacement_fallback_edges() -> None:
+    assert figurecomposer_codegen._source_alias_assignment_lines({}) == []
     assert (
         figurecomposer_codegen._replace_source_load_names("bad code !", {"data": "map"})
         == "bad code !"
@@ -445,6 +552,60 @@ def test_figure_composer_source_name_replacement_fallback_edges() -> None:
         )
         == "value = data"
     )
+    assert (
+        figurecomposer_custom_code._renamed_source_loads(
+            "value = 1", {"data": "renamed"}
+        )
+        == "value = 1"
+    )
+    assert (
+        figurecomposer_custom_code._renamed_source_loads(
+            "value = data", {"data": "data"}
+        )
+        == "value = data"
+    )
+
+
+def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="summary",
+                    code="data = data.mean()",
+                    trusted=True,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"data"}, "data")
+    tool._refresh_source_selection_editor()
+    alias_edit = next(
+        item.widget()
+        for row in range(tool.source_selection_controls_layout.rowCount())
+        if (
+            (
+                item := tool.source_selection_controls_layout.itemAt(
+                    row, QtWidgets.QFormLayout.ItemRole.FieldRole
+                )
+            )
+            is not None
+            and isinstance(item.widget(), QtWidgets.QLineEdit)
+            and item.widget().objectName() == "figureComposerSourceAliasEdit"
+        )
+    )
+
+    alias_edit.setText("renamed")
+    alias_edit.editingFinished.emit()
+
+    assert alias_edit.text() == "data"
+    assert tool.tool_status.sources[0].name == "data"
+    assert not tool.source_status_label.isHidden()
 
 
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:

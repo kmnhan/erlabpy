@@ -72,6 +72,7 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_region_valid,
     _gridspec_remove_region,
     _gridspec_replace_grid,
+    _gridspec_reserved_axis_code_names,
     _gridspec_setup_from_subplots,
     _gridspec_update_axis_variable_name,
     _gridspec_valid_axes_ids,
@@ -82,6 +83,9 @@ from erlab.interactive._figurecomposer._operations._base import (
     COMMON_AXES_SECTION_TOOLTIP,
     COMMON_SOURCE_SECTION_TOOLTIP,
     StepSection,
+)
+from erlab.interactive._figurecomposer._operations._custom_code import (
+    _renamed_source_loads,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
@@ -185,6 +189,7 @@ _FIGURE_RESIZE_HISTORY_DELAY_MS = 250
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
 _PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
+_PERSISTED_SELECTED_SOURCE_DATA_ATTR = "figure_composer_selected_source_data"
 _PERSISTED_PREVIEW_CACHE_SIZE = QtCore.QSize(512, 384)
 _PERSISTED_PREVIEW_CACHE_MAX_BYTES = 384_000
 _COMBO_POPUP_REBUILD_GRACE_MS = 150
@@ -2595,7 +2600,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_status_text(error)
             edit.setText(original)
             return
-        self._rename_source_alias(original, alias)
+        if not self._rename_source_alias(original, alias):
+            edit.setText(original)
 
     @QtCore.Slot()
     def _focus_source_alias_editor(self) -> None:
@@ -2639,7 +2645,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
 
-    def _rename_source_alias(self, old_name: str, new_name: str) -> None:
+    def _rename_source_alias(self, old_name: str, new_name: str) -> bool:
+        self._flush_pending_editor_commits()
         rename_map = {old_name: new_name}
         sources: list[FigureSourceState] = []
         changed = False
@@ -2656,7 +2663,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 sources.append(source)
         if not changed:
             self._refresh_source_controls()
-            return
+            return False
+
+        operations: list[FigureOperationState] = []
+        try:
+            for operation in self._recipe.operations:
+                updated = self._operation_with_renamed_sources(operation, rename_map)
+                if (
+                    operation.kind == FigureOperationKind.CUSTOM
+                    and re.search(rf"\b{re.escape(old_name)}\b", operation.code)
+                    is not None
+                ):
+                    updated = updated.model_copy(
+                        update={
+                            "code": _renamed_source_loads(operation.code, rename_map)
+                        }
+                    )
+                operations.append(updated)
+        except ValueError as exc:
+            self._set_source_status_text(
+                f"Could not rename source “{old_name}”: {operation.label}: {exc}."
+            )
+            self._refresh_source_selection_editor()
+            return False
 
         self._source_data = {
             rename_map.get(name, name): data for name, data in self._source_data.items()
@@ -2665,18 +2694,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             rename_map.get(name, name): data
             for name, data in self._source_selection_base_data.items()
         }
-        operations = tuple(
-            self._operation_with_renamed_sources(operation, rename_map)
-            for operation in self._recipe.operations
-        )
         updates: dict[str, typing.Any] = {
             "sources": tuple(sources),
-            "operations": operations,
+            "operations": tuple(operations),
         }
         if self._recipe.primary_source == old_name:
             updates["primary_source"] = new_name
         self._recipe = self._recipe.model_copy(update=updates)
         self._finish_source_structure_change({new_name}, new_name)
+        return True
 
     @QtCore.Slot()
     def _duplicate_selected_sources(self) -> None:
@@ -5970,6 +5996,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         reserved = set(existing)
         reserved.update(self._source_data)
         source_data_updates: dict[str, xr.DataArray] = {}
+        selection_base_updates: dict[str, xr.DataArray] = {}
+        clear_selection_bases: set[str] = set()
+        skipped: list[str] = []
         for source in sources:
             data = source_data.get(source.name)
             if data is None:
@@ -5984,14 +6013,40 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if existing_source is not None and not same_linked_source:
                 target_name = self._source_unique_alias(target_name, reserved)
                 source = source.model_copy(update={"name": target_name})
+                selected_data = data
             else:
                 reserved.add(target_name)
+                if existing_source is None:
+                    selected_data = data
+                else:
+                    try:
+                        source, selected_data = self._replacement_source_data(
+                            target_name,
+                            source,
+                            data,
+                            existing_source,
+                            keep_selection_source=True,
+                        )
+                    except (IndexError, KeyError, TypeError, ValueError) as exc:
+                        message = str(exc) or exc.__class__.__name__
+                        skipped.append(f"{target_name} ({message})")
+                        continue
             existing[target_name] = source
-            source_data_updates[target_name] = data
-            self._source_selection_base_data.pop(target_name, None)
+            source_data_updates[target_name] = selected_data
+            if same_linked_source and _source_has_selection(source):
+                selection_base_updates[target_name] = data
+            else:
+                clear_selection_bases.add(target_name)
         if not source_data_updates:
+            if skipped:
+                self._set_source_status_text(
+                    "Could not update source data for: " + ", ".join(skipped)
+                )
             return
         self._source_data.update(source_data_updates)
+        self._source_selection_base_data.update(selection_base_updates)
+        for source_name in clear_selection_bases - selection_base_updates.keys():
+            self._source_selection_base_data.pop(source_name, None)
         ordered_sources = tuple(existing[name] for name in existing)
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
         self._normalize_operation_source_selections()
@@ -6001,6 +6056,43 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
+        self._set_source_status_text(
+            "Could not update source data for: " + ", ".join(skipped)
+            if skipped
+            else None
+        )
+
+    def _replacement_source_data(
+        self,
+        alias: str,
+        source: FigureSourceState,
+        data: xr.DataArray,
+        existing_source: FigureSourceState | None,
+        *,
+        keep_selection_source: bool,
+    ) -> tuple[FigureSourceState, xr.DataArray]:
+        updates: dict[str, typing.Any] = {"name": alias}
+        if source.selection_source == source.name:
+            updates["selection_source"] = alias
+        replacement = source.model_copy(update=updates)
+        if (
+            existing_source is not None
+            and _source_has_selection(existing_source)
+            and not _source_has_selection(replacement)
+        ):
+            replacement = _source_with_selection(
+                replacement.model_copy(
+                    update={
+                        "selection_source": (
+                            existing_source.selection_source
+                            if keep_selection_source
+                            else alias
+                        )
+                    }
+                ),
+                _source_selection(existing_source),
+            )
+        return replacement, self._source_data_from_selection(alias, data, replacement)
 
     def replace_source(
         self,
@@ -6031,16 +6123,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         if existing_index is None:  # pragma: no cover
             raise RuntimeError("source replacement index was not resolved")
-        replacement = source.model_copy(update={"name": alias})
-        if existing_source is not None and not _source_has_selection(replacement):
-            replacement = _source_with_selection(
-                replacement.model_copy(
-                    update={"selection_source": existing_source.selection_source}
-                ),
-                _source_selection(existing_source),
-            )
         try:
-            selected_data = self._source_data_from_selection(alias, data, replacement)
+            replacement, selected_data = self._replacement_source_data(
+                alias,
+                source,
+                data,
+                existing_source,
+                keep_selection_source=False,
+            )
         except (IndexError, KeyError, TypeError, ValueError) as exc:
             message = str(exc) or exc.__class__.__name__
             self._set_source_status_text(
@@ -6998,16 +7088,74 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
-        items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self.tool_data}
-        for source_name, data in self._source_data.items():
+        primary_source = self._recipe.primary_source
+        if primary_source in self._source_data:
+            primary_data, _already_selected = self._persistence_source_data(
+                primary_source
+            )
+        else:
+            primary_data = self.tool_data
+        items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: primary_data}
+        for source_name in self._source_data:
             if source_name == self._recipe.primary_source:
                 continue
             if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
                 raise ValueError(
                     "Figure source names cannot use the reserved saved-tool data name"
                 )
+            data, _already_selected = self._persistence_source_data(source_name)
             items[source_name] = data
         return items
+
+    def _persistence_source_data(self, source_name: str) -> tuple[xr.DataArray, bool]:
+        data = self._source_data[source_name]
+        source = self._recipe_source(source_name)
+        if source is None or not _source_has_selection(source):
+            return data, False
+        base_data = self._source_selection_base_data.get(source_name)
+        if base_data is not None:
+            return base_data, False
+        if (
+            source.selection_source is not None
+            and source.selection_source != source_name
+        ):
+            base_data = self._source_data.get(source.selection_source)
+            if base_data is not None:
+                return base_data, False
+        return data, True
+
+    def _embedded_selected_source_names(self, ds: xr.Dataset) -> tuple[str, ...]:
+        references = self._saved_tool_data_references(ds)
+        selected_names: list[str] = []
+        for source in self._recipe.sources:
+            if source.name not in self._source_data:
+                continue
+            _data, already_selected = self._persistence_source_data(source.name)
+            variable_name = (
+                erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                if source.name == self._recipe.primary_source
+                else source.name
+            )
+            if already_selected and variable_name not in references:
+                selected_names.append(source.name)
+        return tuple(selected_names)
+
+    @staticmethod
+    def _persisted_selected_source_names(ds: xr.Dataset) -> frozenset[str]:
+        payload = ds.attrs.get(_PERSISTED_SELECTED_SOURCE_DATA_ATTR)
+        if payload is None:
+            return frozenset()
+        try:
+            decoded = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            logger.debug("Ignoring invalid persisted selected-source metadata")
+            return frozenset()
+        if not isinstance(decoded, list) or not all(
+            isinstance(name, str) for name in decoded
+        ):
+            logger.debug("Ignoring invalid persisted selected-source metadata")
+            return frozenset()
+        return frozenset(decoded)
 
     def _persistence_reference_node_uids(self) -> frozenset[str]:
         return frozenset(
@@ -7037,11 +7185,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         source_data = dict(self._source_data)
         selection_base_data: dict[str, xr.DataArray] = {}
+        embedded_selected_names = self._persisted_selected_source_names(ds)
 
         def restored_source_data(
             source: FigureSourceState, data: xr.DataArray
         ) -> xr.DataArray:
-            if not _source_has_selection(source):
+            if (
+                not _source_has_selection(source)
+                or source.name in embedded_selected_names
+            ):
                 return data
             try:
                 selected = self._source_data_from_selection(source.name, data, source)
@@ -7149,6 +7301,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(preview)
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        selected_names = self._embedded_selected_source_names(ds)
+        if selected_names:
+            ds = ds.copy(deep=False)
+            ds.attrs[_PERSISTED_SELECTED_SOURCE_DATA_ATTR] = json.dumps(selected_names)
+
         preview = self._persisted_preview_cache_pixmap()
         if preview is None:
             return ds
@@ -7437,17 +7594,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         else:
             name = "source"
 
-        base = name
-        index = 2
-        while (
-            name in used_names
-            or name in _FIGURE_CODE_RESERVED_NAMES
-            or keyword.iskeyword(name)
-        ):
-            name = f"{base}_{index}"
-            index += 1
-        used_names.add(name)
-        return name
+        return _source_unique_name(name, used_names)
 
     @staticmethod
     def _script_input_with_name(
@@ -7504,6 +7651,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_by_name = self._source_by_name()
         used_sources = self._sources_used_by_recipe()
         used_code_names = set(_FIGURE_CODE_RESERVED_NAMES)
+        if self._recipe.setup.layout_mode == "gridspec":
+            source_names = self._source_names()
+            used_code_names.update(
+                _gridspec_reserved_axis_code_names(
+                    self._recipe.setup, reserved_names=source_names
+                )
+            )
+            used_code_names.update(
+                _gridspec_axis_code_names(
+                    self._recipe.setup, reserved_names=source_names
+                ).values()
+            )
         script_inputs: list[provenance.ScriptInput] = []
         script_input_names: set[str] = set()
         skip_source_selection_names: set[str] = set()

@@ -375,12 +375,13 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     curves_tab_index = tab_widget.addTab(curves_page, "Curves")
     images_tab_index = tab_widget.addTab(images_page, "Images")
 
-    title_edit = QtWidgets.QLineEdit(axes_page)
-    title_edit.setObjectName("figureComposerToolbarAxesTitleEdit")
-    xlabel_edit = QtWidgets.QLineEdit(axes_page)
-    xlabel_edit.setObjectName("figureComposerToolbarAxesXLabelEdit")
-    ylabel_edit = QtWidgets.QLineEdit(axes_page)
-    ylabel_edit.setObjectName("figureComposerToolbarAxesYLabelEdit")
+    title_edit = _axis_plain_text_edit(axes_page, "figureComposerToolbarAxesTitleEdit")
+    xlabel_edit = _axis_plain_text_edit(
+        axes_page, "figureComposerToolbarAxesXLabelEdit"
+    )
+    ylabel_edit = _axis_plain_text_edit(
+        axes_page, "figureComposerToolbarAxesYLabelEdit"
+    )
     xlim_edit = QtWidgets.QLineEdit(axes_page)
     xlim_edit.setObjectName("figureComposerToolbarAxesXLimEdit")
     ylim_edit = QtWidgets.QLineEdit(axes_page)
@@ -683,14 +684,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         try:
             if not axes:
                 unavailable_state = _AxisValueState()
-                for widget in (
-                    title_edit,
-                    xlabel_edit,
-                    ylabel_edit,
-                    xlim_edit,
-                    ylim_edit,
-                    aspect_edit,
-                ):
+                for widget in (title_edit, xlabel_edit, ylabel_edit):
+                    _apply_axis_plain_text_edit_state(widget, unavailable_state)
+                for widget in (xlim_edit, ylim_edit, aspect_edit):
                     _apply_axis_line_edit_state(widget, unavailable_state)
                 for combo in (xscale_combo, yscale_combo):
                     _apply_axis_combo_state(combo, unavailable_state)
@@ -700,13 +696,13 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 tick_params_editor.setEnabled(False)
                 _apply_axis_check_state(grid_check, unavailable_state)
                 return
-            _apply_axis_line_edit_state(
+            _apply_axis_plain_text_edit_state(
                 title_edit, _axis_value_state(axes, lambda axis: axis.get_title())
             )
-            _apply_axis_line_edit_state(
+            _apply_axis_plain_text_edit_state(
                 xlabel_edit, _axis_value_state(axes, lambda axis: axis.get_xlabel())
             )
-            _apply_axis_line_edit_state(
+            _apply_axis_plain_text_edit_state(
                 ylabel_edit, _axis_value_state(axes, lambda axis: axis.get_ylabel())
             )
             _apply_axis_line_edit_state(
@@ -744,24 +740,23 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     ),
                 ),
             )
-            for edit in (
-                title_edit,
-                xlabel_edit,
-                ylabel_edit,
-                xlim_edit,
-                ylim_edit,
-                aspect_edit,
-            ):
+            for edit in (xlim_edit, ylim_edit, aspect_edit):
                 edit.setModified(False)
         finally:
             updating = False
         refresh_style_targets()
 
-    def update_text_method(edit: QtWidgets.QLineEdit, name: str) -> None:
-        if updating or _line_edit_mixed_unchanged(edit) or not edit.isModified():
+    def update_text_method(edit: QtWidgets.QPlainTextEdit, name: str) -> None:
+        document = edit.document()
+        if (
+            updating
+            or _plain_text_edit_mixed_unchanged(edit)
+            or document is None
+            or not document.isModified()
+        ):
             return
-        upsert_axis_method(name, args=(edit.text(),))
-        edit.setModified(False)
+        upsert_axis_method(name, args=(edit.toPlainText(),))
+        document.setModified(False)
 
     def update_limit_method(edit: QtWidgets.QLineEdit, name: str) -> None:
         if updating or _line_edit_mixed_unchanged(edit) or not edit.isModified():
@@ -845,9 +840,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def selection_changed(_selection: object) -> None:
         refresh_from_axis()
 
-    title_edit.editingFinished.connect(title_finished)
-    xlabel_edit.editingFinished.connect(xlabel_finished)
-    ylabel_edit.editingFinished.connect(ylabel_finished)
+    title_edit.textChanged.connect(title_finished)
+    xlabel_edit.textChanged.connect(xlabel_finished)
+    ylabel_edit.textChanged.connect(ylabel_finished)
     xlim_edit.editingFinished.connect(xlim_finished)
     ylim_edit.editingFinished.connect(ylim_finished)
     aspect_edit.editingFinished.connect(update_aspect)
@@ -2223,8 +2218,48 @@ def _apply_axis_line_edit_state(
         edit.setModified(False)
 
 
+def _axis_plain_text_edit(
+    parent: QtWidgets.QWidget, object_name: str
+) -> QtWidgets.QPlainTextEdit:
+    edit = QtWidgets.QPlainTextEdit(parent)
+    edit.setObjectName(object_name)
+    edit.setMaximumHeight(70)
+    edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return edit
+
+
+def _apply_axis_plain_text_edit_state(
+    edit: QtWidgets.QPlainTextEdit, state: _AxisValueState
+) -> None:
+    with QtCore.QSignalBlocker(edit):
+        edit.setEnabled(state.available)
+        edit.setProperty("batch_mixed", state.mixed)
+        if not state.available:
+            edit.clear()
+            edit.setPlaceholderText("")
+        elif state.mixed:
+            edit.clear()
+            edit.setPlaceholderText(MIXED_VALUES_TEXT)
+        else:
+            edit.setPlaceholderText("")
+            edit.setPlainText(str(state.value))
+        document = edit.document()
+        if document is not None:
+            document.setModified(False)
+
+
 def _line_edit_mixed_unchanged(edit: QtWidgets.QLineEdit) -> bool:
     return bool(edit.property("batch_mixed")) and not edit.isModified()
+
+
+def _plain_text_edit_mixed_unchanged(edit: QtWidgets.QPlainTextEdit) -> bool:
+    document = edit.document()
+    return (
+        bool(edit.property("batch_mixed"))
+        and document is not None
+        and not document.isModified()
+    )
 
 
 def _apply_axis_combo_state(combo: QtWidgets.QComboBox, state: _AxisValueState) -> None:

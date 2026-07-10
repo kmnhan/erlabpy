@@ -99,6 +99,71 @@ class FigureGridSpecLayoutState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
+_SLICE_MARKER_KEY = "__erlab_figure_composer_slice__"
+_LEGACY_SLICE_INDEXER_KIND = "slice"
+_LEGACY_SLICE_INDEXER_KEYS = frozenset(("kind", "start", "stop", "step"))
+
+
+def _jsonable_slice_value(value: typing.Any) -> typing.Any:
+    if isinstance(value, slice):
+        return {_SLICE_MARKER_KEY: [value.start, value.stop, value.step]}
+    if isinstance(value, Mapping):
+        return {key: _jsonable_slice_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_jsonable_slice_value(item) for item in value)
+    if isinstance(value, list):
+        return [_jsonable_slice_value(item) for item in value]
+    return value
+
+
+def _jsonable_slice_mapping(value: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
+    return {key: _jsonable_slice_value(item) for key, item in value.items()}
+
+
+def _is_legacy_slice_indexer_marker(
+    value: Mapping[typing.Any, typing.Any],
+) -> bool:
+    return value.get("kind") == _LEGACY_SLICE_INDEXER_KIND and set(value).issubset(
+        _LEGACY_SLICE_INDEXER_KEYS
+    )
+
+
+def _restore_slice_value(
+    value: typing.Any, *, allow_legacy: bool = False
+) -> typing.Any:
+    if isinstance(value, Mapping):
+        if set(value) == {_SLICE_MARKER_KEY}:
+            parts = value[_SLICE_MARKER_KEY]
+            if isinstance(parts, list | tuple) and len(parts) == 3:
+                return slice(*parts)
+        if allow_legacy and _is_legacy_slice_indexer_marker(value):
+            return slice(value.get("start"), value.get("stop"), value.get("step"))
+        return {
+            key: _restore_slice_value(item, allow_legacy=allow_legacy)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(
+            _restore_slice_value(item, allow_legacy=allow_legacy) for item in value
+        )
+    if isinstance(value, list):
+        return [_restore_slice_value(item, allow_legacy=allow_legacy) for item in value]
+    return value
+
+
+def _restore_slice_mapping(
+    value: typing.Any, *, allow_legacy: bool = False
+) -> typing.Any:
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return {
+            str(key): _restore_slice_value(item, allow_legacy=allow_legacy)
+            for key, item in value.items()
+        }
+    return value
+
+
 class FigureSourceState(pydantic.BaseModel):
     """A named data source used by a figure recipe."""
 
@@ -120,6 +185,17 @@ class FigureSourceState(pydantic.BaseModel):
             value = dict(value)
             value.pop("label", None)
         return value
+
+    @pydantic.field_validator("isel", "qsel", mode="before")
+    @classmethod
+    def _restore_slice_indexers(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value, allow_legacy=True)
+
+    @pydantic.field_serializer("isel", "qsel", when_used="json")
+    def _serialize_slice_indexers(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
 
     @classmethod
     def from_script_input(
@@ -295,6 +371,17 @@ class FigureDataSelectionState(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
+    @pydantic.field_validator("isel", "qsel", mode="before")
+    @classmethod
+    def _restore_slice_indexers(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value, allow_legacy=True)
+
+    @pydantic.field_serializer("isel", "qsel", when_used="json")
+    def _serialize_slice_indexers(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
+
 
 class FigureMethodPlotValueState(pydantic.BaseModel):
     """Source-backed value selected for an ``ax.plot`` method step."""
@@ -323,6 +410,17 @@ class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
     line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.field_validator("norm_kwargs", "line_kw", mode="before")
+    @classmethod
+    def _restore_slice_kwargs(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value)
+
+    @pydantic.field_serializer("norm_kwargs", "line_kw", when_used="json")
+    def _serialize_slice_kwargs(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
 
 
 class FigureOperationState(pydantic.BaseModel):
@@ -463,6 +561,62 @@ class FigureOperationState(pydantic.BaseModel):
     trusted: bool = False
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.field_validator(
+        "norm_kwargs",
+        "slice_kwargs",
+        "extra_kwargs",
+        "line_kw",
+        "bz_vertex_kw",
+        "bz_midpoint_kw",
+        "legend_kw",
+        "method_kwargs",
+        "gradient_kw",
+        "subplot_kw",
+        "annotate_kw",
+        "colorbar_kw",
+        mode="before",
+    )
+    @classmethod
+    def _restore_slice_kwargs(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value)
+
+    @pydantic.field_validator("line_selection", mode="before")
+    @classmethod
+    def _restore_line_selection(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value, allow_legacy=True)
+
+    @pydantic.field_validator("method_args", mode="before")
+    @classmethod
+    def _restore_slice_args(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_value(value)
+
+    @pydantic.field_serializer(
+        "norm_kwargs",
+        "slice_kwargs",
+        "extra_kwargs",
+        "line_kw",
+        "line_selection",
+        "bz_vertex_kw",
+        "bz_midpoint_kw",
+        "legend_kw",
+        "method_kwargs",
+        "gradient_kw",
+        "subplot_kw",
+        "annotate_kw",
+        "colorbar_kw",
+        when_used="json",
+    )
+    def _serialize_slice_kwargs(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value)
+
+    @pydantic.field_serializer("method_args", when_used="json")
+    def _serialize_slice_args(
+        self, value: tuple[typing.Any, ...]
+    ) -> tuple[typing.Any, ...]:
+        return typing.cast("tuple[typing.Any, ...]", _jsonable_slice_value(value))
 
     @classmethod
     def set_palette(cls, *, label: str = "set palette") -> FigureOperationState:
