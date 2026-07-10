@@ -15449,6 +15449,72 @@ def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
         loaded_ds.close()
 
 
+def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(4 * 5 * 3, dtype=np.float64).reshape((4, 5, 3)),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": np.linspace(-2.0, 2.0, 4),
+            "eV": np.linspace(-0.5, 0.5, 5),
+            "sample_temp": np.array([249.4, 251.2, 253.8]),
+        },
+        name="pending_nonuniform_order",
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    saved = tool.to_dataset()
+    state = json.loads(saved.attrs["itool_state"])
+    assert tuple(state["slice"]["dims"]) == (
+        "alpha",
+        "eV",
+        "sample_temp_idx",
+    )
+
+    stored = xr.Dataset(
+        {
+            manager_workspace_io._ITOOL_DATA_NAME: saved[
+                manager_workspace_io._ITOOL_DATA_NAME
+            ].transpose("sample_temp", "eV", "alpha")
+        },
+        attrs=dict(saved.attrs),
+    )
+    fname = tmp_path / "pending-nonuniform-saved-dim-order.itws"
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", stored
+    )
+    node = types.SimpleNamespace(
+        pending_workspace_memory_payload=(fname, "0/imagetool"),
+        pending_workspace_payload_attrs=None,
+        name=data.name,
+        added_time_display="Today",
+    )
+    controller = manager_workspace_io._WorkspaceIOController(
+        typing.cast("ImageToolManager", None)
+    )
+    reference_datasets = {}
+    try:
+        pending = controller._pending_workspace_lazy_source_data(
+            node,
+            reference_datasets=reference_datasets,
+        )
+        assert pending.dims == tool.slicer_area.data.dims
+        assert pending.chunks is not None
+        xr.testing.assert_identical(
+            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                pending.compute()
+            ),
+            data,
+        )
+        info = controller._pending_workspace_imagetool_info_text(node)
+        assert info is not None
+        assert "sample_temp_idx" not in info
+    finally:
+        controller._close_workspace_reference_datasets(reference_datasets)
+    assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
+
+
 def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
     controller_cls = manager_workspace_io._WorkspaceIOController
     data = xr.DataArray(
