@@ -86,6 +86,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     StepSection,
 )
 from erlab.interactive._figurecomposer._operations._custom_code import (
+    _custom_code_bound_names,
     _custom_code_names,
     _renamed_source_loads,
 )
@@ -8410,6 +8411,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             enabled_only=True, executable_only=True
         )
         used_code_names = set(_FIGURE_CODE_RESERVED_NAMES)
+        used_code_names.update(
+            bound_name
+            for operation in self._recipe.operations
+            if operation.enabled
+            and operation.kind == FigureOperationKind.CUSTOM
+            and operation.trusted
+            for bound_name in _custom_code_bound_names(operation.code)
+        )
         if self._recipe.setup.layout_mode == "gridspec":
             source_names = self._source_names()
             used_code_names.update(

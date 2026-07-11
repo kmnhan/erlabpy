@@ -693,12 +693,14 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
                 FigureOperationState.custom(
                     label="custom",
                     code=(
-                        "fig.source_total = float(custom_source.sum())\n"
+                        "custom_source = custom_source.mean()\n"
+                        "fig.source_total = float(custom_source)\n"
                         "import statistics\n"
-                        "fig.source_mean = statistics.fmean(custom_source.values)"
+                        "fig.source_mean = statistics.fmean([float(custom_source)])"
                     ),
                     trusted=True,
                 ),
+                FigureOperationState.line(label="line", source="custom_source"),
             ),
             primary_source="custom_source",
         ),
@@ -706,7 +708,7 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
     )
     qtbot.addWidget(tool)
 
-    assert tool._source_usage_count("custom_source") == 1
+    assert tool._source_usage_count("custom_source") == 2
     assert not tool.remove_source("custom_source")
     _select_operation_rows(tool, (0,))
     tool._copy_selected_operations()
@@ -715,16 +717,18 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
     assert tuple(source.name for source in clipboard_payload[1]) == ("custom_source",)
     spec = tool.current_provenance_spec()
     assert spec is not None
-    assert tuple(script_input.name for script_input in spec.script_inputs) == (
-        "custom_source",
-    )
+    [replay_input] = spec.script_inputs
+    assert replay_input.name != "custom_source"
 
     code = spec.display_code()
     assert code is not None
     assert code.index("fig, axs") < code.index("import statistics")
-    namespace = _exec_generated_code(code, {})
-    assert namespace["fig"].source_total == 6.0
+    assert f"custom_source = {replay_input.name}" in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].source_total == 1.5
     assert namespace["fig"].source_mean == 1.5
+    np.testing.assert_allclose(namespace["fig"].axes[0].lines[-1].get_ydata(), data)
 
 
 def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
