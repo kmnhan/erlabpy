@@ -1452,6 +1452,69 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
     assert sources["data_selected_2"].isel == {"kx": 1}
 
 
+@pytest.mark.parametrize(
+    ("operation_sources", "selection_values", "expected"),
+    (
+        (("first",), (("first", 0.0), ("first", 2.0)), (0.0, 2.0)),
+        (
+            ("first", "second"),
+            (("first", 1.0),),
+            (1.0, "second"),
+        ),
+        (
+            ("first", "first"),
+            (("first", 0.0), ("first", 2.0)),
+            (0.0, 2.0),
+        ),
+        ((), (("first", 2.0), ("first", 0.0)), (2.0, 0.0)),
+    ),
+)
+def test_figure_composer_plot_slices_legacy_selections_preserve_source_order(
+    qtbot,
+    operation_sources: tuple[str, ...],
+    selection_values: tuple[tuple[str, float], ...],
+    expected: tuple[float | str, ...],
+) -> None:
+    first = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("cut", "x", "y"),
+        coords={"cut": [0.0, 1.0, 2.0], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="first",
+    )
+    second = (first + 100.0).rename("second")
+    operation = FigureOperationState.plot_slices(
+        label="maps",
+        sources=operation_sources,
+        map_selections=tuple(
+            FigureDataSelectionState(source=source, qsel={"cut": value})
+            for source, value in selection_values
+        ),
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(FigureSourceState(name="first"), FigureSourceState(name="second")),
+        operations=(operation,),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.map_selections == ()
+    assert len(loaded_operation.sources) == len(expected)
+    for source_name, expected_value in zip(
+        loaded_operation.sources, expected, strict=True
+    ):
+        if expected_value == "second":
+            assert source_name == "second"
+            xr.testing.assert_identical(tool.source_data()[source_name], second)
+        else:
+            selected = first.qsel(cut=expected_value)
+            xr.testing.assert_identical(tool.source_data()[source_name], selected)
+            source = tool._source_by_name()[source_name]
+            assert source.selection_source == "first"
+            assert source.qsel == {"cut": expected_value}
+
+
 def test_figure_composer_source_display_helpers_use_alias_only() -> None:
     source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
     assert figurecomposer_sources._source_display_label(source, "data_0") == "data_0"

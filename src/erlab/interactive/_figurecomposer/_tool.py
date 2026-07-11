@@ -3684,6 +3684,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _plot_slices_operation_with_shared_legacy_selection(
         self, operation: FigureOperationState
     ) -> FigureOperationState | None:
+        selection_sources = tuple(
+            selection.source for selection in operation.map_selections
+        )
+        if operation.sources and selection_sources != operation.sources:
+            return None
+        legacy_sources = operation.sources or selection_sources
+
+        def preserve_legacy_sources(
+            updated: FigureOperationState,
+        ) -> FigureOperationState:
+            if not legacy_sources:
+                return updated
+            return updated.model_copy(update={"sources": legacy_sources})
+
         selection = shared_selection(operation.map_selections)
         if selection is None:
             return None
@@ -3695,14 +3709,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if operation.map_selections
                 else None
             )
-            return self._operation_without_map_selections(operation, fallback)
+            return preserve_legacy_sources(
+                self._operation_without_map_selections(operation, fallback)
+            )
         if selection.isel or selection.mean_dims:
             return None
 
         dims = _operation_dim_names(self, operation)
         if not dims:
-            return self._plot_slices_operation_with_legacy_qsel(
-                operation, selection.qsel
+            return preserve_legacy_sources(
+                self._plot_slices_operation_with_legacy_qsel(operation, selection.qsel)
             )
         if any(not _is_slice_kwarg_key(key, dims) for key in selection.qsel):
             return None
@@ -3713,7 +3729,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _effective_extra_kwargs(self, operation),
         )
         updates["map_selections"] = ()
-        return operation.model_copy(update=updates)
+        return preserve_legacy_sources(operation.model_copy(update=updates))
 
     @staticmethod
     def _plot_slices_operation_with_legacy_qsel(
@@ -3757,26 +3773,46 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_by_name: dict[str, FigureSourceState],
         reserved: set[str],
     ) -> FigureOperationState:
-        selection_by_source = {
-            selection.source: selection for selection in operation.map_selections
-        }
-        sources = operation.sources or tuple(
-            selection.source for selection in operation.map_selections
-        )
+        indexed_by_source: dict[
+            str, collections.deque[tuple[int, FigureDataSelectionState]]
+        ] = {}
+        for index, selection in enumerate(operation.map_selections):
+            indexed_by_source.setdefault(selection.source, collections.deque()).append(
+                (index, selection)
+            )
+        source_counts = collections.Counter(operation.sources)
+
+        def source_for_selection(selection: FigureDataSelectionState) -> str:
+            if not selection_has_effect(selection):
+                return selection.source
+            return self._source_alias_for_legacy_selection(
+                selection,
+                source_list=source_list,
+                source_by_name=source_by_name,
+                reserved=reserved,
+            )
+
         updated_sources: list[str] = []
-        for source_name in sources:
-            selection = selection_by_source.get(source_name)
-            if selection is None or not selection_has_effect(selection):
+        for source_name in operation.sources:
+            selections = indexed_by_source.get(source_name)
+            if not selections:
                 updated_sources.append(source_name)
                 continue
-            updated_sources.append(
-                self._source_alias_for_legacy_selection(
-                    selection,
-                    source_list=source_list,
-                    source_by_name=source_by_name,
-                    reserved=reserved,
-                )
-            )
+            if source_counts[source_name] == 1:
+                while selections:
+                    _index, selection = selections.popleft()
+                    updated_sources.append(source_for_selection(selection))
+            else:
+                _index, selection = selections.popleft()
+                updated_sources.append(source_for_selection(selection))
+
+        remaining = sorted(
+            (entry for entries in indexed_by_source.values() for entry in entries),
+            key=lambda entry: entry[0],
+        )
+        updated_sources.extend(
+            source_for_selection(selection) for _index, selection in remaining
+        )
         return operation.model_copy(
             update={"map_selections": (), "sources": tuple(updated_sources)}
         )
