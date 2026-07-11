@@ -1419,6 +1419,18 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
         "derived",
         "data_2",
     )
+    assert tool._source_by_name()["data_2"].label == "data_2"
+    tool.add_sources(
+        (FigureSourceState(name="data", label="Historical incoming"),),
+        {"data": data},
+    )
+    assert tuple(source.name for source in tool.source_states()) == (
+        "data",
+        "derived",
+        "data_2",
+        "data_3",
+    )
+    assert tool._source_by_name()["data_3"].label == "Historical incoming"
 
 
 def test_figure_composer_legacy_source_selection_normalization_edges(
@@ -1767,6 +1779,159 @@ def test_figure_composer_source_refresh_applies_saved_selection(
     tool.refresh_from_sources({"data": refreshed})
     xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
     assert tool.source_status_label.text() == ""
+
+
+def _transitive_selected_source_tool() -> tuple[
+    FigureComposerTool,
+    xr.DataArray,
+    xr.DataArray,
+    xr.DataArray,
+]:
+    base = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("u", "v", "w"),
+        coords={"u": [0.0, 1.0], "v": [0.0, 1.0, 2.0], "w": np.arange(4)},
+        name="base",
+    )
+    selected_u = base.qsel(u=1.0)
+    selected_v = selected_u.qsel(v=2.0)
+    tool = FigureComposerTool.from_sources(
+        {"base": base, "selected_u": selected_u, "selected_v": selected_v},
+        sources=(
+            FigureSourceState(name="base", node_uid="base-node"),
+            FigureSourceState(
+                name="selected_u",
+                selection_source="base",
+                qsel={"u": 1.0},
+            ),
+            FigureSourceState(
+                name="selected_v",
+                selection_source="selected_u",
+                qsel={"v": 2.0},
+            ),
+        ),
+        operations=(FigureOperationState.line(label="line", source="selected_v"),),
+        primary_source="base",
+    )
+    tool._source_selection_base_data.update(
+        {"selected_u": base, "selected_v": selected_u}
+    )
+    return tool, base, selected_u, selected_v
+
+
+@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
+    qtbot,
+    mutation: str,
+) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    replacement = base + 100.0
+
+    if mutation == "replace":
+        assert tool.replace_source(
+            "base",
+            FigureSourceState(name="incoming", node_uid="replacement-node"),
+            replacement,
+        )
+    elif mutation == "add":
+        tool.add_sources(
+            (FigureSourceState(name="base", node_uid="base-node"),),
+            {"base": replacement},
+        )
+    else:
+        tool.refresh_from_sources({"base": replacement})
+
+    expected_u = replacement.qsel(u=1.0)
+    expected_v = expected_u.qsel(v=2.0)
+    xr.testing.assert_identical(tool.source_data()["base"], replacement)
+    xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_u"], replacement
+    )
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_v"], expected_u
+    )
+    assert tool.source_status_label.text() == ""
+
+
+@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails(
+    qtbot,
+    mutation: str,
+) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    original_status = tool.tool_status
+    original_data = dict(tool.source_data())
+    original_bases = dict(tool._source_selection_base_data)
+    incompatible = base.isel(v=0, drop=True) + 100.0
+
+    if mutation == "replace":
+        assert not tool.replace_source(
+            "base",
+            FigureSourceState(name="incoming", node_uid="replacement-node"),
+            incompatible,
+        )
+    elif mutation == "add":
+        tool.add_sources(
+            (FigureSourceState(name="base", node_uid="base-node"),),
+            {"base": incompatible},
+        )
+    else:
+        tool.refresh_from_sources({"base": incompatible})
+
+    assert tool.tool_status == original_status
+    assert set(tool.source_data()) == set(original_data)
+    for source_name, data in original_data.items():
+        xr.testing.assert_identical(tool.source_data()[source_name], data)
+    assert set(tool._source_selection_base_data) == set(original_bases)
+    for source_name, data in original_bases.items():
+        xr.testing.assert_identical(tool._source_selection_base_data[source_name], data)
+    assert tool.source_status_label.text()
+
+
+def test_figure_composer_selection_edit_recomputes_transitive_selected_sources(
+    qtbot,
+) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"selected_u"}, "selected_u")
+
+    tool._update_selected_source_dimension("u", "qsel", "0.0", "")
+
+    expected_u = base.qsel(u=0.0)
+    expected_v = expected_u.qsel(v=2.0)
+    assert tool._source_by_name()["selected_u"].qsel == {"u": 0.0}
+    xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
+    xr.testing.assert_identical(tool._source_selection_base_data["selected_u"], base)
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_v"], expected_u
+    )
+    assert tool.source_validation_label.text() == ""
+
+
+def test_figure_composer_selection_edit_is_atomic_when_dependent_fails(
+    qtbot,
+) -> None:
+    tool, _base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"selected_u"}, "selected_u")
+    original_status = tool.tool_status
+    original_data = dict(tool.source_data())
+    original_bases = dict(tool._source_selection_base_data)
+
+    tool._update_selected_source_dimension("v", "mean", "", "")
+
+    assert tool.tool_status == original_status
+    for source_name, data in original_data.items():
+        xr.testing.assert_identical(tool.source_data()[source_name], data)
+    for source_name, data in original_bases.items():
+        xr.testing.assert_identical(tool._source_selection_base_data[source_name], data)
+    assert "selected_u" in tool.source_validation_label.text()
+    assert "selected_v" in tool.source_validation_label.text()
 
 
 def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> None:

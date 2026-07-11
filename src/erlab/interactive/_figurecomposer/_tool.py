@@ -3540,13 +3540,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_validation_text(str(exc))
             return
 
+        candidate_data = dict(self._source_data)
+        candidate_bases = dict(self._source_selection_base_data)
+        candidate_sources = self._source_by_name()
         changed = False
         skipped: list[str] = []
-        source_by_name = self._source_by_name()
-        source_list = list(self._recipe.sources)
         for source_name in self._selected_source_names():
-            source = source_by_name.get(source_name)
-            if source is None or source_name not in self._source_data:
+            source = candidate_sources.get(source_name)
+            if source is None or source_name not in candidate_data:
                 skipped.append(source_name)
                 continue
             try:
@@ -3557,7 +3558,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     value,
                     width,
                 )
-                raw_data = self._source_selection_input_data(source_name, source)
+                raw_data = candidate_bases.get(source_name)
+                if raw_data is None:
+                    selection_source = source.selection_source
+                    if selection_source is not None and selection_source != source_name:
+                        raw_data = candidate_data.get(selection_source)
+                    else:
+                        raw_data = candidate_data.get(source_name)
                 if raw_data is None:
                     skipped.append(source_name)
                     continue
@@ -3571,15 +3578,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 message = str(exc) or exc.__class__.__name__
                 skipped.append(f"{source_name} ({message})")
                 continue
+
+            trial_sources = dict(candidate_sources)
+            trial_sources[source_name] = updated_source
+            trial_data = dict(candidate_data)
+            trial_data[source_name] = selected_data
+            trial_bases = dict(candidate_bases)
             if selection_has_effect(selection):
-                self._source_selection_base_data[source_name] = raw_data
+                trial_bases[source_name] = raw_data
             else:
-                self._source_selection_base_data.pop(source_name, None)
-            self._source_data[source_name] = selected_data
-            for index, candidate in enumerate(source_list):
-                if candidate.name == source_name:
-                    source_list[index] = updated_source
-                    break
+                trial_bases.pop(source_name, None)
+            try:
+                trial_data, trial_bases = self._source_data_with_recomputed_dependents(
+                    trial_data,
+                    trial_bases,
+                    (source_name,),
+                    source_by_name=trial_sources,
+                )
+            except ValueError as exc:
+                skipped.append(f"{source_name} ({exc})")
+                continue
+            candidate_sources = trial_sources
+            candidate_data = trial_data
+            candidate_bases = trial_bases
             changed = True
 
         status_text = (
@@ -3589,7 +3610,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_validation_text(status_text)
             self._refresh_source_selection_editor()
             return
-        self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
+        self._source_data = candidate_data
+        self._source_selection_base_data = candidate_bases
+        self._recipe = self._recipe.model_copy(
+            update={
+                "sources": tuple(
+                    candidate_sources[source.name] for source in self._recipe.sources
+                )
+            }
+        )
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
@@ -3621,6 +3650,64 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if data is not None:
                 return data
         return self._source_data.get(source_name)
+
+    def _source_data_with_recomputed_dependents(
+        self,
+        source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
+        changed_names: Iterable[str],
+        *,
+        source_by_name: Mapping[str, FigureSourceState] | None = None,
+    ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
+        """Return candidate source mappings with selected dependents refreshed.
+
+        A selected source stores the raw data to which its complete source-level
+        selection applies separately from the selected payload. When an origin is
+        refreshed, propagate that raw input through every dependent alias before any
+        caller commits the candidate mappings.
+        """
+        sources = dict(source_by_name or self._source_by_name())
+        candidate_data = dict(source_data)
+        candidate_bases = dict(selection_base_data)
+        explicit_names = set(changed_names)
+        queue: collections.deque[str] = collections.deque(explicit_names)
+        refreshed = set(explicit_names)
+
+        while queue:
+            parent_name = queue.popleft()
+            parent_data = candidate_data.get(parent_name)
+
+            for source in sources.values():
+                source_name = source.name
+                if (
+                    source_name in refreshed
+                    or source.selection_source != parent_name
+                    or source_name == parent_name
+                ):
+                    continue
+                if parent_data is None:
+                    raise ValueError(
+                        f"source {source_name!r} depends on unavailable source "
+                        f"{parent_name!r}"
+                    )
+                try:
+                    selected_data = self._source_data_from_selection(
+                        source_name, parent_data, source
+                    )
+                except (IndexError, KeyError, TypeError, ValueError) as exc:
+                    message = str(exc) or exc.__class__.__name__
+                    raise ValueError(
+                        f"could not update dependent source {source_name!r}: {message}"
+                    ) from exc
+                candidate_data[source_name] = selected_data
+                if _source_has_selection(source):
+                    candidate_bases[source_name] = parent_data
+                else:
+                    candidate_bases.pop(source_name, None)
+                refreshed.add(source_name)
+                queue.append(source_name)
+
+        return candidate_data, candidate_bases
 
     def _normalize_operation_source_selections(self) -> None:
         operations: list[FigureOperationState] = []
@@ -6563,14 +6650,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         updated together so workspace saves include the new source data.
         """
         existing = {source.name: source for source in self._recipe.sources}
-        reserved = set(existing)
-        reserved.update(self._source_data)
-        source_data_updates: dict[str, xr.DataArray] = {}
-        selection_base_updates: dict[str, xr.DataArray] = {}
-        clear_selection_bases: set[str] = set()
+        candidate_data = dict(self._source_data)
+        candidate_bases = dict(self._source_selection_base_data)
+        accepted = False
         skipped: list[str] = []
-        for source in sources:
-            incoming_name = source.name
+        for incoming_source in sources:
+            source = incoming_source
+            incoming_name = incoming_source.name
             data = source_data.get(incoming_name)
             if data is None:
                 continue
@@ -6594,9 +6680,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 existing_source = linked_matches[0]
                 target_name = existing_source.name
                 same_linked_source = True
+            reserved = set(existing)
+            reserved.update(candidate_data)
             if existing_source is not None and not same_linked_source:
                 target_name = self._source_unique_alias(target_name, reserved)
-                source = source.model_copy(update={"name": target_name})
+                source = self._source_with_name(source, target_name)
                 selected_data = data
             else:
                 reserved.add(target_name)
@@ -6615,22 +6703,37 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         message = str(exc) or exc.__class__.__name__
                         skipped.append(f"{target_name} ({message})")
                         continue
-            existing[target_name] = source
-            source_data_updates[target_name] = selected_data
+            trial_existing = dict(existing)
+            trial_existing[target_name] = source
+            trial_data = dict(candidate_data)
+            trial_data[target_name] = selected_data
+            trial_bases = dict(candidate_bases)
             if same_linked_source and _source_has_selection(source):
-                selection_base_updates[target_name] = data
+                trial_bases[target_name] = data
             else:
-                clear_selection_bases.add(target_name)
-        if not source_data_updates:
+                trial_bases.pop(target_name, None)
+            try:
+                trial_data, trial_bases = self._source_data_with_recomputed_dependents(
+                    trial_data,
+                    trial_bases,
+                    (target_name,),
+                    source_by_name=trial_existing,
+                )
+            except ValueError as exc:
+                skipped.append(f"{target_name} ({exc})")
+                continue
+            existing = trial_existing
+            candidate_data = trial_data
+            candidate_bases = trial_bases
+            accepted = True
+        if not accepted:
             if skipped:
                 self._set_source_status_text(
                     "Could not update source data for: " + ", ".join(skipped)
                 )
             return
-        self._source_data.update(source_data_updates)
-        self._source_selection_base_data.update(selection_base_updates)
-        for source_name in clear_selection_bases - selection_base_updates.keys():
-            self._source_selection_base_data.pop(source_name, None)
+        self._source_data = candidate_data
+        self._source_selection_base_data = candidate_bases
         ordered_sources = tuple(existing[name] for name in existing)
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
         self._normalize_operation_source_selections()
@@ -6722,11 +6825,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         source_list[existing_index] = replacement
 
-        self._source_data[alias] = selected_data
+        candidate_data = dict(self._source_data)
+        candidate_data[alias] = selected_data
+        candidate_bases = dict(self._source_selection_base_data)
         if _source_has_selection(replacement):
-            self._source_selection_base_data[alias] = data
+            candidate_bases[alias] = data
         else:
-            self._source_selection_base_data.pop(alias, None)
+            candidate_bases.pop(alias, None)
+        source_by_name = {candidate.name: candidate for candidate in source_list}
+        try:
+            candidate_data, candidate_bases = (
+                self._source_data_with_recomputed_dependents(
+                    candidate_data,
+                    candidate_bases,
+                    (alias,),
+                    source_by_name=source_by_name,
+                )
+            )
+        except ValueError as exc:
+            self._set_source_status_text(f"Could not refresh source “{alias}”: {exc}")
+            return False
+        self._source_data = candidate_data
+        self._source_selection_base_data = candidate_bases
         self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
@@ -8354,28 +8474,42 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         source_by_name = self._source_by_name()
+        candidate_data = dict(self._source_data)
+        candidate_bases = dict(self._source_selection_base_data)
         skipped: list[str] = []
         changed = False
         for source_name, data in source_data.items():
             source = source_by_name.get(source_name)
             if source is None:
-                self._source_data[source_name] = data
-                self._source_selection_base_data.pop(source_name, None)
-                changed = True
-                continue
-            try:
-                selected_data = self._source_data_from_selection(
-                    source_name, data, source
-                )
-            except (IndexError, KeyError, TypeError, ValueError) as exc:
-                message = str(exc) or exc.__class__.__name__
-                skipped.append(f"{source_name} ({message})")
-                continue
-            self._source_data[source_name] = selected_data
-            if _source_has_selection(source):
-                self._source_selection_base_data[source_name] = data
+                selected_data = data
             else:
-                self._source_selection_base_data.pop(source_name, None)
+                try:
+                    selected_data = self._source_data_from_selection(
+                        source_name, data, source
+                    )
+                except (IndexError, KeyError, TypeError, ValueError) as exc:
+                    message = str(exc) or exc.__class__.__name__
+                    skipped.append(f"{source_name} ({message})")
+                    continue
+            trial_data = dict(candidate_data)
+            trial_data[source_name] = selected_data
+            trial_bases = dict(candidate_bases)
+            if source is not None and _source_has_selection(source):
+                trial_bases[source_name] = data
+            else:
+                trial_bases.pop(source_name, None)
+            try:
+                trial_data, trial_bases = self._source_data_with_recomputed_dependents(
+                    trial_data,
+                    trial_bases,
+                    (source_name,),
+                    source_by_name=source_by_name,
+                )
+            except ValueError as exc:
+                skipped.append(f"{source_name} ({exc})")
+                continue
+            candidate_data = trial_data
+            candidate_bases = trial_bases
             changed = True
         if skipped:
             self._set_source_status_text(
@@ -8386,6 +8520,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not changed:
             self._refresh_source_controls()
             return
+        self._source_data = candidate_data
+        self._source_selection_base_data = candidate_bases
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
