@@ -12,6 +12,7 @@ from erlab.interactive._figurecomposer._defaults import (
 )
 from erlab.interactive._figurecomposer._operations import _registry
 from erlab.interactive._figurecomposer._sources import (
+    _FIGURE_CODE_RESERVED_NAMES,
     _source_has_selection,
     _valid_source_variable,
 )
@@ -110,14 +111,46 @@ def _source_selection_code_lines(
     *,
     skip_source_names: frozenset[str] = frozenset(),
 ) -> list[str]:
+    used_source_names = tool._direct_sources_used_by_recipe(
+        enabled_only=True, executable_only=True
+    )
+    selected_sources = tuple(
+        source
+        for source in tool._recipe.sources
+        if source.name in used_source_names
+        and source.name not in skip_source_names
+        and _source_has_selection(source)
+    )
+    assigned_names = {source.name for source in selected_sources}
+    captured_names = {
+        source.selection_source
+        for source in selected_sources
+        if source.selection_source is not None
+        and source.selection_source != source.name
+        and source.selection_source in assigned_names
+    }
+
     lines: list[str] = []
+    reserved_names = set(tool._source_names()) | set(_FIGURE_CODE_RESERVED_NAMES)
+    input_names: dict[str, str] = {}
     for source in tool._recipe.sources:
-        if not _source_has_selection(source) or source.name in skip_source_names:
+        if source.name not in captured_names:
             continue
+        stem = f"_{source.name}_input"
+        input_name = stem
+        suffix = 2
+        while input_name in reserved_names:
+            input_name = f"{stem}_{suffix}"
+            suffix += 1
+        reserved_names.add(input_name)
+        input_names[source.name] = input_name
+        lines.append(f"{input_name} = {_valid_source_variable(source.name)}")
+
+    for source in selected_sources:
         target = _valid_source_variable(source.name)
         selection_source = source.selection_source or source.name
         selection = FigureDataSelectionState(
-            source=selection_source,
+            source=input_names.get(selection_source, selection_source),
             isel=dict(source.isel),
             qsel=dict(source.qsel),
             mean_dims=tuple(source.mean_dims),

@@ -4297,12 +4297,13 @@ def test_figure_composer_step_payload_rejects_malformed_clipboard_data() -> None
     mime = QtCore.QMimeData()
     mime.setText(payload_with())
     mime.figure_composer_source_data = object()
-    operations, sources, source_data = (
+    operations, sources, source_data, selection_base_data = (
         figurecomposer_tool_module._step_clipboard_payload(mime)
     )
     assert [operation.label for operation in operations] == ["a"]
     assert sources == ()
     assert source_data == {}
+    assert selection_base_data == {}
 
 
 def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:

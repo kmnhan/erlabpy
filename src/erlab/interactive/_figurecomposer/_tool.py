@@ -86,6 +86,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     StepSection,
 )
 from erlab.interactive._figurecomposer._operations._custom_code import (
+    _custom_code_names,
     _renamed_source_loads,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
@@ -231,11 +232,15 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
         payload_text: str,
         step_code_text: str,
         source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
         *,
         cut_source_tool_id: str | None = None,
     ) -> None:
         super().__init__()
         self.figure_composer_source_data: dict[str, xr.DataArray] = dict(source_data)
+        self.figure_composer_selection_base_data: dict[str, xr.DataArray] = dict(
+            selection_base_data
+        )
         self.figure_composer_cut_source_tool_id = cut_source_tool_id
         self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
         self.setText(step_code_text)
@@ -507,6 +512,7 @@ def _step_clipboard_payload(
         tuple[FigureOperationState, ...],
         tuple[FigureSourceState, ...],
         dict[str, xr.DataArray],
+        dict[str, xr.DataArray],
     ]
     | None
 ):
@@ -547,7 +553,10 @@ def _step_clipboard_payload(
     source_data = getattr(mime, "figure_composer_source_data", {})
     if not isinstance(source_data, dict):
         source_data = {}
-    return operations, sources, dict(source_data)
+    selection_base_data = getattr(mime, "figure_composer_selection_base_data", {})
+    if not isinstance(selection_base_data, dict):
+        selection_base_data = {}
+    return operations, sources, dict(source_data), dict(selection_base_data)
 
 
 def _target_axes_count_text(count: int) -> str:
@@ -614,7 +623,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._flush_pending_figure_resize_history_write
         )
         self._figure_resize_history_state: FigureRecipeState | None = None
-        self._figure_resize_history_source_data: dict[str, xr.DataArray] | None = None
+        self._figure_resize_history_source_data: (
+            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]] | None
+        ) = None
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
         self._preview_pixmap_generation = 0
         self._preview_thumbnail_cache: dict[
@@ -652,12 +663,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_context_menu: QtWidgets.QMenu | None = None
         self._connected_step_clipboard: QtGui.QClipboard | None = None
         self._step_clipboard_tool_id = uuid.uuid4().hex
-        self._prev_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
-            collections.deque(maxlen=self._prev_states.maxlen)
-        )
-        self._next_source_data_states: collections.deque[dict[str, xr.DataArray]] = (
-            collections.deque(maxlen=self._next_states.maxlen)
-        )
+        self._prev_source_data_states: collections.deque[
+            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]
+        ] = collections.deque(maxlen=self._prev_states.maxlen)
+        self._next_source_data_states: collections.deque[
+            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]
+        ] = collections.deque(maxlen=self._next_states.maxlen)
 
         if source_data is not None:
             self.set_source_data(source_data)
@@ -2687,15 +2698,69 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_controls()
         self._refresh_source_detail_panel()
 
+    def _operation_source_names(
+        self, operation: FigureOperationState
+    ) -> tuple[str, ...]:
+        names = list(_registry.spec_for(operation.kind).source_names(operation))
+        if operation.kind == FigureOperationKind.CUSTOM:
+            loaded_names = _custom_code_names(operation.code)
+            names.extend(
+                source_name
+                for source_name in self._source_names()
+                if source_name in loaded_names
+            )
+        return tuple(dict.fromkeys(names))
+
+    def _source_dependency_names(self, names: Iterable[str]) -> tuple[str, ...]:
+        source_by_name = self._source_by_name()
+        ordered: list[str] = []
+        resolved: set[str] = set()
+        resolving: set[str] = set()
+
+        def add_dependencies(name: str) -> None:
+            if name in resolved or name in resolving:
+                return
+            resolving.add(name)
+            source = source_by_name.get(name)
+            if source is not None:
+                base_name = source.selection_source
+                if base_name is not None and base_name != name:
+                    add_dependencies(base_name)
+            resolving.remove(name)
+            resolved.add(name)
+            ordered.append(name)
+
+        for name in names:
+            add_dependencies(name)
+        return tuple(ordered)
+
+    def _operation_source_dependency_names(
+        self, operation: FigureOperationState
+    ) -> tuple[str, ...]:
+        return self._source_dependency_names(self._operation_source_names(operation))
+
+    def _direct_sources_used_by_recipe(
+        self, *, enabled_only: bool = False, executable_only: bool = False
+    ) -> set[str]:
+        return {
+            source_name
+            for operation in self._recipe.operations
+            if not enabled_only or operation.enabled
+            if not executable_only
+            or operation.kind != FigureOperationKind.CUSTOM
+            or operation.trusted
+            for source_name in self._operation_source_names(operation)
+        }
+
     def _source_used_by_operation(self, name: str) -> bool:
         return any(
-            name in self._operation_source_names(operation)
+            name in self._operation_source_dependency_names(operation)
             for operation in self._recipe.operations
         )
 
     def _source_usage_count(self, name: str) -> int:
         return sum(
-            name in self._operation_source_names(operation)
+            name in self._operation_source_dependency_names(operation)
             for operation in self._recipe.operations
         )
 
@@ -2703,7 +2768,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return {
             source_name
             for operation in self._recipe.operations
-            for source_name in self._operation_source_names(operation)
+            for source_name in self._operation_source_dependency_names(operation)
         }
 
     def _source_removable(self, name: str) -> bool:
@@ -2711,6 +2776,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             name in self._source_by_name()
             and len(self._recipe.sources) > 1
             and not self._source_used_by_operation(name)
+            and not any(
+                source.name != name and source.selection_source == name
+                for source in self._recipe.sources
+            )
         )
 
     @QtCore.Slot()
@@ -5420,14 +5489,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             with contextlib.suppress(TypeError, RuntimeError):
                 clipboard.dataChanged.disconnect(self._update_step_action_buttons)
 
-    def _source_data_history_state(self) -> dict[str, xr.DataArray]:
-        return dict(self._source_data)
+    def _source_data_history_state(
+        self,
+    ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
+        return dict(self._source_data), dict(self._source_selection_base_data)
 
     def _restore_source_data_history_state(
-        self, source_data: Mapping[str, xr.DataArray]
+        self,
+        state: tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]],
     ) -> None:
+        source_data, selection_base_data = state
         self._source_data = dict(source_data)
-        self._source_selection_base_data.clear()
+        self._source_selection_base_data = dict(selection_base_data)
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -5455,7 +5528,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _append_history_state(
         self,
         state: FigureRecipeState | None = None,
-        source_data: dict[str, xr.DataArray] | None = None,
+        source_data: (
+            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]] | None
+        ) = None,
     ) -> bool:
         curr_state = self.tool_status if state is None else state
         curr_source_data = (
@@ -5992,10 +6067,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
 
-    @staticmethod
-    def _operation_source_names(operation: FigureOperationState) -> tuple[str, ...]:
-        return _registry.spec_for(operation.kind).source_names(operation)
-
     def _clipboard(self) -> QtGui.QClipboard | None:
         application = QtWidgets.QApplication.instance()
         if not isinstance(application, QtWidgets.QApplication):
@@ -6008,6 +6079,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         tuple[
             tuple[FigureOperationState, ...],
             tuple[FigureSourceState, ...],
+            dict[str, xr.DataArray],
             dict[str, xr.DataArray],
         ]
         | None
@@ -6028,7 +6100,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             dict.fromkeys(
                 source_name
                 for operation in operations
-                for source_name in self._operation_source_names(operation)
+                for source_name in self._operation_source_dependency_names(operation)
             )
         )
         source_by_name = {source.name: source for source in self._recipe.sources}
@@ -6041,6 +6113,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             for source_name in source_names
             if source_name in self._source_data
         }
+        selection_base_data = {
+            source_name: self._source_selection_base_data[source_name].copy(deep=False)
+            for source_name in source_names
+            if source_name in self._source_selection_base_data
+        }
         clipboard = self._clipboard()
         if clipboard is None:
             return None
@@ -6049,6 +6126,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 _step_clipboard_payload_text(operations, sources),
                 _step_clipboard_code_text(self, operations),
                 source_data,
+                selection_base_data,
                 cut_source_tool_id=self._step_clipboard_tool_id if cut else None,
             )
         )
@@ -6080,21 +6158,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         existing_source_names = {source.name for source in self._recipe.sources}
         reserved = {source.name for source in self._recipe.sources}
         reserved.update(self._source_data)
-        rename_map: dict[str, str] = {}
-        renamed_sources: list[FigureSourceState] = []
-        renamed_source_data: dict[str, xr.DataArray] = {}
+        unique_sources: list[FigureSourceState] = []
         seen_sources: set[str] = set()
         for source in sources:
             if source.name in seen_sources:
                 continue
             seen_sources.add(source.name)
+            unique_sources.append(source)
+
+        rename_map: dict[str, str] = {}
+        for source in unique_sources:
             if preserve_existing and source.name in reserved:
                 rename_map[source.name] = source.name
-                if source.name not in existing_source_names:
-                    renamed_sources.append(source)
-                    existing_source_names.add(source.name)
-                if source.name in source_data and source.name not in self._source_data:
-                    renamed_source_data[source.name] = source_data[source.name]
                 continue
             pasted_name = source.name
             if pasted_name in reserved:
@@ -6106,8 +6181,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     suffix += 1
             reserved.add(pasted_name)
             rename_map[source.name] = pasted_name
-            renamed_sources.append(source.model_copy(update={"name": pasted_name}))
-            if source.name in source_data:
+
+        renamed_sources: list[FigureSourceState] = []
+        renamed_source_data: dict[str, xr.DataArray] = {}
+        for source in unique_sources:
+            pasted_name = rename_map[source.name]
+            updates: dict[str, typing.Any] = {"name": pasted_name}
+            if source.selection_source is not None:
+                updates["selection_source"] = rename_map.get(
+                    source.selection_source, source.selection_source
+                )
+            renamed_source = source.model_copy(update=updates)
+            if pasted_name not in existing_source_names:
+                renamed_sources.append(renamed_source)
+                existing_source_names.add(pasted_name)
+            if source.name in source_data and (
+                pasted_name not in self._source_data or not preserve_existing
+            ):
                 renamed_source_data[pasted_name] = source_data[source.name]
         return tuple(renamed_sources), rename_map, renamed_source_data
 
@@ -6162,7 +6252,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         payload = _step_clipboard_payload(mime)
         if payload is None:
             return
-        operations, sources, source_data = payload
+        operations, sources, source_data, selection_base_data = payload
         renamed_sources, rename_map, renamed_source_data = self._renamed_pasted_sources(
             sources,
             source_data,
@@ -6197,6 +6287,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_names.add(source.name)
             source_list.append(source)
         self._source_data.update(renamed_source_data)
+        renamed_selection_base_data = {
+            rename_map.get(source_name, source_name): data
+            for source_name, data in selection_base_data.items()
+            if rename_map.get(source_name, source_name) in source_names
+        }
+        self._source_selection_base_data.update(renamed_selection_base_data)
         self._recipe = self._recipe.model_copy(
             update={
                 "sources": tuple(source_list),
@@ -6205,7 +6301,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._normalize_operation_source_selections()
         self._refresh_source_list()
-        if renamed_source_data:
+        if renamed_source_data or renamed_selection_base_data:
             self.sigDataChanged.emit()
         self._finish_operation_structure_change(
             {operation.operation_id for operation in pasted_operations},
@@ -6412,16 +6508,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         clear_selection_bases: set[str] = set()
         skipped: list[str] = []
         for source in sources:
-            data = source_data.get(source.name)
+            incoming_name = source.name
+            data = source_data.get(incoming_name)
             if data is None:
                 continue
-            target_name = source.name
+            linked_matches = (
+                [
+                    candidate
+                    for candidate in existing.values()
+                    if candidate.node_uid == source.node_uid
+                ]
+                if source.node_uid is not None
+                else []
+            )
+            target_name = incoming_name
             existing_source = existing.get(target_name)
             same_linked_source = (
                 existing_source is not None
                 and existing_source.node_uid is not None
                 and existing_source.node_uid == source.node_uid
             )
+            if not same_linked_source and len(linked_matches) == 1:
+                existing_source = linked_matches[0]
+                target_name = existing_source.name
+                same_linked_source = True
             if existing_source is not None and not same_linked_source:
                 target_name = self._source_unique_alias(target_name, reserved)
                 source = source.model_copy(update={"name": target_name})
@@ -8079,7 +8189,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         dict[str, str],
     ]:
         source_by_name = self._source_by_name()
-        used_sources = self._sources_used_by_recipe()
+        used_sources = self._direct_sources_used_by_recipe(
+            enabled_only=True, executable_only=True
+        )
         used_code_names = set(_FIGURE_CODE_RESERVED_NAMES)
         if self._recipe.setup.layout_mode == "gridspec":
             source_names = self._source_names()

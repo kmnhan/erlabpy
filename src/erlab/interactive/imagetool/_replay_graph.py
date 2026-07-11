@@ -964,6 +964,7 @@ def _compile_spec(
         current_name: str | None = None
         current_bindings = tuple(bindings)
         pending_codes: list[str] = []
+        pending_code_hoist_imports: list[bool] = []
 
         def relay_key(source_key: str) -> str:
             return graph.add_node(
@@ -1028,7 +1029,8 @@ def _compile_spec(
             return False
 
         def flush_script() -> None:
-            nonlocal current_bindings, current_name, pending_codes, script_current_key
+            nonlocal current_bindings, current_name, pending_code_hoist_imports
+            nonlocal pending_codes, script_current_key
             if not pending_codes:
                 return
             output_name = _provenance_framework._script_codes_output_name(
@@ -1045,6 +1047,7 @@ def _compile_spec(
                         "active_name": output_name,
                         "bindings": current_bindings,
                         "codes": tuple(pending_codes),
+                        "hoist_imports": tuple(pending_code_hoist_imports),
                     },
                 ),
                 "script",
@@ -1054,11 +1057,13 @@ def _compile_spec(
                     "active_name": output_name,
                     "bindings": current_bindings,
                     "codes": tuple(pending_codes),
+                    "hoist_imports": tuple(pending_code_hoist_imports),
                 },
             )
             current_name = output_name
             current_bindings = bind_name(output_name, script_current_key)
             pending_codes = []
+            pending_code_hoist_imports = []
 
         def apply_context_binding(names: Sequence[str]) -> None:
             nonlocal current_bindings, current_name, script_current_key
@@ -1082,6 +1087,7 @@ def _compile_spec(
             if seed_file_load_parts is None:
                 if not apply_simple_alias(parsed.seed_code):
                     pending_codes.append(parsed.seed_code)
+                    pending_code_hoist_imports.append(False)
             else:
                 seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
                 script_current_key = _add_file_load_node(
@@ -1132,6 +1138,9 @@ def _compile_spec(
                     )
                 if not apply_simple_alias(operation_code):
                     pending_codes.append(operation_code)
+                    pending_code_hoist_imports.append(
+                        bool(getattr(operation, "hoist_imports", False))
+                    )
                 continue
 
             if pending_codes:
@@ -1149,6 +1158,7 @@ def _compile_spec(
                         context_name=pending_output_name,
                     )
                 )
+                pending_code_hoist_imports.append(False)
                 continue
 
             ensure_script_current_key()
@@ -1641,41 +1651,64 @@ def _cleanup_emitted_replay_code(code: str) -> str:
     return _compact_replay_temp_names(code)
 
 
-def _hoist_top_level_imports(code: str) -> str:
+def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
-        return code
+        return [], code
 
-    imports: list[ast.stmt] = []
-    import_codes: set[str] = set()
-    body: list[ast.stmt] = []
-    changed = False
-    seen_non_import = False
+    lines = code.splitlines()
+    imports: list[tuple[str, str]] = []
+    removed_lines: set[int] = set()
     for statement in module.body:
-        if isinstance(statement, ast.Import | ast.ImportFrom):
-            import_code = ast.unparse(statement)
-            if import_code not in import_codes:
-                imports.append(statement)
-                import_codes.add(import_code)
-            else:
-                changed = True
-            changed = changed or seen_non_import
-            continue
-        seen_non_import = True
-        body.append(statement)
+        if not isinstance(statement, ast.Import | ast.ImportFrom):
+            break
+        if statement.end_lineno is None or statement.end_col_offset is None:
+            break
+        start_index = statement.lineno - 1
+        end_index = statement.end_lineno - 1
+        if (
+            lines[start_index][: statement.col_offset].strip()
+            or lines[end_index][statement.end_col_offset :].strip()
+        ):
+            break
+        source = "\n".join(lines[start_index : end_index + 1]).strip()
+        imports.append((ast.unparse(statement), source))
+        removed_lines.update(range(start_index, end_index + 1))
 
-    if not changed:
-        return code
-    module.body = [*imports, *body]
-    return ast.unparse(ast.fix_missing_locations(module))
+    if not imports:
+        return [], code
+    body = "\n".join(
+        line for index, line in enumerate(lines) if index not in removed_lines
+    ).strip("\n")
+    return imports, body
+
+
+def _group_framework_imports(chunks: Sequence[tuple[str, bool]]) -> str:
+    imports: list[str] = []
+    import_codes: set[str] = set()
+    body: list[str] = []
+    for code, group_imports in chunks:
+        if group_imports:
+            leading_imports, code = _leading_top_level_imports(code)
+            for canonical, source in leading_imports:
+                if canonical in import_codes:
+                    continue
+                import_codes.add(canonical)
+                imports.append(source)
+        if code.strip():
+            body.append(code)
+    return "\n".join((*imports, *body))
 
 
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
-    lines: list[str] = []
+    chunks: list[tuple[str, bool]] = []
     active_setup_key: str | None = None
+
+    def append_code(code: str, *, group_imports: bool = False) -> None:
+        chunks.append((code, graph.display and group_imports))
 
     for node in graph.nodes:
         if node.kind == "setup":
@@ -1689,7 +1722,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             setup_key = node.parents[0] if node.parents else None
             if setup_key is not None and active_setup_key != setup_key:
                 setup_node = node_by_key[setup_key]
-                lines.append(typing.cast("str", setup_node.payload["code"]))
+                append_code(
+                    typing.cast("str", setup_node.payload["code"]),
+                    group_imports=True,
+                )
                 active_setup_key = setup_key
             try:
                 code = _provenance_framework._replace_code_identifiers(
@@ -1699,14 +1735,14 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                 raise ReplayGraphError("File replay code is not valid Python") from exc
             if not _provenance_framework._code_stores_name(code, name):
                 raise ReplayGraphError("File replay code does not assign its output")
-            lines.append(code)
+            append_code(code, group_imports=True)
         elif node.kind == "live_input":
             raise ReplayGraphError("Live inputs cannot be emitted as replay code")
         elif node.kind == "source_view":
             parent_name = names[node.parents[0]]
             if not _source_view_emits_code(graph, node):
                 continue
-            lines.append(
+            append_code(
                 f"{name} = erlab.interactive.imagetool.slicer."
                 f"restore_nonuniform_dims({parent_name})"
             )
@@ -1714,7 +1750,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             parent_name = names[node.parents[0]]
             context_name = names[node.parents[1]]
             operation = node.payload["operation"]
-            lines.append(
+            append_code(
                 _operation_replay_code(
                     operation,
                     active_name=name,
@@ -1724,6 +1760,12 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
+            hoist_imports = list(
+                typing.cast(
+                    "tuple[bool, ...]",
+                    node.payload.get("hoist_imports", (False,) * len(codes)),
+                )
+            )
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
             input_names: set[str] = set()
@@ -1745,7 +1787,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                 ):
                     input_replacements[input_name] = input_value_name
                 else:
-                    lines.append(f"{input_name} = {input_value_name}")
+                    append_code(f"{input_name} = {input_value_name}")
             if input_replacements:
                 try:
                     codes = [
@@ -1776,9 +1818,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                         "Script replay code is not valid Python"
                     ) from exc
                 active_name = name
-            lines.extend(codes)
+            for code, group_imports in zip(codes, hoist_imports, strict=True):
+                append_code(code, group_imports=group_imports)
             if active_name != name:
-                lines.append(f"{name} = {active_name}")
+                append_code(f"{name} = {active_name}")
             active_setup_key = None
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
@@ -1793,11 +1836,8 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
     for public_name, key in aliases:
         planned_name = names[key]
         if public_name != planned_name:
-            lines.append(f"{public_name} = {planned_name}")
-    code = _cleanup_emitted_replay_code("\n".join(lines))
-    if graph.display:
-        code = _hoist_top_level_imports(code)
-    return code
+            append_code(f"{public_name} = {planned_name}")
+    return _cleanup_emitted_replay_code(_group_framework_imports(chunks))
 
 
 def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) -> str:

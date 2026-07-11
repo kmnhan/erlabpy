@@ -238,14 +238,23 @@ def _required_imports(
 
 def _custom_code_names(code: str) -> frozenset[str]:
     try:
-        tree = ast.parse(code)
+        root = symtable.symtable(code, "<figure-composer-python-step>", "exec")
     except SyntaxError:
         return frozenset()
-    return frozenset(
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
+    external: set[str] = set()
+    tables = [root]
+    while tables:
+        table = tables.pop()
+        tables.extend(table.get_children())
+        for symbol in table.get_symbols():
+            if not symbol.is_referenced() or symbol.is_imported():
+                continue
+            if table is root:
+                if not symbol.is_assigned():
+                    external.add(symbol.get_name())
+            elif symbol.is_global():
+                external.add(symbol.get_name())
+    return frozenset(external)
 
 
 def _renamed_source_loads(code: str, replacements: dict[str, str]) -> str:

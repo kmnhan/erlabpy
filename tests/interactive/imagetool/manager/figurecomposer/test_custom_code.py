@@ -464,6 +464,64 @@ def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
     assert namespace["fig"].__dict__["_eplt_name"] == "erlab.plotting"
 
 
+def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="custom_source",
+    )
+    path = tmp_path / "custom-source.nc"
+    data.to_netcdf(path)
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(
+                    name="custom_source",
+                    provenance_spec=_file_load_provenance(path).model_dump(mode="json"),
+                ),
+            ),
+            operations=(
+                FigureOperationState.custom(
+                    label="custom",
+                    code=(
+                        "fig.source_total = float(custom_source.sum())\n"
+                        "import statistics\n"
+                        "fig.source_mean = statistics.fmean(custom_source.values)"
+                    ),
+                    trusted=True,
+                ),
+            ),
+            primary_source="custom_source",
+        ),
+        source_data={"custom_source": data},
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._source_usage_count("custom_source") == 1
+    assert not tool.remove_source("custom_source")
+    _select_operation_rows(tool, (0,))
+    tool._copy_selected_operations()
+    clipboard_payload = tool._clipboard_step_payload()
+    assert clipboard_payload is not None
+    assert tuple(source.name for source in clipboard_payload[1]) == ("custom_source",)
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    assert tuple(script_input.name for script_input in spec.script_inputs) == (
+        "custom_source",
+    )
+
+    code = spec.display_code()
+    assert code is not None
+    assert code.index("fig, axs") < code.index("import statistics")
+    namespace = _exec_generated_code(code, {})
+    assert namespace["fig"].source_total == 6.0
+    assert namespace["fig"].source_mean == 1.5
+
+
 def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
     qtbot,
 ) -> None:

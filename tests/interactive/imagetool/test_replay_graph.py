@@ -1569,7 +1569,11 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
     source_key = graph.add_node(
         "source",
         "file_load",
-        payload={"active_name": "loaded", "load_code": "loaded = data"},
+        payload={
+            "active_name": "loaded",
+            "load_code": "loaded = data",
+            "load_source": _file_replay_source("source.nc"),
+        },
     )
     graph.output_key = graph.add_node(
         "script",
@@ -2210,6 +2214,29 @@ def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
         namespace["derived"],
         xr.DataArray([11.0, 22.0], dims=["x"]),
     )
+
+
+def test_replay_graph_does_not_hoist_imports_from_user_script_code() -> None:
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="User code",
+            code=(
+                "events.append('before')\n"
+                "import statistics\n"
+                "events.append('after')\n"
+                "fig = statistics.fmean([1.0, 2.0])"
+            ),
+        ),
+        start_label="Build result",
+        seed_code="events = []",
+        active_name="fig",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    assert code.index("events.append") < code.index("import statistics")
+    namespace = _exec_generated_code(code)
+    assert namespace["events"] == ["before", "after"]
+    assert namespace["fig"] == 1.5
 
 
 def test_replay_graph_allows_for_loop_script_code() -> None:

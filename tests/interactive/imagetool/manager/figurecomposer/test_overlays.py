@@ -1158,9 +1158,10 @@ def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
     source_tool.copy_operation_button.click()
     payload = source_tool._clipboard_step_payload()
     assert payload is not None
-    _operations, sources, source_data = payload
+    _operations, sources, source_data, selection_base_data = payload
     assert [source.name for source in sources] == ["hvdep_kconv"]
     xr.testing.assert_identical(source_data["hvdep_kconv"], data)
+    assert selection_base_data == {}
 
     destination._paste_operations_from_clipboard()
 

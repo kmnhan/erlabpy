@@ -70,10 +70,14 @@ _FIGURE_CODE_OPERATION_BINDINGS = frozenset(
         "target_axes",
     }
 )
+_FIGURE_CODE_BUILTIN_BINDINGS = frozenset(
+    {"enumerate", "float", "len", "list", "max", "min", "range", "zip"}
+)
 _FIGURE_CODE_RESERVED_NAMES = (
     _FIGURE_CODE_IMPORT_BINDINGS
     | _FIGURE_CODE_SETUP_BINDINGS
     | _FIGURE_CODE_OPERATION_BINDINGS
+    | _FIGURE_CODE_BUILTIN_BINDINGS
 )
 _FIGURE_CODE_RESERVED_NAME_PATTERN = re.compile(
     r"(?:ax\d+|gs\d+(?:_\d+)*|_line(?:_\d+)?)"
@@ -138,6 +142,11 @@ def _source_alias_error(alias: str) -> str | None:
         alias in _FIGURE_CODE_RESERVED_NAMES
         or _FIGURE_CODE_RESERVED_NAME_PATTERN.fullmatch(alias) is not None
     ):
+        if alias in _FIGURE_CODE_BUILTIN_BINDINGS:
+            return (
+                f"{alias!r} is a Python builtin used by generated Figure Composer "
+                "code. Choose a different source alias."
+            )
         return (
             f"{alias!r} is used internally by generated Figure Composer code. "
             "Choose a different source alias."

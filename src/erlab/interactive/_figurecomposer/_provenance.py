@@ -14,6 +14,10 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
+class _FigureBuildCodeOperation(provenance.ScriptCodeOperation):
+    hoist_imports: typing.ClassVar[bool] = True
+
+
 def _code_assigns_name(code: str, name: str) -> bool:
     module = ast.parse(code, mode="exec")
 
@@ -79,7 +83,7 @@ def _figure_build_operation(
         skip_source_selection_names=skip_source_selection_names,
         source_name_map=source_name_map,
     )
-    return provenance.ScriptCodeOperation(
+    return _FigureBuildCodeOperation(
         label="Build figure",
         code=code,
         copyable=code is not None,

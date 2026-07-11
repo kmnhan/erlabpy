@@ -631,6 +631,39 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert tool.source_list.findChildren(QtWidgets.QToolButton) == []
 
 
+def test_figure_composer_cannot_remove_source_used_by_selected_alias(qtbot) -> None:
+    base = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "x"),
+        coords={"eV": [-1.0, 0.0], "x": [0.0, 1.0, 2.0]},
+        name="base",
+    )
+    other = xr.DataArray(np.arange(3.0), dims=("x",), name="other")
+    tool = FigureComposerTool.from_sources(
+        {
+            "base": base,
+            "selected": base.qsel(eV=0.0),
+            "other": other,
+        },
+        sources=(
+            FigureSourceState(name="base"),
+            FigureSourceState(
+                name="selected",
+                qsel={"eV": 0.0},
+                selection_source="base",
+            ),
+            FigureSourceState(name="other"),
+        ),
+        operations=(FigureOperationState.line(label="line", source="other"),),
+        primary_source="other",
+    )
+    qtbot.addWidget(tool)
+
+    assert not tool.remove_source("base")
+    assert tool.remove_source("selected")
+    assert tool.remove_source("base")
+
+
 def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
     first = _figure_composer_image_source("first")
     second = _figure_composer_image_source("second")
@@ -786,6 +819,66 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
     assert tool.source_list.currentItem().text(0) == "second_copy"
 
 
+def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
+    qtbot, monkeypatch
+) -> None:
+    base = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("hv", "x", "y"),
+        coords={"hv": [40.0, 50.0], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    selected = base.qsel(hv=40.0)
+    tool = FigureComposerTool.from_sources(
+        {"data": selected},
+        sources=(
+            FigureSourceState(
+                name="data",
+                qsel={"hv": 40.0},
+                selection_source="data",
+            ),
+        ),
+        operations=(
+            FigureOperationState.plot_array(
+                label="original",
+                source="data",
+                axes=FigureAxesSelectionState(axes=((0, 0),)),
+            ),
+        ),
+        setup=FigureSubplotsState(nrows=1, ncols=2),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool._source_selection_base_data["data"] = base
+    tool._set_selected_source_names_silent({"data"}, "data")
+    tool._duplicate_selected_sources()
+    tool._recipe = tool._recipe.model_copy(
+        update={
+            "operations": (
+                *tool._recipe.operations,
+                FigureOperationState.plot_array(
+                    label="copy",
+                    source="data_copy",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+            )
+        }
+    )
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda data, **_kwargs: captured.append(data),
+    )
+    namespace = _exec_generated_code(tool.generated_code(), {"data": base})
+
+    assert isinstance(namespace["fig"], Figure)
+    assert len(captured) == 2
+    xr.testing.assert_identical(captured[0], selected)
+    xr.testing.assert_identical(captured[1], selected)
+
+
 def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> None:
     data = {
         name: _figure_composer_profile_source(name) for name in ("a", "b", "c", "d")
@@ -930,6 +1023,11 @@ def test_figure_composer_source_alias_editor_commit_paths(
     assert not tool.source_validation_label.isHidden()
     assert tool.source_status_label.isHidden()
     assert alias_edit.text() == "second"
+
+    alias_edit.setText("list")
+    tool._commit_source_alias_edit()
+    assert tuple(source.name for source in tool.source_states()) == ("first", "second")
+    assert not tool.source_validation_label.isHidden()
 
     alias_edit.setText("renamed")
     tool._commit_source_alias_edit()
@@ -1567,6 +1665,46 @@ def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> No
     assert not tool.source_status_label.isHidden()
 
 
+def test_figure_composer_readding_renamed_linked_source_updates_alias(qtbot) -> None:
+    original = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "x"),
+        coords={"eV": [-1.0, 0.0], "x": [0.0, 1.0, 2.0]},
+        name="map",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"custom_alias": original.qsel(eV=0.0)},
+        sources=(
+            FigureSourceState(
+                name="custom_alias",
+                qsel={"eV": 0.0},
+                selection_source="custom_alias",
+                node_uid="node",
+            ),
+        ),
+        operations=(
+            FigureOperationState.plot_array(label="array", source="custom_alias"),
+        ),
+        primary_source="custom_alias",
+    )
+    qtbot.addWidget(tool)
+
+    refreshed = original + 10.0
+    tool.add_sources(
+        (FigureSourceState(name="manager_default", node_uid="node"),),
+        {"manager_default": refreshed},
+    )
+
+    assert tuple(source.name for source in tool.source_states()) == ("custom_alias",)
+    assert tool.source_states()[0].qsel == {"eV": 0.0}
+    xr.testing.assert_identical(
+        tool.source_data()["custom_alias"], refreshed.qsel(eV=0.0)
+    )
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["custom_alias"], refreshed
+    )
+
+
 def test_figure_composer_replace_different_source_preserves_compatible_selection(
     qtbot,
 ) -> None:
@@ -1869,7 +2007,10 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     assert figurecomposer_sources._source_name(reserved_name) == "profiles_2"
     bvec_name = xr.DataArray(np.arange(2.0), dims=("x",), name="bvec")
     assert figurecomposer_sources._source_name(bvec_name) == "bvec_2"
+    builtin_name = xr.DataArray(np.arange(2.0), dims=("x",), name="list")
+    assert figurecomposer_sources._source_name(builtin_name) == "list_2"
     assert figurecomposer_sources._source_alias_error("erlab") is not None
+    assert figurecomposer_sources._source_alias_error("list") is not None
     assert (
         figurecomposer_sources._source_alias_error("line_color_values_norm") is not None
     )
@@ -2885,6 +3026,69 @@ def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
     xr.testing.assert_identical(destination.source_data()["map"], source_data)
 
 
+def test_figure_composer_copy_paste_steps_carries_selection_dependencies(
+    qtbot, monkeypatch
+) -> None:
+    base = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("hv", "x", "y"),
+        coords={"hv": [40.0, 50.0], "x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="base",
+    )
+    selected = base.qsel(hv=40.0)
+    source_tool = FigureComposerTool.from_sources(
+        {"base": base, "selected": selected},
+        sources=(
+            FigureSourceState(name="base"),
+            FigureSourceState(
+                name="selected",
+                qsel={"hv": 40.0},
+                selection_source="base",
+            ),
+        ),
+        operations=(FigureOperationState.plot_array(label="plot", source="selected"),),
+        primary_source="base",
+    )
+    source_tool._source_selection_base_data["selected"] = base
+
+    existing = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="existing")
+    destination = FigureComposerTool.from_sources(
+        {"base": existing, "selected": existing},
+        sources=(FigureSourceState(name="base"), FigureSourceState(name="selected")),
+        operations=(),
+        primary_source="base",
+    )
+    qtbot.addWidget(source_tool)
+    qtbot.addWidget(destination)
+    _clear_clipboard()
+
+    _select_operation_rows(source_tool, (0,))
+    source_tool._copy_selected_operations()
+    destination._paste_operations_from_clipboard()
+
+    source_by_name = destination._source_by_name()
+    assert source_by_name["selected_copy"].selection_source == "base_copy"
+    xr.testing.assert_identical(destination.source_data()["base_copy"], base)
+    xr.testing.assert_identical(destination.source_data()["selected_copy"], selected)
+    xr.testing.assert_identical(
+        destination._source_selection_base_data["selected_copy"], base
+    )
+    assert destination.tool_status.operations[-1].sources == ("selected_copy",)
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda data, **_kwargs: captured.append(data),
+    )
+    namespace = _exec_generated_code(
+        destination.generated_code(),
+        {"base_copy": destination.source_data()["base_copy"]},
+    )
+    assert isinstance(namespace["fig"], Figure)
+    xr.testing.assert_identical(captured[-1], selected)
+
+
 def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
     qtbot,
 ) -> None:
@@ -3155,7 +3359,8 @@ def test_figure_composer_source_data_history_helpers(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool._reset_history_stack()
-    assert list(tool._prev_source_data_states[-1]) == ["data"]
+    assert list(tool._prev_source_data_states[-1][0]) == ["data"]
+    assert tool._prev_source_data_states[-1][1] == {}
     assert not tool.undoable
     assert not tool.redoable
     tool.undo()
@@ -3171,13 +3376,51 @@ def test_figure_composer_source_data_history_helpers(qtbot) -> None:
     replacement = data.copy(data=np.full(3, 2.0))
     tool.set_source_data({"data": replacement})
     tool._replace_last_state()
-    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
+    xr.testing.assert_identical(
+        tool._prev_source_data_states[-1][0]["data"], replacement
+    )
 
     tool._prev_states.clear()
     tool._prev_source_data_states.clear()
     tool._replace_last_state()
     assert len(tool._prev_states) == 1
-    xr.testing.assert_identical(tool._prev_source_data_states[-1]["data"], replacement)
+    xr.testing.assert_identical(
+        tool._prev_source_data_states[-1][0]["data"], replacement
+    )
+
+
+def test_figure_composer_history_restores_source_selection_backing(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "x"),
+        coords={"eV": [-1.0, 0.0], "x": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(FigureOperationState.plot_array(label="plot", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"data"}, "data")
+
+    tool._update_selected_source_dimension("eV", "qsel", "0.0", "")
+    assert tool.source_data()["data"].dims == ("x",)
+    xr.testing.assert_identical(tool._source_selection_base_data["data"], data)
+
+    tool.undo()
+    assert tool.source_states()[0].qsel == {}
+    assert "data" not in tool._source_selection_base_data
+    xr.testing.assert_identical(tool.source_data()["data"], data)
+
+    tool.redo()
+    assert tool.source_states()[0].qsel == {"eV": 0.0}
+    xr.testing.assert_identical(tool._source_selection_base_data["data"], data)
+
+    tool._update_selected_source_dimension("eV", "keep", "", "")
+    assert tool.source_states()[0].qsel == {}
+    xr.testing.assert_identical(tool.source_data()["data"], data)
 
 
 def test_figure_composer_copy_paste_source_and_insert_fallbacks(
