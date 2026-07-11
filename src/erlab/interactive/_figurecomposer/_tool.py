@@ -8370,32 +8370,73 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         display_name: str,
         source_by_name: Mapping[str, FigureSourceState],
     ) -> provenance.ScriptInput | None:
-        base_source = source_by_name.get(source.selection_source or source.name)
-        base_input = None if base_source is None else base_source.to_script_input()
-        if base_input is None:
-            base_input = source.to_script_input()
-        if base_input is None:
-            return None
-        base_spec = base_input.parsed_provenance_spec()
-        if base_spec is None:
-            return None
-
-        operations = self._source_selection_replay_operations(source)
-        if not operations:
-            return self._script_input_with_name(base_input, display_name)
-        try:
-            base_replay_spec = provenance.to_replay_provenance_spec(base_spec)
-            if base_replay_spec is None:
+        lineage: list[FigureSourceState] = []
+        seen: set[str] = set()
+        current = source
+        while True:
+            if current.name in seen:
                 return None
-            selected_spec = base_replay_spec.append_replay_stage(
-                provenance.public_data(*operations)
+            seen.add(current.name)
+            lineage.append(current)
+            parent_name = current.selection_source
+            if parent_name is None or parent_name == current.name:
+                break
+            parent = source_by_name.get(parent_name)
+            if parent is None:
+                break
+            current = parent
+
+        base_input: provenance.ScriptInput | None = None
+        base_index = -1
+        try:
+            for candidate_index in range(len(lineage) - 1, -1, -1):
+                candidate_input = lineage[candidate_index].to_script_input()
+                if candidate_input is None:
+                    continue
+                candidate_spec = candidate_input.parsed_provenance_spec()
+                if candidate_spec is None:
+                    continue
+                if provenance.to_replay_provenance_spec(candidate_spec) is None:
+                    continue
+                base_input = candidate_input
+                base_index = candidate_index
+                break
+            if base_input is None:
+                for candidate_index in range(len(lineage) - 1, -1, -1):
+                    candidate_input = lineage[candidate_index].to_script_input()
+                    if candidate_input is None or not candidate_input.node_uid:
+                        continue
+                    base_input = candidate_input
+                    base_index = candidate_index
+                    break
+            if base_input is None:
+                return None
+            source_label = " ".join(source.label.split())
+            selected_spec = provenance.script(
+                start_label=f"Select data for {source_label or source.name}",
+                seed_code=(
+                    None
+                    if base_input.name == display_name
+                    else f"{display_name} = {base_input.name}"
+                ),
+                active_name=display_name,
+                script_inputs=(base_input,),
             )
+            for selected_source in reversed(lineage[: base_index + 1]):
+                operations = self._source_selection_replay_operations(selected_source)
+                if operations:
+                    selected_spec = selected_spec.append_replay_stage(
+                        provenance.public_data(*operations)
+                    )
         except (TypeError, ValueError, pydantic.ValidationError):
             return None
         return provenance.ScriptInput(
             name=display_name,
-            node_uid=base_input.node_uid,
-            node_snapshot_token=base_input.node_snapshot_token,
+            label=(
+                source_label
+                if source_label and source_label != source.name
+                else display_name
+            ),
             provenance_spec=selected_spec.model_dump(mode="json"),
         )
 

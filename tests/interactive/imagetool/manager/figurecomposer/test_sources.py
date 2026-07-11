@@ -2359,10 +2359,71 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     )
     assert selected_input is not None
     assert selected_input.name == "display_selected"
+    assert selected_input.label == "display_selected"
     selected_spec = selected_input.parsed_provenance_spec()
     assert selected_spec is not None
     assert len(selected_spec.replay_stages) == 1
     assert len(selected_spec.replay_stages[0].operations) == 2
+
+    historical_selected_source = selected_source.model_copy(
+        update={"label": "ImageTool 7: gap scan"}
+    )
+    historical_selected_input = tool._selected_source_script_input(
+        historical_selected_source,
+        display_name="display_selected",
+        source_by_name={
+            "base": base_source,
+            "base_selected": historical_selected_source,
+        },
+    )
+    assert historical_selected_input is not None
+    assert historical_selected_input.label == "ImageTool 7: gap scan"
+
+    live_base = FigureSourceState(name="live_base", node_uid="live-node")
+    live_selected_source = FigureSourceState(
+        name="live_selected",
+        selection_source="live_base",
+        qsel={"eV": 0.0},
+    )
+    live_selected_input = tool._selected_source_script_input(
+        live_selected_source,
+        display_name="live_selected",
+        source_by_name={
+            "live_base": live_base,
+            "live_selected": live_selected_source,
+        },
+    )
+    assert live_selected_input is not None
+    assert live_selected_input.node_uid is None
+    live_selected_spec = live_selected_input.parsed_provenance_spec()
+    assert live_selected_spec is not None
+    [live_dependency] = provenance.script_input_dependency_refs(live_selected_spec)
+    assert live_dependency.node_uid == "live-node"
+    live_selected_graph = _replay_graph.compile_replay_graph(
+        live_selected_spec,
+        live_input_resolver=lambda script_input: (
+            (base_data, script_input) if script_input.node_uid == "live-node" else None
+        ),
+    )
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(live_selected_graph),
+        base_data.qsel(eV=0.0),
+    )
+
+    cycle_a = selected_source.model_copy(
+        update={"name": "cycle_a", "selection_source": "cycle_b"}
+    )
+    cycle_b = selected_source.model_copy(
+        update={"name": "cycle_b", "selection_source": "cycle_a"}
+    )
+    assert (
+        tool._selected_source_script_input(
+            cycle_a,
+            display_name="cycle",
+            source_by_name={"cycle_a": cycle_a, "cycle_b": cycle_b},
+        )
+        is None
+    )
 
     assert (
         tool._selected_source_script_input(
@@ -2374,7 +2435,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     )
     assert (
         tool._selected_source_script_input(
-            FigureSourceState(name="invalid", node_uid="node"),
+            FigureSourceState(name="invalid"),
             display_name="invalid",
             source_by_name={},
         )
@@ -3153,6 +3214,97 @@ def test_figure_composer_provenance_includes_sources_and_build_step(
     assert isinstance(namespace["fig"], Figure)
 
 
+def test_figure_composer_provenance_replays_transitive_selected_source_chain(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    base = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("u", "v", "w"),
+        coords={"u": [0.0, 1.0], "v": [0.0, 1.0, 2.0], "w": np.arange(4)},
+        name="sample_map",
+    )
+    selected_u = base.qsel(u=1.0)
+    selected_v = selected_u.qsel(v=2.0)
+    path = tmp_path / "sample_map.nc"
+    base.to_netcdf(path)
+    source_spec = _file_load_provenance(path).model_dump(mode="json")
+    tool = FigureComposerTool.from_sources(
+        {"base": base, "selected_u": selected_u, "selected_v": selected_v},
+        sources=(
+            FigureSourceState(
+                name="base", node_uid="base-node", provenance_spec=source_spec
+            ),
+            FigureSourceState(
+                name="selected_u",
+                selection_source="base",
+                qsel={"u": 1.0},
+                provenance_spec=source_spec,
+            ),
+            FigureSourceState(
+                name="selected_v",
+                selection_source="selected_u",
+                qsel={"v": 2.0},
+                provenance_spec=source_spec,
+            ),
+        ),
+        operations=(
+            FigureOperationState.custom(
+                label="reserve source name",
+                code="sample_map = -1",
+                trusted=True,
+            ),
+            FigureOperationState.line(label="profile", source="selected_v"),
+        ),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    script_inputs, skipped_names, source_name_map = tool._display_code_source_plan()
+    assert skipped_names == {"selected_v"}
+    assert source_name_map == {"selected_v": "sample_map_2"}
+    assert len(script_inputs) == 1
+    assert script_inputs[0].name == "sample_map_2"
+    assert script_inputs[0].label == "sample_map_2"
+    assert script_inputs[0].node_uid is None
+    selected_spec = script_inputs[0].parsed_provenance_spec()
+    assert selected_spec is not None
+    assert len(selected_spec.replay_stages) == 2
+    assert all(len(stage.operations) == 1 for stage in selected_spec.replay_stages)
+    [dependency] = provenance.script_input_dependency_refs(selected_spec)
+    assert dependency.node_uid == "base-node"
+
+    resolved_names: list[str] = []
+
+    def resolve_live(
+        script_input: provenance.ScriptInput,
+    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
+        if script_input.node_uid != "base-node":
+            return None
+        resolved_names.append(script_input.name)
+        return base, script_input
+
+    selected_graph = _replay_graph.compile_replay_graph(
+        selected_spec,
+        live_input_resolver=resolve_live,
+    )
+    live_selected = _replay_graph.execute_replay_graph(selected_graph)
+    xr.testing.assert_identical(live_selected, selected_v)
+    assert resolved_names == ["base"]
+
+    figure_spec = tool.current_provenance_spec()
+    assert figure_spec is not None
+    code = figure_spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {})
+
+    assert namespace["sample_map"] == -1
+    xr.testing.assert_identical(namespace["sample_map_2"], selected_v)
+    lines = namespace["fig"].axes[0].lines
+    assert len(lines) == 1
+    np.testing.assert_allclose(lines[0].get_ydata(), selected_v.values)
+
+
 def test_figure_composer_full_code_composes_selected_file_sources(
     qtbot,
     monkeypatch,
@@ -3355,9 +3507,7 @@ def test_figure_composer_full_code_falls_back_for_live_selected_source(
 
     spec = tool.current_provenance_spec()
     assert spec is not None
-    assert tuple(script_input.name for script_input in spec.script_inputs) == (
-        "data_3",
-    )
+    assert tuple(script_input.name for script_input in spec.script_inputs) == ("live",)
     assert spec.display_code() is None
 
     code = tool.generated_code()
