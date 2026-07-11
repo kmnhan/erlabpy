@@ -1084,6 +1084,56 @@ def test_figure_composer_remove_selected_sources_removes_available_rows(qtbot) -
     assert "second" not in tool._source_data
 
 
+def test_figure_composer_remove_selected_sources_resolves_dependencies(qtbot) -> None:
+    base = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+        name="base",
+    )
+    selected = base.qsel(x=1.0)
+    other = xr.DataArray(np.arange(3.0), dims=("y",), name="other")
+    tool = FigureComposerTool.from_sources(
+        {"other": other, "base": base, "selected": selected},
+        sources=(
+            FigureSourceState(name="other"),
+            FigureSourceState(name="base"),
+            FigureSourceState(
+                name="selected", selection_source="base", qsel={"x": 1.0}
+            ),
+        ),
+        operations=(),
+        primary_source="other",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"base", "selected"}, "base")
+
+    tool._remove_selected_sources()
+
+    assert tuple(source.name for source in tool.source_states()) == ("other",)
+    assert set(tool.source_data()) == {"other"}
+
+
+def test_figure_composer_remove_all_selected_sources_keeps_last_row(qtbot) -> None:
+    source_data = {
+        name: xr.DataArray(np.arange(2.0), dims=("x",), name=name)
+        for name in ("first", "second", "third")
+    }
+    tool = FigureComposerTool.from_sources(
+        source_data,
+        sources=tuple(FigureSourceState(name=name) for name in source_data),
+        operations=(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent(set(source_data), "first")
+
+    tool._remove_selected_sources()
+
+    assert tuple(source.name for source in tool.source_states()) == ("third",)
+    assert set(tool.source_data()) == {"third"}
+
+
 def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     qtbot,
 ) -> None:

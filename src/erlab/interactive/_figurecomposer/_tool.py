@@ -2784,10 +2784,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _remove_selected_sources(self) -> None:
+        pending = list(self._selected_source_names())
         removed = False
-        for name in tuple(self._selected_source_names()):
-            if self.remove_source(name):
-                removed = True
+        while pending:
+            next_pending: list[str] = []
+            removed_this_pass = False
+            for name in pending:
+                if self.remove_source(name):
+                    removed = True
+                    removed_this_pass = True
+                else:
+                    next_pending.append(name)
+            if not removed_this_pass:
+                break
+            pending = next_pending
         if not removed:
             self._refresh_source_controls()
 
