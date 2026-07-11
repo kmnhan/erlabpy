@@ -7955,16 +7955,49 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
             source_data[source.name] = restored_source_data(source, source_data_item)
             changed = True
-        for source in self._recipe.sources:
-            if source.name in source_data or not _source_has_selection(source):
-                continue
-            if source.selection_source is None:
-                continue
-            source_data_item = source_data.get(source.selection_source)
-            if source_data_item is None:
-                continue
-            source_data[source.name] = restored_source_data(source, source_data_item)
-            changed = True
+        pending = [
+            source
+            for source in self._recipe.sources
+            if source.name not in source_data
+            and _source_has_selection(source)
+            and source.selection_source is not None
+        ]
+        while pending:
+            next_pending: list[FigureSourceState] = []
+            restored_this_pass = False
+            for source in pending:
+                selection_source = source.selection_source
+                if selection_source is None:  # pragma: no cover - filtered above.
+                    continue
+                source_data_item = source_data.get(selection_source)
+                if source_data_item is None:
+                    next_pending.append(source)
+                    continue
+                try:
+                    selected = self._source_data_from_selection(
+                        source.name, source_data_item, source
+                    )
+                except (IndexError, KeyError, TypeError, ValueError):
+                    logger.debug(
+                        "Could not rebuild saved Figure Composer source %s from %s",
+                        source.name,
+                        selection_source,
+                        exc_info=True,
+                    )
+                    continue
+                source_data[source.name] = selected
+                selection_base_data[source.name] = source_data_item
+                changed = True
+                restored_this_pass = True
+            if not restored_this_pass:
+                if next_pending:
+                    logger.debug(
+                        "Could not resolve saved Figure Composer source "
+                        "dependencies: %s",
+                        ", ".join(source.name for source in next_pending),
+                    )
+                break
+            pending = next_pending
         if not changed:
             self._restore_persisted_preview_cache(ds)
             self._queue_post_restore_redraw_if_needed(ds)

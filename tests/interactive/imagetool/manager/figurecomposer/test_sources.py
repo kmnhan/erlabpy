@@ -231,6 +231,71 @@ def test_figure_composer_selected_alias_roundtrip_uses_source_alias_base(
     xr.testing.assert_identical(restored._source_selection_base_data["selected"], base)
 
 
+def test_figure_composer_restore_rebuilds_selected_source_chain_out_of_order(
+    qtbot,
+) -> None:
+    base = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("u", "v", "w"),
+        coords={"u": [0.0, 1.0], "v": [0.0, 1.0, 2.0], "w": np.arange(4)},
+        name="base",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": base},
+        sources=(
+            FigureSourceState(
+                name="selected_v",
+                selection_source="selected_u",
+                qsel={"v": 2.0},
+            ),
+            FigureSourceState(
+                name="selected_u",
+                selection_source="base",
+                qsel={"u": 1.0},
+            ),
+            FigureSourceState(name="base"),
+        ),
+        operations=(FigureOperationState.line(label="line", source="selected_v"),),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    tool._restore_persistence_data_items({}, xr.Dataset())
+
+    selected_u = base.qsel(u=1.0)
+    selected_v = selected_u.qsel(v=2.0)
+    xr.testing.assert_identical(tool.source_data()["selected_u"], selected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], selected_v)
+    xr.testing.assert_identical(tool._source_selection_base_data["selected_u"], base)
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_v"], selected_u
+    )
+
+
+def test_figure_composer_restore_selected_source_cycle_stays_unresolved(qtbot) -> None:
+    stable = xr.DataArray(np.arange(3.0), dims=("x",), name="stable")
+    tool = FigureComposerTool.from_sources(
+        {"stable": stable},
+        sources=(
+            FigureSourceState(name="stable"),
+            FigureSourceState(
+                name="cycle_a", selection_source="cycle_b", isel={"x": 0}
+            ),
+            FigureSourceState(
+                name="cycle_b", selection_source="cycle_a", isel={"x": 0}
+            ),
+        ),
+        operations=(),
+        primary_source="stable",
+    )
+    qtbot.addWidget(tool)
+
+    tool._restore_persistence_data_items({}, xr.Dataset())
+
+    assert set(tool.source_data()) == {"stable"}
+    assert tool._source_selection_base_data == {}
+
+
 def test_figure_composer_persistence_metadata_fallbacks(qtbot) -> None:
     primary = xr.DataArray(np.arange(2.0), dims=("x",), name="primary")
     fallback = xr.DataArray(np.arange(2.0) + 2.0, dims=("x",), name="fallback")
