@@ -710,6 +710,7 @@ def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
     assert tuple(tool.source_data()) == ("renamed", "data_1")
     assert tool.tool_status.operations[0].sources == ("renamed", "data_1")
     assert tool.tool_status.operations[1].line_source == "renamed"
+    assert tool._source_by_name()["renamed"].label == "Legacy first"
     assert tool.source_list.topLevelItem(0).text(0) == "renamed"
     assert "Legacy" not in tool.source_list.topLevelItem(0).text(0)
 
@@ -781,6 +782,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "third",
     )
     duplicate = tool._source_by_name()["second_copy"]
+    assert duplicate.label == "second_copy"
     assert duplicate.isel == {"x": 0}
     assert duplicate.selection_source == "first"
     xr.testing.assert_identical(tool.source_data()["second_copy"], second)
@@ -817,6 +819,31 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "second_copy",
     )
     assert tool.source_list.currentItem().text(0) == "second_copy"
+
+
+def test_figure_composer_duplicate_source_preserves_historical_label(qtbot) -> None:
+    source_data = {
+        name: xr.DataArray(np.arange(2.0), dims=("x",), name=name)
+        for name in ("automatic", "historical", "keeper")
+    }
+    tool = FigureComposerTool.from_sources(
+        source_data,
+        sources=(
+            FigureSourceState(name="automatic"),
+            FigureSourceState(name="historical", label="Historical display label"),
+            FigureSourceState(name="keeper"),
+        ),
+        operations=(),
+        primary_source="keeper",
+    )
+    qtbot.addWidget(tool)
+    tool._set_selected_source_names_silent({"automatic", "historical"}, "automatic")
+
+    tool._duplicate_selected_sources()
+
+    source_by_name = tool._source_by_name()
+    assert source_by_name["automatic_copy"].label == "automatic_copy"
+    assert source_by_name["historical_copy"].label == "Historical display label"
 
 
 def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
@@ -1035,6 +1062,7 @@ def test_figure_composer_source_alias_editor_commit_paths(
         "renamed",
         "second",
     )
+    assert tool._source_by_name()["renamed"].label == "renamed"
     assert "renamed" in tool._source_data
 
 
@@ -1420,6 +1448,7 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
     assert tool.tool_status.operations[3].map_selections == ()
     assert tool.tool_status.operations[4].sources == ("data_selected_2",)
     assert tool.tool_status.operations[4].map_selections == ()
+    assert sources["data_selected_2"].label == "data_selected_2"
     assert sources["data_selected_2"].isel == {"kx": 1}
 
 
@@ -1512,6 +1541,7 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     assert replaced is True
     [source] = tool.source_states()
     assert source.name == "data_0"
+    assert source.label == "ImageTool 1: replacement"
     assert source.node_uid == "new-node"
     assert source.node_snapshot_token == new_snapshot_id
     assert source.provenance_spec == {"source": "new"}
@@ -1550,14 +1580,22 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     tool._source_data["orphan"] = original
     assert tool.replace_source(
         "orphan",
-        FigureSourceState(name="data_2", label="Orphan"),
+        FigureSourceState(name="data_2", label="Historical orphan"),
+        original,
+    )
+    tool._source_data["default_orphan"] = original
+    assert tool.replace_source(
+        "default_orphan",
+        FigureSourceState(name="data_3"),
         original,
     )
     assert tuple(source.name for source in tool.source_states()) == (
         "data_0",
         "orphan",
+        "default_orphan",
     )
-    assert not hasattr(tool.source_states()[-1], "label")
+    assert tool._source_by_name()["orphan"].label == "Historical orphan"
+    assert tool._source_by_name()["default_orphan"].label == "default_orphan"
 
 
 def test_figure_composer_source_refresh_applies_saved_selection(
@@ -1696,6 +1734,7 @@ def test_figure_composer_readding_renamed_linked_source_updates_alias(qtbot) -> 
     )
 
     assert tuple(source.name for source in tool.source_states()) == ("custom_alias",)
+    assert tool.source_states()[0].label == "custom_alias"
     assert tool.source_states()[0].qsel == {"eV": 0.0}
     xr.testing.assert_identical(
         tool.source_data()["custom_alias"], refreshed.qsel(eV=0.0)
@@ -1949,7 +1988,18 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
 
     script_input = provenance.ScriptInput(name="base", provenance_spec=base_spec)
     assert tool._script_input_with_name(script_input, "base") is script_input
-    assert tool._script_input_with_name(script_input, "renamed").name == "renamed"
+    renamed_script_input = tool._script_input_with_name(script_input, "renamed")
+    assert renamed_script_input.name == "renamed"
+    assert renamed_script_input.label == "renamed"
+    historical_input = script_input.model_copy(update={"label": "Historical input"})
+    renamed_historical_input = tool._script_input_with_name(historical_input, "renamed")
+    assert renamed_historical_input.name == "renamed"
+    assert renamed_historical_input.label == "Historical input"
+    historical_source = FigureSourceState.from_script_input(historical_input)
+    assert historical_source.label == "Historical input"
+    historical_roundtrip = historical_source.to_script_input()
+    assert historical_roundtrip is not None
+    assert historical_roundtrip.label == "Historical input"
 
     renamed_input = tool._selected_source_script_input(
         base_source,
@@ -2065,10 +2115,35 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
         "start": 1,
         "stop": 2,
     }
-    legacy_source = FigureSourceState.model_validate(
-        {"name": "legacy", "isel": {"x": {"kind": "slice", "start": 1}}}
+    ordinary_source = FigureSourceState(name="ordinary")
+    ordinary_payload = ordinary_source.model_dump(mode="json")
+    assert ordinary_payload["label"] == "ordinary"
+    assert "isel" not in ordinary_payload
+    assert "qsel" not in ordinary_payload
+    assert "mean_dims" not in ordinary_payload
+    assert "selection_source" not in ordinary_payload
+
+    current_saved_recipe = FigureRecipeState.model_validate(
+        {
+            "sources": (
+                {
+                    "name": "legacy",
+                    "isel": {"x": {"kind": "slice", "start": 1}},
+                    "selection_source": "base",
+                },
+            ),
+            "primary_source": "legacy",
+        }
     )
+    [legacy_source] = current_saved_recipe.sources
+    assert legacy_source.label == "legacy"
     assert legacy_source.isel == {"x": slice(1, None)}
+    [legacy_payload] = current_saved_recipe.model_dump(mode="json")["sources"]
+    assert legacy_payload["label"] == "legacy"
+    assert legacy_payload["isel"] == {
+        "x": {"__erlab_figure_composer_slice__": [1, None, None]}
+    }
+    assert legacy_payload["selection_source"] == "base"
 
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),

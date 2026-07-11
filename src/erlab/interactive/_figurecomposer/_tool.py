@@ -2803,6 +2803,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return f"Source alias {alias!r} is already in use."
         return None
 
+    @staticmethod
+    def _source_with_name(source: FigureSourceState, name: str) -> FigureSourceState:
+        if source.name == name:
+            return source
+        updates = {"name": name}
+        if source.label == source.name:
+            updates["label"] = name
+        return source.model_copy(update=updates)
+
     def _source_unique_alias(self, source_name: str, reserved: set[str]) -> str:
         return _source_unique_name(source_name, reserved)
 
@@ -2877,14 +2886,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources: list[FigureSourceState] = []
         changed = False
         for source in self._recipe.sources:
-            source_updates: dict[str, typing.Any] = {}
+            updated_source = source
             if source.name == old_name:
-                source_updates["name"] = new_name
+                updated_source = self._source_with_name(source, new_name)
             if source.selection_source == old_name:
-                source_updates["selection_source"] = new_name
-            if source_updates:
+                updated_source = updated_source.model_copy(
+                    update={"selection_source": new_name}
+                )
+            if updated_source is not source:
                 changed = True
-                sources.append(source.model_copy(update=source_updates))
+                sources.append(updated_source)
             else:
                 sources.append(source)
         if not changed:
@@ -2943,7 +2954,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         for index in indices:
             source = sources[index]
             alias = self._source_copy_alias(source.name, reserved)
-            duplicates.append(source.model_copy(update={"name": alias}))
+            duplicates.append(self._source_with_name(source, alias))
             duplicated_names.add(alias)
             if source.name in self._source_data:
                 self._source_data[alias] = self._source_data[source.name].copy(
@@ -3816,11 +3827,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_name, FigureSourceState(name=source_name)
         )
         selected_source = _source_with_selection(
-            base_source.model_copy(
-                update={
-                    "name": alias,
-                    "selection_source": source_name,
-                }
+            self._source_with_name(base_source, alias).model_copy(
+                update={"selection_source": source_name}
             ),
             selection.model_copy(update={"source": alias}),
         )
@@ -6186,12 +6194,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         renamed_source_data: dict[str, xr.DataArray] = {}
         for source in unique_sources:
             pasted_name = rename_map[source.name]
-            updates: dict[str, typing.Any] = {"name": pasted_name}
+            renamed_source = self._source_with_name(source, pasted_name)
             if source.selection_source is not None:
-                updates["selection_source"] = rename_map.get(
-                    source.selection_source, source.selection_source
+                renamed_source = renamed_source.model_copy(
+                    update={
+                        "selection_source": rename_map.get(
+                            source.selection_source, source.selection_source
+                        )
+                    }
                 )
-            renamed_source = source.model_copy(update=updates)
             if pasted_name not in existing_source_names:
                 renamed_sources.append(renamed_source)
                 existing_source_names.add(pasted_name)
@@ -6593,10 +6604,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         keep_selection_source: bool,
     ) -> tuple[FigureSourceState, xr.DataArray]:
-        updates: dict[str, typing.Any] = {"name": alias}
+        replacement = self._source_with_name(source, alias)
         if source.selection_source == source.name:
-            updates["selection_source"] = alias
-        replacement = source.model_copy(update=updates)
+            replacement = replacement.model_copy(update={"selection_source": alias})
         if (
             existing_source is not None
             and _source_has_selection(existing_source)
@@ -6640,7 +6650,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if alias not in self._source_data:
                 return False
             existing_source = None
-            source_list.append(source.model_copy(update={"name": alias}))
+            source_list.append(self._source_with_name(source, alias))
             existing_index = len(source_list) - 1
 
         if existing_index is None:  # pragma: no cover
@@ -8143,7 +8153,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> provenance.ScriptInput:
         if script_input.name == name:
             return script_input
-        return script_input.model_copy(update={"name": name})
+        updates = {"name": name}
+        if script_input.label == script_input.name:
+            updates["label"] = name
+        return script_input.model_copy(update=updates)
 
     def _selected_source_script_input(
         self,

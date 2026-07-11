@@ -168,10 +168,19 @@ class FigureSourceState(pydantic.BaseModel):
     """A named data source used by a figure recipe."""
 
     name: str
-    isel: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    qsel: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    mean_dims: tuple[str, ...] = ()
-    selection_source: str | None = None
+    label: str = ""
+    isel: dict[str, typing.Any] = pydantic.Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+    qsel: dict[str, typing.Any] = pydantic.Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+    mean_dims: tuple[str, ...] = pydantic.Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    selection_source: str | None = pydantic.Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     node_uid: str | None = None
     node_snapshot_token: str | None = None
     provenance_spec: dict[str, typing.Any] | None = None
@@ -180,10 +189,12 @@ class FigureSourceState(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _drop_legacy_label(cls, value: typing.Any) -> typing.Any:
-        if isinstance(value, Mapping) and "label" in value:
+    def _default_label_from_name(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping) and (
+            "label" not in value or value.get("label") is None
+        ):
             value = dict(value)
-            value.pop("label", None)
+            value["label"] = value.get("name")
         return value
 
     @pydantic.field_validator("isel", "qsel", mode="before")
@@ -203,6 +214,7 @@ class FigureSourceState(pydantic.BaseModel):
     ) -> FigureSourceState:
         return cls(
             name=script_input.name,
+            label=script_input.label,
             node_uid=script_input.node_uid,
             node_snapshot_token=script_input.node_snapshot_token,
             provenance_spec=script_input.provenance_spec,
@@ -213,6 +225,7 @@ class FigureSourceState(pydantic.BaseModel):
             return None
         return provenance.ScriptInput(
             name=self.name,
+            label=self.label,
             node_uid=self.node_uid,
             node_snapshot_token=self.node_snapshot_token,
             provenance_spec=self.provenance_spec,
