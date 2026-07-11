@@ -50,6 +50,83 @@ def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
     )
 
 
+def test_figure_composer_line_preserves_multi_cursor_legacy_selections(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("cut", "kx"),
+        coords={"cut": [0.0, 1.0, 2.0], "kx": [-1.0, -0.5, 0.5, 1.0]},
+        name="profile",
+    )
+    selections = (
+        FigureDataSelectionState(source="profile", qsel={"cut": 0.0}),
+        FigureDataSelectionState(source="profile", qsel={"cut": 2.0}),
+    )
+    operation = FigureOperationState.line(
+        label="profiles", source="profile"
+    ).model_copy(
+        update={
+            "map_selections": selections,
+            "line_x": "kx",
+            "line_labels": ("first", "second"),
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"profile": data},
+        sources=(FigureSourceState(name="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    qtbot.addWidget(tool)
+
+    [loaded_operation] = tool.tool_status.operations
+    assert loaded_operation.map_selections == selections
+    assert figurecomposer_line_profile._source_names(loaded_operation) == ("profile",)
+    profiles = figurecomposer_line_profile._line_data_items(tool, loaded_operation)
+    assert len(profiles) == 2
+    xr.testing.assert_identical(profiles[0], data.qsel(cut=0.0))
+    xr.testing.assert_identical(profiles[1], data.qsel(cut=2.0))
+
+    figure = plt.figure()
+    try:
+        figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+        rendered_lines = figure.axes[0].lines
+        assert len(rendered_lines) == 2
+        np.testing.assert_allclose(rendered_lines[0].get_ydata(), data.qsel(cut=0.0))
+        np.testing.assert_allclose(rendered_lines[1].get_ydata(), data.qsel(cut=2.0))
+    finally:
+        plt.close(figure)
+
+    namespace = _exec_generated_code(tool.generated_code(), {"profile": data})
+    generated_lines = namespace["fig"].axes[0].lines
+    assert len(generated_lines) == 2
+    np.testing.assert_allclose(generated_lines[0].get_ydata(), data.qsel(cut=0.0))
+    np.testing.assert_allclose(generated_lines[1].get_ydata(), data.qsel(cut=2.0))
+
+    operation_payload = loaded_operation.model_dump(mode="json")
+    assert operation_payload["map_selections"] == [
+        selection.model_dump(mode="json") for selection in selections
+    ]
+    assert "map_selections" not in FigureOperationState.line(
+        label="plain", source="profile"
+    ).model_dump(mode="json")
+    restored_operation = FigureOperationState.model_validate_json(
+        loaded_operation.model_dump_json()
+    )
+    assert restored_operation.map_selections == selections
+
+    restored_tool = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    assert isinstance(restored_tool, FigureComposerTool)
+    qtbot.addWidget(restored_tool)
+    assert restored_tool.tool_status.operations[0].map_selections == selections
+    restored_profiles = figurecomposer_line_profile._line_data_items(
+        restored_tool, restored_tool.tool_status.operations[0]
+    )
+    xr.testing.assert_identical(restored_profiles[0], data.qsel(cut=0.0))
+    xr.testing.assert_identical(restored_profiles[1], data.qsel(cut=2.0))
+
+
 def test_imagetool_line_profile_seeds_public_nonuniform_coordinate(qtbot) -> None:
     public = xr.DataArray(
         np.arange(24.0).reshape(4, 2, 3),

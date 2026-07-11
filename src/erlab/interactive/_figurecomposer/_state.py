@@ -455,10 +455,11 @@ class FigureOperationState(pydantic.BaseModel):
     palette_color_codes: bool = False
 
     sources: tuple[str, ...] = ()
-    # Legacy load-only source selections. Live recipes normalize these into
-    # source-level selections before user-visible editing or saving.
+    # Legacy source selections. Live recipes normalize the usual single-selection
+    # form into source-level selections; the multi-profile Line compatibility form
+    # remains nonempty so it can round-trip without losing cursor multiplicity.
     map_selections: tuple[FigureDataSelectionState, ...] = pydantic.Field(
-        default=(), exclude=True
+        default=(), exclude_if=lambda value: not value
     )
     slice_dim: str | None = None
     slice_values_mode: typing.Literal["manual", "all"] = "manual"

@@ -3659,6 +3659,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
 
         if len(operation.map_selections) != 1:
+            # A legacy Line/Profile step can contain one picked profile per cursor.
+            # Keep that compatibility representation intact so rendering, styling,
+            # offsets, and placement still see every profile in cursor order.
+            if operation.kind == FigureOperationKind.LINE:
+                return operation
             return self._operation_without_map_selections(operation, None)
 
         selection = operation.map_selections[0]
