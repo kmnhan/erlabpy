@@ -31,6 +31,42 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         "import erlab.plotting as eplt",
     )
     assert figurecomposer_custom_code._custom_code_names("bad code !!") == frozenset()
+    assert "data" in figurecomposer_custom_code._custom_code_names("data = data.mean()")
+    assert "data" in figurecomposer_custom_code._custom_code_names("data += 1")
+    assert "data" in figurecomposer_custom_code._custom_code_names(
+        "def update():\n    global data\n    data += 1"
+    )
+    assert "data" in figurecomposer_custom_code._custom_code_names(
+        "def remove():\n    global data\n    del data"
+    )
+    assert "data" not in figurecomposer_custom_code._custom_code_names(
+        "data = 1\nfig.result = data"
+    )
+    assert "data" in figurecomposer_custom_code._custom_code_names(
+        "def f():\n    return data\nresult = f()\ndata = 1"
+    )
+    assert "data" in figurecomposer_custom_code._custom_code_names(
+        "if condition:\n    data = 1\nfig.result = data"
+    )
+    assert (
+        figurecomposer_custom_code._custom_code_names(
+            "import data\ndef identity(data):\n    return data\nvalue = data"
+        )
+        == frozenset()
+    )
+    assert figurecomposer_custom_code._custom_code_bound_names(
+        "value = 1\n"
+        "import numpy as array_module\n"
+        "def identity(item):\n"
+        "    return item\n"
+        "def overwrite():\n"
+        "    global replay_input\n"
+        "    del replay_input"
+    ) == frozenset({"value", "array_module", "identity", "overwrite", "replay_input"})
+    assert (
+        figurecomposer_custom_code._custom_code_bound_names("bad code !!")
+        == frozenset()
+    )
     assert figurecomposer_custom_code._custom_axes_alias_lines(tool) == []
     assert (
         figurecomposer_custom_code._code_lines(
@@ -80,6 +116,143 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         "}",
     ]
     assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
+
+
+def test_figure_composer_custom_code_names_cover_nested_class_and_flow() -> None:
+    nested_class_source = (
+        "def build():\n"
+        "    class Result:\n"
+        "        data = data.mean()\n"
+        "    return Result\n"
+        "build()"
+    )
+    nested_class_import = nested_class_source.replace(
+        "data = data.mean()", "np = np.asarray([1.0])"
+    )
+    assert "data" in figurecomposer_custom_code._custom_code_names(nested_class_source)
+    assert "np" in figurecomposer_custom_code._custom_code_names(nested_class_import)
+
+    class_local = nested_class_source.replace(
+        "data = data.mean()", "data = 1\n        result = data"
+    )
+    class_import = nested_class_source.replace(
+        "data = data.mean()",
+        "import numpy as np\n        result = np.asarray([1.0])",
+    )
+    assert "data" not in figurecomposer_custom_code._custom_code_names(class_local)
+    assert "np" not in figurecomposer_custom_code._custom_code_names(class_import)
+
+    for module_bound_nested_scope in (
+        "data = 1\nclass C:\n    data = data + 1",
+        "import data\nclass C:\n    data = data.value",
+        "data = 1\ndef f():\n    return data",
+        "data = 1\ndef f():\n    global data\n    data += 1",
+        (
+            "data = 2\n"
+            "class Outer:\n"
+            "    data = 1\n"
+            "    class Inner:\n"
+            "        data = data + 1"
+        ),
+    ):
+        assert "data" not in figurecomposer_custom_code._custom_code_names(
+            module_bound_nested_scope
+        )
+
+    for late_or_class_local_binding in (
+        "class C:\n    data = data + 1\ndata = 1",
+        "def f():\n    global data\n    data += 1\nf()\ndata = 1",
+        ("class Outer:\n    data = 1\n    class Inner:\n        data = data + 1"),
+    ):
+        assert "data" in figurecomposer_custom_code._custom_code_names(
+            late_or_class_local_binding
+        )
+
+    plain_global_assignment = "def set_data():\n    global data\n    data = 1"
+    assert "data" not in figurecomposer_custom_code._custom_code_names(
+        plain_global_assignment
+    )
+
+    for conditional_binding in (
+        "match flag:\n    case 0:\n        data = 1\nprint(data)",
+        "flag and (data := 1)\nprint(data)",
+        "(data := 1) if flag else 0\nprint(data)",
+    ):
+        assert "data" in figurecomposer_custom_code._custom_code_names(
+            conditional_binding
+        )
+
+    for definite_binding in (
+        "(data := 1) and print(data)\nprint(data)",
+        "(data := 1) if flag else (data := 2)\nprint(data)",
+    ):
+        assert "data" not in figurecomposer_custom_code._custom_code_names(
+            definite_binding
+        )
+
+    assert "data" in figurecomposer_custom_code._custom_code_names(
+        "values = [data for _ in range(1)]"
+    )
+    for local_comprehension_data in (
+        "data = 1\nvalues = [data for _ in range(1)]",
+        "values = [data for data in range(1)]",
+    ):
+        assert "data" not in figurecomposer_custom_code._custom_code_names(
+            local_comprehension_data
+        )
+
+    assert {"data", "other"} <= figurecomposer_custom_code._custom_code_names(
+        "f, g = (lambda: data, lambda: other)"
+    )
+    assert {"data", "other"} <= figurecomposer_custom_code._custom_code_names(
+        "x = [data for _ in ()]; y = [other for _ in ()]"
+    )
+    assert not {
+        "data",
+        "other",
+    } & figurecomposer_custom_code._custom_code_names(
+        "data = 1\nother = 2\nf, g = (lambda: data, lambda: other)"
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "data = data.mean()",
+        "data += 1",
+        "def update():\n    global data\n    data += 1",
+        "def remove():\n    global data\n    del data",
+        (
+            "def build():\n"
+            "    class Result:\n"
+            "        data = data.mean()\n"
+            "    return Result\n"
+            "build()"
+        ),
+    ),
+)
+def test_figure_composer_custom_code_read_write_source_is_dependency(
+    qtbot, code: str
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    operation = FigureOperationState.custom(
+        label="read-write source",
+        code=code,
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._operation_source_names(operation) == ("data",)
+    assert tool._source_usage_count("data") == 1
+    assert not tool.remove_source("data")
 
 
 def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
@@ -464,6 +637,38 @@ def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
     assert namespace["fig"].__dict__["_eplt_name"] == "erlab.plotting"
 
 
+def test_figure_composer_custom_code_codegen_nested_class_import(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="nested class",
+                    code=(
+                        "def build():\n"
+                        "    class Result:\n"
+                        "        np = np.asarray([1.0, 2.0])\n"
+                        "        total = float(np.sum())\n"
+                        "    return Result\n"
+                        "fig.custom_total = build().total"
+                    ),
+                    trusted=True,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "import numpy as np" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].custom_total == 3.0
+
+
 def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
     qtbot, tmp_path
 ) -> None:
@@ -691,7 +896,12 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
                 FigureOperationState.custom(
                     label="custom",
                     code=(
-                        "ax.set_title('main')\naxs['main-axis'].set_xlabel('energy')"
+                        "axs = dict(axs)\n"
+                        "ax = ax.twinx()\n"
+                        "np = np.asarray([1.0, 2.0])\n"
+                        "ax.set_title('main')\n"
+                        "axs['main-axis'].set_xlabel('energy')\n"
+                        "fig.custom_total = float(np.sum())"
                     ),
                     trusted=True,
                 ),
@@ -702,13 +912,15 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
     qtbot.addWidget(tool)
 
     code = tool.generated_code()
+    assert "import numpy as np" in code
     assert "axs = {" in code
     assert "'main-axis': main_axis" in code
     assert "ax = main_axis" in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
-    assert namespace["fig"].axes[0].get_title() == "main"
+    assert namespace["fig"].axes[1].get_title() == "main"
     assert namespace["fig"].axes[0].get_xlabel() == "energy"
+    assert namespace["fig"].custom_total == 3.0
 
 
 def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> None:
