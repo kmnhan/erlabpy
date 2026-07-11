@@ -1932,8 +1932,8 @@ def test_manager_provenance_collects_nested_file_load_targets(
         tmp_path / "b.h5",
     ]
     assert [target.display_text for target in targets] == [
-        "Derived: data_0",
-        "Derived: data_1: nested",
+        "Derived: First",
+        "Derived: Second: Nested",
     ]
 
 
@@ -10914,8 +10914,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     assert input_item is not None
     assert input_item.text() == "Missing source for data_10"
     assert "ImageTool 10" not in input_item.text()
-    assert "Missing source for data_10" in details
-    assert "ImageTool 10" not in details
+    assert "Missing source for data_10 (recorded as ImageTool 10: stale)" in details
 
 
 def test_manager_copy_selected_derivation_code_fallbacks(

@@ -934,9 +934,14 @@ def _compile_spec(
                 else:
                     input_spec = script_input.parsed_provenance_spec()
                     if input_spec is None:
+                        input_reference = (
+                            _provenance_framework._script_input_reference_text(
+                                script_input
+                            )
+                        )
                         raise ReplayGraphError(
-                            f"{script_input.name} does not contain recorded source "
-                            "provenance"
+                            f"{input_reference} "
+                            "does not contain recorded source provenance"
                         )
                     input_key = _compile_spec(
                         graph,
@@ -1852,7 +1857,8 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
         input_spec = script_input.parsed_provenance_spec()
         if input_spec is None:
             raise ReplayGraphError(
-                f"{script_input.name} does not contain recorded source provenance"
+                f"{_provenance_framework._script_input_reference_text(script_input)} "
+                "does not contain recorded source provenance"
             )
         input_key = _compile_spec(
             graph,
@@ -2158,8 +2164,12 @@ def rebuild_script_provenance(
 
             input_spec = script_input.parsed_provenance_spec()
             if input_spec is None:
+                input_reference = _provenance_framework._script_input_reference_text(
+                    script_input
+                )
                 raise ReplayGraphError(
-                    f"{script_input.name} is not open and "
+                    f"{input_reference} "
+                    "is not open and "
                     "does not contain recorded source provenance."
                 )
             if input_spec.kind == "file":
@@ -2197,7 +2207,8 @@ def rebuild_script_provenance(
                 )
                 continue
             raise ReplayGraphError(
-                f"{script_input.name} is not open and "
+                f"{_provenance_framework._script_input_reference_text(script_input)} "
+                "is not open and "
                 "does not contain reloadable script or file provenance."
             )
         return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})

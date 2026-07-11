@@ -897,6 +897,10 @@ def test_manager_console_bare_expression_opens_provenance_root(
             "data_0",
             "data_1",
         ]
+        assert [source.label for source in provenance.script_inputs] == [
+            "ImageTool 0: left",
+            "ImageTool 1: right",
+        ]
         assert [source.node_uid for source in provenance.script_inputs] == [
             manager._tool_graph.root_wrappers[0].uid,
             manager._tool_graph.root_wrappers[1].uid,
@@ -931,6 +935,10 @@ def test_manager_console_bare_expression_opens_provenance_root(
         assert [source.name for source in loaded[0].script_inputs] == [
             "data_0",
             "data_1",
+        ]
+        assert [source.label for source in loaded[0].script_inputs] == [
+            "ImageTool 0: left",
+            "ImageTool 1: right",
         ]
         derived_uid = manager._tool_graph.root_wrappers[2].uid
         assert manager.dependency_status_for_uid(derived_uid) == "current"
@@ -3590,7 +3598,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert manager.dependency_status_label_for_uid(derived_uid) is not None
         manager.dependency_status_badge_for_uid(derived_uid)
         assert manager.dependency_status_tooltip_for_uid(derived_uid) is not None
-        assert manager.dependency_input_summary_for_uid(derived_uid) is not None
+        dependency_summary = manager.dependency_input_summary_for_uid(derived_uid)
+        assert dependency_summary is not None
+        assert "data_0: ImageTool 0" in dependency_summary
         assert manager.dependency_status_label_for_uid("missing") is None
         assert manager.dependency_status_badge_for_uid("missing") is None
         assert manager.dependency_status_tooltip_for_uid("missing") is None
@@ -3807,6 +3817,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         )
         ref = provenance.ScriptInputDependencyRef(
             name="file_input",
+            label="File input",
             node_uid="missing-file-node",
             node_snapshot_token=file_marker,
         )
@@ -3828,6 +3839,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         )
         script_input = manager._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")
+        assert script_input.label == "Child node"
         assert script_input.parsed_provenance_spec() == file_spec
 
         monkeypatch.setattr(manager_mainwindow.QtWidgets, "QMessageBox", FakeMessageBox)

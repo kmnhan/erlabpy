@@ -1569,7 +1569,7 @@ class _ProvenanceEditController:
                 scope,
                 nested,
                 script_input_path=(*script_input_path, index),
-                display_label=f"{display_label}: {script_input.name}",
+                display_label=f"{display_label}: {script_input.label}",
             )
 
     def _file_load_target_for_path(

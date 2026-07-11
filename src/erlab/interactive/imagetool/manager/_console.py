@@ -1289,6 +1289,9 @@ class ToolNamespace(_ConsoleDataHandleBase):
     def _script_input(
         self,
     ) -> provenance.ScriptInput:
+        label = self._console_label
+        if self._wrapper.name:
+            label += f": {self._wrapper.name}"
         wrapper_provenance = self._wrapper.displayed_provenance_spec
         provenance_spec = (
             wrapper_provenance.model_dump(mode="json")
@@ -1297,6 +1300,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
         )
         return provenance.ScriptInput(
             name=self._console_input_name,
+            label=label,
             node_uid=self._wrapper.uid,
             node_snapshot_token=self._wrapper.snapshot_token,
             provenance_spec=provenance_spec,
@@ -1680,6 +1684,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
             (
                 provenance.ScriptInput(
                     name=self._console_name,
+                    label=f"console variable {self._console_name!r}",
                     provenance_spec=provenance_payload,
                 ),
             ),
