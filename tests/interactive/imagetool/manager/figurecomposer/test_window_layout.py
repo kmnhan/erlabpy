@@ -3421,6 +3421,56 @@ def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> Non
     )
 
 
+def test_figure_composer_operation_target_preview_uses_axes_selector_palette(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="image",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    item = tool.operation_list.topLevelItem(0)
+    assert item is not None
+    index = tool.operation_list.indexFromItem(
+        item, figurecomposer_tool_module._OPERATION_LIST_TARGET_COLUMN
+    )
+    observed_sources: list[QtWidgets.QWidget] = []
+    selector_colors = figurecomposer_widgets._selector_colors
+
+    def record_color_source(
+        widget: QtWidgets.QWidget,
+    ) -> figurecomposer_widgets._SelectorColors:
+        observed_sources.append(widget)
+        return selector_colors(widget)
+
+    monkeypatch.setattr(figurecomposer_widgets, "_selector_colors", record_color_source)
+    option = QtWidgets.QStyleOptionViewItem()
+    option.initFrom(tool.operation_list)
+    option.widget = tool.operation_list
+    option.rect = QtCore.QRect(0, 0, 80, 24)
+    pixmap = QtGui.QPixmap(option.rect.size())
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        tool.operation_target_delegate.paint(painter, option, index)
+    finally:
+        painter.end()
+
+    assert observed_sources == [tool.axes_selector]
+
+
 def test_figure_composer_operation_table_presents_nested_gridspec_target(
     qtbot,
 ) -> None:

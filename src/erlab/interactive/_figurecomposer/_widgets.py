@@ -348,10 +348,12 @@ class _AxesTargetItemDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(
         self,
         descriptor_role: int,
+        color_source: QtWidgets.QWidget,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._descriptor_role = descriptor_role
+        self._color_source_ref = weakref.ref(color_source)
 
     def sizeHint(
         self,
@@ -406,7 +408,12 @@ class _AxesTargetItemDelegate(QtWidgets.QStyledItemDelegate):
             )
             if target.isEmpty():
                 return
-            colors = _selector_colors(widget)
+            color_source = self._color_source_ref()
+            if color_source is None or not erlab.interactive.utils.qt_is_valid(
+                color_source
+            ):
+                color_source = widget
+            colors = _selector_colors(color_source)
             _draw_selector_rect(
                 painter,
                 target,

@@ -1468,12 +1468,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._show_operation_context_menu
         )
         self.operation_list.rows_reordered.connect(self._operation_list_reordered)
-        self.operation_target_delegate = _AxesTargetItemDelegate(
-            int(_OPERATION_LIST_TARGET_ROLE), self.operation_list
-        )
-        self.operation_list.setItemDelegateForColumn(
-            _OPERATION_LIST_TARGET_COLUMN, self.operation_target_delegate
-        )
         self._operation_list_viewport = self.operation_list.viewport()
         if self._operation_list_viewport is not None:
             self._operation_list_viewport.installEventFilter(self)
@@ -1783,6 +1777,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.axes_selector.sigAddRowRequested.connect(self._add_subplot_row)
         self.axes_selector.sigAddColumnRequested.connect(self._add_subplot_column)
         target_axes_layout.addWidget(self.axes_selector)
+        self.operation_target_delegate = _AxesTargetItemDelegate(
+            int(_OPERATION_LIST_TARGET_ROLE),
+            self.axes_selector,
+            self.operation_list,
+        )
+        self.operation_list.setItemDelegateForColumn(
+            _OPERATION_LIST_TARGET_COLUMN, self.operation_target_delegate
+        )
         self.gridspec_axes_selector = _GridSpecViewWidget(
             self.target_axes_page, mode="select"
         )
