@@ -207,6 +207,46 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
         erlab.interactive.options.restore()
 
 
+@pytest.fixture(autouse=True)
+def _retain_qtbot_widgets_until_teardown(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Keep registered Qt widgets alive until pytest-qt closes them."""
+    if "qtbot" not in request.fixturenames:
+        yield
+        return
+
+    qtbot = request.getfixturevalue("qtbot")
+    original_add_widget = qtbot.addWidget
+    original_add_widget_pep8 = qtbot.add_widget
+    # pytest-qt tracks widgets weakly, then drains events after the test body.
+    # Retain Python-owned top-level widgets through that final event processing.
+    live_widgets: dict[object, QtWidgets.QWidget] = {}
+
+    def add_widget(
+        widget: QtWidgets.QWidget,
+        *,
+        before_close_func: Callable[[QtWidgets.QWidget], None] | None = None,
+    ) -> None:
+        token = object()
+        live_widgets[token] = widget
+
+        def release_widget(*_args: object, token: object = token) -> None:
+            live_widgets.pop(token, None)
+
+        widget.destroyed.connect(release_widget)
+        original_add_widget(widget, before_close_func=before_close_func)
+
+    qtbot.addWidget = add_widget
+    qtbot.add_widget = add_widget
+    try:
+        yield
+    finally:
+        qtbot.addWidget = original_add_widget
+        qtbot.add_widget = original_add_widget_pep8
+        live_widgets.clear()
+
+
 @pytest.fixture(scope="session")
 def cluster():
     with LocalCluster(
