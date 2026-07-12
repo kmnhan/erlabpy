@@ -711,6 +711,49 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert tool.source_list.findChildren(QtWidgets.QToolButton) == []
 
 
+def test_figure_composer_remove_selected_sources_coalesces_history(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    first_unused = data.copy(data=np.arange(3.0) + 10.0).rename("first_unused")
+    second_unused = data.copy(data=np.arange(3.0) + 20.0).rename("second_unused")
+    tool = FigureComposerTool.from_sources(
+        {
+            "data": data,
+            "first_unused": first_unused,
+            "second_unused": second_unused,
+        },
+        sources=(
+            FigureSourceState(name="data"),
+            FigureSourceState(name="first_unused"),
+            FigureSourceState(name="second_unused"),
+        ),
+        operations=(FigureOperationState.line(label="line", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    tool._reset_history_stack()
+    tool._set_selected_source_names_silent(
+        {"first_unused", "second_unused"}, "first_unused"
+    )
+
+    tool._remove_selected_sources()
+
+    assert tuple(tool.source_data()) == ("data",)
+    assert len(tool._prev_states) == 2
+    tool.undo()
+    assert tuple(tool.source_data()) == (
+        "data",
+        "first_unused",
+        "second_unused",
+    )
+    assert not tool.undoable
+    assert tool.redoable
+
+    tool.redo()
+    assert tuple(tool.source_data()) == ("data",)
+    assert tool.undoable
+    assert not tool.redoable
+
+
 def test_figure_composer_cannot_remove_source_used_by_selected_alias(qtbot) -> None:
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),

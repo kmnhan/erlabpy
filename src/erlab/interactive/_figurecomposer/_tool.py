@@ -2811,18 +2811,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _remove_selected_sources(self) -> None:
         pending = list(self._selected_source_names())
         removed = False
-        while pending:
-            next_pending: list[str] = []
-            removed_this_pass = False
-            for name in pending:
-                if self.remove_source(name):
-                    removed = True
-                    removed_this_pass = True
-                else:
-                    next_pending.append(name)
-            if not removed_this_pass:
-                break
-            pending = next_pending
+        with self._history_suppressed():
+            while pending:
+                next_pending: list[str] = []
+                removed_this_pass = False
+                for name in pending:
+                    if self.remove_source(name):
+                        removed = True
+                        removed_this_pass = True
+                    else:
+                        next_pending.append(name)
+                if not removed_this_pass:
+                    break
+                pending = next_pending
+        if removed:
+            self._write_state()
         if not removed:
             self._refresh_source_controls()
 
