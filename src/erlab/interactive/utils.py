@@ -3349,6 +3349,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._managed_secondary_window_callback: (
             Callable[[QtWidgets.QWidget], None] | None
         ) = None
+        self._managed_reveal_callback: Callable[[], bool] | None = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
@@ -3407,6 +3408,21 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self.redo_action.triggered.connect(self.redo)
         self._tool_edit_menu.addAction(self.redo_action)
         self._update_history_actions()
+
+        self._tool_window_menu = typing.cast(
+            "QtWidgets.QMenu", menu_bar.addMenu("&Window")
+        )
+        self._tool_window_menu.setObjectName("tool_window_menu")
+        self.reveal_in_manager_action = QtWidgets.QAction(
+            "Reveal in ImageTool Manager", self
+        )
+        self.reveal_in_manager_action.setObjectName("tool_reveal_in_manager_action")
+        self.reveal_in_manager_action.setIcon(QtGui.QIcon.fromTheme("go-jump"))
+        self.reveal_in_manager_action.triggered.connect(self._reveal_in_manager)
+        self._tool_window_menu.addAction(self.reveal_in_manager_action)
+        typing.cast("QtGui.QAction", self._tool_window_menu.menuAction()).setVisible(
+            False
+        )
 
         # Enable closing with keyboard shortcut
         self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self._hide_or_close)
@@ -4625,6 +4641,28 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> None:
         """Set the manager-owned callback for secondary tool windows."""
         self._managed_secondary_window_callback = callback
+
+    def _set_managed_reveal_callback(self, callback: Callable[[], bool] | None) -> None:
+        """Set the manager-owned callback that reveals this window's row."""
+        self._managed_reveal_callback = callback
+        if not qt_is_valid(self):  # pragma: no cover
+            # Deleted Qt wrappers are binding-dependent during manager teardown.
+            return
+        available = callback is not None
+        if qt_is_valid(self.reveal_in_manager_action):  # pragma: no branch
+            self.reveal_in_manager_action.setVisible(available)
+        if qt_is_valid(self._tool_window_menu):  # pragma: no branch
+            menu_action = self._tool_window_menu.menuAction()
+            if menu_action is not None and qt_is_valid(
+                menu_action
+            ):  # pragma: no branch
+                menu_action.setVisible(available)
+
+    @QtCore.Slot()
+    def _reveal_in_manager(self) -> None:
+        callback = self._managed_reveal_callback
+        if callback is not None:
+            callback()
 
     def _configure_managed_secondary_window(self, window: QtWidgets.QWidget) -> None:
         """Apply manager-owned behavior to a secondary tool window."""

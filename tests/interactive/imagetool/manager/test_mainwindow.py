@@ -153,6 +153,117 @@ def _selection_shortcut_sequences(
     }
 
 
+def test_managed_window_actions_reveal_tree_and_figure_rows(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    standalone_imagetool = typing.cast(
+        "erlab.interactive.imagetool.ImageTool",
+        itool(test_data, manager=False, execute=False),
+    )
+    qtbot.addWidget(standalone_imagetool)
+    standalone_imagetool_menu = typing.cast(
+        "erlab.interactive.imagetool._mainwindow.ItoolMenuBar",
+        standalone_imagetool.menuBar(),
+    )
+    assert (
+        not standalone_imagetool_menu.menu_dict["windowMenu"].menuAction().isVisible()
+    )
+    standalone_imagetool._reveal_in_manager()
+
+    standalone_tool = erlab.interactive.utils.ToolWindow()
+    qtbot.addWidget(standalone_tool)
+    assert not standalone_tool._tool_window_menu.menuAction().isVisible()
+    standalone_tool._reveal_in_manager()
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, test_data, test_data + 1)
+        root_tool = manager.get_imagetool(0)
+        second_uid = manager._tool_graph.root_wrappers[1].uid
+
+        child_tool = erlab.interactive.utils.ToolWindow()
+        child_uid = manager.add_childtool(child_tool, 0, show=False)
+        figure_tool = FigureComposerTool(test_data)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        root_menu = typing.cast(
+            "erlab.interactive.imagetool._mainwindow.ItoolMenuBar",
+            root_tool.menuBar(),
+        ).menu_dict["windowMenu"]
+        assert root_menu.menuAction().isVisible()
+        assert root_tool.reveal_in_manager_act in root_menu.actions()
+        assert child_tool._tool_window_menu.menuAction().isVisible()
+        assert figure_tool._tool_window_menu.menuAction().isVisible()
+
+        manager.tree_view.clearSelection()
+        root_tool.reveal_in_manager_act.trigger()
+        assert manager.tree_view.selected_imagetool_indices == [0]
+        assert manager.left_tabs.currentWidget() is manager.tree_view
+
+        child_index = manager.tree_view._model._row_index(child_uid)
+        manager.tree_view.collapse(child_index.parent())
+        child_tool.reveal_in_manager_action.trigger()
+        assert manager.tree_view.selected_childtool_uids == [child_uid]
+        assert manager.tree_view.isExpanded(child_index.parent())
+
+        assert manager.reveal_nodes((child_uid, second_uid, child_uid, "missing"))
+        assert manager.tree_view.selected_imagetool_indices == [1]
+        assert manager.tree_view.selected_childtool_uids == [child_uid]
+        assert not manager.reveal_nodes(("missing",))
+
+        figure_tool.reveal_in_manager_action.trigger()
+        assert manager.left_tabs.currentWidget() is manager.figure_tab
+        selected_figure_uids = {
+            manager._figure_uid_from_item(item)
+            for item in manager.figure_list.selectedItems()
+        }
+        assert selected_figure_uids == {figure_uid}
+        assert not manager.tree_view.selectedIndexes()
+
+        child_node = manager._child_node(child_uid)
+        manager_ref = child_node._manager
+        child_node._manager = lambda: None
+        assert not child_node.reveal_in_manager()
+        child_node._manager = manager_ref
+        manager._remove_childtool(child_uid)
+        assert not child_node.reveal_in_manager()
+        assert not child_tool.reveal_in_manager_action.isVisible()
+
+
+def test_reveal_nodes_restores_minimized_manager(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, test_data)
+        calls: list[str] = []
+        monkeypatch.setattr(manager, "isMinimized", lambda: True)
+        monkeypatch.setattr(manager, "showNormal", lambda: calls.append("normal"))
+        monkeypatch.setattr(manager, "raise_", lambda: calls.append("raise"))
+        monkeypatch.setattr(manager, "activateWindow", lambda: calls.append("activate"))
+
+        assert manager.reveal_nodes((manager._tool_graph.root_wrappers[0].uid,))
+
+        assert calls == ["normal", "raise", "activate"]
+
+        calls.clear()
+        monkeypatch.setattr(manager, "isMinimized", lambda: False)
+        monkeypatch.setattr(manager, "isVisible", lambda: False)
+        monkeypatch.setattr(manager, "show", lambda: calls.append("show"))
+
+        assert manager.reveal_nodes((manager._tool_graph.root_wrappers[0].uid,))
+
+        assert calls == ["show", "raise", "activate"]
+
+
 def test_manager_open_settings_reuses_live_dialog(
     qtbot,
     manager_context: Callable[

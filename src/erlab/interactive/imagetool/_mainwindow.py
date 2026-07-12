@@ -408,6 +408,7 @@ class ImageTool(BaseImageTool):
         super().__init__(data, **kwargs)
         self.__recent_name_filter: str | None = None
         self.__recent_directory: str | None = None
+        self._managed_reveal_callback: Callable[[], bool] | None = None
 
         self._dask_menu = erlab.interactive._dask.DaskMenu(self, "Dask")
         self._history_menu = erlab.interactive.imagetool._history.HistoryMenu(
@@ -469,6 +470,14 @@ class ImageTool(BaseImageTool):
         self.remove_act.triggered.connect(self.slicer_area.remove_from_manager)
         self.remove_act.setVisible(self.slicer_area._in_manager)
 
+        self.reveal_in_manager_act = QtWidgets.QAction(
+            "Reveal in ImageTool Manager", self
+        )
+        self.reveal_in_manager_act.setObjectName("itool_reveal_in_manager_action")
+        self.reveal_in_manager_act.setIcon(QtGui.QIcon.fromTheme("go-jump"))
+        self.reveal_in_manager_act.setVisible(False)
+        self.reveal_in_manager_act.triggered.connect(self._reveal_in_manager)
+
         self.toggle_controls_act = QtWidgets.QAction("Show Controls", self)
         self.toggle_controls_act.setCheckable(True)
         self.toggle_controls_act.setChecked(self.controls_visible)
@@ -485,6 +494,33 @@ class ImageTool(BaseImageTool):
             self.hide()
         else:
             self.close()
+
+    def _set_managed_reveal_callback(self, callback: Callable[[], bool] | None) -> None:
+        """Set the manager-owned callback that reveals this window's row."""
+        self._managed_reveal_callback = callback
+        if not erlab.interactive.utils.qt_is_valid(self):  # pragma: no cover
+            # Deleted Qt wrappers are binding-dependent during manager teardown.
+            return
+        available = callback is not None
+        if erlab.interactive.utils.qt_is_valid(
+            self.reveal_in_manager_act
+        ):  # pragma: no branch
+            self.reveal_in_manager_act.setVisible(available)
+        menu = getattr(self.menuBar(), "menu_dict", {}).get("windowMenu")
+        if isinstance(menu, QtWidgets.QMenu) and erlab.interactive.utils.qt_is_valid(
+            menu
+        ):  # pragma: no branch
+            menu_action = menu.menuAction()
+            if menu_action is not None and erlab.interactive.utils.qt_is_valid(
+                menu_action
+            ):  # pragma: no branch
+                menu_action.setVisible(available)
+
+    @QtCore.Slot()
+    def _reveal_in_manager(self) -> None:
+        callback = self._managed_reveal_callback
+        if callback is not None:
+            callback()
 
     @property
     def mnb(self) -> ItoolMenuBar:
@@ -797,6 +833,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                 },
             },
+            "windowMenu": {
+                "title": "&Window",
+                "actions": {
+                    "revealInManagerAct": self.image_tool.reveal_in_manager_act,
+                },
+            },
             "daskMenu": {"menu": self.image_tool._dask_menu},
             "helpMenu": {
                 "title": "&Help",
@@ -873,6 +915,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     def createMenus(self) -> None:
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
+        typing.cast(
+            "QtGui.QAction", self.menu_dict["windowMenu"].menuAction()
+        ).setVisible(False)
 
         # Disable/Enable menus based on context
         self.menu_dict["fileMenu"].aboutToShow.connect(self._file_menu_visibility)
