@@ -393,6 +393,22 @@ def test_tool_window_deferred_restore_flushes_on_show(qtbot) -> None:
     qtbot.waitUntil(lambda: restored.deferred_runs == 1, timeout=1000)
 
 
+def test_tool_window_deferred_restore_is_discarded_on_close(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    saved = _DeferredRestoreTool(data).to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _DeferredRestoreTool)
+
+    restored.close()
+
+    assert restored.deferred_runs == 0
+    assert restored._deferred_restore_work == {}
+
+
 def test_tool_window_deferred_restore_flushes_before_output(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     saved = _DeferredRestoreTool(data).to_dataset()

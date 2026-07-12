@@ -444,6 +444,25 @@ def test_goldtool_deferred_restore_resaves_fit_payload_before_show(
     xr.testing.assert_identical(eager_restored.corrected, expected_corrected)
 
 
+def test_goldtool_close_skips_deferred_fit_snapshot(qtbot, gold, monkeypatch) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+
+    post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(), _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+    assert restored._pending_persisted_fit_snapshot is not None
+
+    restored.close()
+
+    assert post_fit_calls == []
+    assert GoldTool._PERSISTED_FIT_SNAPSHOT_KEY not in restored._deferred_restore_work
+
+
 def test_goldtool_deferred_restore_update_data_refits_pending_fit(
     qtbot, gold, monkeypatch
 ) -> None:

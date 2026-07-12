@@ -3624,7 +3624,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Materialize queued work before returning data or serialized state.
 
         `ToolWindow` already calls this before save, copy/provenance generation, output
-        access, show, and close. Subclasses should call it only at narrower correctness
+        access, and show. Subclasses should call it only at narrower correctness
         boundaries they own, such as a property that returns a derived result. Use
         ``skip`` only when saving can preserve a still-deferred raw payload unchanged.
         """
@@ -5523,7 +5523,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return super().showEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._flush_restore_work()
+        # Teardown has no consumer for optional restored state, and running it here can
+        # queue paints for widgets that Qt is already deleting.
+        self._deferred_restore_work.clear()
         self._flush_pending_history_write()
         return super().closeEvent(event)
 

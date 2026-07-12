@@ -718,10 +718,9 @@ def test_ktool_unsafe_preview_clears_kspace_image(
     assert not win.preview_symmetry_group.isEnabled()
     assert not win.bz_group.isEnabled()
     assert estimate_calls == 1
-    qtbot.wait_until(
-        lambda: win._memory_estimate_label.property("kspaceMemoryUnsafe") is True,
-        timeout=2000,
-    )
+    win._output_memory_estimate_timer.stop()
+    win._flush_output_memory_estimate()
+    assert win._memory_estimate_label.property("kspaceMemoryUnsafe") is True
     assert estimate_calls == 2
     assert convert_calls == 0
 
