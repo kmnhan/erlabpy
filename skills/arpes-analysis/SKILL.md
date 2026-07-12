@@ -78,7 +78,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or `update_data` for
   contributor questions about adding new interactive tools.
 - Search `Figure Composer`, `Add to Figure`, `Append to Figure`, `New Figure`,
-  `Recipe steps`, `Step sources`, `Sources`, `Add New Step`, `Add Source Only`,
+  `Recipe steps`, `Sources`, `Add New Step`, `Add Source Only`,
   `Replace Source`, `Set Palette`, `Image Plot`, `Slice Plot`, `Line/Profile`,
   `Python`, `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
   `plot_bz`, `BZ Overlay`, `Photon Energy Overlay`, `plot_in_plane_bz`,

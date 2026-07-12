@@ -58,7 +58,7 @@ Last updated: 2026-06-18.
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-open
 - Figure Composer recipe steps:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-recipe
-- Figure Composer step sources:
+- Figure Composer sources:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-sources
 - Manager Figure Composer workflow:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-figure-composer
@@ -136,7 +136,7 @@ Last updated: 2026-06-18.
   `site:erlabpy.readthedocs.io/en/stable "<symbol or topic>"`
 - Figure Composer search hints:
   `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "BZ Overlay"`,
-  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "Step sources"`,
+  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "Sources"`,
   `site:erlabpy.readthedocs.io/en/stable "Add to Figure" "Replace Source"`,
   `site:erlabpy.readthedocs.io/en/stable "plot_in_plane_bz"`, and
   `site:erlabpy.readthedocs.io/en/stable "hv_to_kz" "Photon Energy Overlay"`

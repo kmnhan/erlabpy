@@ -19,6 +19,7 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive.utils
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._modelview import (
+    _FIGURE_SOURCE_MIME,
     _MIME,
     _NODE_UID_ROLE,
     _TOOL_TYPE_ROLE,
@@ -912,6 +913,60 @@ def test_wait_dialog_constructor_failure_does_not_suppress_later_dialogs(
     assert current_depth == original_depth
     with erlab.interactive.utils.wait_dialog(parent, "Outer") as dialog:
         assert isinstance(dialog, erlab.interactive.utils._WaitDialog)
+
+
+def test_set_widget_cursor_skips_native_cursor_updates_on_macos(
+    qtbot, monkeypatch
+) -> None:
+    class CursorWidget(QtWidgets.QWidget):
+        def setCursor(self, cursor: object) -> None:
+            del cursor
+            raise AssertionError("setCursor should not be called on macOS")
+
+        def unsetCursor(self) -> None:
+            raise AssertionError("unsetCursor should not be called on macOS")
+
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "darwin")
+    widget = CursorWidget()
+    qtbot.addWidget(widget)
+
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+
+    assert not widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor)
+
+
+def test_set_widget_cursor_keeps_idempotent_native_updates(qtbot, monkeypatch) -> None:
+    calls: list[object | None] = []
+
+    class CursorWidget(QtWidgets.QWidget):
+        def setCursor(self, cursor: object) -> None:
+            calls.append(cursor)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor, True)
+
+        def unsetCursor(self) -> None:
+            calls.append(None)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor, False)
+
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "linux")
+    widget = CursorWidget()
+    qtbot.addWidget(widget)
+
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(
+        widget, QtCore.Qt.CursorShape.SizeAllCursor
+    )
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+    erlab.interactive.utils.set_widget_cursor(widget, None)
+
+    assert calls == [QtCore.Qt.CursorShape.SizeAllCursor, None]
 
 
 def test_single_shot_ignores_pyside_deleted_wrapper_error(qtbot) -> None:
@@ -3728,7 +3783,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     assert model.parent(child_index).internalPointer() is parent_node
     assert model.rowCount(nonzero_column_index) == 0
     assert not model.hasChildren(nonzero_column_index)
-    assert model.mimeTypes() == [_MIME]
+    assert model.mimeTypes() == [_MIME, _FIGURE_SOURCE_MIME]
     with pytest.raises(KeyError):
         model._childtool_uid(0, "missing-parent")
 

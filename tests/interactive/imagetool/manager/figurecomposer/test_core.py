@@ -214,6 +214,23 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     )
 
 
+def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._set_preview_draw_error(tool, RuntimeError("boom"))
+
+    assert tool._operation_render_errors == {}
+
+
 def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 2, 2),
@@ -329,7 +346,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     _select_operation_rows(tool, (3,))
-    assert tool.operation_list.item(3).text() == "eplt.clean_labels"
+    assert tool.operation_list.topLevelItem(3).text(0) == "eplt.clean_labels"
     assert tool.step_section_buttons["method"].text() == "eplt.clean_labels"
     tool._select_step_section("method")
     erlab_method_page = tool.step_editor_stack.currentWidget()
@@ -350,3 +367,26 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["axs"].shape == (1, 2)
     assert namespace["axs"][0, 0].get_xlim() == pytest.approx((0.25, 0.75))
+
+
+def test_figure_composer_generated_code_skips_disabled_operations(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="disabled Python",
+                    code="raise RuntimeError('must not run')",
+                    trusted=True,
+                ).model_copy(update={"enabled": False}),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    assert "must not run" not in code

@@ -934,8 +934,13 @@ def _compile_spec(
                 else:
                     input_spec = script_input.parsed_provenance_spec()
                     if input_spec is None:
+                        input_reference = (
+                            _provenance_framework._script_input_reference_text(
+                                script_input
+                            )
+                        )
                         raise ReplayGraphError(
-                            f"{script_input.name} from {script_input.label} "
+                            f"{input_reference} "
                             "does not contain recorded source provenance"
                         )
                     input_key = _compile_spec(
@@ -964,6 +969,7 @@ def _compile_spec(
         current_name: str | None = None
         current_bindings = tuple(bindings)
         pending_codes: list[str] = []
+        pending_code_hoist_imports: list[bool] = []
 
         def relay_key(source_key: str) -> str:
             return graph.add_node(
@@ -1028,7 +1034,8 @@ def _compile_spec(
             return False
 
         def flush_script() -> None:
-            nonlocal current_bindings, current_name, pending_codes, script_current_key
+            nonlocal current_bindings, current_name, pending_code_hoist_imports
+            nonlocal pending_codes, script_current_key
             if not pending_codes:
                 return
             output_name = _provenance_framework._script_codes_output_name(
@@ -1045,6 +1052,7 @@ def _compile_spec(
                         "active_name": output_name,
                         "bindings": current_bindings,
                         "codes": tuple(pending_codes),
+                        "hoist_imports": tuple(pending_code_hoist_imports),
                     },
                 ),
                 "script",
@@ -1054,11 +1062,13 @@ def _compile_spec(
                     "active_name": output_name,
                     "bindings": current_bindings,
                     "codes": tuple(pending_codes),
+                    "hoist_imports": tuple(pending_code_hoist_imports),
                 },
             )
             current_name = output_name
             current_bindings = bind_name(output_name, script_current_key)
             pending_codes = []
+            pending_code_hoist_imports = []
 
         def apply_context_binding(names: Sequence[str]) -> None:
             nonlocal current_bindings, current_name, script_current_key
@@ -1082,6 +1092,7 @@ def _compile_spec(
             if seed_file_load_parts is None:
                 if not apply_simple_alias(parsed.seed_code):
                     pending_codes.append(parsed.seed_code)
+                    pending_code_hoist_imports.append(False)
             else:
                 seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
                 script_current_key = _add_file_load_node(
@@ -1132,6 +1143,9 @@ def _compile_spec(
                     )
                 if not apply_simple_alias(operation_code):
                     pending_codes.append(operation_code)
+                    pending_code_hoist_imports.append(
+                        bool(getattr(operation, "hoist_imports", False))
+                    )
                 continue
 
             if pending_codes:
@@ -1149,6 +1163,7 @@ def _compile_spec(
                         context_name=pending_output_name,
                     )
                 )
+                pending_code_hoist_imports.append(False)
                 continue
 
             ensure_script_current_key()
@@ -1641,11 +1656,216 @@ def _cleanup_emitted_replay_code(code: str) -> str:
     return _compact_replay_temp_names(code)
 
 
+def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return [], code
+
+    lines = code.splitlines()
+    imports: list[tuple[str, str]] = []
+    removed_lines: set[int] = set()
+    for statement in module.body:
+        if not isinstance(statement, ast.Import | ast.ImportFrom):
+            break
+        if statement.end_lineno is None or statement.end_col_offset is None:
+            break
+        start_index = statement.lineno - 1
+        end_index = statement.end_lineno - 1
+        if (
+            lines[start_index][: statement.col_offset].strip()
+            or lines[end_index][statement.end_col_offset :].strip()
+        ):
+            break
+        source = "\n".join(lines[start_index : end_index + 1]).strip()
+        imports.append((ast.unparse(statement), source))
+        removed_lines.update(range(start_index, end_index + 1))
+
+    if not imports:
+        return [], code
+    body = "\n".join(
+        line for index, line in enumerate(lines) if index not in removed_lines
+    ).strip("\n")
+    return imports, body
+
+
+def _import_binding_targets(code: str) -> dict[str, str] | None:
+    """Return names bound by one import and their canonical targets.
+
+    Star imports cannot be reasoned about locally, so callers must leave them in place.
+    """
+    statement = ast.parse(code, mode="exec").body[0]
+    if isinstance(statement, ast.Import):
+        targets: dict[str, str] = {}
+        for alias in statement.names:
+            if alias.asname is None:
+                name = alias.name.partition(".")[0]
+                target = f"module:{name}"
+            else:
+                name = alias.asname
+                target = f"module:{alias.name}"
+            if name in targets and targets[name] != target:
+                return None
+            targets[name] = target
+        return targets
+    if not isinstance(statement, ast.ImportFrom):  # pragma: no cover - caller contract.
+        return None
+    if statement.module == "__future__":
+        return {}
+    targets = {}
+    module = "." * statement.level + (statement.module or "")
+    for alias in statement.names:
+        if alias.name == "*":
+            return None
+        name = alias.asname or alias.name
+        target = f"from:{module}:{alias.name}"
+        if name in targets and targets[name] != target:
+            return None
+        targets[name] = target
+    return targets
+
+
+def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
+    """Return conservatively accessed and rebound names in a code chunk."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        # Invalid generated code is diagnosed by the normal replay-code path. Treat it
+        # as opaque so import grouping cannot make its behavior less predictable.
+        return {"*"}, {"*"}
+
+    accessed: set[str] = set()
+    rebound: set[str] = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name):
+            accessed.add(node.id)
+            if isinstance(node.ctx, ast.Store | ast.Del):
+                rebound.add(node.id)
+        elif isinstance(node, ast.AsyncFunctionDef | ast.ClassDef | ast.FunctionDef):
+            accessed.add(node.name)
+            rebound.add(node.name)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            bindings = _import_binding_targets(ast.unparse(node))
+            if bindings is None:
+                accessed.add("*")
+                rebound.add("*")
+            else:
+                accessed.update(bindings)
+                rebound.update(bindings)
+        elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar):
+            if node.name is not None:
+                accessed.add(node.name)
+                rebound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            accessed.add(node.rest)
+            rebound.add(node.rest)
+    return accessed, rebound
+
+
+def _is_future_import(code: str) -> bool:
+    statement = ast.parse(code, mode="exec").body[0]
+    return isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
+
+
+def _group_framework_imports(chunks: Sequence[tuple[str, bool]]) -> str:
+    """Group canonical framework imports without changing Python name resolution.
+
+    Framework code producers should use one canonical import target for each alias. If
+    independently generated chunks violate that invariant, keep the imports beside the
+    code that uses them instead of silently changing the program by hoisting them.
+    """
+    parsed_chunks: list[tuple[str, bool, list[tuple[str, str]], str]] = []
+    targets_by_name: dict[str, set[str]] = {}
+    for code, group_imports in chunks:
+        leading_imports, import_body = (
+            _leading_top_level_imports(code) if group_imports else ([], code)
+        )
+        parsed_chunks.append((code, group_imports, leading_imports, import_body))
+        for canonical, _source in leading_imports:
+            bindings = _import_binding_targets(canonical)
+            if bindings is None:
+                continue
+            for name, target in bindings.items():
+                targets_by_name.setdefault(name, set()).add(target)
+    conflicting_names = {
+        name for name, targets in targets_by_name.items() if len(targets) > 1
+    }
+
+    future_imports: list[str] = []
+    imports: list[str] = []
+    import_codes: set[str] = set()
+    hoisted_bindings: dict[str, str] = {}
+    seen_accesses: set[str] = set()
+    seen_rebindings: set[str] = set()
+    body: list[str] = []
+    for original_code, group_imports, leading_imports, import_body in parsed_chunks:
+        code = original_code
+        if group_imports and leading_imports:
+            regular_imports = [
+                item for item in leading_imports if not _is_future_import(item[0])
+            ]
+            future_items = [
+                item for item in leading_imports if _is_future_import(item[0])
+            ]
+            for canonical, source in future_items:
+                if canonical not in import_codes:
+                    import_codes.add(canonical)
+                    future_imports.append(source)
+
+            regular_bindings: dict[str, str] = {}
+            safe_to_hoist = True
+            for canonical, _source in regular_imports:
+                bindings = _import_binding_targets(canonical)
+                if bindings is None:
+                    safe_to_hoist = False
+                    break
+                for name, target in bindings.items():
+                    existing_target = hoisted_bindings.get(name)
+                    if (
+                        name in conflicting_names
+                        or "*" in seen_accesses
+                        or (existing_target is None and name in seen_accesses)
+                        or (
+                            existing_target is not None
+                            and (existing_target != target or name in seen_rebindings)
+                        )
+                    ):
+                        safe_to_hoist = False
+                        break
+                    regular_bindings[name] = target
+                if not safe_to_hoist:
+                    break
+
+            if safe_to_hoist:
+                code = import_body
+                hoisted_bindings.update(regular_bindings)
+                for canonical, source in regular_imports:
+                    if canonical in import_codes:
+                        continue
+                    import_codes.add(canonical)
+                    imports.append(source)
+            elif future_items:
+                # Future imports must remain at the beginning of the combined module;
+                # retain every ordinary import next to its original body.
+                code = "\n".join(
+                    (*[source for _canonical, source in regular_imports], import_body)
+                ).strip("\n")
+        if code.strip():
+            body.append(code)
+        accesses, rebindings = _code_name_accesses(code)
+        seen_accesses.update(accesses)
+        seen_rebindings.update(rebindings)
+    return "\n".join((*future_imports, *imports, *body))
+
+
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
-    lines: list[str] = []
+    chunks: list[tuple[str, bool]] = []
     active_setup_key: str | None = None
+
+    def append_code(code: str, *, group_imports: bool = False) -> None:
+        chunks.append((code, graph.display and group_imports))
 
     for node in graph.nodes:
         if node.kind == "setup":
@@ -1659,7 +1879,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             setup_key = node.parents[0] if node.parents else None
             if setup_key is not None and active_setup_key != setup_key:
                 setup_node = node_by_key[setup_key]
-                lines.append(typing.cast("str", setup_node.payload["code"]))
+                append_code(
+                    typing.cast("str", setup_node.payload["code"]),
+                    group_imports=True,
+                )
                 active_setup_key = setup_key
             try:
                 code = _provenance_framework._replace_code_identifiers(
@@ -1669,14 +1892,14 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                 raise ReplayGraphError("File replay code is not valid Python") from exc
             if not _provenance_framework._code_stores_name(code, name):
                 raise ReplayGraphError("File replay code does not assign its output")
-            lines.append(code)
+            append_code(code, group_imports=True)
         elif node.kind == "live_input":
             raise ReplayGraphError("Live inputs cannot be emitted as replay code")
         elif node.kind == "source_view":
             parent_name = names[node.parents[0]]
             if not _source_view_emits_code(graph, node):
                 continue
-            lines.append(
+            append_code(
                 f"{name} = erlab.interactive.imagetool.slicer."
                 f"restore_nonuniform_dims({parent_name})"
             )
@@ -1684,7 +1907,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             parent_name = names[node.parents[0]]
             context_name = names[node.parents[1]]
             operation = node.payload["operation"]
-            lines.append(
+            append_code(
                 _operation_replay_code(
                     operation,
                     active_name=name,
@@ -1694,6 +1917,12 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
+            hoist_imports = list(
+                typing.cast(
+                    "tuple[bool, ...]",
+                    node.payload.get("hoist_imports", (False,) * len(codes)),
+                )
+            )
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
             input_names: set[str] = set()
@@ -1715,7 +1944,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                 ):
                     input_replacements[input_name] = input_value_name
                 else:
-                    lines.append(f"{input_name} = {input_value_name}")
+                    append_code(f"{input_name} = {input_value_name}")
             if input_replacements:
                 try:
                     codes = [
@@ -1746,9 +1975,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                         "Script replay code is not valid Python"
                     ) from exc
                 active_name = name
-            lines.extend(codes)
+            for code, group_imports in zip(codes, hoist_imports, strict=True):
+                append_code(code, group_imports=group_imports)
             if active_name != name:
-                lines.append(f"{name} = {active_name}")
+                append_code(f"{name} = {active_name}")
             active_setup_key = None
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
@@ -1763,8 +1993,8 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
     for public_name, key in aliases:
         planned_name = names[key]
         if public_name != planned_name:
-            lines.append(f"{public_name} = {planned_name}")
-    return _cleanup_emitted_replay_code("\n".join(lines))
+            append_code(f"{public_name} = {planned_name}")
+    return _cleanup_emitted_replay_code(_group_framework_imports(chunks))
 
 
 def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) -> str:
@@ -1779,7 +2009,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
         input_spec = script_input.parsed_provenance_spec()
         if input_spec is None:
             raise ReplayGraphError(
-                f"{script_input.name} from {script_input.label} "
+                f"{_provenance_framework._script_input_reference_text(script_input)} "
                 "does not contain recorded source provenance"
             )
         input_key = _compile_spec(
@@ -2086,8 +2316,12 @@ def rebuild_script_provenance(
 
             input_spec = script_input.parsed_provenance_spec()
             if input_spec is None:
+                input_reference = _provenance_framework._script_input_reference_text(
+                    script_input
+                )
                 raise ReplayGraphError(
-                    f"{script_input.name} from {script_input.label} is not open and "
+                    f"{input_reference} "
+                    "is not open and "
                     "does not contain recorded source provenance."
                 )
             if input_spec.kind == "file":
@@ -2125,7 +2359,8 @@ def rebuild_script_provenance(
                 )
                 continue
             raise ReplayGraphError(
-                f"{script_input.name} from {script_input.label} is not open and "
+                f"{_provenance_framework._script_input_reference_text(script_input)} "
+                "is not open and "
                 "does not contain reloadable script or file provenance."
             )
         return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})

@@ -76,7 +76,7 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
 
     tool._updating_controls = True
     figurecomposer_line_style.update_current_line_kw(
@@ -155,7 +155,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(0)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._update_operation_editor()
     tool._select_step_section("selection")
     line_selection_page = tool.step_editor_stack.currentWidget()
@@ -193,7 +193,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentRow(1)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
     tool._update_operation_editor()
     tool._select_step_section("selection")
     line_slices_selection_page = tool.step_editor_stack.currentWidget()
@@ -248,7 +248,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentRow(2)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(2))
     tool._update_operation_editor()
     tool._select_step_section("colors")
     image_slices_colors_page = tool.step_editor_stack.currentWidget()
@@ -266,7 +266,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         "figureComposerPlotSlicesColorsPanelOverridesSection",
     )
 
-    tool.operation_list.setCurrentRow(3)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(3))
     tool._update_operation_editor()
     tool._select_step_section("method")
     method_page = tool.step_editor_stack.currentWidget()
@@ -275,19 +275,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
     _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
 
-    tool.operation_list.setCurrentRow(4)
+    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(4))
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    plot_array_selection_page = tool.step_editor_stack.currentWidget()
-    assert plot_array_selection_page is not None
-    _assert_step_editor_section(
-        plot_array_selection_page,
-        "figureComposerPlotArraySelectionDataSection",
-    )
-    _assert_step_editor_section(
-        plot_array_selection_page,
-        "figureComposerPlotArraySelectionDimensionsSection",
-    )
     tool._select_step_section("view")
     plot_array_view_page = tool.step_editor_stack.currentWidget()
     assert plot_array_view_page is not None

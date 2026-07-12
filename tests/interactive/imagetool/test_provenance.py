@@ -4460,6 +4460,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
             provenance.ScriptInput(
                 name="diff",
                 label="console variable 'diff'",
+                node_uid="",
                 provenance_spec=nested,
             ),
             provenance.ScriptInput(
@@ -4472,10 +4473,12 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     )
 
     refs = provenance.script_input_dependency_refs(spec)
-    assert [(ref.name, ref.node_uid, ref.node_snapshot_token) for ref in refs] == [
-        ("data_0", "old-left", left_snapshot_id),
-        ("data_1", "old-right", right_snapshot_id),
-        ("data_2", "old-extra", extra_snapshot_id),
+    assert [
+        (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token) for ref in refs
+    ] == [
+        ("data_0", "ImageTool 0", "old-left", left_snapshot_id),
+        ("data_1", "ImageTool 1", "old-right", right_snapshot_id),
+        ("data_2", "ImageTool 2", "old-extra", extra_snapshot_id),
     ]
 
     rebased = provenance.rebase_script_input_node_uids(
@@ -4489,17 +4492,16 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
     assert [source.name for source in rebased.script_inputs] == ["diff", "data_2"]
     assert rebased.script_inputs[1].node_uid == "new-extra"
-    assert rebased.script_inputs[1].label == "ImageTool 2"
     assert typing.cast("str", rebased.operations[-1].derivation_entry().code) == (
         "derived = diff + data_2"
     )
     assert [
-        (ref.name, ref.node_uid, ref.node_snapshot_token)
+        (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token)
         for ref in provenance.script_input_dependency_refs(rebased)
     ] == [
-        ("data_0", "new-left", left_snapshot_id),
-        ("data_1", "new-right", right_snapshot_id),
-        ("data_2", "new-extra", extra_snapshot_id),
+        ("data_0", "ImageTool 0", "new-left", left_snapshot_id),
+        ("data_1", "ImageTool 1", "new-right", right_snapshot_id),
+        ("data_2", "ImageTool 2", "new-extra", extra_snapshot_id),
     ]
     assert provenance.script_input_dependency_refs(None) == ()
     assert provenance.rebase_script_input_node_uids(spec, {}) is spec
@@ -4633,10 +4635,6 @@ derived = data
 
     with pytest.raises(ValidationError):
         provenance.ScriptInput(name=None, label="Input")
-    with pytest.raises(TypeError, match="script input label"):
-        provenance.ScriptInput(name="data_0", label=1)
-    with pytest.raises(ValidationError):
-        provenance.ScriptInput(name="data_0", label="   ")
     with pytest.raises(ValidationError):
         provenance.ScriptInput(name="data_0", label="Input", node_snapshot_token="")
     with pytest.raises(TypeError, match="script input provenance"):
@@ -4693,14 +4691,34 @@ derived = data
             provenance._validate_script_replay_code(code_snippet)
 
 
-def test_script_input_label_is_single_line_display_text() -> None:
+def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
 
     script_input = provenance.ScriptInput(
         name="data_0",
         label="  ImageTool 0:\n\n  processed data  ",
     )
 
+    assert script_input.name == "data_0"
     assert script_input.label == "ImageTool 0: processed data"
+    assert script_input.model_dump()["label"] == "ImageTool 0: processed data"
+    assert provenance.ScriptInput(name="data_0").label == "data_0"
+    assert provenance.ScriptInput(name="data_0", label=None).label == "data_0"
+
+    node_marker = "snapshot"
+    assert provenance.ScriptInputDependencyRef(
+        "data_0", "ImageTool 0", "node", node_marker
+    ) == provenance.ScriptInputDependencyRef(
+        name="data_0",
+        label="ImageTool 0",
+        node_uid="node",
+        node_snapshot_token=node_marker,
+    )
+    legacy_dependency = provenance.ScriptInputDependencyRef("data_0", "", "")
+    assert legacy_dependency.label == ""
+    assert legacy_dependency.node_uid == ""
+
+    with pytest.raises(TypeError, match="script input label"):
+        provenance.ScriptInput(name="data_0", label=1)
     with pytest.raises(ValidationError):
         provenance.ScriptInput(name="data_0", label="\n  \t")
 

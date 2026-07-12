@@ -15384,6 +15384,272 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
     assert float(loaded.coords["temperature"].values) == 12.0
 
 
+def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(2 * 3 * 4, dtype=np.float64).reshape((2, 3, 4)),
+        dims=("x", "hv", "y"),
+        coords={
+            "x": np.array([0.0, 1.0]),
+            "hv": np.array([10.0, 20.0, 30.0]),
+            "y": np.array([-1.0, 0.0, 1.0, 2.0]),
+        },
+        name="pending_order",
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    saved = tool.to_dataset()
+    state = json.loads(saved.attrs["itool_state"])
+    assert tuple(state["slice"]["dims"]) == data.dims
+
+    stored = xr.Dataset(
+        {
+            manager_workspace_io._ITOOL_DATA_NAME: saved[
+                manager_workspace_io._ITOOL_DATA_NAME
+            ].transpose("hv", "y", "x")
+        },
+        attrs=dict(saved.attrs),
+    )
+    fname = tmp_path / "pending-saved-dim-order.itws"
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", stored
+    )
+    node = types.SimpleNamespace(
+        pending_workspace_memory_payload=(fname, "0/imagetool"),
+        pending_workspace_payload_attrs=None,
+        name="pending_order",
+        added_time_display="Today",
+    )
+    controller = manager_workspace_io._WorkspaceIOController(
+        typing.cast("ImageToolManager", None)
+    )
+    reference_datasets = {}
+    try:
+        pending = controller._pending_workspace_lazy_source_data(
+            node,
+            reference_datasets=reference_datasets,
+        )
+        assert pending.dims == data.dims
+        assert pending.chunks is not None
+        np.testing.assert_array_equal(pending.values, data.values)
+    finally:
+        controller._close_workspace_reference_datasets(reference_datasets)
+    assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
+
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    loaded_ds = controller_cls._read_workspace_imagetool_payload_dataset(
+        fname, "0/imagetool", load_data=True
+    )
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
+    qtbot.addWidget(restored)
+    try:
+        assert restored.slicer_area.data.dims == pending.dims
+    finally:
+        loaded_ds.close()
+
+
+def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(4 * 5 * 3, dtype=np.float64).reshape((4, 5, 3)),
+        dims=("alpha", "eV", "sample_temp"),
+        coords={
+            "alpha": np.linspace(-2.0, 2.0, 4),
+            "eV": np.linspace(-0.5, 0.5, 5),
+            "sample_temp": np.array([249.4, 251.2, 253.8]),
+        },
+        name="pending_nonuniform_order",
+    )
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    saved = tool.to_dataset()
+    state = json.loads(saved.attrs["itool_state"])
+    assert tuple(state["slice"]["dims"]) == (
+        "alpha",
+        "eV",
+        "sample_temp_idx",
+    )
+
+    stored = xr.Dataset(
+        {
+            manager_workspace_io._ITOOL_DATA_NAME: saved[
+                manager_workspace_io._ITOOL_DATA_NAME
+            ].transpose("sample_temp", "eV", "alpha")
+        },
+        attrs=dict(saved.attrs),
+    )
+    fname = tmp_path / "pending-nonuniform-saved-dim-order.itws"
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", stored
+    )
+    node = types.SimpleNamespace(
+        pending_workspace_memory_payload=(fname, "0/imagetool"),
+        pending_workspace_payload_attrs=None,
+        name=data.name,
+        added_time_display="Today",
+    )
+    controller = manager_workspace_io._WorkspaceIOController(
+        typing.cast("ImageToolManager", None)
+    )
+    reference_datasets = {}
+    try:
+        pending = controller._pending_workspace_lazy_source_data(
+            node,
+            reference_datasets=reference_datasets,
+        )
+        assert pending.dims == tool.slicer_area.data.dims
+        assert pending.chunks is not None
+        xr.testing.assert_identical(
+            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                pending.compute()
+            ),
+            data,
+        )
+        info = controller._pending_workspace_imagetool_info_text(node)
+        assert info is not None
+        assert "sample_temp_idx" not in info
+    finally:
+        controller._close_workspace_reference_datasets(reference_datasets)
+    assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
+
+
+def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    data = xr.DataArray(
+        np.arange(6, dtype=np.float64).reshape((2, 3)),
+        dims=("x", "y"),
+    )
+    valid_state = {"slice": {"dims": ["y", "x"]}}
+
+    reordered = controller_cls._pending_workspace_data_with_saved_dim_order(
+        data, {"itool_state": json.dumps(valid_state).encode()}
+    )
+    assert reordered.dims == ("y", "x")
+    np.testing.assert_array_equal(reordered.values, data.transpose("y", "x").values)
+
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": b"\xff"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": "{"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": "[]"}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps({"slice": []})}
+        )
+        is data
+    )
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps({"slice": {"dims": "xy"}})}
+        )
+        is data
+    )
+
+    def _raise_transpose(self: xr.DataArray, *_args, **_kwargs) -> xr.DataArray:
+        raise ValueError("bad dim order")
+
+    monkeypatch.setattr(xr.DataArray, "transpose", _raise_transpose)
+    assert (
+        controller_cls._pending_workspace_data_with_saved_dim_order(
+            data, {"itool_state": json.dumps(valid_state)}
+        )
+        is data
+    )
+
+
+def test_pending_workspace_filter_validation(monkeypatch) -> None:
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    data = xr.DataArray(
+        np.arange(6, dtype=np.float64).reshape((2, 3)),
+        dims=("x", "y"),
+    )
+
+    assert controller_cls._apply_pending_workspace_filter(data, None) is data
+    with pytest.raises(TypeError, match="Invalid pending filter operation"):
+        controller_cls._apply_pending_workspace_filter(data, object())
+
+    class _FakeOperation:
+        def __init__(self, result: xr.DataArray) -> None:
+            self._result = result
+
+        def apply(
+            self, _data: xr.DataArray, *, parent_data: xr.DataArray
+        ) -> xr.DataArray:
+            assert parent_data is data
+            return self._result
+
+    def _set_filter_result(result: xr.DataArray) -> None:
+        monkeypatch.setattr(
+            manager_workspace_io.provenance,
+            "parse_tool_provenance_operation",
+            lambda _payload: _FakeOperation(result),
+        )
+
+    _set_filter_result(data.mean("x"))
+    with pytest.raises(ValueError, match="changed data dimensions"):
+        controller_cls._apply_pending_workspace_filter(data, {})
+
+    _set_filter_result(
+        xr.DataArray(
+            np.arange(8, dtype=np.float64).reshape((2, 4)),
+            dims=("x", "y"),
+        )
+    )
+    with pytest.raises(ValueError, match="changed data shape"):
+        controller_cls._apply_pending_workspace_filter(data, {})
+
+    _set_filter_result(data.transpose("y", "x"))
+    filtered = controller_cls._apply_pending_workspace_filter(data, {})
+    xr.testing.assert_identical(filtered, data)
+
+
+def test_pending_workspace_source_data_decodes_saved_state_attrs(monkeypatch) -> None:
+    controller = manager_workspace_io._WorkspaceIOController.__new__(
+        manager_workspace_io._WorkspaceIOController
+    )
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    payload = xr.Dataset(
+        {data_name: xr.DataArray(np.arange(3.0), dims=("x",), name=data_name)}
+    )
+
+    monkeypatch.setattr(
+        controller,
+        "_workspace_imagetool_reference_dataset",
+        lambda *_args, **_kwargs: payload,
+    )
+
+    node = types.SimpleNamespace(
+        name="restored",
+        pending_workspace_payload_attrs={
+            "itool_state": json.dumps({"filter_operation": None}).encode()
+        },
+    )
+    loaded = controller._pending_workspace_lazy_source_data(node)
+    assert loaded.name == "restored"
+    np.testing.assert_array_equal(loaded.values, np.arange(3.0))
+
+    node.pending_workspace_payload_attrs = {"itool_state": "{"}
+    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+
+    node.pending_workspace_payload_attrs = {"itool_state": "[]"}
+    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+
+
 def test_pending_workspace_metadata_coord_load_failure_falls_back(
     tmp_path, monkeypatch
 ) -> None:

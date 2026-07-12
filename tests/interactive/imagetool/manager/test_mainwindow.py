@@ -21,7 +21,18 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
-from erlab.interactive._figurecomposer import FigureComposerTool
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
+from erlab.interactive._figurecomposer._tool import FigureSourceAddResult
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
@@ -612,6 +623,29 @@ def test_details_panel_update_info_uses_default_child_preview_aspect_ratio() -> 
     assert metadata_nodes == [node]
     assert preview_widget.pixmap_calls == [(pixmap, {})]
     assert preview_widget.visible is True
+
+
+def test_details_panel_script_input_labels_omit_redundant_history() -> None:
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={}),
+    )
+    controller = _DetailsPanelController(
+        typing.cast("manager_mainwindow.ImageToolManager", manager)
+    )
+
+    assert (
+        controller._script_input_row_label(
+            provenance.ScriptInput(name="source"), include_history=False
+        )
+        == "Use source"
+    )
+    assert (
+        controller._script_input_row_label(
+            provenance.ScriptInput(name="source", node_uid="missing"),
+            include_history=True,
+        )
+        == "Missing source for source"
+    )
 
 
 def test_single_image_preview_does_not_show_null_pixmap(qtbot) -> None:
@@ -3047,6 +3081,162 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
         assert root_index not in manager._tool_graph.root_wrappers
         assert figure_uid not in manager._tool_graph.nodes
         assert calls == []
+
+
+def test_manager_append_reports_post_alias_plot_slices_error(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("source")
+    existing = _batch_data("existing")
+    with manager_context() as manager:
+        source_tool = itool(source, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        figure_tool = FigureComposerTool(
+            existing,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(),
+                sources=(FigureSourceState(name="existing"),),
+                operations=(),
+                primary_source="existing",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        calls: list[tuple[str, ...]] = []
+
+        def image_operations(
+            _targets: tuple[int | str, ...], source_names: tuple[str, ...]
+        ) -> tuple[FigureOperationState, ...]:
+            calls.append(source_names)
+            if len(calls) == 2:
+                raise FigureComposerPlotSlicesSelectionError("source")
+            return (
+                FigureOperationState.plot_array(label="source", source=source_names[0]),
+            )
+
+        errors: list[FigureComposerPlotSlicesSelectionError] = []
+        monkeypatch.setattr(
+            manager, "_figure_operations_from_image_targets", image_operations
+        )
+        monkeypatch.setattr(
+            manager, "_show_figure_plot_slices_selection_error", errors.append
+        )
+
+        assert not manager.append_figure_from_targets(
+            (0,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            show=False,
+        )
+        assert len(calls) == 2
+        assert len(errors) == 1
+        assert figure_tool.tool_status.operations == ()
+
+
+def test_manager_append_partial_source_result_shows_figure_without_new_step(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="source")
+    existing = xr.DataArray(np.arange(4.0), dims=("x",), name="existing")
+    with manager_context() as manager:
+        source_tool = itool(source, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        figure_tool = FigureComposerTool(
+            existing,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(),
+                sources=(FigureSourceState(name="existing"),),
+                operations=(),
+                primary_source="existing",
+            ),
+        )
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        node = manager._child_node(figure_uid)
+        source_name = manager._script_input_name_for_node(manager._node_for_target(0))
+        shown: list[str] = []
+        monkeypatch.setattr(
+            figure_tool,
+            "add_sources",
+            lambda _sources, _source_data: FigureSourceAddResult(
+                added=((source_name, source_name),),
+                skipped=(("rejected", "rejected"),),
+            ),
+        )
+        monkeypatch.setattr(node, "show", lambda: shown.append(figure_uid))
+
+        assert manager.append_figure_from_targets(
+            (0,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            operation=FigureOperationState.line(label="line", source=source_name),
+            show=True,
+        )
+        assert shown == [figure_uid]
+        assert figure_tool.tool_status.operations == ()
+
+
+def test_manager_append_reuses_short_axes_id_selection_for_all_operations() -> None:
+    operations = (
+        FigureOperationState.plot_array(label="first", source="first"),
+        FigureOperationState.plot_array(label="second", source="second"),
+    )
+    selection = FigureAxesSelectionState(axes_ids=("only",))
+
+    mapped = manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
+        operations, selection
+    )
+
+    assert [operation.axes for operation in mapped] == [selection, selection]
+
+
+def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(4.0), dims=("x",), name="source")
+    with manager_context() as manager:
+        source_tool = itool(source, manager=False, execute=False)
+        manager.add_imagetool(source_tool, show=False)
+        root = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(FigureComposerTool(source), show=False)
+        original_children = list(root._childtool_indices)
+        root._childtool_indices.extend(("missing-child", figure_uid))
+        try:
+            with monkeypatch.context() as context:
+                context.setattr(
+                    manager._tool_graph,
+                    "root_indices_for_workspace",
+                    lambda: (999, 0),
+                )
+                dialog = manager_mainwindow._FigureSourcePickerDialog(manager)
+                qtbot.addWidget(dialog)
+                assert dialog.tree.topLevelItemCount() == 1
+                root_item = dialog.tree.topLevelItem(0)
+                assert root_item is not None
+                assert root_item.childCount() == 0
+        finally:
+            root._childtool_indices[:] = original_children
+
+        assert manager._figure_source_uid_for_target("missing") is None
+        assert manager._figure_imagetool_targets(
+            (0, root.uid, "missing", figure_uid)
+        ) == (0,)
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                manager,
+                "_selected_imagetool_targets",
+                lambda: (0, root.uid, "missing", figure_uid),
+            )
+            assert manager._selected_figure_source_uids() == (root.uid,)
 
 
 def test_remove_child_imagetool_remove_action(

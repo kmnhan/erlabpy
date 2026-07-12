@@ -272,6 +272,12 @@ def set_widget_cursor(
     current_key = widget.property(_ERLAB_CURSOR_SHAPE_PROPERTY)
     if current_key == shape_key:
         return
+    if sys.platform == "darwin":
+        # Qt/Cocoa can crash inside QImage::toCGImage() while applying cursor
+        # images. Keep hover cursor changes as a nonessential affordance on
+        # macOS instead of risking a process abort.
+        widget.setProperty(_ERLAB_CURSOR_SHAPE_PROPERTY, shape_key)
+        return
     if shape is None:
         if widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor):
             widget.unsetCursor()

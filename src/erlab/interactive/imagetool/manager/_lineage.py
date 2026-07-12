@@ -159,7 +159,10 @@ class _LineageController:
             label = " ".join(ref.label.split())
             current = " ".join(current.split())
             if name and label and current:
-                parts.append(f"{name}: {label} ({current})")
+                if label == name:
+                    parts.append(f"{name} ({current})")
+                else:
+                    parts.append(f"{name}: {label} ({current})")
         if not parts:
             return None
         return "\n".join(parts)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 import typing
 
 if typing.TYPE_CHECKING:
@@ -11,6 +12,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 import erlab.interactive.imagetool.slicer
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -18,13 +20,90 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationState,
     FigureSourceState,
     FigureSubplotsState,
+    _restore_slice_mapping,
 )
+
+# Keep every binding emitted by Figure Composer code generation here. Source aliases
+# share the generated module namespace, so missing one can silently replace source data.
+_FIGURE_CODE_IMPORT_BINDINGS = frozenset(
+    {
+        "_erlab_stylesheets",
+        "eplt",
+        "erlab",
+        "mcolors",
+        "mtransforms",
+        "np",
+        "plt",
+        "sns",
+        "xr",
+        "xarray",
+    }
+)
+_FIGURE_CODE_SETUP_BINDINGS = frozenset({"ax", "axs", "fig", "gs0"})
+_FIGURE_CODE_OPERATION_BINDINGS = frozenset(
+    {
+        "_",
+        "_line",
+        "avec",
+        "bvec",
+        "color",
+        "i",
+        "index",
+        "kz",
+        "kz_values",
+        "label",
+        "line_color_values",
+        "line_color_values_norm",
+        "line_color_values_vmax",
+        "line_color_values_vmin",
+        "line_colors",
+        "map_index",
+        "offset",
+        "plot_maps",
+        "profile",
+        "profile_data",
+        "profiles",
+        "scale",
+        "slice_index",
+        "slice_value",
+        "source",
+        "target_axes",
+    }
+)
+_FIGURE_CODE_BUILTIN_BINDINGS = frozenset(
+    {"enumerate", "float", "len", "list", "max", "min", "range", "zip"}
+)
+_FIGURE_CODE_RESERVED_NAMES = (
+    _FIGURE_CODE_IMPORT_BINDINGS
+    | _FIGURE_CODE_SETUP_BINDINGS
+    | _FIGURE_CODE_OPERATION_BINDINGS
+    | _FIGURE_CODE_BUILTIN_BINDINGS
+)
+_FIGURE_CODE_RESERVED_NAME_PATTERN = re.compile(
+    r"(?:ax\d+|gs\d+(?:_\d+)*|_line(?:_\d+)?)"
+)
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _source_alias_candidate(data: xr.DataArray) -> str | None:
+    if data.name is None:
+        return None
+    text = str(data.name).strip()
+    if not text:
+        return None
+    if erlab.interactive.utils._is_kwarg_name(text):
+        return text
+    if not any(character.isalnum() for character in text):
+        return None
+    snake_text = _CAMEL_CASE_BOUNDARY.sub("_", text).lower()
+    alias = erlab.interactive.utils.IdentifierValidator().fixup(snake_text)
+    if not erlab.interactive.utils._is_kwarg_name(alias):
+        return None
+    return alias
 
 
 def _source_name(data: xr.DataArray) -> str:
-    if isinstance(data.name, str) and data.name.isidentifier():
-        return data.name
-    return "data"
+    return _source_unique_name(_source_alias_candidate(data) or "data", set())
 
 
 def _source_label(data: xr.DataArray) -> str:
@@ -36,36 +115,58 @@ def _source_label(data: xr.DataArray) -> str:
 def _source_display_label(
     source: FigureSourceState | None, name: str, *, disambiguate: bool = False
 ) -> str:
-    """Return the user-facing source label for a recipe source alias."""
-    label = name if source is None else source.label.strip() or name
-    if source is not None and disambiguate and label != name:
-        return f"{label} ({name})"
-    return label
-
-
-def _source_duplicate_labels(
-    sources: Sequence[FigureSourceState],
-) -> frozenset[str]:
-    counts: dict[str, int] = {}
-    for source in sources:
-        label = source.label.strip() or source.name
-        counts[label] = counts.get(label, 0) + 1
-    return frozenset(label for label, count in counts.items() if count > 1)
+    """Return the user-facing source alias."""
+    del source, disambiguate
+    return name
 
 
 def _source_display_tooltip(source: FigureSourceState | None, name: str) -> str:
-    if source is None:
-        return f"Alias: {name}"
-    label = source.label.strip() or name
-    if label == name:
-        return f"Alias: {name}"
-    return f"{label}\nAlias: {name}"
+    del source
+    return f"Alias: {name}"
 
 
 def _valid_source_variable(name: str) -> str:
-    if not name.isidentifier():
+    if not erlab.interactive.utils._is_kwarg_name(name):
         raise ValueError(f"Figure source name {name!r} is not a valid variable name")
     return name
+
+
+def _source_alias_error(alias: str) -> str | None:
+    if not alias:
+        return "Source alias must not be empty."
+    try:
+        _valid_source_variable(alias)
+    except ValueError:
+        return f"{alias!r} is not a valid Python variable name."
+    if (
+        alias in _FIGURE_CODE_RESERVED_NAMES
+        or _FIGURE_CODE_RESERVED_NAME_PATTERN.fullmatch(alias) is not None
+    ):
+        if alias in _FIGURE_CODE_BUILTIN_BINDINGS:
+            return (
+                f"{alias!r} is a Python builtin used by generated Figure Composer "
+                "code. Choose a different source alias."
+            )
+        return (
+            f"{alias!r} is used internally by generated Figure Composer code. "
+            "Choose a different source alias."
+        )
+    return None
+
+
+def _source_unique_name(source_name: str, reserved: set[str]) -> str:
+    base = (
+        f"{source_name}_source"
+        if _FIGURE_CODE_RESERVED_NAME_PATTERN.fullmatch(source_name) is not None
+        else source_name
+    )
+    alias = base
+    suffix = 2
+    while _source_alias_error(alias) is not None or alias in reserved:
+        alias = f"{base}_{suffix}"
+        suffix += 1
+    reserved.add(alias)
+    return alias
 
 
 def _public_source_data(data: xr.DataArray) -> xr.DataArray:
@@ -96,7 +197,7 @@ def _selected_data(
     if selection.isel:
         selected = selected.isel(_decode_indexers(selection.isel))
     if selection.qsel:
-        selected = selected.qsel(selection.qsel)
+        selected = selected.qsel(_decode_indexers(selection.qsel))
     if selection.mean_dims:
         mean_arg: str | tuple[str, ...]
         if len(selection.mean_dims) == 1:
@@ -104,6 +205,45 @@ def _selected_data(
         else:
             mean_arg = selection.mean_dims
         selected = selected.qsel.mean(mean_arg)
+    return selected
+
+
+def _source_selection(source: FigureSourceState) -> FigureDataSelectionState:
+    return FigureDataSelectionState(
+        source=source.name,
+        isel=dict(source.isel),
+        qsel=dict(source.qsel),
+        mean_dims=tuple(source.mean_dims),
+    )
+
+
+def _source_has_selection(source: FigureSourceState) -> bool:
+    return bool(source.isel or source.qsel or source.mean_dims)
+
+
+def _source_with_selection(
+    source: FigureSourceState, selection: FigureDataSelectionState
+) -> FigureSourceState:
+    has_selection = bool(selection.isel or selection.qsel or selection.mean_dims)
+    selection_source = source.selection_source
+    if selection_source == source.name:
+        selection_source = None
+    return source.model_copy(
+        update={
+            "isel": dict(selection.isel),
+            "qsel": dict(selection.qsel),
+            "mean_dims": tuple(selection.mean_dims),
+            "selection_source": selection_source if has_selection else None,
+        }
+    )
+
+
+def _selected_source_data(
+    data: xr.DataArray, source: FigureSourceState
+) -> xr.DataArray:
+    selected = _selected_data({source.name: data}, _source_selection(source))
+    if selected is None:  # pragma: no cover
+        raise KeyError(source.name)
     return selected
 
 
@@ -163,11 +303,5 @@ def _default_setup_for_data(data: xr.DataArray) -> FigureSubplotsState:
     return FigureSubplotsState(nrows=1, ncols=1)
 
 
-def _decode_indexer(value: typing.Any) -> typing.Any:
-    if isinstance(value, dict) and value.get("kind") == "slice":
-        return slice(value.get("start"), value.get("stop"), value.get("step"))
-    return value
-
-
 def _decode_indexers(indexers: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
-    return {key: _decode_indexer(value) for key, value in indexers.items()}
+    return _restore_slice_mapping(indexers, allow_legacy=True)

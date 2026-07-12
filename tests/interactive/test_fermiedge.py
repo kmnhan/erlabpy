@@ -516,6 +516,17 @@ def test_goldtool_handles_missing_cpu_count(qtbot, gold, monkeypatch) -> None:
     assert cpu_widget.maximum() == 1
 
 
+def test_goldtool_cancel_background_work_stops_pending_update(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._pending_update_timer.start(1000)
+
+    assert win._pending_update_timer.isActive()
+    assert win._cancel_background_work(timeout_ms=0)
+    assert not win._pending_update_timer.isActive()
+
+
 def test_goldtool_duplicate_roundtrip(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
     qtbot.addWidget(win)

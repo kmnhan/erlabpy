@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import logging
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -18,6 +20,16 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._figurecomposer._state import FigureSourceState
+
+
+logger = logging.getLogger(__name__)
+
+
+def _original_source_name(data: xr.DataArray | None, alias: str) -> str | None:
+    if data is None or data.name is None:
+        return None
+    original = str(data.name)
+    return original if original and original != alias else None
 
 
 def _dims_text(dims: Sequence[typing.Hashable]) -> str:
@@ -39,11 +51,11 @@ def source_metadata_tooltip(
 ) -> str:
     """Return a compact source tooltip with public DataArray metadata."""
     lines = [_source_display_label(source, name, disambiguate=False)]
-    if source is not None and (source.label.strip() or name) != name:
-        lines.append(f"Alias: {name}")
     if data is None:
         lines.append("DataArray: unavailable")
         return "\n".join(lines)
+    if original := _original_source_name(data, name):
+        lines.append(f"Original name: {original}")
     public = _public_source_data(data)
     lines.extend(
         (
@@ -112,26 +124,49 @@ def _coord_by_name(data: xr.DataArray, name: str | None) -> xr.DataArray | None:
     return None
 
 
+def _source_data_with_loaded_coords(data: xr.DataArray) -> xr.DataArray:
+    loaded_coords = {
+        key: coord.copy(deep=False).load() for key, coord in data.coords.items()
+    }
+    return data.copy(deep=False).assign_coords(loaded_coords)
+
+
+def _source_details_html(data: xr.DataArray) -> str:
+    try:
+        return erlab.utils.formatting.format_darr_html(
+            _source_data_with_loaded_coords(data),
+            show_size=True,
+            show_summary=False,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to load coordinates for Figure Composer source details",
+            exc_info=True,
+        )
+        return erlab.utils.formatting.format_darr_html(
+            data,
+            show_size=True,
+            show_summary=False,
+            load_values=False,
+        )
+
+
 class SourceInspectorWidget(QtWidgets.QWidget):
-    """Compact, source-tab-local inspector for Figure Composer source data."""
+    """Source metadata summary with lazily rendered coordinate details."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("figureComposerSourceInspector")
         self._source_name: str | None = None
+        self._data: xr.DataArray | None = None
+        self._details_key: tuple[str, int] | None = None
+        self._details_html: str | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-
-        self.title_label = QtWidgets.QLabel("No source selected", self)
-        self.title_label.setObjectName("figureComposerSourceInspectorTitle")
-        self.title_label.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        layout.addWidget(self.title_label)
 
         self.subtitle_label = QtWidgets.QLabel("", self)
         self.subtitle_label.setObjectName("figureComposerSourceInspectorSubtitle")
@@ -159,12 +194,7 @@ class SourceInspectorWidget(QtWidgets.QWidget):
         self.details_button.toggled.connect(self._set_details_visible)
         layout.addWidget(self.details_button)
 
-        self.details_scroll = QtWidgets.QScrollArea(self)
-        self.details_scroll.setObjectName("figureComposerSourceInspectorDetailsScroll")
-        self.details_scroll.setWidgetResizable(True)
-        self.details_scroll.setMaximumHeight(180)
-        self.details_scroll.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.details_label = QtWidgets.QLabel(self.details_scroll)
+        self.details_label = QtWidgets.QLabel(self)
         self.details_label.setObjectName("figureComposerSourceInspectorDetails")
         self.details_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.details_label.setWordWrap(True)
@@ -172,17 +202,34 @@ class SourceInspectorWidget(QtWidgets.QWidget):
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.details_label.setMargin(6)
-        self.details_scroll.setWidget(self.details_label)
-        self.details_scroll.setVisible(False)
-        layout.addWidget(self.details_scroll)
+        self.details_label.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.details_label.setVisible(False)
+        layout.addWidget(self.details_label)
 
     @QtCore.Slot(bool)
     def _set_details_visible(self, visible: bool) -> None:
+        if visible:
+            self._ensure_details_html()
         self.details_button.setArrowType(
             QtCore.Qt.ArrowType.DownArrow if visible else QtCore.Qt.ArrowType.RightArrow
         )
-        self.details_scroll.setVisible(visible)
+        self.details_label.setVisible(visible)
         self.setProperty("figureComposerSourceDetailsExpanded", visible)
+
+    def _ensure_details_html(self) -> None:
+        if self._data is None or self._details_key is None:
+            self.details_label.clear()
+            return
+        if self._details_html is None:
+            self._details_html = erlab.interactive.utils._apply_qt_accent_color(
+                _source_details_html(self._data)
+            )
+        self.details_label.setText(self._details_html)
+
+    def invalidate_details(self) -> None:
+        """Discard cached metadata after source data changes."""
+        self._details_html = None
+        self.details_label.clear()
 
     def source_name(self) -> str | None:
         return self._source_name
@@ -194,48 +241,62 @@ class SourceInspectorWidget(QtWidgets.QWidget):
         self,
         *,
         source_name: str | None,
-        source_state: FigureSourceState | None,
         data: xr.DataArray | None,
-        operation_source_names: Sequence[str],
+        context_lines: Sequence[str] = (),
     ) -> None:
         self._source_name = source_name
         self.setProperty("figureComposerSourceAlias", source_name or "")
         if source_name is None:
-            self.title_label.setText("No source selected")
-            self.subtitle_label.setText("Select a source in this tab.")
+            self._data = None
+            self._details_key = None
+            self._details_html = None
+            self.subtitle_label.clear()
             self.details_label.clear()
             self.details_button.setEnabled(False)
             self.setProperty("figureComposerSourceDims", ())
-            self.setProperty("figureComposerSourceUsedByStep", False)
+            self.setProperty("figureComposerSourceDtype", "")
+            self.setProperty("figureComposerSourceSize", "")
             return
-        self.title_label.setText(_source_display_label(source_state, source_name))
-        used_by_step = source_name in set(operation_source_names)
-        self.setProperty("figureComposerSourceUsedByStep", used_by_step)
+        context_html = tuple(html.escape(line) for line in context_lines)
         if data is None:
-            self.subtitle_label.setText(f"Alias: {source_name}<br>Unavailable")
+            self._data = None
+            self._details_key = None
+            self._details_html = None
+            self.subtitle_label.setText(
+                "<br>".join(("Data unavailable", *context_html))
+            )
             self.details_label.clear()
             self.details_button.setEnabled(False)
             self.setProperty("figureComposerSourceDims", ())
+            self.setProperty("figureComposerSourceDtype", "")
+            self.setProperty("figureComposerSourceSize", "")
             return
         public = _public_source_data(data)
-        summary_html = erlab.utils.formatting.format_darr_shape_html(
+        details_key = (source_name, id(data))
+        if details_key != self._details_key:
+            self._details_html = None
+            self.details_label.clear()
+        self._data = public.rename(None)
+        self._details_key = details_key
+        shape_html = erlab.utils.formatting.format_darr_shape_html(
             public.rename(None),
             show_size=True,
         )
-        self.subtitle_label.setText(
-            erlab.interactive.utils._apply_qt_accent_color(summary_html)
+        shape_html = (
+            shape_html.removeprefix("<p>")
+            .removesuffix("</p>")
+            .replace("</p><p>", "<br>")
         )
-        self.details_label.setText(
-            erlab.interactive.utils._apply_qt_accent_color(
-                erlab.utils.formatting.format_darr_html(
-                    public.rename(None),
-                    show_size=True,
-                    show_summary=False,
-                    load_values=False,
-                )
-            )
+        summary_lines: list[str] = []
+        if original := _original_source_name(data, source_name):
+            summary_lines.append(html.escape(original))
+        summary_lines.extend((shape_html, *context_html))
+        self.subtitle_label.setText(
+            erlab.interactive.utils._apply_qt_accent_color("<br>".join(summary_lines))
         )
         self.details_button.setEnabled(True)
+        if self.details_button.isChecked():
+            self._ensure_details_html()
         self.setProperty(
             "figureComposerSourceDims",
             tuple(str(dim) for dim in public.dims),

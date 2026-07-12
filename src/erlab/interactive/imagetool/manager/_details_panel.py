@@ -308,9 +308,11 @@ class _DetailsPanelController:
                     f"{self._script_input_current_node_label(node)}"
                 )
             label = f"Missing source for {script_input.name}"
-            if include_history:
+            if include_history and script_input.label != script_input.name:
                 label += f" (recorded as {script_input.label})"
             return label
+        if script_input.label == script_input.name:
+            return f"Use {script_input.name}"
         return f"Use {script_input.name} from {script_input.label}"
 
     @staticmethod
