@@ -2167,6 +2167,91 @@ def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
     assert tool.source_status_label.text() == ""
 
 
+def test_figure_composer_refreshing_selected_alias_updates_linked_root(qtbot) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    replacement = base + 100.0
+    provenance_spec = {"kind": "new-origin"}
+    snapshot_id = "new-snapshot"
+
+    assert tool.replace_source(
+        "selected_v",
+        FigureSourceState(
+            name="manager_default",
+            node_uid="base-node",
+            node_snapshot_token=snapshot_id,
+            provenance_spec=provenance_spec,
+        ),
+        replacement,
+    )
+
+    source_by_name = tool._source_by_name()
+    assert source_by_name["base"].selection_source is None
+    assert source_by_name["selected_u"].selection_source == "base"
+    assert source_by_name["selected_v"].selection_source == "selected_u"
+    assert {source.node_uid for source in source_by_name.values()} == {"base-node"}
+    assert {source.node_snapshot_token for source in source_by_name.values()} == {
+        snapshot_id
+    }
+    assert all(
+        source.provenance_spec == provenance_spec for source in source_by_name.values()
+    )
+    expected_u = replacement.qsel(u=1.0)
+    expected_v = expected_u.qsel(v=2.0)
+    xr.testing.assert_identical(tool.source_data()["base"], replacement)
+    xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
+
+
+def test_figure_composer_readding_shared_link_updates_root_without_new_alias(
+    qtbot,
+) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    replacement = base + 100.0
+
+    result = tool.add_sources(
+        (FigureSourceState(name="manager_default", node_uid="base-node"),),
+        {"manager_default": replacement},
+    )
+
+    assert result.added == ()
+    assert result.updated == (("manager_default", "base"),)
+    assert result.skipped == ()
+    assert result.name_map == {"manager_default": "base"}
+    assert tuple(tool._source_by_name()) == ("base", "selected_u", "selected_v")
+    expected_u = replacement.qsel(u=1.0)
+    expected_v = expected_u.qsel(v=2.0)
+    xr.testing.assert_identical(tool.source_data()["base"], replacement)
+    xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
+
+
+def test_figure_composer_add_sources_reports_partial_batch_outcome(qtbot) -> None:
+    tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    incompatible = base.isel(v=0, drop=True) + 100.0
+    extra = xr.DataArray(np.arange(3.0), dims=("x",), name="extra")
+
+    result = tool.add_sources(
+        (
+            FigureSourceState(name="incoming", node_uid="base-node"),
+            FigureSourceState(name="extra", node_uid="extra-node"),
+        ),
+        {"incoming": incompatible, "extra": extra},
+    )
+
+    assert result.added == (("extra", "extra"),)
+    assert result.updated == ()
+    assert result.skipped[0][0] == "incoming"
+    assert "base" in result.skipped[0][1]
+    assert result.name_map == {"extra": "extra"}
+    assert result
+    xr.testing.assert_identical(tool.source_data()["base"], base)
+    xr.testing.assert_identical(tool.source_data()["extra"], extra)
+    assert "Could not update source data for: base" in tool.source_status_label.text()
+
+
 @pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
 def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails(
     qtbot,

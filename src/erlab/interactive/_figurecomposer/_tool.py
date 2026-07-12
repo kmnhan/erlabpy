@@ -225,6 +225,27 @@ _OPERATION_STATUS_LABELS = {
 }
 
 
+class FigureSourceAddResult(typing.NamedTuple):
+    """Outcome of adding or refreshing a batch of figure sources.
+
+    Accepted entries pair the requested source name with the stored recipe name. A
+    linked source refresh can keep an existing stored name instead of the incoming
+    name, so callers that create recipe steps need this mapping.
+    """
+
+    added: tuple[tuple[str, str], ...] = ()
+    updated: tuple[tuple[str, str], ...] = ()
+    skipped: tuple[tuple[str, str], ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.added or self.updated)
+
+    @property
+    def name_map(self) -> dict[str, str]:
+        """Map accepted requested names to their stored recipe names."""
+        return dict((*self.added, *self.updated))
+
+
 class _FigureComposerStepMimeData(QtCore.QMimeData):
     """Clipboard payload that can also carry live source data in one process."""
 
@@ -6783,23 +6804,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self,
         sources: Sequence[FigureSourceState],
         source_data: Mapping[str, xr.DataArray],
-    ) -> None:
+    ) -> FigureSourceAddResult:
         """Add or update source data without changing existing recipe steps.
 
         This supports appending operations and the manager's source-only workflow. The
         source list, backing data, preview, persistent state, and data-dirty signals are
-        updated together so workspace saves include the new source data.
+        updated together so workspace saves include the new source data. The result
+        identifies accepted additions and linked-source updates, including the stored
+        recipe name chosen for each requested source.
         """
         existing = {source.name: source for source in self._recipe.sources}
         candidate_data = dict(self._source_data)
         candidate_bases = dict(self._source_selection_base_data)
-        accepted = False
-        skipped: list[str] = []
+        added: list[tuple[str, str]] = []
+        updated: list[tuple[str, str]] = []
+        skipped: list[tuple[str, str]] = []
         for incoming_source in sources:
             source = incoming_source
             incoming_name = incoming_source.name
             data = source_data.get(incoming_name)
             if data is None:
+                skipped.append(
+                    (incoming_name, f"{incoming_name} (source data is unavailable)")
+                )
                 continue
             linked_matches = (
                 [
@@ -6853,7 +6880,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         )
                     except (IndexError, KeyError, TypeError, ValueError) as exc:
                         message = str(exc) or exc.__class__.__name__
-                        skipped.append(f"{target_name} ({message})")
+                        skipped.append((incoming_name, f"{target_name} ({message})"))
                         continue
             trial_existing = dict(existing)
             trial_existing[target_name] = source
@@ -6878,18 +6905,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     source_by_name=trial_existing,
                 )
             except ValueError as exc:
-                skipped.append(f"{target_name} ({exc})")
+                skipped.append((incoming_name, f"{target_name} ({exc})"))
                 continue
             existing = trial_existing
             candidate_data = trial_data
             candidate_bases = trial_bases
-            accepted = True
-        if not accepted:
+            accepted_entry = (incoming_name, target_name)
+            if same_linked_source:
+                updated.append(accepted_entry)
+            else:
+                added.append(accepted_entry)
+        result = FigureSourceAddResult(
+            added=tuple(added),
+            updated=tuple(updated),
+            skipped=tuple(skipped),
+        )
+        skipped_details = tuple(detail for _name, detail in skipped)
+        if not result:
             if skipped:
                 self._set_source_status_text(
-                    "Could not update source data for: " + ", ".join(skipped)
+                    "Could not update source data for: " + ", ".join(skipped_details)
                 )
-            return
+            return result
         self._source_data = candidate_data
         self._source_selection_base_data = candidate_bases
         ordered_sources = tuple(existing[name] for name in existing)
@@ -6902,10 +6939,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
         self._set_source_status_text(
-            "Could not update source data for: " + ", ".join(skipped)
+            "Could not update source data for: " + ", ".join(skipped_details)
             if skipped
             else None
         )
+        return result
 
     def _replacement_source_data(
         self,

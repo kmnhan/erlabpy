@@ -75,6 +75,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
+    from erlab.interactive._figurecomposer._tool import FigureSourceAddResult
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
@@ -2912,22 +2913,24 @@ class ImageToolManager(_ImageToolManagerBase):
         source_data: Mapping[str, xr.DataArray],
         *,
         show: bool = True,
-    ) -> bool:
+    ) -> FigureSourceAddResult | None:
         """Add or update figure sources without appending recipe operations."""
         from erlab.interactive._figurecomposer import FigureComposerTool
 
         if not self._is_figure_uid(figure_uid):
-            return False
+            return None
         node = self._child_node(figure_uid)
         tool = node.tool_window
         if not isinstance(tool, FigureComposerTool):
-            return False
-        tool.add_sources(sources, source_data)
+            return None
+        result = tool.add_sources(sources, source_data)
+        if not result:
+            return result
         self._mark_workspace_dirty(uid=figure_uid, state=True)
         self._select_figure_uid(figure_uid)
         if show:
             node.show()
-        return True
+        return result
 
     def _add_imagetool_sources_to_figure(
         self,
@@ -2950,24 +2953,16 @@ class ImageToolManager(_ImageToolManagerBase):
         node = self._child_node(figure_uid) if self._is_figure_uid(figure_uid) else None
         from erlab.interactive._figurecomposer import FigureComposerTool
 
-        tool_before = node.tool_window if node is not None else None
-        existing_source_uids: set[str] = (
-            {
-                source.node_uid
-                for source in tool_before.source_states()
-                if source.node_uid is not None
-            }
-            if isinstance(tool_before, FigureComposerTool)
-            else set()
+        result = self._add_sources_to_figure(
+            figure_uid, sources, source_data, show=show
         )
-        if not self._add_sources_to_figure(figure_uid, sources, source_data, show=show):
+        if not result:
             return False
         tool = node.tool_window if node is not None else None
         if isinstance(tool, FigureComposerTool):
-            updated = sum(
-                1 for source in sources if source.node_uid in existing_source_uids
-            )
-            added = len(sources) - updated
+            source_error = tool.source_status_label.text() if result.skipped else ""
+            added = len(result.added)
+            updated = len(result.updated)
             parts: list[str] = []
             if added:
                 suffix = "source" if added == 1 else "sources"
@@ -2975,10 +2970,17 @@ class ImageToolManager(_ImageToolManagerBase):
             if updated:
                 suffix = "source" if updated == 1 else "sources"
                 parts.append(f"Updated {updated} ImageTool {suffix}")
+            if result.skipped:
+                skipped = len(result.skipped)
+                suffix = "update" if skipped == 1 else "updates"
+                parts.append(f"Skipped {skipped} ImageTool source {suffix}")
             if skipped_targets:
                 suffix = "selection" if skipped_targets == 1 else "selections"
                 parts.append(f"Skipped {skipped_targets} unsupported {suffix}")
-            tool._set_source_status_text("; ".join(parts) + ".")
+            status = "; ".join(parts) + "."
+            if source_error:
+                status = f"{status} {source_error}"
+            tool._set_source_status_text(status)
         return True
 
     def _replace_figure_source(
@@ -3509,7 +3511,15 @@ class ImageToolManager(_ImageToolManagerBase):
                 self._show_figure_plot_slices_selection_error(exc)
                 return False
 
-        tool.add_sources(tuple(sources), source_data)
+        add_result = tool.add_sources(tuple(sources), source_data)
+        if not add_result:
+            return False
+        if add_result.skipped:
+            self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
+            self._select_figure_uid(resolved_figure_uid)
+            if show:
+                node.show()
+            return True
         with figure_options_context(self.effective_interactive_options):
             operations = (
                 (append_operation,)
@@ -3527,6 +3537,16 @@ class ImageToolManager(_ImageToolManagerBase):
                 )
                 if bz_operation is not None:
                     operations = (*operations, bz_operation)
+        source_name_map = {
+            requested: stored
+            for requested, stored in add_result.name_map.items()
+            if requested != stored
+        }
+        if source_name_map:
+            operations = tuple(
+                self._figure_operation_with_source_names(appended, source_name_map)
+                for appended in operations
+            )
         for appended in self._figure_operations_with_append_axes(
             operations,
             typing.cast("FigureAxesSelectionState", axes_selection),
