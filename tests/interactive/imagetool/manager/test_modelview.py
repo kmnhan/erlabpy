@@ -463,7 +463,8 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
     )
 
     missing_child_index = model.createIndex(0, 0, "missing-child")
-    malformed_parent = model.createIndex(0, 0, object())
+    malformed_pointer = object()
+    malformed_parent = model.createIndex(0, 0, malformed_pointer)
     with monkeypatch.context() as context:
         context.setattr(
             type(model),
