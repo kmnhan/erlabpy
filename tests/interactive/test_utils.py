@@ -406,7 +406,7 @@ def test_tool_window_deferred_restore_is_discarded_on_close(qtbot) -> None:
     restored.close()
 
     assert restored.deferred_runs == 0
-    assert restored._deferred_restore_work == {}
+    assert not restored._flush_restore_work()
 
 
 def test_tool_window_deferred_restore_flushes_before_output(qtbot) -> None:

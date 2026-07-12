@@ -460,7 +460,7 @@ def test_goldtool_close_skips_deferred_fit_snapshot(qtbot, gold, monkeypatch) ->
     restored.close()
 
     assert post_fit_calls == []
-    assert GoldTool._PERSISTED_FIT_SNAPSHOT_KEY not in restored._deferred_restore_work
+    assert not restored._flush_restore_work(key=GoldTool._PERSISTED_FIT_SNAPSHOT_KEY)
 
 
 def test_goldtool_deferred_restore_update_data_refits_pending_fit(

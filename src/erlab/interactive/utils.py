@@ -3228,7 +3228,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       `_run_or_defer_restore_work` or `_defer_restore_work` instead of running
       expensive work unconditionally during restore. Direct calls to
       `from_dataset` remain eager; the ImageTool manager uses this protected framework
-      internally so hidden restored tools do not slow down workspace loading.
+      internally so hidden restored tools do not slow down workspace loading. Deferred
+      work is materialized only when its data is needed, such as for show, save, copy,
+      or output access. Closing a tool discards any work that was never needed.
 
     For tools that support refreshing their data from an ImageTool source, subclasses
     should also override the following hooks:
@@ -3555,6 +3557,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         Use this only for derived UI/cache/result work. Required validation and state
         needed to make the restored tool structurally valid must still run eagerly.
+        Queued callbacks are discarded if the window closes before they are needed, so
+        they must not own required teardown or cleanup work.
         """
         if not self._should_defer_restore_work:
             return False
@@ -3577,7 +3581,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         would otherwise deserialize, render, or recompute optional data. The callback is
         run immediately for normal standalone restores and queued during manager
         workspace restore. Set ``run_on_show=True`` when hidden tools can wait until the
-        user shows the window.
+        user shows the window. If the window closes first, its queued work is discarded
+        without running.
 
         The callback itself is normally the queue key, so repeated calls coalesce. Pass
         ``key`` only when another method must address the work by a stable handle, for
@@ -5523,6 +5528,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return super().showEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        """Close without materializing optional work that was never requested."""
         # Teardown has no consumer for optional restored state, and running it here can
         # queue paints for widgets that Qt is already deleting.
         self._deferred_restore_work.clear()

@@ -15,8 +15,6 @@ permissions:
 
 env:
   FORCE_COLOR: 1
-  ERLAB_TEST_DATA_COMMIT: a90b37654184b9bf3378b032646c9c5b6231a0fa
-  ERLAB_TEST_DATA_ARCHIVE_SHA256: de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be
   ERLAB_TEST_DATA_CACHE_DIR: /home/runner/.cache/erlabpy
 
 jobs:
@@ -90,6 +88,15 @@ jobs:
           pyvista: false
           qt: true
 
+      - name: Load test data configuration
+        if: matrix.group == 'cov-io'
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tests/test-data.env
+          cat tests/test-data.env >> "$GITHUB_ENV"
+          echo "ERLAB_TEST_DATA_DIR=$ERLAB_TEST_DATA_CACHE_DIR/kmnhan-erlabpy-data-${ERLAB_TEST_DATA_COMMIT:0:7}" >> "$GITHUB_ENV"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -106,7 +113,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
 
       - name: Populate test data cache
         if: >-
@@ -145,7 +152,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
 
       - name: Verify test data cache
         if: matrix.group == 'cov-io'

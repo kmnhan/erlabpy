@@ -15,22 +15,29 @@ permissions:
 
 env:
   FORCE_COLOR: 1
-  ERLAB_TEST_DATA_COMMIT: a90b37654184b9bf3378b032646c9c5b6231a0fa
-  ERLAB_TEST_DATA_ARCHIVE_SHA256: de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be
   ERLAB_TEST_DATA_CACHE_DIR: /home/runner/.cache/erlabpy
-  ERLAB_TEST_DATA_DIR: /home/runner/.cache/erlabpy/kmnhan-erlabpy-data-a90b376
 
 jobs:
   test-data-cache:
     name: Cache Test Data
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Load test data configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tests/test-data.env
+          cat tests/test-data.env >> "$GITHUB_ENV"
+          echo "ERLAB_TEST_DATA_DIR=$ERLAB_TEST_DATA_CACHE_DIR/kmnhan-erlabpy-data-${ERLAB_TEST_DATA_COMMIT:0:7}" >> "$GITHUB_ENV"
+
       - name: Restore test data cache
         id: restore-test-data
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
 
       - name: Populate test data cache
         if: steps.restore-test-data.outputs.cache-hit != 'true'
@@ -59,7 +66,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
 
       - name: Verify test data cache
         shell: bash
@@ -86,6 +93,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Load test data configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tests/test-data.env
+          cat tests/test-data.env >> "$GITHUB_ENV"
+          echo "ERLAB_TEST_DATA_DIR=$ERLAB_TEST_DATA_CACHE_DIR/kmnhan-erlabpy-data-${ERLAB_TEST_DATA_COMMIT:0:7}" >> "$GITHUB_ENV"
+
       - uses: pyvista/setup-headless-display-action@v4
         with:
           pyvista: false
@@ -105,7 +120,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ env.ERLAB_TEST_DATA_COMMIT }}
+          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
           fail-on-cache-miss: true
 
       - name: Verify test data cache
