@@ -345,3 +345,9 @@ module = [
     "erlab.interactive._mesh",
 ]
 disable_error_code = ["attr-defined"]
+
+# Numba 0.66 is marked as typed but does not expose usable annotations for ``prange``
+# or compiled dispatchers under mypy 2.2. Remove this once Numba's typing is complete.
+[[tool.mypy.overrides]]
+module = ["numba", "numba.*"]
+follow_imports = "skip"

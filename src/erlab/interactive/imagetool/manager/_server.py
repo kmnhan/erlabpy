@@ -395,7 +395,7 @@ def _query_zmq(
     record = resolve_manager_record(target) if record is None else record
     response_timeout_ms = ZMQ_TIMEOUT_MS if timeout_ms is None else timeout_ms
 
-    ctx = zmq.Context.instance()
+    ctx: zmq.Context[zmq.Socket] = zmq.Context.instance()
 
     sock: zmq.Socket = ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.SNDHWM, 0)
@@ -500,7 +500,7 @@ class _WatcherServer(QtCore.QThread):
         self.stopped.clear()
         logger.debug("Starting watcher server...")
 
-        ctx = zmq.Context.instance()
+        ctx: zmq.Context[zmq.Socket] = zmq.Context.instance()
         sock: zmq.Socket = ctx.socket(zmq.PUB)
         sock.setsockopt(zmq.LINGER, 0)
 
@@ -599,7 +599,7 @@ class _ManagerServer(QtCore.QThread):
     def _wake_receiver(self) -> None:
         if self._bound_port is None:
             return
-        ctx = zmq.Context.instance()
+        ctx: zmq.Context[zmq.Socket] = zmq.Context.instance()
         sock: zmq.Socket = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.SNDTIMEO, 100)
@@ -626,7 +626,7 @@ class _ManagerServer(QtCore.QThread):
         self.stopped.clear()
         logger.debug("Starting server...")
 
-        ctx = zmq.Context.instance()
+        ctx: zmq.Context[zmq.Socket] = zmq.Context.instance()
         sock: zmq.Socket = ctx.socket(zmq.REP)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.SNDHWM, 0)

@@ -80,7 +80,7 @@ class _ManagerRecord:
                 started=str(value["started"]),
                 version=str(value["version"]),
                 heartbeat=float(value["heartbeat"]),
-                state=typing.cast("typing.Literal['starting', 'ready']", state),
+                state=state,
                 workspace_path=(
                     None
                     if value.get("workspace_path") is None

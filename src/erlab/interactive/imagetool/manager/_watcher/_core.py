@@ -417,7 +417,7 @@ class _Watcher:
         watch_port: int | None = None,
     ) -> None:
         self._stop.clear()
-        context = zmq.Context.instance()
+        context: zmq.Context[zmq.Socket] = zmq.Context.instance()
         sock: zmq.Socket = context.socket(zmq.SUB)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.RCVTIMEO, 100)
