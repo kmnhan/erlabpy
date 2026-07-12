@@ -1,3 +1,29 @@
+## v3.24.1 (2026-07-12)
+
+### 🐞 Bug Fixes
+
+- **manager:** fix intermittent errors during startup (#456) ([5472d06](https://github.com/kmnhan/erlabpy/commit/5472d0669bb476f3443ad5acdb72ff996ab7738d))
+
+- **goldtool:** harden persistence in a manager workspace (#452) ([6c02ee5](https://github.com/kmnhan/erlabpy/commit/6c02ee5f195a70e1f9f687179606a827335ffd4b))
+
+- **manager:** fix figure composer preview aspect ratio (#451) ([06f16b4](https://github.com/kmnhan/erlabpy/commit/06f16b41df3b4bef2b2b3236aeebb5542d9af31e))
+
+- **manager:** fix incorrect `plot_array` selection UI behavior in Figure Composer (#450) ([c8cba47](https://github.com/kmnhan/erlabpy/commit/c8cba47533258eb14d0f2b93daa26b605046a793))
+
+### ⚡️ Performance
+
+- **manager:** optimize ImageTool workspace save and load (#453) ([b753ccd](https://github.com/kmnhan/erlabpy/commit/b753ccd8a67e9396674a81205d21d8611da18f74))
+
+  Greatly improves speed of saving/loading workspaces. Saving is now asynchronous, so workspaces can be saved without interrupting work. Also, loading workspaces is now lazy, so data is read from disk on demand. This allows loading extremely large workspaces that exceed available memory.
+
+- **imagetool:** improve slicing speed by skipping degenerate updates (#455) ([4650417](https://github.com/kmnhan/erlabpy/commit/4650417f8e9b8bad0b87ae2a84323205de95053a))
+
+### ♻️ Code Refactor
+
+- **manager:** improve Figure Composer workflow (#460) ([8a752f0](https://github.com/kmnhan/erlabpy/commit/8a752f032af9fc757dd45a6c92ce6d6505ab7b9c))
+
+  Adds a separate tab to manage source data for each figure, and also optimizes various aspects of the figure composer to make it easier to use.
+
 ## v3.24.0 (2026-07-01)
 
 ### ✨ Features
