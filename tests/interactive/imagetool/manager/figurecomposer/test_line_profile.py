@@ -20,6 +20,12 @@ def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
                 FigureDataSelectionState(source="profile", qsel={"cut": 0.0}),
             ),
             "line_x": "kx",
+            "line_y": "cut",
+            "line_selection": {"kx": 0.5},
+            "line_iter_dim": "cut",
+            "line_reduce": "both",
+            "line_reduce_coarsen": 3,
+            "line_reduce_thin": 4,
         }
     )
     tool = FigureComposerTool.from_sources(
@@ -33,12 +39,20 @@ def test_figure_composer_line_migrates_single_map_selection_to_source_alias(
     [loaded_operation] = tool.tool_status.operations
     assert loaded_operation.line_source == "profile_selected"
     assert loaded_operation.map_selections == ()
+    assert loaded_operation.line_y is None
+    assert loaded_operation.line_selection == {}
+    assert loaded_operation.line_iter_dim is None
+    assert loaded_operation.line_reduce == "disabled"
+    assert loaded_operation.line_reduce_coarsen == 2
+    assert loaded_operation.line_reduce_thin == 2
     source_by_name = {source.name: source for source in tool.source_states()}
     assert source_by_name["profile_selected"].selection_source == "profile"
     assert source_by_name["profile_selected"].qsel == {"cut": 0.0}
     xr.testing.assert_identical(
         tool.source_data()["profile_selected"], data.qsel(cut=0.0)
     )
+    [profile] = figurecomposer_line_profile._line_data_items(tool, loaded_operation)
+    xr.testing.assert_identical(profile, data.qsel(cut=0.0))
 
     tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
     tool._select_step_section("selection")

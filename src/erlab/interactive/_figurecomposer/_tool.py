@@ -4111,6 +4111,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> FigureOperationState:
         updates: dict[str, typing.Any] = {"map_selections": ()}
         if operation.kind == FigureOperationKind.LINE:
+            if operation.map_selections:
+                # The legacy map-selection rendering branch bypassed these input
+                # extraction controls.  Activating stale values while converting a
+                # single cursor to a source alias changes the saved figure.
+                updates.update(
+                    {
+                        "line_selection": {},
+                        "line_y": None,
+                        "line_iter_dim": None,
+                        "line_reduce": "disabled",
+                        "line_reduce_coarsen": 2,
+                        "line_reduce_thin": 2,
+                    }
+                )
             if source_name is not None:
                 updates["line_source"] = source_name
             return operation.model_copy(update=updates)
