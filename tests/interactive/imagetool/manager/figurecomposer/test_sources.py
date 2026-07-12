@@ -287,6 +287,75 @@ def test_figure_composer_restore_rebuilds_selected_source_chain_out_of_order(
     )
 
 
+def test_figure_composer_restore_recomputes_cached_selected_descendants(qtbot) -> None:
+    tool, base, selected_u, selected_v = _transitive_selected_source_tool()
+    qtbot.addWidget(tool)
+    replacement = base + 100.0
+
+    tool._restore_persistence_data_items(
+        {
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: replacement,
+            "selected_u": base,
+            "selected_v": selected_u,
+        },
+        xr.Dataset(),
+    )
+
+    expected_u = replacement.qsel(u=1.0)
+    expected_v = expected_u.qsel(v=2.0)
+    xr.testing.assert_identical(tool.source_data()["base"], replacement)
+    xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
+    xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
+    assert not tool.source_data()["selected_u"].identical(selected_u)
+    assert not tool.source_data()["selected_v"].identical(selected_v)
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_u"], replacement
+    )
+    xr.testing.assert_identical(
+        tool._source_selection_base_data["selected_v"], expected_u
+    )
+
+
+def test_figure_composer_restore_fallbacks_are_parent_first(qtbot) -> None:
+    stable = xr.DataArray(np.arange(2.0), dims=("x",), name="stable")
+    base = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("u", "v", "w"),
+        coords={"u": [0.0, 1.0], "v": [0.0, 1.0, 2.0], "w": np.arange(4)},
+        name="base",
+    )
+    selected_u = base.qsel(u=1.0)
+    tool = FigureComposerTool.from_sources(
+        {"stable": stable},
+        sources=(
+            FigureSourceState(
+                name="selected_v",
+                selection_source="selected_u",
+                qsel={"v": 2.0},
+            ),
+            FigureSourceState(
+                name="selected_u",
+                selection_source="missing_base",
+                qsel={"u": 1.0},
+            ),
+            FigureSourceState(name="missing_base"),
+            FigureSourceState(name="stable"),
+        ),
+        operations=(FigureOperationState.line(label="line", source="selected_v"),),
+        primary_source="stable",
+    )
+    qtbot.addWidget(tool)
+
+    tool._restore_persistence_data_items(
+        {"selected_v": selected_u, "selected_u": base}, xr.Dataset()
+    )
+
+    xr.testing.assert_identical(tool.source_data()["selected_u"], selected_u)
+    xr.testing.assert_identical(
+        tool.source_data()["selected_v"], selected_u.qsel(v=2.0)
+    )
+
+
 def test_figure_composer_restore_selected_source_cycle_stays_unresolved(qtbot) -> None:
     stable = xr.DataArray(np.arange(3.0), dims=("x",), name="stable")
     tool = FigureComposerTool.from_sources(

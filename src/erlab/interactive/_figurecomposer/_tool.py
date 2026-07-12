@@ -8047,99 +8047,164 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
         source_data = dict(self._source_data)
-        selection_base_data: dict[str, xr.DataArray] = {}
+        selection_base_data = dict(self._source_selection_base_data)
         embedded_selected_names = self._persisted_selected_source_names(ds)
+        source_by_name = self._source_by_name()
+        persisted_inputs: dict[str, tuple[xr.DataArray, bool]] = {}
+        changed = False
 
-        def restored_source_data(
-            source: FigureSourceState, data: xr.DataArray
-        ) -> xr.DataArray:
-            if (
-                not _source_has_selection(source)
-                or source.name in embedded_selected_names
-            ):
+        def persisted_data(source: FigureSourceState) -> xr.DataArray | None:
+            variable_name = (
+                erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                if source.name == self._recipe.primary_source
+                else source.name
+            )
+            data = data_items.get(variable_name)
+            if data is None:
+                return None
+            if source.name != self._recipe.primary_source:
                 return data
+            current_primary = source_data.get(source.name)
+            if current_primary is not None:
+                return data.rename(current_primary.name)
+            tool_data_name = ds.attrs.get("tool_data_name", "<none-value>")
+            if tool_data_name == "<none-value>":
+                tool_data_name = None
+            return data.rename(tool_data_name)
+
+        for source in self._recipe.sources:
+            data = persisted_data(source)
+            if data is None:
+                continue
+            changed = True
+            source_data.pop(source.name, None)
+            selection_base_data.pop(source.name, None)
+            already_selected = source.name in embedded_selected_names
+            if source.selection_source is not None:
+                persisted_inputs[source.name] = (data, already_selected)
+                continue
+            if not _source_has_selection(source) or already_selected:
+                source_data[source.name] = data
+                continue
             try:
-                selected = self._source_data_from_selection(source.name, data, source)
+                source_data[source.name] = self._source_data_from_selection(
+                    source.name, data, source
+                )
             except (IndexError, KeyError, TypeError, ValueError):
                 logger.debug(
                     "Could not apply saved Figure Composer source selection for %s",
                     source.name,
                     exc_info=True,
                 )
-                return data
-            selection_base_data[source.name] = data
-            return selected
-
-        primary_data = data_items.get(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
-        changed = False
-        if (
-            primary_data is not None
-            and source_data.get(self._recipe.primary_source) is not primary_data
-        ):
-            current_primary = source_data.get(self._recipe.primary_source)
-            if current_primary is not None:
-                primary_data = primary_data.rename(current_primary.name)
+                source_data[source.name] = data
             else:
-                tool_data_name = ds.attrs.get("tool_data_name", "<none-value>")
-                if tool_data_name == "<none-value>":
-                    tool_data_name = None
-                primary_data = primary_data.rename(tool_data_name)
-            primary_source = self._recipe_source(self._recipe.primary_source)
-            if primary_source is not None:
-                primary_data = restored_source_data(primary_source, primary_data)
-            source_data[self._recipe.primary_source] = primary_data
-            changed = True
-        for source in self._recipe.sources:
-            if source.name == self._recipe.primary_source:
-                continue
-            source_data_item = data_items.get(source.name)
-            if source_data_item is None:
-                continue
-            source_data[source.name] = restored_source_data(source, source_data_item)
-            changed = True
+                selection_base_data[source.name] = data
+
+        resolved = {
+            source.name
+            for source in self._recipe.sources
+            if source.selection_source is None and source.name in source_data
+        }
+        queue: collections.deque[str] = collections.deque(resolved)
+
+        def rebuild_descendants() -> None:
+            nonlocal changed
+            while queue:
+                parent_name = queue.popleft()
+                parent_data = source_data.get(parent_name)
+                if parent_data is None:
+                    continue
+                for source in self._recipe.sources:
+                    if (
+                        source.name in resolved
+                        or source.selection_source != parent_name
+                        or source.name == parent_name
+                    ):
+                        continue
+                    source_data.pop(source.name, None)
+                    selection_base_data.pop(source.name, None)
+                    try:
+                        selected = self._source_data_from_selection(
+                            source.name, parent_data, source
+                        )
+                    except (IndexError, KeyError, TypeError, ValueError):
+                        logger.debug(
+                            "Could not rebuild saved Figure Composer source %s from %s",
+                            source.name,
+                            parent_name,
+                            exc_info=True,
+                        )
+                        continue
+                    source_data[source.name] = selected
+                    if _source_has_selection(source):
+                        selection_base_data[source.name] = parent_data
+                    resolved.add(source.name)
+                    queue.append(source.name)
+                    changed = True
+
+        rebuild_descendants()
+
         pending = [
             source
             for source in self._recipe.sources
-            if source.name not in source_data
-            and _source_has_selection(source)
-            and source.selection_source is not None
+            if source.name not in resolved and source.name in persisted_inputs
         ]
         while pending:
             next_pending: list[FigureSourceState] = []
             restored_this_pass = False
             for source in pending:
-                selection_source = source.selection_source
-                if selection_source is None:  # pragma: no cover - filtered above.
+                if source.name in resolved:
                     continue
-                source_data_item = source_data.get(selection_source)
-                if source_data_item is None:
+                parent_name = source.selection_source
+                if parent_name in persisted_inputs and parent_name not in resolved:
                     next_pending.append(source)
                     continue
-                try:
-                    selected = self._source_data_from_selection(
-                        source.name, source_data_item, source
-                    )
-                except (IndexError, KeyError, TypeError, ValueError):
-                    logger.debug(
-                        "Could not rebuild saved Figure Composer source %s from %s",
-                        source.name,
-                        selection_source,
-                        exc_info=True,
-                    )
+                if parent_name is not None and parent_name in source_data:
+                    # A resolved parent would already have visited this source.  Do
+                    # not mask a failed current selection with an older payload.
                     continue
+                try:
+                    self._source_lineage_names(source.name, source_by_name)
+                except ValueError:
+                    continue
+                data, already_selected = persisted_inputs[source.name]
+                if already_selected or not _source_has_selection(source):
+                    selected = data
+                else:
+                    try:
+                        selected = self._source_data_from_selection(
+                            source.name, data, source
+                        )
+                    except (IndexError, KeyError, TypeError, ValueError):
+                        logger.debug(
+                            "Could not restore saved Figure Composer source %s "
+                            "without %s",
+                            source.name,
+                            parent_name,
+                            exc_info=True,
+                        )
+                        continue
+                    selection_base_data[source.name] = data
                 source_data[source.name] = selected
-                selection_base_data[source.name] = source_data_item
+                resolved.add(source.name)
+                queue.append(source.name)
                 changed = True
                 restored_this_pass = True
+                rebuild_descendants()
             if not restored_this_pass:
-                if next_pending:
-                    logger.debug(
-                        "Could not resolve saved Figure Composer source "
-                        "dependencies: %s",
-                        ", ".join(source.name for source in next_pending),
-                    )
                 break
             pending = next_pending
+
+        unresolved = tuple(
+            source.name
+            for source in self._recipe.sources
+            if source.selection_source is not None and source.name not in source_data
+        )
+        if unresolved:
+            logger.debug(
+                "Could not resolve saved Figure Composer source dependencies: %s",
+                ", ".join(unresolved),
+            )
         if not changed:
             self._restore_persisted_preview_cache(ds)
             self._queue_post_restore_redraw_if_needed(ds)
