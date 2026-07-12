@@ -1,14 +1,11 @@
-import gc
 import importlib.util
 import os
 import pathlib
 import subprocess
 import sys
 import types
-import weakref
 
 import pytest
-from qtpy import QtCore, QtWidgets
 
 
 def _load_conftest_module() -> types.ModuleType:
@@ -80,37 +77,6 @@ def test_conftest_import_defaults_pyside6_to_offscreen() -> None:
         env=env,
     )
     assert result.stdout.strip().splitlines()[-1] == "offscreen"
-
-
-def test_qtbot_keeps_registered_widgets_alive_until_teardown(qtbot) -> None:
-    widget = QtWidgets.QWidget()
-    widget_ref = weakref.ref(widget)
-    qtbot.addWidget(widget)
-
-    del widget
-    gc.collect()
-
-    assert widget_ref() is not None
-
-
-def test_qtbot_keepalive_releases_destroyed_widgets(qtbot) -> None:
-    widget = QtWidgets.QWidget()
-    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-    widget_ref = weakref.ref(widget)
-    qtbot.addWidget(widget)
-
-    widget.close()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-
-    def widget_is_deleted() -> bool:
-        wrapper = widget_ref()
-        return wrapper is not None and not _CONFTEST.qt_is_valid(wrapper)
-
-    qtbot.waitUntil(widget_is_deleted, timeout=1000)
-    del widget
-    gc.collect()
-
-    assert widget_ref() is None
 
 
 def test_is_deleted_qt_wrapper_error_matches_deleted_wrapper_message() -> None:

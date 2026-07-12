@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 import typing
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pytest
@@ -23,6 +24,35 @@ from erlab.interactive.fermiedge import (
     restool,
 )
 from erlab.io.exampledata import generate_gold_edge
+
+
+@pytest.fixture(autouse=True)
+def _retain_registered_goldtool_widgets(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Keep this module's registered widgets alive through the final event drain."""
+    if "qtbot" not in request.fixturenames:
+        yield
+        return
+
+    qtbot = request.getfixturevalue("qtbot")
+    original_add_widget = qtbot.addWidget
+    live_widgets: list[QtWidgets.QWidget] = []
+
+    def add_widget(
+        widget: QtWidgets.QWidget,
+        *,
+        before_close_func: Callable[[QtWidgets.QWidget], None] | None = None,
+    ) -> None:
+        live_widgets.append(widget)
+        original_add_widget(widget, before_close_func=before_close_func)
+
+    qtbot.addWidget = add_widget
+    try:
+        yield
+    finally:
+        qtbot.addWidget = original_add_widget
+        live_widgets.clear()
 
 
 def _configure_goldtool_state(
