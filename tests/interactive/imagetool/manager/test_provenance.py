@@ -13553,3 +13553,23 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
 
         assert copied
         _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
+
+
+def test_manager_dependency_summary_coalesces_matching_input_name_and_label() -> None:
+    """Avoid repeating an input's name when its label is identical."""
+    ref = types.SimpleNamespace(
+        name="data",
+        label="data",
+        node_uid="closed-parent",
+        node_snapshot_token=None,
+    )
+    manager = types.SimpleNamespace(
+        _dependency_refs_for_uid=lambda _uid: (ref,),
+        _tool_graph=types.SimpleNamespace(nodes={}),
+        _dependency_ref_has_recorded_file=lambda _spec, _ref: False,
+    )
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+
+    assert controller.dependency_input_summary_for_uid("derived") == (
+        "data (parent no longer open)"
+    )

@@ -102,6 +102,18 @@ def test_figure_composer_line_preserves_multi_cursor_legacy_selections(
     xr.testing.assert_identical(profiles[0], data.qsel(cut=0.0))
     xr.testing.assert_identical(profiles[1], data.qsel(cut=2.0))
 
+    one_per_axis_operation = loaded_operation.model_copy(
+        update={
+            "axes": FigureAxesSelectionState(axes=((0, 0),)),
+            "line_placement": "one_per_axis",
+        }
+    )
+    selection_code = figurecomposer_line_profile._line_selection_code(
+        tool, one_per_axis_operation
+    )
+    assert "profiles = [" in selection_code
+    assert "for profile, label in zip(" in selection_code
+
     figure = plt.figure()
     try:
         figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)

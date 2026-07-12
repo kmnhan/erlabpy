@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import textwrap
+
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 
 from ._common import *
@@ -212,6 +214,204 @@ def test_figure_composer_custom_code_names_cover_nested_class_and_flow() -> None
         "other",
     } & figurecomposer_custom_code._custom_code_names(
         "data = 1\nother = 2\nf, g = (lambda: data, lambda: other)"
+    )
+
+
+def test_figure_composer_custom_code_names_cover_structured_python() -> None:
+    code = textwrap.dedent(
+        """\
+        @decorator
+        def function(
+            positional: annotation,
+            /,
+            regular: annotation = default,
+            *args: annotation,
+            required_keyword: annotation,
+            keyword: annotation = default,
+            **kwargs: annotation,
+        ) -> annotation:
+            return child_source
+
+        @decorator
+        async def async_function(
+            positional: annotation,
+            /,
+            regular: annotation = default,
+            *args: annotation,
+            required_keyword: annotation,
+            keyword: annotation = default,
+            **kwargs: annotation,
+        ) -> annotation:
+            return child_source
+
+        callable_value = lambda item=default: child_source
+        keyword_callable_value = lambda *, required, optional=default: child_source
+
+        @decorator
+        class Result(base, metaclass=metaclass):
+            class_value = class_value + child_source
+
+        import package.submodule
+        from package import imported as local_import
+        from package import *
+        annotation_only: annotation
+        container.attribute: annotation
+        value: annotation = source
+        result += source
+        container.attribute += source
+        (walrus := source)
+        del result
+        del container.attribute
+
+        if condition:
+            branch = source
+        else:
+            branch = source
+        conditional = source if condition else alternate
+        condition and (short_circuit := source)
+
+        match subject:
+            case [head, *tail] as matched if guard:
+                match_result = source
+            case {"item": mapping_value, **remaining}:
+                mapping_result = source
+
+        for first, *tail in iterable:
+            loop_result = source
+        else:
+            loop_else = source
+        while condition:
+            while_result = source
+        else:
+            while_else = source
+        with context:
+            bare_with_result = source
+        with context as (left, right):
+            with_result = source
+
+        try:
+            success = source
+        except exception_type as error:
+            failure = source
+        else:
+            after_success = source
+        finally:
+            cleanup = source
+        try:
+            star_success = source
+        except* exception_type as grouped:
+            star_failure = source
+        try:
+            bare_success = source
+        except:
+            bare_failure = source
+
+        list_result = [
+            item for item in iterable if condition for child in child_iterable if child
+        ]
+        set_result = {item for item in iterable if condition}
+        dict_result = {item: source for item in iterable}
+        generator_result = (item for item in iterable)
+
+        def mutation_scope():
+            global mutation_target, object_target
+            mutation_target += source
+            object_target.value += source
+            del mutation_target, object_target.value
+            def nested():
+                return None
+            async def nested_async():
+                return None
+            class Nested:
+                pass
+            ignored = lambda: None
+        """
+    )
+
+    names = figurecomposer_custom_code._custom_code_names(code)
+
+    assert {
+        "annotation",
+        "alternate",
+        "base",
+        "child_iterable",
+        "child_source",
+        "class_value",
+        "condition",
+        "container",
+        "context",
+        "decorator",
+        "default",
+        "exception_type",
+        "guard",
+        "iterable",
+        "metaclass",
+        "mutation_target",
+        "source",
+        "subject",
+    } <= names
+    assert "local_import" not in names
+
+    if sys.version_info >= (3, 12):
+        assert "source" in figurecomposer_custom_code._custom_code_names(
+            "def generic[T](value: T) -> T:\n    return source"
+        )
+        assert "source" in figurecomposer_custom_code._custom_code_names(
+            "class Generic[T]:\n    value: T = source"
+        )
+
+
+def test_figure_composer_custom_code_analyzer_handles_async_blocks() -> None:
+    tree = ast.parse(
+        textwrap.dedent(
+            """\
+            async def process():
+                async for item in async_iterable:
+                    current = item
+                else:
+                    current = fallback
+                async with async_context as context_value:
+                    current = context_value
+            """
+        )
+    )
+    [function] = tree.body
+    assert isinstance(function, ast.AsyncFunctionDef)
+    analyzer = figurecomposer_custom_code._TopLevelExternalNameAnalyzer()
+
+    analyzer._analyze_block(function.body, set())
+
+    assert {"async_context", "async_iterable", "fallback"} <= analyzer.external
+
+
+def test_figure_composer_custom_code_analyzer_handles_partial_ast_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class_tree = ast.parse("class Result:\n    value = source")
+    root = figurecomposer_custom_code.symtable.symtable(
+        "class Result:\n    value = source", "<test>", "exec"
+    )
+    monkeypatch.setattr(
+        figurecomposer_custom_code, "_scope_symbol_tables", lambda *_args: {}
+    )
+    assert (
+        figurecomposer_custom_code._class_local_external_names(class_tree, root, {})
+        == set()
+    )
+
+    analyzer = figurecomposer_custom_code._TopLevelExternalNameAnalyzer()
+    analyzer.bound.add("already_bound")
+    analyzer.visit(ast.BoolOp(op=ast.And(), values=[]))
+    assert analyzer.bound == {"already_bound"}
+    assert analyzer.external == set()
+
+    incomplete_comprehension = ast.ListComp(
+        elt=ast.Name(id="source", ctx=ast.Load()), generators=[]
+    )
+    analyzer.visit(incomplete_comprehension)
+    assert analyzer.external == {"source"}
+    assert analyzer.scope_bindings[id(incomplete_comprehension)] == frozenset(
+        {"already_bound"}
     )
 
 
@@ -842,6 +1042,68 @@ def test_figure_composer_source_name_replacement_fallback_edges() -> None:
             "bad code !!  # data", {"data": "renamed"}
         )
         == "bad code !!  # data"
+    )
+
+
+def test_figure_composer_source_rename_preserves_multibyte_custom_code() -> None:
+    code = (
+        "label = 'μ source'\n"
+        "total = data.mean() + other.mean()\n"
+        "# data and other stay comments\n"
+    )
+
+    renamed = figurecomposer_custom_code._renamed_source_loads(
+        code, {"data": "renamed_data", "other": "renamed_other", "unused": "x"}
+    )
+
+    assert renamed == (
+        "label = 'μ source'\n"
+        "total = renamed_data.mean() + renamed_other.mean()\n"
+        "# data and other stay comments\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "import package as data\nresult = data.value",
+        "def summarize(data):\n    return data.mean()",
+        (
+            "def outer():\n"
+            "    data = 1\n"
+            "    def inner():\n"
+            "        nonlocal data\n"
+            "        return data\n"
+            "    return inner()"
+        ),
+        "def read_global():\n    global data\n    return data",
+    ),
+)
+def test_figure_composer_source_rename_rejects_every_local_binding_kind(
+    code: str,
+) -> None:
+    with pytest.raises(ValueError, match="also binds 'data'"):
+        figurecomposer_custom_code._renamed_source_loads(code, {"data": "renamed"})
+
+
+def test_figure_composer_source_rename_rejects_unparseable_source_tokens() -> None:
+    with pytest.raises(ValueError, match="valid code"):
+        figurecomposer_custom_code._renamed_source_loads(
+            "text = '''\ndata", {"data": "renamed"}
+        )
+
+    with pytest.raises(ValueError, match="valid code"):
+        figurecomposer_custom_code._renamed_source_loads(
+            "    invalid\n  data", {"data": "renamed"}
+        )
+
+
+def test_figure_composer_source_rename_ignores_non_load_declarations() -> None:
+    code = "def configure():\n    global data"
+
+    assert (
+        figurecomposer_custom_code._renamed_source_loads(code, {"data": "renamed"})
+        == code
     )
 
 

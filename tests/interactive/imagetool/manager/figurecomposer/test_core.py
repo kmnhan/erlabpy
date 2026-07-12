@@ -367,3 +367,26 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["axs"].shape == (1, 2)
     assert namespace["axs"][0, 0].get_xlim() == pytest.approx((0.25, 0.75))
+
+
+def test_figure_composer_generated_code_skips_disabled_operations(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="disabled Python",
+                    code="raise RuntimeError('must not run')",
+                    trusted=True,
+                ).model_copy(update={"enabled": False}),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    assert "must not run" not in code

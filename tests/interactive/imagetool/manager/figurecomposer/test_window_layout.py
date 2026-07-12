@@ -1163,6 +1163,38 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
+def test_figure_display_window_event_filter_accepts_source_drag(qtbot) -> None:
+    window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
+    qtbot.addWidget(window)
+    mime = QtCore.QMimeData()
+    window.set_source_drop_callbacks(can_drop=lambda data: data is mime)
+
+    class _NoMimeDragEnterEvent(QtGui.QDragEnterEvent):
+        def mimeData(self) -> None:
+            return None
+
+    no_mime_event = _NoMimeDragEnterEvent(
+        QtCore.QPoint(0, 0),
+        QtCore.Qt.DropAction.CopyAction,
+        mime,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    assert not window._handle_source_drag_event(no_mime_event)
+
+    event = QtGui.QDragEnterEvent(
+        QtCore.QPoint(0, 0),
+        QtCore.Qt.DropAction.MoveAction | QtCore.Qt.DropAction.CopyAction,
+        mime,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert window.eventFilter(window.canvas, event)
+    assert event.isAccepted()
+    assert event.dropAction() == QtCore.Qt.DropAction.CopyAction
+
+
 def test_figure_display_window_show_for_setup_recalls_hidden_states(
     qtbot, monkeypatch
 ) -> None:
@@ -3420,6 +3452,115 @@ def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> Non
         "layout"
     )
 
+    thin_child = FigureGridSpecGridState(
+        grid_id="thin-child",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="thin-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    thin_root = FigureGridSpecGridState(
+        grid_id="thin-root",
+        ncols=400,
+        child_grids=(thin_child,),
+    )
+    thin_descriptor = figurecomposer_widgets._gridspec_target_preview_descriptor(
+        thin_root, ("thin-axis",)
+    )
+    assert [entry[0] for entry in thin_descriptor[2]].count("grid") == 1
+    assert all(entry[0] != "axis" for entry in thin_descriptor[2])
+
+
+def test_figure_composer_operation_row_target_and_source_drag_edges(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2),
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState.plot_array(
+                    label="image", source="data", axes=FigureAxesSelectionState()
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._set_current_operation_row_silent(99, preserve_selection=False)
+    assert not tool.operation_list.currentIndex().isValid()
+
+    empty_expression = tool.tool_status.operations[0].model_copy(
+        update={"axes": FigureAxesSelectionState(expression="axs[:0, :0]")}
+    )
+    descriptor = tool._operation_target_preview_descriptor(empty_expression)
+    assert descriptor[-1] is True
+    assert not any(entry[-1] for entry in descriptor[2])
+
+    mime = QtCore.QMimeData()
+    monkeypatch.setattr(tool, "_source_drop_available", lambda data: data is mime)
+    monkeypatch.setattr(tool, "_add_sources_from_mime", lambda data: data is mime)
+
+    def drag_enter_event() -> QtGui.QDragEnterEvent:
+        return QtGui.QDragEnterEvent(
+            QtCore.QPoint(),
+            QtCore.Qt.DropAction.CopyAction,
+            mime,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+
+    def drag_move_event() -> QtGui.QDragMoveEvent:
+        return QtGui.QDragMoveEvent(
+            QtCore.QPoint(),
+            QtCore.Qt.DropAction.CopyAction,
+            mime,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+
+    def drop_event() -> QtGui.QDropEvent:
+        return QtGui.QDropEvent(
+            QtCore.QPointF(),
+            QtCore.Qt.DropAction.CopyAction,
+            mime,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+
+    filtered_event = drag_enter_event()
+    assert tool.eventFilter(tool, filtered_event)
+    assert filtered_event.isAccepted()
+
+    for handler, event in (
+        (tool.dragEnterEvent, drag_enter_event()),
+        (tool.dragMoveEvent, drag_move_event()),
+        (tool.dropEvent, drop_event()),
+    ):
+        handler(event)
+        assert event.isAccepted()
+
+    monkeypatch.setattr(tool, "_source_drop_available", lambda _data: False)
+    tool.dragEnterEvent(drag_enter_event())
+    tool.dragMoveEvent(drag_move_event())
+    tool.dropEvent(drop_event())
+
 
 def test_figure_composer_operation_target_preview_uses_axes_selector_palette(
     qtbot, monkeypatch
@@ -3469,6 +3610,90 @@ def test_figure_composer_operation_target_preview_uses_axes_selector_palette(
         painter.end()
 
     assert observed_sources == [tool.axes_selector]
+
+
+def test_figure_composer_operation_target_delegate_handles_empty_previews(
+    qtbot, monkeypatch
+) -> None:
+    view = QtWidgets.QTreeWidget()
+    view.setColumnCount(1)
+    qtbot.addWidget(view)
+    color_source = QtWidgets.QWidget()
+    qtbot.addWidget(color_source)
+    item = QtWidgets.QTreeWidgetItem(view)
+    descriptor_role = int(QtCore.Qt.ItemDataRole.UserRole) + 77
+    delegate = figurecomposer_widgets._AxesTargetItemDelegate(
+        descriptor_role, color_source, view
+    )
+    index = view.indexFromItem(item, 0)
+    option = QtWidgets.QStyleOptionViewItem()
+    option.initFrom(view)
+    option.widget = view
+    draw_calls: list[QtCore.QRectF] = []
+    draw_selector_rect = figurecomposer_widgets._draw_selector_rect
+
+    def record_selector_rect(
+        painter: QtGui.QPainter,
+        rect: QtCore.QRect | QtCore.QRectF,
+        **kwargs: typing.Any,
+    ) -> None:
+        draw_calls.append(QtCore.QRectF(rect))
+        draw_selector_rect(painter, rect, **kwargs)
+
+    monkeypatch.setattr(
+        figurecomposer_widgets, "_draw_selector_rect", record_selector_rect
+    )
+
+    def paint(descriptor: object, rect: QtCore.QRect) -> None:
+        item.setData(0, descriptor_role, descriptor)
+        option.rect = rect
+        pixmap = QtGui.QPixmap(max(1, rect.width()), max(1, rect.height()))
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        try:
+            delegate.paint(painter, option, index)
+        finally:
+            painter.end()
+
+    paint(None, QtCore.QRect(0, 0, 80, 24))
+    assert draw_calls == []
+
+    descriptor = (
+        "layout",
+        1.0,
+        (("axis", 0.0, 0.0, 1.0, 1.0, False),),
+        False,
+    )
+    paint(descriptor, QtCore.QRect(0, 0, 7, 3))
+    assert draw_calls == []
+
+    paint(
+        (
+            "layout",
+            1.0,
+            (("axis", 0.0, 0.0, 0.0, 0.0, False),),
+            False,
+        ),
+        QtCore.QRect(0, 0, 80, 24),
+    )
+    assert len(draw_calls) == 1
+
+    observed_sources: list[QtWidgets.QWidget] = []
+    selector_colors = figurecomposer_widgets._selector_colors
+
+    def record_color_source(
+        widget: QtWidgets.QWidget,
+    ) -> figurecomposer_widgets._SelectorColors:
+        observed_sources.append(widget)
+        return selector_colors(widget)
+
+    monkeypatch.setattr(figurecomposer_widgets, "_selector_colors", record_color_source)
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+    draw_calls.clear()
+    paint(descriptor, QtCore.QRect(0, 0, 80, 24))
+
+    assert observed_sources == [view]
+    assert len(draw_calls) == 2
 
 
 def test_figure_composer_operation_table_presents_nested_gridspec_target(
@@ -4388,6 +4613,111 @@ def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
         QtCore.Qt.KeyboardModifier.NoModifier,
     )
     operation_list.keyPressEvent(fallback_event)
+
+
+def test_figure_composer_step_editor_and_reorder_defensive_paths(
+    qtbot, monkeypatch
+) -> None:
+    scroll = figurecomposer_tool_module._FigureComposerStepEditorScroll()
+    qtbot.addWidget(scroll)
+    empty_hint = scroll.minimumSizeHint()
+
+    class _HintWidget(QtWidgets.QWidget):
+        def minimumSizeHint(self) -> QtCore.QSize:
+            return QtCore.QSize(220, 20)
+
+    content = _HintWidget()
+    scroll.setWidget(content)
+    scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    assert scroll.minimumSizeHint().width() > empty_hint.width()
+
+    tabs = QtWidgets.QTabWidget()
+    qtbot.addWidget(tabs)
+    page = figurecomposer_tool_module._FigureComposerStepEditorPage(tabs, tabs)
+    page._background_color = QtGui.QColor(0, 0, 0, 0)
+    monkeypatch.setattr(tabs, "render", lambda *_args, **_kwargs: None)
+    page._refresh_background()
+    assert page._background_color.alpha() == 0
+    page.paintEvent(None)
+    page.changeEvent(None)
+
+    scheduled: list[tuple[QtCore.QObject, object]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda owner, _delay, callback, *_args: scheduled.append((owner, callback)),
+    )
+    page.changeEvent(QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
+    assert scheduled == [(page, page._refresh_background)]
+
+    rows = figurecomposer_tool_module._FigureComposerReorderList(0)
+    qtbot.addWidget(rows)
+    invalid_item = QtWidgets.QTreeWidgetItem(rows)
+    invalid_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, 1)
+    assert rows._row_ids() == ()
+    rows._emit_rows_reordered()
+
+    rows.clear()
+    for row_id in ("first", "second"):
+        item = QtWidgets.QTreeWidgetItem(rows)
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, row_id)
+    emitted: list[tuple[tuple[str, ...], frozenset[str], str | None]] = []
+    rows.rows_reordered.connect(
+        lambda row_ids, selected_ids, current_id: emitted.append(
+            (row_ids, selected_ids, current_id)
+        )
+    )
+    rows.setCurrentIndex(QtCore.QModelIndex())
+    rows._emit_rows_reordered()
+    assert emitted[-1] == (("first", "second"), frozenset(), None)
+
+    with monkeypatch.context() as context:
+        context.setattr(rows, "currentItem", lambda: QtWidgets.QTreeWidgetItem())
+        rows._emit_rows_reordered()
+    assert emitted[-1][-1] is None
+
+    scheduled.clear()
+    rows._rows_reordered_pending = True
+    rows._queue_rows_reordered()
+    assert scheduled == []
+    rows._rows_reordered_pending = False
+    rows._queue_rows_reordered()
+    assert scheduled == [(rows, rows._emit_rows_reordered)]
+    rows._rows_reordered_pending = False
+
+    mime = QtCore.QMimeData()
+    external_drop = QtGui.QDropEvent(
+        QtCore.QPointF(),
+        QtCore.Qt.DropAction.MoveAction,
+        mime,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    rows.dropEvent(external_drop)
+    assert not external_drop.isAccepted()
+
+    class _InternalDropEvent(QtGui.QDropEvent):
+        def source(self) -> QtCore.QObject:
+            return rows
+
+    internal_drop = _InternalDropEvent(
+        QtCore.QPointF(),
+        QtCore.Qt.DropAction.MoveAction,
+        mime,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    queued: list[bool] = []
+    monkeypatch.setattr(rows, "_queue_rows_reordered", lambda: queued.append(True))
+    with monkeypatch.context() as context:
+        context.setattr(
+            QtWidgets.QTreeWidget,
+            "dropEvent",
+            lambda _tree, event: event.accept(),
+        )
+        rows.dropEvent(internal_drop)
+    assert internal_drop.isAccepted()
+    assert queued == [True]
 
 
 def test_figure_composer_copy_paste_defensive_paths(qtbot, monkeypatch) -> None:
@@ -7019,6 +7349,38 @@ def test_figure_composer_provenance_build_code_handles_invalid_recipes(
     operation = figurecomposer_provenance._figure_build_operation(fake_tool)
     assert operation.copyable
     assert operation.code == "fig = object()"
+
+
+def test_figure_composer_toolbar_axes_plain_text_handles_missing_document(
+    qtbot, monkeypatch
+) -> None:
+    class _DocumentlessPlainTextEdit(QtWidgets.QPlainTextEdit):
+        def document(self):
+            return None
+
+    edit = _DocumentlessPlainTextEdit()
+    qtbot.addWidget(edit)
+    figurecomposer_toolbar_dialogs._apply_axis_plain_text_edit_state(
+        edit,
+        figurecomposer_toolbar_dialogs._AxisValueState(value="Title", available=True),
+    )
+    assert edit.toPlainText() == "Title"
+
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    title_edit = dialog.findChild(
+        QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
+    )
+    assert title_edit is not None
+    monkeypatch.setattr(title_edit, "document", lambda: None)
+
+    title_edit.textChanged.emit()
+
+    assert _method_operations(tool, FigureMethodFamily.AXES, "set_title") == ()
 
 
 def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:

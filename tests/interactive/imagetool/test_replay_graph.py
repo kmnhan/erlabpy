@@ -1,6 +1,7 @@
 import ast
 import pathlib
 import re
+import textwrap
 import types
 import typing
 from collections.abc import Mapping
@@ -2304,6 +2305,178 @@ def test_group_framework_imports_places_future_imports_first() -> None:
     assert code.startswith("from __future__ import annotations\n")
     namespace = _exec_generated_code(code)
     assert namespace["__annotations__"] == {"second": "MissingType | None"}
+
+
+def test_replay_import_helpers_preserve_nonhoistable_imports() -> None:
+    source = (
+        "import numpy as np\n"
+        "from xarray import DataArray as Array\n"
+        "result = Array(np.asarray([1.0]))"
+    )
+    imports, body = _replay_graph._leading_top_level_imports(source)
+
+    assert imports == [
+        ("import numpy as np", "import numpy as np"),
+        (
+            "from xarray import DataArray as Array",
+            "from xarray import DataArray as Array",
+        ),
+    ]
+    assert body == "result = Array(np.asarray([1.0]))"
+    assert _replay_graph._leading_top_level_imports("if True:\n") == (
+        [],
+        "if True:\n",
+    )
+    assert _replay_graph._leading_top_level_imports("value = 1") == ([], "value = 1")
+    commented_import = "import numpy as np  # preserve this comment\nvalue = np"
+    assert _replay_graph._leading_top_level_imports(commented_import) == (
+        [],
+        commented_import,
+    )
+
+    assert _replay_graph._import_binding_targets("import numpy.linalg") == {
+        "numpy": "module:numpy"
+    }
+    assert _replay_graph._import_binding_targets(
+        "import numpy.linalg as linalg, xarray as xr"
+    ) == {"linalg": "module:numpy.linalg", "xr": "module:xarray"}
+    assert _replay_graph._import_binding_targets(
+        "from ..package import item as alias"
+    ) == {"alias": "from:..package:item"}
+    assert (
+        _replay_graph._import_binding_targets("from __future__ import annotations")
+        == {}
+    )
+    assert _replay_graph._import_binding_targets("from package import *") is None
+    assert (
+        _replay_graph._import_binding_targets(
+            "from package import first as item, second as item"
+        )
+        is None
+    )
+    assert (
+        _replay_graph._import_binding_targets(
+            "import numpy as module, xarray as module"
+        )
+        is None
+    )
+    assert _replay_graph._is_future_import("from __future__ import annotations")
+    assert not _replay_graph._is_future_import("import numpy as np")
+
+
+def test_replay_import_helpers_preserve_imports_without_ast_locations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import_node = ast.Import(names=[ast.alias(name="numpy")])
+    import_node.lineno = 1
+    import_node.col_offset = 0
+    import_node.end_lineno = None
+    import_node.end_col_offset = None
+    module = ast.Module(body=[import_node], type_ignores=[])
+    monkeypatch.setattr(_replay_graph.ast, "parse", lambda *_args, **_kwargs: module)
+
+    assert _replay_graph._leading_top_level_imports("import numpy") == (
+        [],
+        "import numpy",
+    )
+
+
+def test_replay_import_helpers_track_names_bound_by_python_constructs() -> None:
+    accessed, rebound = _replay_graph._code_name_accesses(
+        textwrap.dedent(
+            """\
+            import numpy as np
+            from package import *
+            def helper():
+                pass
+            class Result:
+                pass
+            value = np
+            del value
+            try:
+                raise error_type
+            except error_type as caught:
+                handled = caught
+            try:
+                raise error_type
+            except:
+                handled_without_name = True
+            match subject:
+                case [head, *tail] as whole:
+                    matched = whole
+                case {"key": item, **remaining}:
+                    mapped = remaining
+            """
+        )
+    )
+
+    assert {
+        "*",
+        "Result",
+        "caught",
+        "head",
+        "helper",
+        "remaining",
+        "tail",
+        "value",
+        "whole",
+    } <= accessed
+    assert {
+        "*",
+        "Result",
+        "caught",
+        "head",
+        "helper",
+        "remaining",
+        "tail",
+        "value",
+        "whole",
+    } <= rebound
+    assert _replay_graph._code_name_accesses("if value:\n") == ({"*"}, {"*"})
+
+
+def test_group_framework_imports_keeps_unsafe_and_rebound_imports_local() -> None:
+    code = _replay_graph._group_framework_imports(
+        (
+            (
+                "from __future__ import annotations\nfrom package import *\nfirst = 1",
+                True,
+            ),
+            (
+                "from __future__ import annotations\nsecond: MissingType | None = None",
+                True,
+            ),
+            ("import numpy as np\nthird = np.asarray([3.0])", True),
+        )
+    )
+
+    assert code.count("from __future__ import annotations") == 1
+    assert code.index("from package import *") < code.index("first = 1")
+    assert code.index("first = 1") < code.index("import numpy as np")
+    assert code.index("import numpy as np") < code.index("third =")
+
+    rebound_code = _replay_graph._group_framework_imports(
+        (
+            ("import numpy as np\nfirst = np.asarray([1.0])", True),
+            ("np = 'changed'", False),
+            ("import numpy as np\nsecond = np.asarray([2.0])", True),
+        )
+    )
+    assert rebound_code.count("import numpy as np") == 2
+    assert rebound_code.index("first =") < rebound_code.index("np = 'changed'")
+    assert rebound_code.index("np = 'changed'") < rebound_code.rindex(
+        "import numpy as np"
+    )
+
+    non_framework_code = "import numpy as np\nvalue = np.asarray([1.0])"
+    assert (
+        _replay_graph._group_framework_imports(((non_framework_code, False),))
+        == non_framework_code
+    )
+    assert (
+        _replay_graph._group_framework_imports((("import numpy as np", True),))
+        == "import numpy as np"
+    )
 
 
 def test_replay_graph_allows_for_loop_script_code() -> None:

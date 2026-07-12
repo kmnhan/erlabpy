@@ -1564,6 +1564,18 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     )
     assert tool.tool_status.operations[0].sources == ("first", "second")
 
+    first_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    figurecomposer_plot_slices._plot_source_check_changed(
+        tool, "first", first_check, ("first", "second")
+    )
+    assert tool.tool_status.operations[0].sources == ("second",)
+
+    first_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    figurecomposer_plot_slices._plot_source_check_changed(
+        tool, "first", first_check, ("first", "second")
+    )
+    assert tool.tool_status.operations[0].sources == ("first", "second")
+
     figurecomposer_plot_slices._plot_source_move(tool, "first", 1)
     assert tool.tool_status.operations[0].sources[:2] == ("second", "first")
 

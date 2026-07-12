@@ -408,6 +408,15 @@ def test_figure_composer_state_serializes_slice_values() -> None:
     assert empty_source.isel == {}
     with pytest.raises(pydantic.ValidationError):
         FigureSourceState.model_validate({"name": "invalid", "isel": "not-a-mapping"})
+    malformed_slice_marker = FigureSourceState.model_validate(
+        {
+            "name": "malformed-marker",
+            "isel": {"x": {"__erlab_figure_composer_slice__": [0, 1]}},
+        }
+    )
+    assert malformed_slice_marker.isel == {
+        "x": {"__erlab_figure_composer_slice__": [0, 1]}
+    }
 
     ordinary_kwargs = FigureOperationState.method(
         family="axes",

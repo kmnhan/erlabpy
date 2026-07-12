@@ -28,10 +28,12 @@ from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
     _MIME,
     _ImageToolWrapperItemDelegate,
+    _ImageToolWrapperItemModel,
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
+from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 from .helpers import (
     assert_nonempty_tooltip,
@@ -40,11 +42,6 @@ from .helpers import (
     select_child_tool,
     select_tools,
 )
-
-if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool.manager._modelview import (
-        _ImageToolWrapperItemModel,
-    )
 
 logger = logging.getLogger(__name__)
 
@@ -420,10 +417,61 @@ def test_drop_mimedata(
             QtCore.QByteArray(json.dumps({"uids": "not a list"}).encode("utf-8")),
         )
         assert model.decode_figure_source_mime(invalid_source_mime) == ()
-
         missing_child_index = model.createIndex(0, 0, "missing-child")
         missing_child_mime = model.mimeData([missing_child_index])
         assert _MIME not in missing_child_mime.formats()
+
+
+def test_figure_source_mime_filters_duplicates_and_malformed_rows(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FakeManager(QtWidgets.QWidget):
+        pass
+
+    manager = _FakeManager()
+    qtbot.addWidget(manager)
+    wrapper = _ImageToolWrapper(
+        typing.cast("ImageToolManager", manager),
+        index=0,
+        uid="root-source",
+        tool=None,
+    )
+    manager._tool_graph = types.SimpleNamespace(
+        displayed_indices=[0],
+        root_wrappers={0: wrapper},
+        nodes={"root-source": wrapper},
+    )
+    model = _ImageToolWrapperItemModel(
+        typing.cast("ImageToolManager", manager), manager
+    )
+    root_index = model.index(0, 0)
+    root_uid = root_index.internalPointer().uid
+
+    duplicate_source_mime = model.mimeData([root_index, root_index])
+    assert model.decode_figure_source_mime(duplicate_source_mime) == (root_uid,)
+
+    mixed_source_mime = QtCore.QMimeData()
+    mixed_source_mime.setData(
+        _FIGURE_SOURCE_MIME,
+        QtCore.QByteArray(
+            json.dumps({"uids": ["first", 1, "first", None, "second"]}).encode("utf-8")
+        ),
+    )
+    assert model.decode_figure_source_mime(mixed_source_mime) == (
+        "first",
+        "second",
+    )
+
+    missing_child_index = model.createIndex(0, 0, "missing-child")
+    malformed_parent = model.createIndex(0, 0, object())
+    with monkeypatch.context() as context:
+        context.setattr(
+            type(model),
+            "parent",
+            lambda _self, _index: malformed_parent,
+        )
+        malformed_child_mime = model.mimeData([missing_child_index])
+    assert malformed_child_mime.formats() == []
 
 
 def test_treeview(qtbot, accept_dialog, test_data) -> None:

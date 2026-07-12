@@ -67,6 +67,29 @@ def test_figure_composer_source_state_normalizes_legacy_self_selection_parent() 
     assert source.selection_source is None
     assert "selection_source" not in source.model_dump(mode="json")
 
+    immutable_source = FigureSourceState.model_validate(
+        types.MappingProxyType(
+            {
+                "name": "immutable_selected",
+                "label": "immutable_selected",
+                "selection_source": "immutable_selected",
+            }
+        )
+    )
+    assert immutable_source.selection_source is None
+
+    with pytest.raises(ValueError):
+        FigureSourceState.model_validate("not a source mapping")
+
+    legacy_source = FigureSourceState(name="selected").model_copy(
+        update={"selection_source": "selected"}
+    )
+    selected_source = figurecomposer_sources._source_with_selection(
+        legacy_source,
+        FigureDataSelectionState(source="selected", isel={"x": 0}),
+    )
+    assert selected_source.selection_source is None
+
 
 def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     qtbot, monkeypatch
@@ -1347,6 +1370,16 @@ def test_figure_composer_source_alias_editor_commit_paths(
     tool._refresh_source_selection_editor()
     alias_edit = tool.source_alias_edit
 
+    original_sources = tool.source_states()
+    monkeypatch.setattr(tool, "sender", lambda: None)
+    tool._commit_source_alias_edit()
+    assert tool.source_states() == original_sources
+
+    detached_edit = QtWidgets.QLineEdit()
+    monkeypatch.setattr(tool, "sender", lambda: detached_edit)
+    tool._commit_source_alias_edit()
+    assert tool.source_states() == original_sources
+
     monkeypatch.setattr(tool, "sender", lambda: alias_edit)
     alias_edit.setText("first")
     tool._commit_source_alias_edit()
@@ -1362,6 +1395,21 @@ def test_figure_composer_source_alias_editor_commit_paths(
     tool._commit_source_alias_edit()
     assert tuple(source.name for source in tool.source_states()) == ("first", "second")
     assert not tool.source_validation_label.isHidden()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tool, "_rename_source_alias", lambda *_args: False)
+        alias_edit.setText("third")
+        tool._commit_source_alias_edit()
+    assert alias_edit.text() == "first"
+
+    tool._set_selected_source_names_silent(set(), None)
+    tool._focus_source_alias_editor()
+    tool._set_selected_source_names_silent({"first"}, "first")
+    tool._refresh_source_detail_panel()
+    tool.source_alias_edit.setEnabled(False)
+    tool._focus_source_alias_editor()
+    assert not tool.source_alias_edit.isEnabled()
+    tool.source_alias_edit.setEnabled(True)
 
     alias_edit.setText("renamed")
     tool._commit_source_alias_edit()
@@ -3383,6 +3431,9 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
     assert inspector.property("figureComposerSourceDims") == ()
     assert not inspector.details_button.isEnabled()
 
+    inspector._ensure_details_html()
+    assert not inspector.details_label.text()
+
 
 def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
     data = xr.DataArray([1.0, 2.0], dims=("x",), name="data")
@@ -4591,3 +4642,486 @@ def test_figure_composer_restore_skips_missing_nonprimary_source_reference(
     assert any(source.name == "stale" for source in restored.tool_status.sources)
     assert restored.preview_pixmap is not None
     assert not restored.preview_pixmap_stale
+
+
+def test_figure_composer_source_structure_defensive_paths(qtbot) -> None:
+    first = xr.DataArray(np.arange(3.0), dims=("x",), name="first")
+    second = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",), name="second")
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(FigureSourceState(name="first"), FigureSourceState(name="second")),
+        operations=(),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    tool._update_source_list_item(QtWidgets.QTreeWidgetItem())
+    tool._set_selected_source_names_silent(set(), None)
+    assert tool._selected_source_names() == ()
+
+    refreshed: list[str] = []
+
+    def refresh_source(name: str) -> bool:
+        if name == "first":
+            tool._set_source_status_text("refresh rejected")
+            return False
+        refreshed.append(name)
+        return True
+
+    tool._set_source_refresh_callbacks(
+        can_refresh_source=lambda name: name in {"first", "second"},
+        refresh_source=refresh_source,
+    )
+    tool._refresh_source_names(("first", "second"))
+    assert refreshed == ["second"]
+    assert not tool.source_status_label.isHidden()
+
+    legacy_source = FigureSourceState(name="legacy").model_copy(
+        update={"selection_source": "legacy"}
+    )
+    renamed = FigureComposerTool._source_with_renamed_references(
+        legacy_source, {"legacy": "renamed"}
+    )
+    assert renamed.name == "renamed"
+    assert renamed.selection_source is None
+
+    tool._source_list_reordered(("second", "first"), (), "second")
+    assert tuple(source.name for source in tool.source_states()) == ("second", "first")
+    assert tool._selected_source_names() == ("second",)
+
+    first_source = tool._source_by_name()["first"].model_copy(
+        update={"selection_source": "second"}
+    )
+    second_source = tool._source_by_name()["second"].model_copy(
+        update={"selection_source": "first"}
+    )
+    tool._recipe = tool._recipe.model_copy(
+        update={"sources": (first_source, second_source)}
+    )
+    assert tool._source_dependency_names(("first",)) == ("second", "first")
+
+
+def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
+    base = xr.DataArray(np.arange(3.0), dims=("x",), name="base")
+    selected = FigureSourceState(
+        name="selected",
+        selection_source="base",
+        qsel={"missing": 0.0},
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": base},
+        sources=(FigureSourceState(name="base"), selected),
+        operations=(),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    source_list = list(tool.source_states())
+    source_by_name = {source.name: source for source in source_list}
+    alias = tool._source_alias_for_legacy_selection(
+        FigureDataSelectionState(source="base", qsel={"missing": 0.0}),
+        source_list=source_list,
+        source_by_name=source_by_name,
+        reserved=set(source_by_name),
+    )
+    assert alias == "selected"
+    assert "selected" not in tool.source_data()
+    xr.testing.assert_identical(tool._source_selection_base_data["selected"], base)
+
+    assert FigureComposerTool._source_lineage_names(
+        "selected", {"selected": selected}
+    ) == ("selected",)
+    cycle_a = selected.model_copy(
+        update={"name": "cycle_a", "selection_source": "cycle_b"}
+    )
+    cycle_b = selected.model_copy(
+        update={"name": "cycle_b", "selection_source": "cycle_a"}
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        FigureComposerTool._source_lineage_names(
+            "cycle_a", {"cycle_a": cycle_a, "cycle_b": cycle_b}
+        )
+    propagated = FigureComposerTool._source_states_with_propagated_link_metadata(
+        {"selected": selected}, ("missing",)
+    )
+    assert propagated["selected"] is selected
+
+    with pytest.raises(ValueError, match="unavailable"):
+        tool._source_data_with_recomputed_dependents(
+            {}, {}, ("base",), source_by_name=source_by_name
+        )
+
+    linked = FigureSourceState(name="linked", selection_source="base")
+    recomputed_data, recomputed_bases = tool._source_data_with_recomputed_dependents(
+        {"base": base},
+        {"linked": base},
+        ("base",),
+        source_by_name={"base": source_by_name["base"], "linked": linked},
+    )
+    xr.testing.assert_identical(recomputed_data["linked"], base)
+    assert "linked" not in recomputed_bases
+
+    empty_operation = FigureOperationState.plot_slices(label="empty", sources=())
+    converted_empty = tool._plot_slices_operation_with_shared_legacy_selection(
+        empty_operation
+    )
+    assert converted_empty is not None
+    assert converted_empty.map_selections == ()
+
+    invalid_operation = FigureOperationState.plot_slices(
+        label="invalid",
+        sources=("base",),
+        map_selections=(
+            FigureDataSelectionState(source="base", qsel={"missing": 0.0}),
+        ),
+    )
+    assert (
+        tool._plot_slices_operation_with_shared_legacy_selection(invalid_operation)
+        is None
+    )
+
+    no_slice_dimension = FigureOperationState.plot_slices(
+        label="legacy", sources=("base",)
+    ).model_copy(update={"slice_dim": None})
+    converted_slice = FigureComposerTool._plot_slices_operation_with_legacy_qsel(
+        no_slice_dimension,
+        {"x": 1.0, "x_width": 0.5},
+    )
+    assert converted_slice.slice_dim == "x"
+    assert converted_slice.slice_values == (1.0,)
+    assert converted_slice.slice_width == 0.5
+
+    no_selection_operation = FigureOperationState.plot_slices(
+        label="no selection",
+        sources=("base",),
+        map_selections=(FigureDataSelectionState(source="base"),),
+    )
+    converted_sources = tool._plot_slices_operation_with_legacy_source_aliases(
+        no_selection_operation,
+        source_list=[source_by_name["base"]],
+        source_by_name={"base": source_by_name["base"]},
+        reserved={"base"},
+    )
+    assert converted_sources.sources == ("base",)
+    assert converted_sources.map_selections == ()
+    assert (
+        FigureComposerTool._legacy_selection_fallback_source(
+            FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            "base",
+        )
+        is None
+    )
+
+
+def test_figure_composer_add_and_replace_tolerate_broken_link_cycle(qtbot) -> None:
+    left_data = xr.DataArray(np.arange(3.0), dims=("x",), name="left")
+    right_data = left_data.rename("right")
+    left = FigureSourceState(name="left", node_uid="shared").model_copy(
+        update={"selection_source": "right"}
+    )
+    right = FigureSourceState(name="right", node_uid="shared").model_copy(
+        update={"selection_source": "left"}
+    )
+    tool = FigureComposerTool.from_sources(
+        {"left": left_data, "right": right_data},
+        sources=(left, right),
+        operations=(),
+        primary_source="left",
+    )
+    qtbot.addWidget(tool)
+
+    incoming = left_data + 10.0
+    result = tool.add_sources(
+        (FigureSourceState(name="incoming", node_uid="shared"),),
+        {"incoming": incoming},
+    )
+    assert result.added == (("incoming", "incoming"),)
+    xr.testing.assert_identical(tool.source_data()["incoming"], incoming)
+
+    replacement = left_data + 20.0
+    assert tool.replace_source(
+        "left",
+        FigureSourceState(name="replacement", node_uid="shared"),
+        replacement,
+    )
+    xr.testing.assert_identical(tool.source_data()["left"], replacement)
+
+    unavailable = tool.add_sources((FigureSourceState(name="missing"),), {})
+    assert not unavailable
+    assert unavailable.skipped[0][0] == "missing"
+    assert not tool.source_status_label.isHidden()
+
+
+def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="saved")
+
+    primary_tool = FigureComposerTool.from_sources(
+        {"primary": data},
+        sources=(FigureSourceState(name="primary"),),
+        operations=(),
+        primary_source="primary",
+    )
+    qtbot.addWidget(primary_tool)
+    invalid_primary = primary_tool.source_states()[0].model_copy(
+        update={"qsel": {"missing": 0.0}}
+    )
+    primary_tool._recipe = primary_tool._recipe.model_copy(
+        update={"sources": (invalid_primary,)}
+    )
+    primary_tool.set_source_data({})
+    primary_tool._restore_persistence_data_items(
+        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data},
+        xr.Dataset(attrs={"tool_data_name": "restored"}),
+    )
+    assert primary_tool.source_data()["primary"].name == "restored"
+    assert "primary" not in primary_tool._source_selection_base_data
+
+    invalid_child = FigureSourceState(
+        name="child",
+        selection_source="root",
+        qsel={"missing": 0.0},
+    )
+    descendant_tool = FigureComposerTool.from_sources(
+        {"root": data},
+        sources=(FigureSourceState(name="root"), invalid_child),
+        operations=(),
+        primary_source="root",
+    )
+    qtbot.addWidget(descendant_tool)
+    descendant_tool.set_source_data({})
+    descendant_tool._restore_persistence_data_items(
+        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data}, xr.Dataset()
+    )
+    assert "root" in descendant_tool.source_data()
+    assert "child" not in descendant_tool.source_data()
+
+    orphan = FigureSourceState(
+        name="orphan",
+        selection_source="missing",
+        qsel={"missing": 0.0},
+    )
+    pending_tool = FigureComposerTool.from_sources(
+        {"stable": data},
+        sources=(FigureSourceState(name="stable"), orphan),
+        operations=(),
+        primary_source="stable",
+    )
+    qtbot.addWidget(pending_tool)
+    pending_tool._restore_persistence_data_items({"orphan": data}, xr.Dataset())
+    assert "stable" in pending_tool.source_data()
+    assert "orphan" not in pending_tool.source_data()
+
+
+def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
+    qtbot,
+) -> None:
+    base_data = xr.DataArray(np.arange(3.0), dims=("x",), name="base")
+    selected_data = base_data.isel(x=0)
+    base_source = FigureSourceState(name="base")
+    selected_source = FigureSourceState(
+        name="selected",
+        selection_source="base",
+        isel={"x": 0},
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": base_data, "selected": selected_data},
+        sources=(base_source, selected_source),
+        operations=(FigureOperationState.plot_array(label="plot", source="selected"),),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    malformed_provenance = {"kind": "not-a-provenance-kind"}
+    tool._recipe = tool._recipe.model_copy(
+        update={
+            "sources": (
+                base_source.model_copy(
+                    update={"provenance_spec": malformed_provenance}
+                ),
+                selected_source.model_copy(
+                    update={"provenance_spec": malformed_provenance}
+                ),
+            )
+        }
+    )
+    script_inputs, skipped_names, source_name_map = tool._display_code_source_plan()
+    assert tuple(script_input.name for script_input in script_inputs) == ("base",)
+    assert skipped_names == frozenset()
+    assert source_name_map == {}
+
+    cleanup_tool = FigureComposerTool.from_sources(
+        {"base": base_data, "selected": selected_data},
+        sources=(base_source, selected_source),
+        operations=(),
+        primary_source="base",
+    )
+    qtbot.addWidget(cleanup_tool)
+    cleanup_tool._source_selection_base_data["selected"] = base_data
+    cleanup_tool.set_missing_sources({"selected"})
+    assert "selected" not in cleanup_tool.source_data()
+    assert "selected" not in cleanup_tool._source_selection_base_data
+
+
+def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
+    plain = xr.DataArray(np.arange(2.0), dims=("x",), name="plain")
+    other = xr.DataArray(np.arange(2.0), dims=("y",), name="other")
+    empty = xr.DataArray(
+        np.empty(0), dims=("empty",), coords={"empty": np.empty(0)}, name="empty"
+    )
+    with_coordinates = xr.DataArray(
+        np.arange(2.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0]},
+        name="with_coordinates",
+    )
+    source_names = ("plain", "other", "empty", "with_coordinates", "unavailable")
+    tool = FigureComposerTool.from_sources(
+        {
+            "plain": plain,
+            "other": other,
+            "empty": empty,
+            "with_coordinates": with_coordinates,
+        },
+        sources=tuple(FigureSourceState(name=name) for name in source_names),
+        operations=(),
+        primary_source="plain",
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._source_selection_dimension_tooltip("x", source_names)
+    assert tool._common_source_selection_dims(("unavailable", "plain", "other")) == ()
+    tool._set_selected_source_names_silent({"with_coordinates"}, "with_coordinates")
+    assert tool._default_source_inspector_target() == "with_coordinates"
+
+    mode_combo = tool._source_selection_mode_combo(
+        current="qsel", mixed=False, parent=tool
+    )
+    value_edit = QtWidgets.QLineEdit("1.0", tool)
+    width_edit = QtWidgets.QLineEdit("0.5", tool)
+    tool._connect_source_selection_dimension_controls(
+        "x", mode_combo, value_edit, width_edit
+    )
+    before = tool.source_states()
+    mode_combo.addItem("unsupported", object())
+    unsupported_index = mode_combo.count() - 1
+    mode_combo.setCurrentIndex(unsupported_index)
+    mode_combo.activated.emit(unsupported_index)
+    assert tool.source_states() == before
+
+    qsel_index = mode_combo.findData("qsel")
+    assert qsel_index >= 0
+    mode_combo.setCurrentIndex(qsel_index)
+    mode_combo.activated.emit(qsel_index)
+    FigureComposerTool._apply_mixed_line_edit(value_edit, True)
+    value_edit.editingFinished.emit()
+    assert tool.source_states() == before
+
+    FigureComposerTool._apply_mixed_line_edit(value_edit, False)
+    value_edit.setText("1.0")
+    FigureComposerTool._apply_mixed_line_edit(width_edit, True)
+    value_edit.editingFinished.emit()
+    assert tool.source_states() == before
+
+    FigureComposerTool._apply_mixed_line_edit(width_edit, False)
+    value_edit.setText("[")
+    width_edit.setText("0.5")
+    value_edit.editingFinished.emit()
+    assert not tool.source_validation_label.isHidden()
+
+    value_edit.setText("1.0")
+    width_edit.editingFinished.emit()
+    selected_source = tool._source_by_name()["with_coordinates"]
+    assert selected_source.qsel
+    assert "with_coordinates" in tool._source_selection_base_data
+
+    detached_selected = FigureSourceState(
+        name="selected", selection_source="missing_base"
+    )
+    detached_tool = FigureComposerTool.from_sources(
+        {"selected": with_coordinates},
+        sources=(FigureSourceState(name="missing_base"), detached_selected),
+        operations=(),
+        primary_source="selected",
+    )
+    qtbot.addWidget(detached_tool)
+    detached_tool._set_selected_source_names_silent({"selected"}, "selected")
+    detached_before = detached_tool.source_states()
+    detached_tool._update_selected_source_dimension("x", "qsel", "1.0", "")
+    assert detached_tool.source_states() == detached_before
+
+    tool._set_selected_source_names_silent({"unavailable"}, "unavailable")
+    tool._recipe = tool._recipe.model_copy(
+        update={
+            "sources": tuple(
+                source
+                for source in tool.source_states()
+                if source.name != "unavailable"
+            )
+        }
+    )
+    tool._refresh_source_detail_panel()
+    assert not tool.source_alias_edit.isEnabled()
+
+
+def test_figure_composer_restore_persisted_source_pending_paths(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="saved")
+    blocked_tool = FigureComposerTool.from_sources(
+        {"stable": data, "parent": data},
+        sources=(
+            FigureSourceState(name="stable"),
+            FigureSourceState(name="parent", selection_source="missing_parent"),
+            FigureSourceState(name="child", selection_source="parent"),
+        ),
+        operations=(),
+        primary_source="stable",
+    )
+    qtbot.addWidget(blocked_tool)
+    blocked_tool._restore_persistence_data_items({"child": data}, xr.Dataset())
+    assert "parent" in blocked_tool.source_data()
+    assert "child" not in blocked_tool.source_data()
+
+    fallback_tool = FigureComposerTool.from_sources(
+        {"stable": data},
+        sources=(
+            FigureSourceState(name="stable"),
+            FigureSourceState(name="orphan", selection_source="missing_parent"),
+        ),
+        operations=(),
+        primary_source="stable",
+    )
+    qtbot.addWidget(fallback_tool)
+    fallback_tool._restore_persistence_data_items({"orphan": data}, xr.Dataset())
+    xr.testing.assert_identical(fallback_tool.source_data()["orphan"], data)
+
+
+def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(2.0), dims=("x",), coords={"x": [0.0, 1.0]}, name="base"
+    )
+    provenance_spec = provenance.public_data().model_dump(mode="json")
+    base = FigureSourceState(name="base", provenance_spec=provenance_spec)
+    selected = FigureSourceState(
+        name="selected",
+        selection_source="base",
+        qsel={"x": 1.0},
+        provenance_spec=provenance_spec,
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": data, "selected": data.qsel(x=1.0)},
+        sources=(base, selected),
+        operations=(FigureOperationState.line(label="line", source="selected"),),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+
+    monkeypatch.setattr(provenance, "to_replay_provenance_spec", lambda _spec: None)
+    assert (
+        tool._selected_source_script_input(
+            selected,
+            display_name="selected_display",
+            source_by_name={"base": base, "selected": selected},
+        )
+        is None
+    )
