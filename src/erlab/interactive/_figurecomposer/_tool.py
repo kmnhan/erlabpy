@@ -654,7 +654,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_drop_callback: Callable[[QtCore.QMimeData], bool] | None = None
         self._source_inspector_target: str | None = None
         self._updating_source_selection = False
-        self._recipe = recipe or self._default_recipe(data)
+        initial_recipe = recipe or self._default_recipe(data)
+        self._recipe = initial_recipe.model_copy(
+            update={"sources": self._normalized_source_states(initial_recipe.sources)}
+        )
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
         self._figure_window: _FigureComposerDisplayWindow | None = None
@@ -2816,12 +2819,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @staticmethod
     def _source_with_name(source: FigureSourceState, name: str) -> FigureSourceState:
-        if source.name == name:
+        selection_source = source.selection_source
+        if selection_source == source.name:
+            selection_source = None
+        if source.name == name and selection_source == source.selection_source:
             return source
-        updates = {"name": name}
+        updates: dict[str, typing.Any] = {
+            "name": name,
+            "selection_source": selection_source,
+        }
         if source.label == source.name:
             updates["label"] = name
         return source.model_copy(update=updates)
+
+    @classmethod
+    def _source_with_renamed_references(
+        cls,
+        source: FigureSourceState,
+        rename_map: Mapping[str, str],
+    ) -> FigureSourceState:
+        """Rename one source and every explicit parent reference atomically."""
+        old_name = source.name
+        renamed = cls._source_with_name(source, rename_map.get(old_name, old_name))
+        parent_name = source.selection_source
+        if parent_name == old_name:
+            parent_name = None
+        elif parent_name is not None:
+            parent_name = rename_map.get(parent_name, parent_name)
+        if renamed.selection_source == parent_name:
+            return renamed
+        return renamed.model_copy(update={"selection_source": parent_name})
 
     def _source_unique_alias(self, source_name: str, reserved: set[str]) -> str:
         return _source_unique_name(source_name, reserved)
@@ -2897,13 +2924,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sources: list[FigureSourceState] = []
         changed = False
         for source in self._recipe.sources:
-            updated_source = source
-            if source.name == old_name:
-                updated_source = self._source_with_name(source, new_name)
-            if source.selection_source == old_name:
-                updated_source = updated_source.model_copy(
-                    update={"selection_source": new_name}
-                )
+            updated_source = self._source_with_renamed_references(source, rename_map)
             if updated_source is not source:
                 changed = True
                 sources.append(updated_source)
@@ -3651,6 +3672,89 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if data is not None:
                 return data
         return self._source_data.get(source_name)
+
+    @staticmethod
+    def _source_lineage_names(
+        source_name: str,
+        source_by_name: Mapping[str, FigureSourceState],
+    ) -> tuple[str, ...]:
+        """Return one source lineage from its available root to the requested leaf."""
+        lineage: list[str] = []
+        seen: set[str] = set()
+        current_name = source_name
+        while True:
+            if current_name in seen:
+                raise ValueError(
+                    f"source selection dependency cycle includes {current_name!r}"
+                )
+            seen.add(current_name)
+            lineage.append(current_name)
+            current = source_by_name.get(current_name)
+            if current is None or current.selection_source is None:
+                break
+            parent_name = current.selection_source
+            if parent_name not in source_by_name:
+                break
+            current_name = parent_name
+        lineage.reverse()
+        return tuple(lineage)
+
+    @staticmethod
+    def _source_states_with_propagated_link_metadata(
+        source_by_name: Mapping[str, FigureSourceState],
+        changed_names: Iterable[str],
+    ) -> dict[str, FigureSourceState]:
+        """Propagate origin-link metadata through every selected descendant."""
+        sources = dict(source_by_name)
+        queue: collections.deque[str] = collections.deque(changed_names)
+        visited = set(queue)
+        while queue:
+            parent_name = queue.popleft()
+            parent = sources.get(parent_name)
+            if parent is None:
+                continue
+            for source_name, source in tuple(sources.items()):
+                if (
+                    source_name in visited
+                    or source.selection_source != parent_name
+                    or source_name == parent_name
+                ):
+                    continue
+                updates = {
+                    field: getattr(parent, field)
+                    for field in (
+                        "node_uid",
+                        "node_snapshot_token",
+                        "provenance_spec",
+                    )
+                    if getattr(source, field) != getattr(parent, field)
+                }
+                if updates:
+                    source = source.model_copy(update=updates)
+                    sources[source_name] = source
+                visited.add(source_name)
+                queue.append(source_name)
+        return sources
+
+    @classmethod
+    def _normalized_source_states(
+        cls, sources: Sequence[FigureSourceState]
+    ) -> tuple[FigureSourceState, ...]:
+        """Return source states satisfying the canonical selection graph invariants."""
+        canonical = tuple(
+            cls._source_with_name(source, source.name) for source in sources
+        )
+        source_by_name = {source.name: source for source in canonical}
+        roots = tuple(
+            source.name
+            for source in canonical
+            if source.selection_source is None
+            or source.selection_source not in source_by_name
+        )
+        propagated = cls._source_states_with_propagated_link_metadata(
+            source_by_name, roots
+        )
+        return tuple(propagated[source.name] for source in canonical)
 
     def _source_data_with_recomputed_dependents(
         self,
@@ -6333,15 +6437,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         renamed_source_data: dict[str, xr.DataArray] = {}
         for source in unique_sources:
             pasted_name = rename_map[source.name]
-            renamed_source = self._source_with_name(source, pasted_name)
-            if source.selection_source is not None:
-                renamed_source = renamed_source.model_copy(
-                    update={
-                        "selection_source": rename_map.get(
-                            source.selection_source, source.selection_source
-                        )
-                    }
-                )
+            renamed_source = self._source_with_renamed_references(source, rename_map)
             if pasted_name not in existing_source_names:
                 renamed_sources.append(renamed_source)
                 existing_source_names.add(pasted_name)
@@ -6760,8 +6856,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         keep_selection_source: bool,
     ) -> tuple[FigureSourceState, xr.DataArray]:
         replacement = self._source_with_name(source, alias)
-        if source.selection_source == source.name:
-            replacement = replacement.model_copy(update={"selection_source": alias})
         if (
             existing_source is not None
             and _source_has_selection(existing_source)
@@ -6773,7 +6867,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         "selection_source": (
                             existing_source.selection_source
                             if keep_selection_source
-                            else alias
+                            else None
                         )
                     }
                 ),
@@ -7708,7 +7802,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _registry.spec_for(operation.kind).loaded_operation(operation)
             for operation in status.operations
         )
-        self._recipe = status.model_copy(update={"operations": operations})
+        sources = self._normalized_source_states(status.sources)
+        self._recipe = status.model_copy(
+            update={"sources": sources, "operations": operations}
+        )
         self._ensure_primary_source_data()
         self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()

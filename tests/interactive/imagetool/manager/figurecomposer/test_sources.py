@@ -53,6 +53,19 @@ def test_figure_composer_source_alias_candidate_rejects_unusable_names(
     )
 
 
+def test_figure_composer_source_state_normalizes_legacy_self_selection_parent() -> None:
+    source = FigureSourceState.model_validate(
+        {
+            "name": "selected",
+            "qsel": {"x": 1.0},
+            "selection_source": "selected",
+        }
+    )
+
+    assert source.selection_source is None
+    assert "selection_source" not in source.model_dump(mode="json")
+
+
 def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     qtbot, monkeypatch
 ) -> None:
@@ -782,6 +795,35 @@ def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
     assert tool._source_alias_error("data_1", current="renamed") is not None
 
 
+def test_figure_composer_source_alias_rename_keeps_own_selection_implicit(
+    qtbot,
+) -> None:
+    base = xr.DataArray(np.arange(4.0), dims=("x",), name="base")
+    selected = base.isel(x=slice(1, None))
+    tool = FigureComposerTool.from_sources(
+        {"selected": selected},
+        sources=(
+            FigureSourceState(
+                name="selected",
+                selection_source="selected",
+                isel={"x": slice(1, None)},
+            ),
+        ),
+        operations=(FigureOperationState.line(label="line", source="selected"),),
+        primary_source="selected",
+    )
+    qtbot.addWidget(tool)
+    tool._source_selection_base_data["selected"] = base
+
+    assert tool._rename_source_alias("selected", "renamed")
+
+    [source] = tool.source_states()
+    assert source.name == "renamed"
+    assert source.selection_source is None
+    xr.testing.assert_identical(tool.source_data()["renamed"], selected)
+    xr.testing.assert_identical(tool._source_selection_base_data["renamed"], base)
+
+
 def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
     first = _figure_composer_profile_source("first")
     second = _figure_composer_profile_source("second")
@@ -944,6 +986,7 @@ def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
     tool._source_selection_base_data["data"] = base
     tool._set_selected_source_names_silent({"data"}, "data")
     tool._duplicate_selected_sources()
+    assert tool._source_by_name()["data_copy"].selection_source is None
     tool._recipe = tool._recipe.model_copy(
         update={
             "operations": (
@@ -963,7 +1006,9 @@ def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
         "plot_array",
         lambda data, **_kwargs: captured.append(data),
     )
-    namespace = _exec_generated_code(tool.generated_code(), {"data": base})
+    namespace = _exec_generated_code(
+        tool.generated_code(), {"data": base, "data_copy": base}
+    )
 
     assert isinstance(namespace["fig"], Figure)
     assert len(captured) == 2
@@ -1823,7 +1868,7 @@ def test_figure_composer_source_refresh_applies_saved_selection(
     xr.testing.assert_identical(tool.source_data()["data"], replacement.qsel(eV=0.0))
     [source] = tool.source_states()
     assert source.qsel == {"eV": 0.0}
-    assert source.selection_source == "data"
+    assert source.selection_source is None
 
     stale = tool.source_data()["data"]
     incompatible = xr.DataArray(
@@ -2030,7 +2075,7 @@ def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> No
 
     [source] = tool.source_states()
     assert source.qsel == {"eV": 0.0}
-    assert source.selection_source == "data"
+    assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
     xr.testing.assert_identical(tool._source_selection_base_data["data"], refreshed)
 
@@ -2079,6 +2124,7 @@ def test_figure_composer_readding_renamed_linked_source_updates_alias(qtbot) -> 
     assert tuple(source.name for source in tool.source_states()) == ("custom_alias",)
     assert tool.source_states()[0].label == "custom_alias"
     assert tool.source_states()[0].qsel == {"eV": 0.0}
+    assert tool.source_states()[0].selection_source is None
     xr.testing.assert_identical(
         tool.source_data()["custom_alias"], refreshed.qsel(eV=0.0)
     )
@@ -2121,7 +2167,7 @@ def test_figure_composer_replace_different_source_preserves_compatible_selection
     [source] = tool.source_states()
     assert source.node_uid == "new-node"
     assert source.qsel == {"eV": 0.0}
-    assert source.selection_source == "data"
+    assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["data"], replacement.qsel(eV=0.0))
     xr.testing.assert_identical(tool._source_selection_base_data["data"], replacement)
 
@@ -2138,7 +2184,7 @@ def test_figure_composer_replace_different_source_preserves_compatible_selection
     )
     [source] = tool.source_states()
     assert source.qsel == {"eV": -1.0}
-    assert source.selection_source == "data"
+    assert source.selection_source is None
     xr.testing.assert_identical(
         tool.source_data()["data"], selected_replacement.qsel(eV=-1.0)
     )

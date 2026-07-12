@@ -225,14 +225,15 @@ def _source_with_selection(
     source: FigureSourceState, selection: FigureDataSelectionState
 ) -> FigureSourceState:
     has_selection = bool(selection.isel or selection.qsel or selection.mean_dims)
+    selection_source = source.selection_source
+    if selection_source == source.name:
+        selection_source = None
     return source.model_copy(
         update={
             "isel": dict(selection.isel),
             "qsel": dict(selection.qsel),
             "mean_dims": tuple(selection.mean_dims),
-            "selection_source": (
-                (source.selection_source or source.name) if has_selection else None
-            ),
+            "selection_source": selection_source if has_selection else None,
         }
     )
 

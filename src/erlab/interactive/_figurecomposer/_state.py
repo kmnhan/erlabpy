@@ -189,12 +189,16 @@ class FigureSourceState(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _default_label_from_name(cls, value: typing.Any) -> typing.Any:
-        if isinstance(value, Mapping) and (
-            "label" not in value or value.get("label") is None
-        ):
+    def _normalize_source_defaults(cls, value: typing.Any) -> typing.Any:
+        if not isinstance(value, Mapping):
+            return value
+        if "label" not in value or value.get("label") is None:
             value = dict(value)
             value["label"] = value.get("name")
+        if value.get("selection_source") == value.get("name"):
+            if not isinstance(value, dict):
+                value = dict(value)
+            value["selection_source"] = None
         return value
 
     @pydantic.field_validator("isel", "qsel", mode="before")

@@ -153,7 +153,7 @@ def test_figure_composer_source_selection_editor_updates_source_snapshot(
     assert source.qsel == {"eV": 1.0}
     assert source.isel == {}
     assert source.mean_dims == ()
-    assert source.selection_source == "data"
+    assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["data"], data.qsel(eV=1.0))
     assert tool.tool_status.operations[0].map_selections == ()
 
