@@ -2247,9 +2247,12 @@ def test_manager_badge_hit_testing_edge_paths(
         assert dask_rect is not None
 
         assert delegate._badge_at(option, QtCore.QModelIndex(), QtCore.QPoint()) is None
+        malformed_pointer = object()
         assert (
             delegate._badge_at(
-                option, model.createIndex(0, 0, object()), option.rect.center()
+                option,
+                model.createIndex(0, 0, malformed_pointer),
+                option.rect.center(),
             )
             is None
         )
