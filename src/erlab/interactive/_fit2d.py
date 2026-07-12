@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import enum
 import functools
 import logging
@@ -16,7 +17,11 @@ import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from xarray_lmfit._io import _patch_encode4js
-from xarray_lmfit.modelfit import _ParametersWrapper, _parse_params
+from xarray_lmfit.modelfit import (
+    _materialize_broadcast_params,
+    _ParametersWrapper,
+    _parse_params,
+)
 
 import erlab.interactive.utils
 from erlab.interactive._fit1d import (
@@ -358,18 +363,41 @@ class Fit2DTool(Fit1DTool):
         self._init_full_data_state(data, data_name=data_name)
 
         if params is not None:
-            parsed_params: xr.DataArray | _ParametersWrapper = _parse_params(params)
-            if isinstance(parsed_params, _ParametersWrapper):
-                params = parsed_params.params
-            else:
-                if parsed_params.dims[0] != self._y_dim_name:
+            parameter_inputs = _parse_params(params)
+            if parameter_inputs.plan.mode == "static":
+                if parameter_inputs.plan.template is None:  # pragma: no cover
+                    # Guaranteed by xarray-lmfit for static parameter inputs.
+                    raise RuntimeError("Static parameter template was not initialized.")
+                params = parameter_inputs.plan.template.params
+            elif parameter_inputs.plan.mode == "broadcast":
+                template = lmfit.create_params(
+                    **{
+                        name: dict(specs)
+                        for name, specs in parameter_inputs.plan.template_specs
+                    }
+                )
+                parameter_plan = dataclasses.replace(
+                    parameter_inputs.plan,
+                    template=_ParametersWrapper(template),
+                )
+                parameter_sets = xr.apply_ufunc(
+                    lambda *values: (
+                        _materialize_broadcast_params(
+                            parameter_plan, values, guess=False
+                        ).params
+                    ),
+                    *(array.compute() for array in parameter_inputs.arrays),
+                    vectorize=True,
+                    output_dtypes=[object],
+                )
+                if parameter_sets.dims[0] != self._y_dim_name:
                     raise ValueError(
                         f"Some parameters are dependent on dimension "
-                        f"`{parsed_params.dims[0]}`, which does not match the "
+                        f"`{parameter_sets.dims[0]}`, which does not match the "
                         f"independent dimension of the data (`{self._y_dim_name}`)."
                     )
                 if (
-                    parsed_params.sizes[self._y_dim_name]
+                    parameter_sets.sizes[self._y_dim_name]
                     != data.sizes[self._y_dim_name]
                 ):
                     raise ValueError(
@@ -377,12 +405,16 @@ class Fit2DTool(Fit1DTool):
                         "the independent dimension of the data."
                     )
                 self._params_full: list[lmfit.Parameters | None] = (
-                    parsed_params.values.tolist()
+                    parameter_sets.values.tolist()
                 )
                 self._initial_params_full: list[lmfit.Parameters] | None = [
-                    p.copy() for p in parsed_params.values
+                    p.copy() for p in parameter_sets.values
                 ]
                 params = self._params_full[0]
+            else:  # pragma: no cover - _parse_params only returns these two modes
+                raise RuntimeError(
+                    f"Unsupported parameter input mode: {parameter_inputs.plan.mode}"
+                )
 
         super().__init__(
             self._data_full.isel({self._y_dim_name: self._current_idx}),

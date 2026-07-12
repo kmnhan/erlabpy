@@ -15,6 +15,7 @@ import enum
 import fnmatch
 import importlib
 import inspect
+import io
 import itertools
 import json
 import keyword
@@ -1683,36 +1684,33 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
 
 
 def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
-    from xarray_lmfit._io import _dumps_result, _patch_encode4js
+    import xarray_lmfit
 
     from erlab.interactive.imagetool import _serialization
 
     serialized = ds.copy()
-    with _patch_encode4js():
-        for var in serialized.data_vars:
-            if str(var).endswith("modelfit_results"):
-                serialized[var] = xr.apply_ufunc(
-                    _dumps_result,
-                    serialized[var],
-                    vectorize=True,
-                    output_dtypes=[str],
-                )
     private_coord_data_name = _fit_dataset_private_coord_data_name(serialized)
     if private_coord_data_name is not None:
         serialized = _serialization.encode_private_coords(
             serialized, private_coord_data_name
         )
-    blob = serialized.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
-    return np.frombuffer(blob, dtype=np.uint8).copy()
+    buffer = io.BytesIO()
+    xarray_lmfit.save_fit(
+        serialized,
+        buffer,
+        engine="h5netcdf",
+        invalid_netcdf=True,
+    )
+    return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
 
 
 def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
-    from xarray_lmfit._io import _loads_result
+    import xarray_lmfit
 
     from erlab.interactive.imagetool import _serialization
 
-    restored = xr.load_dataset(
-        memoryview(np.asarray(blob, dtype=np.uint8).tobytes()),
+    restored = xarray_lmfit.load_fit(
+        io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
     private_coord_data_name = _fit_dataset_private_coord_data_name(restored)
@@ -1720,14 +1718,6 @@ def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
         restored = _serialization.restore_private_coords(
             restored, private_coord_data_name
         )
-    for var in restored.data_vars:
-        if str(var).endswith("modelfit_results"):
-            restored[var] = xr.apply_ufunc(
-                lambda s: _loads_result(s, None),
-                restored[var],
-                vectorize=True,
-                output_dtypes=[object],
-            )
     return restored
 
 
