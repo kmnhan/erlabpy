@@ -2715,22 +2715,43 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         return tuple(dict.fromkeys(names))
 
-    def _source_dependency_names(self, names: Iterable[str]) -> tuple[str, ...]:
+    def _source_dependency_names(
+        self,
+        names: Iterable[str],
+        *,
+        stop_at: frozenset[str] = frozenset(),
+        reject_cycles: bool = False,
+    ) -> tuple[str, ...]:
+        """Return source names in dependency order, with parents before children.
+
+        Names in ``stop_at`` are treated as already materialized inputs, so their
+        own dependencies are not traversed. Set ``reject_cycles`` at boundaries
+        that require a valid topological order, such as generated code.
+        """
         source_by_name = self._source_by_name()
         ordered: list[str] = []
         resolved: set[str] = set()
-        resolving: set[str] = set()
+        resolving: list[str] = []
 
         def add_dependencies(name: str) -> None:
-            if name in resolved or name in resolving:
+            if name in resolved:
                 return
-            resolving.add(name)
+            if name in resolving:
+                if reject_cycles:
+                    cycle_start = resolving.index(name)
+                    cycle = (*resolving[cycle_start:], name)
+                    raise FigureComposerInputError(
+                        "Cannot generate code because source selections contain a "
+                        f"dependency cycle: {' -> '.join(cycle)}."
+                    )
+                return
+            resolving.append(name)
             source = source_by_name.get(name)
-            if source is not None:
+            if source is not None and name not in stop_at:
                 base_name = source.selection_source
                 if base_name is not None and base_name != name:
                     add_dependencies(base_name)
-            resolving.remove(name)
+            resolving.pop()
             resolved.add(name)
             ordered.append(name)
 

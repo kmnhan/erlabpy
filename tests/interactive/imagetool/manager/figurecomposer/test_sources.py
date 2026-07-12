@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+
 from ._common import *
 
 
@@ -1014,6 +1016,89 @@ def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
     assert len(captured) == 2
     xr.testing.assert_identical(captured[0], selected)
     xr.testing.assert_identical(captured[1], selected)
+
+
+def test_figure_composer_generated_code_resolves_selected_source_dependencies(
+    qtbot, monkeypatch
+) -> None:
+    base = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 2, 2),
+        dims=("u", "v", "x", "y"),
+        coords={
+            "u": [0.0, 1.0],
+            "v": [10.0, 20.0, 30.0],
+            "x": [0.0, 1.0],
+            "y": [0.0, 1.0],
+        },
+        name="base",
+    )
+    selected_u = base.qsel(u=1.0)
+    selected_v = selected_u.qsel(v=20.0)
+    tool = FigureComposerTool.from_sources(
+        {
+            "base": base,
+            "selected_u": selected_u,
+            "selected_v": selected_v,
+        },
+        sources=(
+            FigureSourceState(
+                name="selected_v",
+                selection_source="selected_u",
+                qsel={"v": 20.0},
+            ),
+            FigureSourceState(name="base"),
+            FigureSourceState(
+                name="selected_u",
+                selection_source="base",
+                qsel={"u": 1.0},
+            ),
+        ),
+        operations=(
+            FigureOperationState.plot_array(label="selected", source="selected_v"),
+        ),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda data, **_kwargs: captured.append(data),
+    )
+
+    code = tool.generated_code()
+
+    assert code.index("selected_u = base.qsel(u=1.0)") < code.index(
+        "selected_v = selected_u.qsel(v=20.0)"
+    )
+    _exec_generated_code(code, {"base": base})
+    xr.testing.assert_identical(captured[-1], selected_v)
+
+    code_with_materialized_parent = figurecomposer_codegen.generated_code(
+        tool,
+        skip_source_selection_names=frozenset({"selected_u"}),
+    )
+
+    assert "selected_u =" not in code_with_materialized_parent
+    assert "base.qsel" not in code_with_materialized_parent
+    _exec_generated_code(
+        code_with_materialized_parent,
+        {"selected_u": selected_u},
+    )
+    xr.testing.assert_identical(captured[-1], selected_v)
+
+    cyclic_sources = tuple(
+        source.model_copy(update={"selection_source": "selected_v"})
+        if source.name == "selected_u"
+        else source
+        for source in tool.source_states()
+    )
+    tool._recipe = tool._recipe.model_copy(update={"sources": cyclic_sources})
+    with pytest.raises(
+        figurecomposer_text.FigureComposerInputError,
+        match=r"dependency cycle: selected_v -> selected_u -> selected_v",
+    ):
+        tool.generated_code()
 
 
 def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> None:
