@@ -299,10 +299,9 @@ these steps:
    the main repository.
 
 8. Once your pull request to [erlabpy-data](https://github.com/kmnhan/erlabpy-data) is
-   merged, update the `DATA_COMMIT_HASH` and `DATA_KNOWN_HASH` attributes in
-   `tests/conftest.py`.
+   merged, update the two values in `tests/test-data.env`.
 
-   - `DATA_COMMIT_HASH` should be the commit hash of
+   - `ERLAB_TEST_DATA_COMMIT` should be the commit hash of
      [erlabpy-data](https://github.com/kmnhan/erlabpy-data) that contains your test
      data. This will ensure that the version of the test data used in the tests is
      consistent.
@@ -311,9 +310,9 @@ these steps:
      history](https://github.com/kmnhan/erlabpy-data/commits/main/) page will copy the
      full hash to your clipboard. :::
 
-   - `DATA_KNOWN_HASH` is the file hash of the test data tarball. This will ensure that
-     the test data has not been modified or corrupted since the last time the tests were
-     run.
+   - `ERLAB_TEST_DATA_ARCHIVE_SHA256` is the SHA-256 hash of that commit's test-data
+     tarball. This verifies that the downloaded archive has not been modified or
+     corrupted.
 
      The hash is calculated by [this
      workflow](https://github.com/kmnhan/erlabpy-data/actions/workflows/checksum.yml)
@@ -321,7 +320,7 @@ these steps:
      the commit you wish to refer to.
 
 9. Following the [development workflow](#development-workflow), push your changes
-   including the new plugin, test files, and updated `tests/conftest.py` to your
+   including the new plugin, test files, and updated `tests/test-data.env` to your
    development branch, and create a pull request.
 
 (code-standards)=

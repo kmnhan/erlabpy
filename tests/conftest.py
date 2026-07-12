@@ -50,10 +50,19 @@ from erlab.interactive.utils import (
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "a90b37654184b9bf3378b032646c9c5b6231a0fa"
+_TEST_DATA_CONFIG = dict(
+    line.split("=", maxsplit=1)
+    for line in pathlib.Path(__file__)
+    .with_name("test-data.env")
+    .read_text()
+    .splitlines()
+    if line
+)
+
+DATA_COMMIT_HASH = _TEST_DATA_CONFIG["ERLAB_TEST_DATA_COMMIT"]
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "de72bfef9cedea535e5502fe55903c526ca500ef1575cd3c63e0aae3f4fb77be"
+DATA_KNOWN_HASH = _TEST_DATA_CONFIG["ERLAB_TEST_DATA_ARCHIVE_SHA256"]
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 DATA_RETRIEVE_ATTEMPTS = 4

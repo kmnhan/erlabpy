@@ -2892,6 +2892,26 @@ def test_fit2d_init_validation_errors(qtbot, exp_decay_model) -> None:
         Fit2DTool(data, params=params_da)  # type: ignore[arg-type]
 
 
+def test_fit2d_init_broadcast_params(qtbot, exp_decay_model) -> None:
+    data = _make_2d_data()
+    n0_values = xr.DataArray([1.0, 2.0, 3.0], dims=("y",)).chunk({"y": 1})
+
+    win = Fit2DTool(
+        data,
+        model=exp_decay_model,
+        params={
+            "n0": {"value": n0_values, "min": 0.0},
+            "tau": {"value": 2.0, "vary": False},
+        },
+    )
+    qtbot.addWidget(win)
+
+    assert [params["n0"].value for params in win._params_full] == [1.0, 2.0, 3.0]
+    assert all(params["n0"].min == 0.0 for params in win._params_full)
+    assert all(params["tau"].value == 2.0 for params in win._params_full)
+    assert all(not params["tau"].vary for params in win._params_full)
+
+
 def test_fit2d_tool_data_and_refresh_multipeak_model(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

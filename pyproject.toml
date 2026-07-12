@@ -48,7 +48,7 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
-    "xarray-lmfit>=0.5.4",
+    "xarray-lmfit>=0.5.5",
     "pygments>=2.11.0",
     "xraydb>=4.5.8",
     "hdf5plugin>=6.0.0",
@@ -345,3 +345,9 @@ module = [
     "erlab.interactive._mesh",
 ]
 disable_error_code = ["attr-defined"]
+
+# Numba 0.66 is marked as typed but does not expose usable annotations for ``prange``
+# or compiled dispatchers under mypy 2.2. Remove this once Numba's typing is complete.
+[[tool.mypy.overrides]]
+module = ["numba", "numba.*"]
+follow_imports = "skip"

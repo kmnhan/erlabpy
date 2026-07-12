@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 import typing
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pytest
@@ -23,6 +24,35 @@ from erlab.interactive.fermiedge import (
     restool,
 )
 from erlab.io.exampledata import generate_gold_edge
+
+
+@pytest.fixture(autouse=True)
+def _retain_registered_goldtool_widgets(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Keep this module's registered widgets alive through the final event drain."""
+    if "qtbot" not in request.fixturenames:
+        yield
+        return
+
+    qtbot = request.getfixturevalue("qtbot")
+    original_add_widget = qtbot.addWidget
+    live_widgets: list[QtWidgets.QWidget] = []
+
+    def add_widget(
+        widget: QtWidgets.QWidget,
+        *,
+        before_close_func: Callable[[QtWidgets.QWidget], None] | None = None,
+    ) -> None:
+        live_widgets.append(widget)
+        original_add_widget(widget, before_close_func=before_close_func)
+
+    qtbot.addWidget = add_widget
+    try:
+        yield
+    finally:
+        qtbot.addWidget = original_add_widget
+        live_widgets.clear()
 
 
 def _configure_goldtool_state(
@@ -442,6 +472,25 @@ def test_goldtool_deferred_restore_resaves_fit_payload_before_show(
     assert post_fit_calls == [eager_restored]
     assert isinstance(eager_restored.result, scipy.interpolate.BSpline)
     xr.testing.assert_identical(eager_restored.corrected, expected_corrected)
+
+
+def test_goldtool_close_skips_deferred_fit_snapshot(qtbot, gold, monkeypatch) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+
+    post_fit_calls = _spy_goldtool_post_fit(monkeypatch)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(), _defer_restore_work=True
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+    assert restored._pending_persisted_fit_snapshot is not None
+
+    restored.close()
+
+    assert post_fit_calls == []
+    assert not restored._flush_restore_work(key=GoldTool._PERSISTED_FIT_SNAPSHOT_KEY)
 
 
 def test_goldtool_deferred_restore_update_data_refits_pending_fit(

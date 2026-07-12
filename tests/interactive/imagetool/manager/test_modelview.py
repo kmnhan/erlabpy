@@ -463,7 +463,8 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
     )
 
     missing_child_index = model.createIndex(0, 0, "missing-child")
-    malformed_parent = model.createIndex(0, 0, object())
+    malformed_pointer = object()
+    malformed_parent = model.createIndex(0, 0, malformed_pointer)
     with monkeypatch.context() as context:
         context.setattr(
             type(model),
@@ -2246,9 +2247,12 @@ def test_manager_badge_hit_testing_edge_paths(
         assert dask_rect is not None
 
         assert delegate._badge_at(option, QtCore.QModelIndex(), QtCore.QPoint()) is None
+        malformed_pointer = object()
         assert (
             delegate._badge_at(
-                option, model.createIndex(0, 0, object()), option.rect.center()
+                option,
+                model.createIndex(0, 0, malformed_pointer),
+                option.rect.center(),
             )
             is None
         )

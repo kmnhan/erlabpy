@@ -117,6 +117,7 @@ def _workspace_blosc2_encoding(
         return {}
 
     ensure_workspace_hdf5_filters_registered()
+    cname: typing.Literal["blosclz", "zstd"]
     match compression_mode:
         case "blosclz3":
             cname = "blosclz"

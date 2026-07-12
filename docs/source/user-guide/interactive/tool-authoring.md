@@ -555,7 +555,9 @@ def _restore_result_cache(self) -> None:
 
 Use `run_on_show=True` when hidden tools can wait until the user shows them. ToolWindow
 will also flush deferred work before saving, copying generated code, returning declared
-ImageTool outputs, closing, and other correctness boundaries it owns.
+ImageTool outputs, and other correctness boundaries that consume the derived state. If
+the tool closes before any such boundary, ToolWindow discards the queued work without
+running it. Do not use deferred restore callbacks for required teardown or cleanup.
 
 Call `_flush_restore_work(...)` from a subclass only when that subclass has a narrower
 data boundary. For example, `DerivativeTool.result` flushes the pending recomputation
@@ -583,6 +585,7 @@ internal restore queue:
 - direct `from_dataset()` remains eager;
 - manager-style deferred restore does not run the expensive callback during hidden load;
 - showing the tool or requesting its output flushes the callback exactly once;
+- closing a hidden tool discards callbacks whose results were never requested;
 - saving before flush preserves any raw serialized payload that is meant to stay raw;
   and
 - generated code, declared outputs, and provenance remain identical after flush.
