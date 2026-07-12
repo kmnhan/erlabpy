@@ -207,6 +207,14 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
         erlab.interactive.options.restore()
 
 
+def _release_retained_qtbot_widget(
+    live_widgets: dict[object, QtWidgets.QWidget],
+    token: object,
+    *_args: object,
+) -> None:
+    live_widgets.pop(token, None)
+
+
 @pytest.fixture(autouse=True)
 def _retain_qtbot_widgets_until_teardown(
     request: pytest.FixtureRequest,
@@ -230,11 +238,9 @@ def _retain_qtbot_widgets_until_teardown(
     ) -> None:
         token = object()
         live_widgets[token] = widget
-
-        def release_widget(*_args: object, token: object = token) -> None:
-            live_widgets.pop(token, None)
-
-        widget.destroyed.connect(release_widget)
+        widget.destroyed.connect(
+            functools.partial(_release_retained_qtbot_widget, live_widgets, token)
+        )
         original_add_widget(widget, before_close_func=before_close_func)
 
     qtbot.addWidget = add_widget
