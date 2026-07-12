@@ -518,6 +518,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old._set_managed_source_update_dialog(None)
             old._set_managed_source_reload(None)
             old._set_managed_secondary_window_callback(None)
+            old._set_managed_reveal_callback(None)
             old.set_source_parent_fetcher(None)
             old.set_input_provenance_parent_fetcher(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -550,6 +551,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
             value.slicer_area._in_manager = True
             value.remove_act.setVisible(True)
+            value._set_managed_reveal_callback(self.reveal_in_manager)
             for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
             return
@@ -574,6 +576,7 @@ class _ManagedWindowNode(QtCore.QObject):
         tool._set_managed_secondary_window_callback(
             self._configure_tool_secondary_window
         )
+        tool._set_managed_reveal_callback(self.reveal_in_manager)
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
 
@@ -645,6 +648,15 @@ class _ManagedWindowNode(QtCore.QObject):
                 ),
             )
 
+    def reveal_in_manager(self) -> bool:
+        """Reveal this node in its manager window."""
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return False
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return False
+        return manager.reveal_nodes((self.uid,))
+
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
@@ -680,6 +692,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old.slicer_area.sigSourceDataReplaced.disconnect(
                 self._handle_source_data_replaced
             )
+        old._set_managed_reveal_callback(None)
         if close:
             old.close()
         self._imagetool = None

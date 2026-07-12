@@ -3276,6 +3276,74 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
         assert "second" not in figure_tool.source_data()
 
 
+def test_manager_figure_sources_reveal_associated_imagetool_rows(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="first"
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2), dims=("x", "y"), name="second"
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        assert not manager._reveal_figure_sources("missing", ("first",))
+
+        def raise_reveal_error(_source_name: str) -> bool:
+            raise RuntimeError("source is unavailable")
+
+        original_reveal_available = figure_tool._source_reveal_available_callback
+        figure_tool._source_reveal_available_callback = raise_reveal_error
+        assert not figure_tool._source_reveal_available("first")
+        figure_tool._source_reveal_available_callback = original_reveal_available
+
+        figure_tool._set_selected_source_names_silent({"first"}, "first")
+        figure_tool._duplicate_selected_sources()
+        source_names = {source.name for source in figure_tool.source_states()}
+        figure_tool._set_selected_source_names_silent(source_names, "first")
+        figure_tool._refresh_source_controls()
+        assert figure_tool.reveal_sources_button.isEnabled()
+        assert not figure_tool.reveal_sources_button.autoRaise()
+        assert (
+            figure_tool.reveal_sources_button.toolButtonStyle()
+            == QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+
+        figure_tool.reveal_sources_button.click()
+
+        assert manager.tree_view.selected_imagetool_indices == [0, 1]
+        assert manager.left_tabs.currentWidget() is manager.tree_view
+
+        manager.tree_view.clearSelection()
+        figure_tool._show_source_context_menu(QtCore.QPoint(0, 0))
+        assert figure_tool._source_context_menu is not None
+        reveal_action = next(
+            action
+            for action in figure_tool._source_context_menu.actions()
+            if action.objectName() == "figureComposerContextRevealSourceAction"
+        )
+        assert reveal_action.isEnabled()
+        reveal_action.trigger()
+        assert manager.tree_view.selected_imagetool_indices == [0, 1]
+        figure_tool._source_context_menu.close()
+
+        manager.remove_imagetool(1)
+        figure_tool._set_selected_source_names_silent({"second"}, "second")
+        figure_tool._refresh_source_controls()
+        assert not figure_tool.reveal_sources_button.isEnabled()
+        figure_tool._reveal_selected_sources()
+
+
 def test_manager_figure_source_row_refresh_updates_only_selected_source(
     qtbot,
     manager_context: Callable[

@@ -40,7 +40,8 @@ Use {guilabel}`Add…` to select ImageTool rows from the manager. You can also d
 ImageTool rows from the manager into the composer controls or figure window.
 
 Select one or more sources and use {guilabel}`Refresh` to update them from their
-ImageTools.
+ImageTools. Use {guilabel}`Reveal in Manager` to select their ImageTool rows and bring
+ImageTool Manager to the front.
 
 When you choose {guilabel}`Add to Figure…` from ImageTool Manager, the corresponding
 ImageTool rows are added to the figure sources. In that dialog, different choices for

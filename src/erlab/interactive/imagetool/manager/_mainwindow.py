@@ -3028,6 +3028,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 figure_uid, source_name
             ),
         )
+        tool._set_source_reveal_callbacks(
+            can_reveal_source=lambda source_name: self._can_reveal_figure_source(
+                figure_uid, source_name
+            ),
+            reveal_sources=lambda source_names: self._reveal_figure_sources(
+                figure_uid, source_names
+            ),
+        )
         tool._set_source_add_callbacks(
             can_add_sources=functools.partial(
                 self._can_request_add_sources_to_figure, figure_uid
@@ -3109,6 +3117,26 @@ class ImageToolManager(_ImageToolManagerBase):
             # Invalid Qt wrappers are binding- and lifetime-dependent.
             return None  # pragma: no cover
         return node
+
+    def _can_reveal_figure_source(self, figure_uid: str, source_name: str) -> bool:
+        node = self._figure_source_node(figure_uid, source_name)
+        return node is not None and node.is_imagetool
+
+    def _reveal_figure_sources(
+        self, figure_uid: str, source_names: Sequence[str]
+    ) -> bool:
+        if not self._is_figure_uid(figure_uid):
+            return False
+        uids = tuple(
+            dict.fromkeys(
+                node.uid
+                for source_name in source_names
+                if (node := self._figure_source_node(figure_uid, source_name))
+                is not None
+                and node.is_imagetool
+            )
+        )
+        return self.reveal_nodes(uids)
 
     def _can_refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
         return self._figure_source_live_node(figure_uid, source_name) is not None
@@ -4883,6 +4911,77 @@ class ImageToolManager(_ImageToolManagerBase):
         self, uid: str, parent_data: xr.DataArray | None = None
     ) -> None:
         self._lineage_controller._propagate_source_change_from_uid(uid, parent_data)
+
+    def reveal_nodes(self, uids: Iterable[str]) -> bool:
+        """Reveal manager nodes in their corresponding manager collection."""
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+        seen: set[str] = set()
+        for uid in uids:
+            node = self._tool_graph.nodes.get(uid)
+            if node is None or uid in seen:
+                continue
+            nodes.append(node)
+            seen.add(uid)
+        if not nodes:
+            return False
+
+        first_is_figure = self._is_figure_node(nodes[0])
+        nodes = [
+            node for node in nodes if self._is_figure_node(node) == first_is_figure
+        ]
+        focus_widget: QtWidgets.QWidget
+        if first_is_figure:
+            self._sync_figures_ui()
+            self.tree_view.deselect_all()
+            self.figure_list.clearSelection()
+            items = [
+                typing.cast(
+                    "QtWidgets.QListWidgetItem",
+                    self._figure_list_item_for_uid(node.uid),
+                )
+                for node in nodes
+            ]
+            self.figure_list.setCurrentItem(items[0])
+            for item in items:
+                item.setSelected(True)
+            self.left_tabs.setCurrentWidget(self.figure_tab)
+            self.figure_list.scrollToItem(items[0])
+            focus_widget = self.figure_list
+            self._update_actions()
+            self._update_info()
+        else:
+            indexes = [self.tree_view._model._row_index(node.uid) for node in nodes]
+            for index in indexes:
+                parent = index.parent()
+                while parent.isValid():
+                    self.tree_view.expand(parent)
+                    parent = parent.parent()
+            selection = QtCore.QItemSelection()
+            for index in indexes:
+                selection.select(index, index)
+            selection_model = self.tree_view.selectionModel()
+            if selection_model is None:  # pragma: no cover
+                return False
+            selection_model.select(
+                selection,
+                QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+            )
+            selection_model.setCurrentIndex(
+                indexes[0], QtCore.QItemSelectionModel.SelectionFlag.NoUpdate
+            )
+            self.left_tabs.setCurrentWidget(self.tree_view)
+            self.tree_view.scrollTo(indexes[0])
+            focus_widget = self.tree_view
+
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        focus_widget.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        return True
 
     def show_selected(self) -> None:
         self._lineage_controller.show_selected()

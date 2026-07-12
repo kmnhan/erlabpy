@@ -667,6 +667,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_available_callback: Callable[[str], bool] | None = None
         self._source_refresh_callback: Callable[[str], bool] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
+        self._source_reveal_available_callback: Callable[[str], bool] | None = None
+        self._source_reveal_callback: Callable[[Sequence[str]], bool] | None = None
         self._source_add_available_callback: Callable[[], bool] | None = None
         self._source_add_callback: Callable[[], bool] | None = None
         self._source_drop_available_callback: (
@@ -1607,6 +1609,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._remove_selected_sources
         )
         source_actions_layout.addWidget(self.remove_selected_source_button)
+        self.reveal_sources_button = _step_toolbar_button(
+            self.source_actions,
+            "figureComposerRevealSourcesButton",
+            "Reveal in Manager",
+            "Reveal selected sources in ImageTool Manager",
+        )
+        self.reveal_sources_button.setAccessibleName(
+            "Reveal Selected Sources in ImageTool Manager"
+        )
+        self.reveal_sources_button.clicked.connect(self._reveal_selected_sources)
+        source_actions_layout.addWidget(self.reveal_sources_button)
         source_actions_layout.addStretch(1)
         self.refresh_sources_button = QtWidgets.QToolButton(self.source_actions)
         self.refresh_sources_button.setObjectName("figureComposerRefreshSourcesButton")
@@ -2264,6 +2277,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_label_callback = source_label
         self.refresh_source_controls()
 
+    def _set_source_reveal_callbacks(
+        self,
+        *,
+        can_reveal_source: Callable[[str], bool] | None = None,
+        reveal_sources: Callable[[Sequence[str]], bool] | None = None,
+    ) -> None:
+        self._source_reveal_available_callback = can_reveal_source
+        self._source_reveal_callback = reveal_sources
+        self.refresh_source_controls()
+
     def _set_source_add_callbacks(
         self,
         *,
@@ -2587,6 +2610,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return bool(self._source_refresh_available_callback(name))
         return False
 
+    def _source_reveal_available(self, name: str) -> bool:
+        if (
+            self._source_reveal_available_callback is None
+            or self._source_reveal_callback is None
+        ):
+            return False
+        with contextlib.suppress(LookupError, RuntimeError, ValueError):
+            return bool(self._source_reveal_available_callback(name))
+        return False
+
     def _source_refresh_label(self, name: str) -> str | None:
         if self._source_refresh_label_callback is None:
             return None
@@ -2624,6 +2657,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.refresh_sources_button.setEnabled(bool(selected_refreshable))
         self.refresh_sources_button.setToolTip(selected_tip)
         self.refresh_sources_button.setStatusTip(self.refresh_sources_button.toolTip())
+        selected_revealable = tuple(
+            name for name in selected_names if self._source_reveal_available(name)
+        )
+        reveal_tip = (
+            "Reveal selected sources in ImageTool Manager"
+            if selected_revealable
+            else "No selected sources are associated with an ImageTool Manager row"
+        )
+        self.reveal_sources_button.setEnabled(bool(selected_revealable))
+        self.reveal_sources_button.setToolTip(reveal_tip)
+        self.reveal_sources_button.setStatusTip(reveal_tip)
 
         removable_selected = [
             name for name in selected_names if self._source_removable(name)
@@ -2661,6 +2705,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot()
     def _refresh_selected_sources_from_button(self) -> None:
         self._refresh_source_names(self._selected_source_names())
+
+    @QtCore.Slot()
+    def _reveal_selected_sources(self) -> None:
+        callback = self._source_reveal_callback
+        source_names = tuple(
+            name
+            for name in self._selected_source_names()
+            if self._source_reveal_available(name)
+        )
+        if callback is None or not source_names:
+            self._refresh_source_controls()
+            return
+        callback(source_names)
+        self._refresh_source_controls()
 
     @QtCore.Slot()
     def _refresh_all_sources_from_button(self) -> None:
@@ -3167,9 +3225,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         menu.addAction(move_down_action)
 
         menu.addSeparator()
+        reveal_action = QtGui.QAction("Reveal in Manager", menu)
+        reveal_action.setObjectName("figureComposerContextRevealSourceAction")
+        selected_names = self._selected_source_names()
+        reveal_action.setEnabled(
+            any(self._source_reveal_available(name) for name in selected_names)
+        )
+        reveal_action.triggered.connect(self._reveal_selected_sources)
+        menu.addAction(reveal_action)
+
         refresh_action = QtGui.QAction("Refresh Selected", menu)
         refresh_action.setObjectName("figureComposerContextRefreshSourceAction")
-        selected_names = self._selected_source_names()
         refresh_action.setEnabled(
             any(self._source_refresh_available(name) for name in selected_names)
         )
