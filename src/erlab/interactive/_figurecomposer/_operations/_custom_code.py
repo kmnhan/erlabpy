@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import collections
+import io
 import symtable
+import tokenize
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -771,8 +773,18 @@ def _renamed_source_loads(code: str, replacements: dict[str, str]) -> str:
         for old, new in replacements.items()
         if old != new and old.isidentifier()
     }
-    if not replacements:
+    if not replacements or not any(old in code for old in replacements):
         return code
+    try:
+        has_source_identifier = any(
+            token.type == tokenize.NAME and token.string in replacements
+            for token in tokenize.generate_tokens(io.StringIO(code).readline)
+        )
+    except (IndentationError, tokenize.TokenError):
+        pass
+    else:
+        if not has_source_identifier:
+            return code
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:

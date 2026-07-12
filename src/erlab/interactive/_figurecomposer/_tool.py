@@ -2958,18 +2958,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operations: list[FigureOperationState] = []
         try:
             for operation in self._recipe.operations:
-                updated = self._operation_with_renamed_sources(operation, rename_map)
-                if (
-                    operation.kind == FigureOperationKind.CUSTOM
-                    and re.search(rf"\b{re.escape(old_name)}\b", operation.code)
-                    is not None
-                ):
-                    updated = updated.model_copy(
-                        update={
-                            "code": _renamed_source_loads(operation.code, rename_map)
-                        }
-                    )
-                operations.append(updated)
+                operations.append(
+                    self._operation_with_renamed_sources(operation, rename_map)
+                )
         except ValueError as exc:
             self._set_source_validation_text(
                 f"Could not rename source “{old_name}”: {operation.label}: {exc}."
@@ -6473,24 +6464,37 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operation: FigureOperationState, rename_map: Mapping[str, str]
     ) -> FigureOperationState:
         updates: dict[str, typing.Any] = {}
+        if operation.kind == FigureOperationKind.CUSTOM:
+            try:
+                code = _renamed_source_loads(operation.code, dict(rename_map))
+            except ValueError as exc:
+                raise FigureComposerInputError(
+                    "Could not rename source references in Python step "
+                    f"{operation.label!r}: {exc}."
+                ) from exc
+            if code != operation.code:
+                updates["code"] = code
         if operation.sources:
-            updates["sources"] = tuple(
+            sources = tuple(
                 rename_map.get(source_name, source_name)
                 for source_name in operation.sources
             )
+            if sources != operation.sources:
+                updates["sources"] = sources
         if operation.map_selections:
-            updates["map_selections"] = tuple(
-                selection.model_copy(
-                    update={
-                        "source": rename_map.get(selection.source, selection.source),
-                    }
-                )
+            map_selections = tuple(
+                selection.model_copy(update={"source": source})
+                if (source := rename_map.get(selection.source, selection.source))
+                != selection.source
+                else selection
                 for selection in operation.map_selections
             )
+            if map_selections != operation.map_selections:
+                updates["map_selections"] = map_selections
         if operation.line_source is not None:
-            updates["line_source"] = rename_map.get(
-                operation.line_source, operation.line_source
-            )
+            line_source = rename_map.get(operation.line_source, operation.line_source)
+            if line_source != operation.line_source:
+                updates["line_source"] = line_source
         for field in (
             "method_plot_x",
             "method_plot_y",
@@ -6499,13 +6503,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             state = getattr(operation, field)
             if state is not None:
-                updates[field] = state.model_copy(
-                    update={"source": rename_map.get(state.source, state.source)}
-                )
+                source = rename_map.get(state.source, state.source)
+                if source != state.source:
+                    updates[field] = state.model_copy(update={"source": source})
         if operation.hv_overlay_source is not None:
-            updates["hv_overlay_source"] = rename_map.get(
+            hv_overlay_source = rename_map.get(
                 operation.hv_overlay_source, operation.hv_overlay_source
             )
+            if hv_overlay_source != operation.hv_overlay_source:
+                updates["hv_overlay_source"] = hv_overlay_source
         if not updates:
             return operation
         return operation.model_copy(update=updates)

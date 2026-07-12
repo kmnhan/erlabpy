@@ -2842,6 +2842,70 @@ def test_manager_explicit_figure_operations_use_readable_source_aliases(
         assert figure.tool_status.operations[-1].sources == ("sample_map",)
 
 
+def test_manager_custom_figure_code_uses_readable_source_aliases(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(8.0).reshape(2, 4),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": np.arange(4.0)},
+            name="sample map",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        script_name = manager._script_input_name_for_node(manager._node_for_target(0))
+        assert script_name != "sample_map"
+        for argument in ("operation", "custom_code"):
+            code = f"fig.__dict__['{argument}_total'] = float({script_name}.sum())"
+            kwargs: dict[str, typing.Any]
+            if argument == "operation":
+                kwargs = {
+                    "operation": FigureOperationState.custom(
+                        label="summary",
+                        code=code,
+                        trusted=True,
+                    )
+                }
+            else:
+                kwargs = {"custom_code": code}
+
+            figure_uid = manager.create_figure_from_targets((0,), show=False, **kwargs)
+
+            assert figure_uid is not None
+            figure = manager._child_node(figure_uid).tool_window
+            assert isinstance(figure, FigureComposerTool)
+            [custom_operation] = figure.tool_status.operations
+            assert script_name not in custom_operation.code
+            assert "sample_map" in custom_operation.code
+            figurecomposer_rendering._render_into_figure(
+                figure, figure.figure, sync_visible=False
+            )
+            assert figure._operation_render_errors == {}
+            assert figure.figure.__dict__[f"{argument}_total"] == float(data.sum())
+
+        ambiguous_code = f"{script_name} = {script_name}.mean()"
+        for kwargs in (
+            {
+                "operation": FigureOperationState.custom(
+                    label="ambiguous",
+                    code=ambiguous_code,
+                    trusted=True,
+                )
+            },
+            {"custom_code": ambiguous_code},
+        ):
+            with pytest.raises(
+                figurecomposer_text.FigureComposerInputError,
+                match="also binds",
+            ):
+                manager.create_figure_from_targets((0,), show=False, **kwargs)
+
+
 def test_manager_append_explicit_operation_uses_conflict_free_source_alias(
     qtbot,
     manager_context: Callable[

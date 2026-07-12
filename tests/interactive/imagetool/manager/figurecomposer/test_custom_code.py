@@ -831,6 +831,18 @@ def test_figure_composer_source_name_replacement_fallback_edges() -> None:
         )
         == "value = data"
     )
+    assert (
+        figurecomposer_custom_code._renamed_source_loads(
+            "bad code !!", {"data": "renamed"}
+        )
+        == "bad code !!"
+    )
+    assert (
+        figurecomposer_custom_code._renamed_source_loads(
+            "bad code !!  # data", {"data": "renamed"}
+        )
+        == "bad code !!  # data"
+    )
 
 
 def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> None:
