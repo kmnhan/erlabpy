@@ -9424,15 +9424,17 @@ def test_itool_interpolate(qtbot, accept_dialog) -> None:
     assert "interpolateAct" in win.mnb.action_dict
 
     target = np.linspace(0.0, 2.0, 5)
+    copied_code: list[str] = []
 
     def _set_dialog_params(dialog: InterpolationDialog) -> None:
         dialog.dim_combo.setCurrentText("x")
         dialog.coord_widget.count_spin.setValue(target.size)
-        with qtbot.wait_signal(dialog._sigCodeCopied):
-            dialog.copy_button.click()
+        dialog._sigCodeCopied.connect(copied_code.append)
+        dialog.copy_button.click()
         dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._interpolate, pre_call=_set_dialog_params)
+    assert copied_code == [pyperclip.paste()]
 
     expected = data.interp({"x": target}, method="linear")
     xarray.testing.assert_identical(
