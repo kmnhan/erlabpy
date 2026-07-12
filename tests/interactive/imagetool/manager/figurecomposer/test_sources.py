@@ -2160,6 +2160,10 @@ def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
     xr.testing.assert_identical(
         tool._source_selection_base_data["selected_v"], expected_u
     )
+    if mutation == "replace":
+        assert {source.node_uid for source in tool.source_states()} == {
+            "replacement-node"
+        }
     assert tool.source_status_label.text() == ""
 
 

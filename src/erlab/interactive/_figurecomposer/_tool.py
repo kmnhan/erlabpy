@@ -6812,15 +6812,26 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             target_name = incoming_name
             existing_source = existing.get(target_name)
-            same_linked_source = (
-                existing_source is not None
-                and existing_source.node_uid is not None
-                and existing_source.node_uid == source.node_uid
-            )
-            if not same_linked_source and len(linked_matches) == 1:
-                existing_source = linked_matches[0]
-                target_name = existing_source.name
-                same_linked_source = True
+            same_linked_source = False
+            if linked_matches:
+                linked_roots: list[str] = []
+                for linked_source in linked_matches:
+                    try:
+                        root_name = self._source_lineage_names(
+                            linked_source.name, existing
+                        )[0]
+                    except ValueError:
+                        continue
+                    if root_name not in linked_roots:
+                        linked_roots.append(root_name)
+                if linked_roots:
+                    target_name = (
+                        incoming_name
+                        if incoming_name in linked_roots
+                        else linked_roots[0]
+                    )
+                    existing_source = existing[target_name]
+                    same_linked_source = True
             reserved = set(existing)
             reserved.update(candidate_data)
             if existing_source is not None and not same_linked_source:
@@ -6846,6 +6857,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         continue
             trial_existing = dict(existing)
             trial_existing[target_name] = source
+            normalized_sources = self._normalized_source_states(
+                tuple(trial_existing.values())
+            )
+            trial_existing = {
+                candidate.name: candidate for candidate in normalized_sources
+            }
             trial_data = dict(candidate_data)
             trial_data[target_name] = selected_data
             trial_bases = dict(candidate_bases)
@@ -6948,13 +6965,35 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         if existing_index is None:  # pragma: no cover
             raise RuntimeError("source replacement index was not resolved")
+        replacement_name = alias
+        preserve_selection_parent = False
+        if (
+            existing_source is not None
+            and existing_source.node_uid is not None
+            and existing_source.node_uid == source.node_uid
+        ):
+            source_by_name = {candidate.name: candidate for candidate in source_list}
+            try:
+                root_name = self._source_lineage_names(alias, source_by_name)[0]
+            except ValueError:
+                root_name = alias
+            root_source = source_by_name[root_name]
+            if root_source.selection_source is None:
+                replacement_name = root_name
+                existing_source = root_source
+                existing_index = next(
+                    index
+                    for index, candidate in enumerate(source_list)
+                    if candidate.name == root_name
+                )
+                preserve_selection_parent = True
         try:
             replacement, selected_data = self._replacement_source_data(
-                alias,
+                replacement_name,
                 source,
                 data,
                 existing_source,
-                keep_selection_source=False,
+                keep_selection_source=preserve_selection_parent,
             )
         except (IndexError, KeyError, TypeError, ValueError) as exc:
             message = str(exc) or exc.__class__.__name__
@@ -6963,21 +7002,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             return False
         source_list[existing_index] = replacement
+        source_list = list(self._normalized_source_states(source_list))
 
         candidate_data = dict(self._source_data)
-        candidate_data[alias] = selected_data
+        candidate_data[replacement_name] = selected_data
         candidate_bases = dict(self._source_selection_base_data)
         if _source_has_selection(replacement):
-            candidate_bases[alias] = data
+            candidate_bases[replacement_name] = data
         else:
-            candidate_bases.pop(alias, None)
+            candidate_bases.pop(replacement_name, None)
         source_by_name = {candidate.name: candidate for candidate in source_list}
         try:
             candidate_data, candidate_bases = (
                 self._source_data_with_recomputed_dependents(
                     candidate_data,
                     candidate_bases,
-                    (alias,),
+                    (replacement_name,),
                     source_by_name=source_by_name,
                 )
             )
