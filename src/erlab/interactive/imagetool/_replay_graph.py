@@ -1689,21 +1689,173 @@ def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
     return imports, body
 
 
+def _import_binding_targets(code: str) -> dict[str, str] | None:
+    """Return names bound by one import and their canonical targets.
+
+    Star imports cannot be reasoned about locally, so callers must leave them in place.
+    """
+    statement = ast.parse(code, mode="exec").body[0]
+    if isinstance(statement, ast.Import):
+        targets: dict[str, str] = {}
+        for alias in statement.names:
+            if alias.asname is None:
+                name = alias.name.partition(".")[0]
+                target = f"module:{name}"
+            else:
+                name = alias.asname
+                target = f"module:{alias.name}"
+            if name in targets and targets[name] != target:
+                return None
+            targets[name] = target
+        return targets
+    if not isinstance(statement, ast.ImportFrom):  # pragma: no cover - caller contract.
+        return None
+    if statement.module == "__future__":
+        return {}
+    targets = {}
+    module = "." * statement.level + (statement.module or "")
+    for alias in statement.names:
+        if alias.name == "*":
+            return None
+        name = alias.asname or alias.name
+        target = f"from:{module}:{alias.name}"
+        if name in targets and targets[name] != target:
+            return None
+        targets[name] = target
+    return targets
+
+
+def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
+    """Return conservatively accessed and rebound names in a code chunk."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        # Invalid generated code is diagnosed by the normal replay-code path. Treat it
+        # as opaque so import grouping cannot make its behavior less predictable.
+        return {"*"}, {"*"}
+
+    accessed: set[str] = set()
+    rebound: set[str] = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name):
+            accessed.add(node.id)
+            if isinstance(node.ctx, ast.Store | ast.Del):
+                rebound.add(node.id)
+        elif isinstance(node, ast.AsyncFunctionDef | ast.ClassDef | ast.FunctionDef):
+            accessed.add(node.name)
+            rebound.add(node.name)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            bindings = _import_binding_targets(ast.unparse(node))
+            if bindings is None:
+                accessed.add("*")
+                rebound.add("*")
+            else:
+                accessed.update(bindings)
+                rebound.update(bindings)
+        elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar):
+            if node.name is not None:
+                accessed.add(node.name)
+                rebound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            accessed.add(node.rest)
+            rebound.add(node.rest)
+    return accessed, rebound
+
+
+def _is_future_import(code: str) -> bool:
+    statement = ast.parse(code, mode="exec").body[0]
+    return isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
+
+
 def _group_framework_imports(chunks: Sequence[tuple[str, bool]]) -> str:
+    """Group canonical framework imports without changing Python name resolution.
+
+    Framework code producers should use one canonical import target for each alias. If
+    independently generated chunks violate that invariant, keep the imports beside the
+    code that uses them instead of silently changing the program by hoisting them.
+    """
+    parsed_chunks: list[tuple[str, bool, list[tuple[str, str]], str]] = []
+    targets_by_name: dict[str, set[str]] = {}
+    for code, group_imports in chunks:
+        leading_imports, import_body = (
+            _leading_top_level_imports(code) if group_imports else ([], code)
+        )
+        parsed_chunks.append((code, group_imports, leading_imports, import_body))
+        for canonical, _source in leading_imports:
+            bindings = _import_binding_targets(canonical)
+            if bindings is None:
+                continue
+            for name, target in bindings.items():
+                targets_by_name.setdefault(name, set()).add(target)
+    conflicting_names = {
+        name for name, targets in targets_by_name.items() if len(targets) > 1
+    }
+
+    future_imports: list[str] = []
     imports: list[str] = []
     import_codes: set[str] = set()
+    hoisted_bindings: dict[str, str] = {}
+    seen_accesses: set[str] = set()
+    seen_rebindings: set[str] = set()
     body: list[str] = []
-    for code, group_imports in chunks:
-        if group_imports:
-            leading_imports, code = _leading_top_level_imports(code)
-            for canonical, source in leading_imports:
-                if canonical in import_codes:
-                    continue
-                import_codes.add(canonical)
-                imports.append(source)
+    for original_code, group_imports, leading_imports, import_body in parsed_chunks:
+        code = original_code
+        if group_imports and leading_imports:
+            regular_imports = [
+                item for item in leading_imports if not _is_future_import(item[0])
+            ]
+            future_items = [
+                item for item in leading_imports if _is_future_import(item[0])
+            ]
+            for canonical, source in future_items:
+                if canonical not in import_codes:
+                    import_codes.add(canonical)
+                    future_imports.append(source)
+
+            regular_bindings: dict[str, str] = {}
+            safe_to_hoist = True
+            for canonical, _source in regular_imports:
+                bindings = _import_binding_targets(canonical)
+                if bindings is None:
+                    safe_to_hoist = False
+                    break
+                for name, target in bindings.items():
+                    existing_target = hoisted_bindings.get(name)
+                    if (
+                        name in conflicting_names
+                        or "*" in seen_accesses
+                        or (existing_target is None and name in seen_accesses)
+                        or (
+                            existing_target is not None
+                            and (existing_target != target or name in seen_rebindings)
+                        )
+                    ):
+                        safe_to_hoist = False
+                        break
+                    regular_bindings[name] = target
+                if not safe_to_hoist:
+                    break
+
+            if safe_to_hoist:
+                code = import_body
+                hoisted_bindings.update(regular_bindings)
+                for canonical, source in regular_imports:
+                    if canonical in import_codes:
+                        continue
+                    import_codes.add(canonical)
+                    imports.append(source)
+            elif future_items:
+                # Future imports must remain at the beginning of the combined module;
+                # retain every ordinary import next to its original body.
+                code = "\n".join(
+                    (*[source for _canonical, source in regular_imports], import_body)
+                ).strip("\n")
         if code.strip():
             body.append(code)
-    return "\n".join((*imports, *body))
+        accesses, rebindings = _code_name_accesses(code)
+        seen_accesses.update(accesses)
+        seen_rebindings.update(rebindings)
+    return "\n".join((*future_imports, *imports, *body))
 
 
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:

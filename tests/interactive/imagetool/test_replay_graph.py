@@ -2239,6 +2239,73 @@ def test_replay_graph_does_not_hoist_imports_from_user_script_code() -> None:
     assert namespace["fig"] == 1.5
 
 
+def test_group_framework_imports_preserves_conflicting_alias_bindings() -> None:
+    code = _replay_graph._group_framework_imports(
+        (
+            (
+                "import xarray as array_module\n"
+                "first = array_module.DataArray([1.0], dims=['x'])",
+                True,
+            ),
+            (
+                "import numpy as array_module\nsecond = array_module.asarray([2.0])",
+                True,
+            ),
+        )
+    )
+
+    assert code.index("import xarray") < code.index("first =")
+    assert code.index("first =") < code.index("import numpy")
+    assert code.index("import numpy") < code.index("second =")
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["first"], xr.DataArray([1.0], dims=["x"]))
+    np.testing.assert_array_equal(namespace["second"], np.asarray([2.0]))
+
+
+def test_group_framework_imports_deduplicates_canonical_aliases() -> None:
+    code = _replay_graph._group_framework_imports(
+        (
+            ("import numpy as np\nfirst = np.asarray([1.0])", True),
+            ("import numpy as np\nsecond = np.asarray([2.0])", True),
+        )
+    )
+
+    assert code.count("import numpy as np") == 1
+    namespace = _exec_generated_code(code)
+    np.testing.assert_array_equal(namespace["first"], np.asarray([1.0]))
+    np.testing.assert_array_equal(namespace["second"], np.asarray([2.0]))
+
+
+def test_group_framework_imports_preserves_rebinding_before_import() -> None:
+    code = _replay_graph._group_framework_imports(
+        (
+            ("np = 'sentinel'\nfirst = np", True),
+            ("import numpy as np\nsecond = np.asarray([2.0])", True),
+        )
+    )
+
+    assert code.index("first =") < code.index("import numpy as np")
+    namespace = _exec_generated_code(code)
+    assert namespace["first"] == "sentinel"
+    np.testing.assert_array_equal(namespace["second"], np.asarray([2.0]))
+
+
+def test_group_framework_imports_places_future_imports_first() -> None:
+    code = _replay_graph._group_framework_imports(
+        (
+            ("import numpy as np\nfirst = np.asarray([1.0])", True),
+            (
+                "from __future__ import annotations\nsecond: MissingType | None = None",
+                True,
+            ),
+        )
+    )
+
+    assert code.startswith("from __future__ import annotations\n")
+    namespace = _exec_generated_code(code)
+    assert namespace["__annotations__"] == {"second": "MissingType | None"}
+
+
 def test_replay_graph_allows_for_loop_script_code() -> None:
     spec = provenance.script(
         provenance.ScriptCodeOperation(
