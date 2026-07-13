@@ -15,6 +15,7 @@ from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
 )
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_display_name,
@@ -93,7 +94,6 @@ from erlab.interactive._figurecomposer._subplot_adjust import (
     subplots_adjust_spinbox_range,
 )
 from erlab.interactive._figurecomposer._text import (
-    FigureComposerInputError,
     _dict_from_text,
     _format_dict,
     _limit_pair_from_text,
@@ -526,7 +526,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     def tick_params_for_selection() -> dict[str, typing.Any]:
         selection = current_selection()
-        for operation in tool._recipe.operations:
+        for operation in tool._document.recipe.operations:
             if (
                 operation.kind == FigureOperationKind.METHOD
                 and operation.method_family == FigureMethodFamily.AXES
@@ -1710,7 +1710,7 @@ def _curve_style_targets(
     if not selected_axis_ids:
         return []
     targets: list[_StyleTarget] = []
-    for index, operation in enumerate(tool._recipe.operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if not operation.enabled:
             continue
         if operation.kind == FigureOperationKind.LINE:
@@ -1753,7 +1753,7 @@ def _image_style_targets(
     if not selected_axis_ids:
         return []
     targets: list[_StyleTarget] = []
-    for index, operation in enumerate(tool._recipe.operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if operation.enabled and operation.kind == FigureOperationKind.PLOT_ARRAY:
             operation_axes = _axes_for_selection(tool, operation.axes)
             if len(operation_axes) == 1 and id(operation_axes[0]) in selected_axis_ids:
@@ -1871,7 +1871,7 @@ def _image_style_target_label(
 def _operation_by_id(
     tool: FigureComposerTool, operation_id: str
 ) -> FigureOperationState | None:
-    for operation in tool._recipe.operations:
+    for operation in tool._document.recipe.operations:
         if operation.operation_id == operation_id:
             return operation
     return None
@@ -1884,7 +1884,7 @@ def _replace_operation_by_id(
     *,
     rebuild_editor: bool = False,
 ) -> None:
-    for index, operation in enumerate(tool._recipe.operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if operation.operation_id == operation_id:
             _replace_recipe_operation(
                 tool,
@@ -1957,12 +1957,12 @@ def _replace_recipe_operation(
     *,
     rebuild_editor: bool = False,
 ) -> None:
-    if index < 0 or index >= len(tool._recipe.operations):
+    if index < 0 or index >= len(tool._document.recipe.operations):
         return
     current = tool._current_operation()
     current_id = current[1].operation_id if current is not None else None
     selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
+    operations = list(tool._document.recipe.operations)
     operations[index] = operation
     _set_operations(
         tool,
@@ -2040,7 +2040,7 @@ def _upsert_method_operation(
     current = tool._current_operation()
     current_id = current[1].operation_id if current is not None else None
     selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
+    operations = list(tool._document.recipe.operations)
     updates: dict[str, typing.Any] = {
         "label": label or name,
         "method_args": tuple(args),
@@ -2087,7 +2087,7 @@ def _set_method_operation_enabled(
     current = tool._current_operation()
     current_id = current[1].operation_id if current is not None else None
     selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
+    operations = list(tool._document.recipe.operations)
     changed = False
     for index, operation in enumerate(operations):
         if (
@@ -2111,12 +2111,14 @@ def _set_operations(
     *,
     rebuild_editor: bool = True,
 ) -> None:
-    tool._recipe = tool._recipe.model_copy(update={"operations": operations})
+    tool._document.recipe = tool._document.recipe.model_copy(
+        update={"operations": operations}
+    )
     tool._refresh_operation_list()
     if selected_ids:
         tool._set_selected_operation_ids_silent(selected_ids)
     if current_id is not None:
-        for row, operation in enumerate(tool._recipe.operations):
+        for row, operation in enumerate(tool._document.recipe.operations):
             if operation.operation_id == current_id:
                 tool._set_current_operation_row_silent(row)
                 break
@@ -2133,7 +2135,7 @@ def _set_operations(
 
 
 def _layout_axes(tool: FigureComposerTool) -> np.ndarray | dict[str, Axes] | None:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
         axes = tool.figure.axes[: len(axes_ids)]
@@ -2163,7 +2165,7 @@ def _axes_for_selection(
 
 
 def _layout_engine_text(tool: FigureComposerTool) -> str:
-    return tool._recipe.setup.layout or "default"
+    return tool._document.recipe.setup.layout or "default"
 
 
 def _set_setup_layout_engine(tool: FigureComposerTool, text: str) -> None:
@@ -2349,12 +2351,12 @@ def _aspect_value(text: str) -> str | float:
 def _selector_widget(
     tool: FigureComposerTool, parent: QtWidgets.QWidget
 ) -> _AxesSelectorWidget | _GridSpecViewWidget:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         selector = _GridSpecViewWidget(parent, mode="select")
         labels = {
             axes_id: _gridspec_axis_display_name(
-                setup, axes_id, reserved_names=tool._source_names()
+                setup, axes_id, reserved_names=tool._document.source_names()
             )
             for axes_id in _gridspec_all_axes_ids(setup)
         }
@@ -2375,7 +2377,7 @@ def _selector_widget(
         selected = selector.selected_axes()
         if not tool._grow_subplot_grid(direction):
             return
-        updated_setup = tool._recipe.setup
+        updated_setup = tool._document.recipe.setup
         selector.set_grid(updated_setup.nrows, updated_setup.ncols)
         selector.set_selected_axes(selected or ((0, 0),), emit=True)
 
@@ -2393,8 +2395,8 @@ def _selector_selection(
         axes_ids = selector.selected_axes_ids()
         if not axes_ids:
             axes_ids = _gridspec_valid_axes_ids(
-                tool._recipe.setup,
-                _gridspec_all_axes_ids(tool._recipe.setup),
+                tool._document.recipe.setup,
+                _gridspec_all_axes_ids(tool._document.recipe.setup),
             )[:1]
         return FigureAxesSelectionState(axes_ids=axes_ids)
     axes = selector.selected_axes()

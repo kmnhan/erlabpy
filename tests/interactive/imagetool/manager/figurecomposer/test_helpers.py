@@ -575,10 +575,12 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
 
     with pytest.raises(ValueError, match="outside the current layout"):
         figurecomposer_code._axes_sequence_code(
-            tool, FigureAxesSelectionState(axes=((1, 0),))
+            tool._document, FigureAxesSelectionState(axes=((1, 0),))
         )
     with pytest.raises(ValueError, match="No axes"):
-        figurecomposer_code._axes_sequence_code(tool, FigureAxesSelectionState(axes=()))
+        figurecomposer_code._axes_sequence_code(
+            tool._document, FigureAxesSelectionState(axes=())
+        )
 
     root = FigureGridSpecGridState(
         grid_id="root",
@@ -620,7 +622,7 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
 
     assert (
         figurecomposer_code._axes_code(
-            grid_tool,
+            grid_tool._document,
             FigureAxesSelectionState(axes_ids=("axis-a", "axis-b")),
             for_plot_slices=False,
         )
@@ -628,7 +630,7 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
     )
     with pytest.raises(ValueError, match="No axes"):
         figurecomposer_code._axes_sequence_code(
-            grid_tool, FigureAxesSelectionState(axes_ids=())
+            grid_tool._document, FigureAxesSelectionState(axes_ids=())
         )
 
 
@@ -847,8 +849,8 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    assert "sharex" not in figurecomposer_rendering._setup_kwargs(tool)
-    assert "sharey" not in figurecomposer_rendering._setup_kwargs(tool)
+    assert "sharex" not in figurecomposer_rendering._setup_kwargs(tool._document)
+    assert "sharey" not in figurecomposer_rendering._setup_kwargs(tool._document)
 
     fig, axs = plt.subplots(1, 1, squeeze=False)
     with pytest.raises(ValueError, match="outside the current figure"):

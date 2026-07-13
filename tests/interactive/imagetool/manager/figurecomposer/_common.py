@@ -31,6 +31,7 @@ import erlab
 import erlab.accessors.general as accessor_general
 import erlab.interactive._figurecomposer._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._code as figurecomposer_code
+import erlab.interactive._figurecomposer._custom_code as figurecomposer_custom_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
@@ -71,6 +72,9 @@ from erlab.interactive._figurecomposer import (
     _line_transform,
 )
 from erlab.interactive._figurecomposer import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
+from erlab.interactive._figurecomposer import (
     _source_inspector as figurecomposer_source_inspector,
 )
 from erlab.interactive._figurecomposer import (
@@ -86,7 +90,7 @@ from erlab.interactive._figurecomposer._operations import (
     _bz_overlay as figurecomposer_bz_overlay,
 )
 from erlab.interactive._figurecomposer._operations import (
-    _custom_code as figurecomposer_custom_code,
+    _custom_code as figurecomposer_custom_code_operation,
 )
 from erlab.interactive._figurecomposer._operations import (
     _line_profile as figurecomposer_line_profile,

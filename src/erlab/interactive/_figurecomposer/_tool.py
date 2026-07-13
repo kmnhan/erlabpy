@@ -35,12 +35,17 @@ import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._toolbar_dialogs
 import erlab.interactive._qt_state as _qt_state
 from erlab.interactive._figurecomposer._axes import _all_axes, _axes_expression_value
+from erlab.interactive._figurecomposer._custom_code import (
+    _custom_code_bound_names,
+    _renamed_source_loads,
+)
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
     _figure_draw_context,
     _figure_style_context,
     figure_options_context,
 )
+from erlab.interactive._figurecomposer._document import FigureDocument
 from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUE as _MIXED_VALUE,
 )
@@ -55,6 +60,7 @@ from erlab.interactive._figurecomposer._editor_controls import (
     PlainTextControlAdapter,
     SignalValueControlAdapter,
 )
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axes_subplot_targets,
@@ -79,16 +85,14 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_valid_axes_ids,
     _subplots_setup_from_gridspec,
 )
+from erlab.interactive._figurecomposer._operation_metadata import (
+    declared_operation_source_names,
+)
 from erlab.interactive._figurecomposer._operations import _registry
 from erlab.interactive._figurecomposer._operations._base import (
     COMMON_AXES_SECTION_TOOLTIP,
     COMMON_SOURCE_SECTION_TOOLTIP,
     StepSection,
-)
-from erlab.interactive._figurecomposer._operations._custom_code import (
-    _custom_code_bound_names,
-    _custom_code_names,
-    _renamed_source_loads,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
@@ -117,6 +121,10 @@ from erlab.interactive._figurecomposer._rendering import (
     _render_into_figure,
     _render_preview,
     _rendered_output_figure,
+)
+from erlab.interactive._figurecomposer._reorder_list import (
+    ReorderList,
+    event_requests_context_menu,
 )
 from erlab.interactive._figurecomposer._source_inspector import (
     SourceInspectorWidget,
@@ -152,7 +160,6 @@ from erlab.interactive._figurecomposer._state import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._text import (
-    FigureComposerInputError,
     _format_axes_tuple,
     _format_tuple,
     _literal_sequence_from_text,
@@ -268,13 +275,6 @@ class _FigureComposerStepMimeData(QtCore.QMimeData):
         self.setText(step_code_text)
 
 
-def _event_requests_context_menu(event: QtGui.QKeyEvent) -> bool:
-    return event.key() == QtCore.Qt.Key.Key_Menu or (
-        event.key() == QtCore.Qt.Key.Key_F10
-        and bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
-    )
-
-
 class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
     """Scroll vertically without allowing the editor content to clip horizontally."""
 
@@ -346,84 +346,7 @@ class _FigureComposerStepEditorPage(QtWidgets.QWidget):
             erlab.interactive.utils.single_shot(self, 0, self._refresh_background)
 
 
-class _FigureComposerReorderList(QtWidgets.QTreeWidget):
-    rows_reordered = QtCore.Signal(object, object, object)
-
-    def __init__(self, id_column: int, parent: QtWidgets.QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._reorder_id_column = id_column
-        self._rows_reordered_pending = False
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
-        self.setDragDropOverwriteMode(False)
-
-    def _row_ids(self) -> tuple[str, ...]:
-        row_ids: list[str] = []
-        for row in range(self.topLevelItemCount()):
-            item = self.topLevelItem(row)
-            row_id = (
-                None
-                if item is None
-                else item.data(
-                    self._reorder_id_column,
-                    QtCore.Qt.ItemDataRole.UserRole,
-                )
-            )
-            if not isinstance(row_id, str):
-                return ()
-            row_ids.append(row_id)
-        return tuple(row_ids)
-
-    def _queue_rows_reordered(self, *_args: object) -> None:
-        if self._rows_reordered_pending:
-            return
-        self._rows_reordered_pending = True
-        # Let QTreeWidget finish transferring ownership of the dragged items before
-        # the recipe refreshes this view.
-        erlab.interactive.utils.single_shot(self, 0, self._emit_rows_reordered)
-
-    def _emit_rows_reordered(self) -> None:
-        self._rows_reordered_pending = False
-        row_ids = self._row_ids()
-        if not row_ids or len(set(row_ids)) != len(row_ids):
-            return
-        current_id = None
-        current_item = self.currentItem()
-        if current_item is not None:
-            candidate = current_item.data(
-                self._reorder_id_column,
-                QtCore.Qt.ItemDataRole.UserRole,
-            )
-            if isinstance(candidate, str):
-                current_id = candidate
-        selected_ids = frozenset(
-            row_id
-            for item in self.selectedItems()
-            if isinstance(
-                row_id := item.data(
-                    self._reorder_id_column,
-                    QtCore.Qt.ItemDataRole.UserRole,
-                ),
-                str,
-            )
-        )
-        self.rows_reordered.emit(row_ids, selected_ids, current_id)
-
-    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
-        if event is None:
-            return
-        if event.source() is not self:
-            event.ignore()
-            return
-        super().dropEvent(event)
-        if event.isAccepted():
-            self._queue_rows_reordered()
-
-
-class _FigureComposerOperationList(_FigureComposerReorderList):
+class _FigureComposerOperationList(ReorderList):
     copy_requested = QtCore.Signal()
     cut_requested = QtCore.Signal()
     paste_requested = QtCore.Signal()
@@ -449,7 +372,7 @@ class _FigureComposerOperationList(_FigureComposerReorderList):
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
             return
-        if _event_requests_context_menu(event):
+        if event_requests_context_menu(event):
             item = self.currentItem()
             rect = self.visualItemRect(item) if item is not None else QtCore.QRect()
             self.context_menu_requested.emit(rect.center())
@@ -470,7 +393,7 @@ class _FigureComposerOperationList(_FigureComposerReorderList):
         super().keyPressEvent(event)
 
 
-class _FigureComposerSourceList(_FigureComposerReorderList):
+class _FigureComposerSourceList(ReorderList):
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
@@ -484,7 +407,7 @@ class _FigureComposerSourceList(_FigureComposerReorderList):
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:
             return
-        if _event_requests_context_menu(event):
+        if event_requests_context_menu(event):
             item = self.currentItem()
             rect = self.visualItemRect(item) if item is not None else QtCore.QRect()
             self.context_menu_requested.emit(rect.center())
@@ -662,8 +585,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._section_tab_stop_refs: dict[
             str, weakref.ReferenceType[QtWidgets.QWidget]
         ] = {}
-        self._source_data: dict[str, xr.DataArray] = {}
-        self._source_selection_base_data: dict[str, xr.DataArray] = {}
         self._source_refresh_available_callback: Callable[[str], bool] | None = None
         self._source_refresh_callback: Callable[[str], bool] | None = None
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
@@ -678,10 +599,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_inspector_target: str | None = None
         self._updating_source_selection = False
         initial_recipe = recipe or self._default_recipe(data)
-        self._recipe = initial_recipe.model_copy(
-            update={"sources": self._normalized_source_states(initial_recipe.sources)}
+        self._document = FigureDocument(
+            initial_recipe.model_copy(
+                update={
+                    "sources": self._normalized_source_states(initial_recipe.sources)
+                }
+            )
         )
-        self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
+        self._active_gridspec_grid_id = (
+            self._document.recipe.setup.gridspec.root.grid_id
+        )
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
@@ -699,16 +626,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         if source_data is not None:
             self.set_source_data(source_data)
-        elif self._recipe.primary_source in {
-            source.name for source in self._recipe.sources
+        elif self._document.recipe.primary_source in {
+            source.name for source in self._document.recipe.sources
         }:
-            self._source_data[self._recipe.primary_source] = data
+            self._document.source_data[self._document.recipe.primary_source] = data
         else:
             source_name = _source_name(data)
-            self._source_data[source_name] = data
+            self._document.source_data[source_name] = data
 
-        if self._recipe.primary_source not in self._source_data:
-            self._source_data[self._recipe.primary_source] = data
+        if self._document.recipe.primary_source not in self._document.source_data:
+            self._document.source_data[self._document.recipe.primary_source] = data
 
         self._normalize_operation_source_selections()
         self._current_step_section_key = "sources"
@@ -785,7 +712,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._figure_window
         ):
             self._figure_window = _FigureComposerDisplayWindow(
-                self._recipe.setup,
+                self._document.recipe.setup,
                 export_callback=lambda: self.export_figure(),
                 subplot_adjust_callback=lambda: self._show_subplot_adjust_dialog(),
                 axes_customize_callback=lambda: self._show_axes_customize_dialog(),
@@ -872,7 +799,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def show_figure_window(self, *, activate: bool = True) -> None:
         figure_window = self.figure_window
         figure_window.show_for_setup(
-            self._recipe.setup, self._figure_window_title(), activate=activate
+            self._document.recipe.setup, self._figure_window_title(), activate=activate
         )
         self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
@@ -965,7 +892,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if layout_axes is None:
             return
 
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         changed_operation_ids: set[str] = set()
         changed = False
         for axis, (x_changed, y_changed) in changes.items():
@@ -1006,7 +933,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         if self._updating_controls or self._rendering:
             return
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         changed_operation_ids: set[str] = set()
         changed = False
         for mappable, clim in changes.items():
@@ -1031,7 +958,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         changed_operation_ids: set[str],
     ) -> None:
         current = self._current_operation()
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         self._refresh_operation_list()
         if current is not None and current[0] < len(operations):
             self._set_current_operation_row_silent(current[0])
@@ -1220,7 +1149,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         window = self._figure_window
         if window is None or not erlab.interactive.utils.qt_is_valid(window):
             return
-        window.resize_to_setup(self._recipe.setup)
+        window.resize_to_setup(self._document.recipe.setup)
         with contextlib.suppress(RuntimeError):
             window.canvas.flush_events()
 
@@ -1233,13 +1162,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         emit_info: bool,
         history: typing.Literal["immediate", "deferred"] = "immediate",
     ) -> bool:
-        setup = self._recipe.setup
+        setup = self._document.recipe.setup
         if math.isclose(width_inches, setup.figsize[0], abs_tol=0.005) and math.isclose(
             height_inches, setup.figsize[1], abs_tol=0.005
         ):
             return False
         figsize = (round(width_inches, 4), round(height_inches, 4))
-        self._recipe = self._recipe.model_copy(
+        self._document.recipe = self._document.recipe.model_copy(
             update={"setup": setup.model_copy(update={"figsize": figsize})}
         )
         self._mark_preview_pixmap_stale()
@@ -2238,7 +2167,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _apply_recipe_to_controls(self) -> None:
         self._updating_controls = True
         try:
-            setup = self._recipe.setup
+            setup = self._document.recipe.setup
             self._set_combo_value(self.layout_mode_combo, setup.layout_mode)
             self._sync_active_grid_controls(setup)
             self.width_spin.setValue(setup.figsize[0])
@@ -2379,22 +2308,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_names = set(self._selected_source_names())
         current_name = self._source_name_from_list_item(self.source_list.currentItem())
         self._clear_source_list_widgets()
-        source_by_name = {source.name: source for source in self._recipe.sources}
+        source_by_name = {
+            source.name: source for source in self._document.recipe.sources
+        }
         used_sources = self._sources_used_by_recipe()
         shown: set[str] = set()
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             name = source.name
             shown.add(name)
             display = _source_display_label(source, name)
             self._add_source_list_row(
                 display,
                 name,
-                data=self._source_data.get(name),
-                missing=name not in self._source_data,
+                data=self._document.source_data.get(name),
+                missing=name not in self._document.source_data,
                 used=name in used_sources,
             )
 
-        for name, data in self._source_data.items():
+        for name, data in self._document.source_data.items():
             if name in shown:
                 continue
             display = _source_display_label(source_by_name.get(name), name)
@@ -2405,7 +2336,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 missing=name not in source_by_name,
                 used=name in used_sources,
             )
-        available_names = set(self._source_names())
+        available_names = set(self._document.source_names())
         selected_names.intersection_update(available_names)
         if current_name not in available_names:
             current_name = (
@@ -2553,7 +2484,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected = set(self._selected_source_names())
         return tuple(
             index
-            for index, source in enumerate(self._recipe.sources)
+            for index, source in enumerate(self._document.recipe.sources)
             if source.name in selected
         )
 
@@ -2565,7 +2496,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if offset < 0:
             return any(index > 0 and index - 1 not in index_set for index in indices)
         return any(
-            index < len(self._recipe.sources) - 1 and index + 1 not in index_set
+            index < len(self._document.recipe.sources) - 1
+            and index + 1 not in index_set
             for index in indices
         )
 
@@ -2631,7 +2563,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _refreshable_source_names(self) -> tuple[str, ...]:
         return tuple(
             name
-            for name in self._source_names()
+            for name in self._document.source_names()
             if self._source_refresh_available(name)
         )
 
@@ -2722,7 +2654,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _refresh_all_sources_from_button(self) -> None:
-        self._refresh_source_names(self._source_names())
+        self._refresh_source_names(self._document.source_names())
 
     def _refresh_source_names(self, source_names: Sequence[str]) -> None:
         callback = self._source_refresh_callback
@@ -2783,108 +2715,35 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_controls()
         self._refresh_source_detail_panel()
 
-    def _operation_source_names(
-        self, operation: FigureOperationState
-    ) -> tuple[str, ...]:
-        names = list(_registry.spec_for(operation.kind).source_names(operation))
-        if operation.kind == FigureOperationKind.CUSTOM:
-            loaded_names = _custom_code_names(operation.code)
-            names.extend(
-                source_name
-                for source_name in self._source_names()
-                if source_name in loaded_names
-            )
-        return tuple(dict.fromkeys(names))
-
-    def _source_dependency_names(
-        self,
-        names: Iterable[str],
-        *,
-        stop_at: frozenset[str] = frozenset(),
-        reject_cycles: bool = False,
-    ) -> tuple[str, ...]:
-        """Return source names in dependency order, with parents before children.
-
-        Names in ``stop_at`` are treated as already materialized inputs, so their
-        own dependencies are not traversed. Set ``reject_cycles`` at boundaries
-        that require a valid topological order, such as generated code.
-        """
-        source_by_name = self._source_by_name()
-        ordered: list[str] = []
-        resolved: set[str] = set()
-        resolving: list[str] = []
-
-        def add_dependencies(name: str) -> None:
-            if name in resolved:
-                return
-            if name in resolving:
-                if reject_cycles:
-                    cycle_start = resolving.index(name)
-                    cycle = (*resolving[cycle_start:], name)
-                    raise FigureComposerInputError(
-                        "Cannot generate code because source selections contain a "
-                        f"dependency cycle: {' -> '.join(cycle)}."
-                    )
-                return
-            resolving.append(name)
-            source = source_by_name.get(name)
-            if source is not None and name not in stop_at:
-                base_name = source.selection_source
-                if base_name is not None and base_name != name:
-                    add_dependencies(base_name)
-            resolving.pop()
-            resolved.add(name)
-            ordered.append(name)
-
-        for name in names:
-            add_dependencies(name)
-        return tuple(ordered)
-
-    def _operation_source_dependency_names(
-        self, operation: FigureOperationState
-    ) -> tuple[str, ...]:
-        return self._source_dependency_names(self._operation_source_names(operation))
-
-    def _direct_sources_used_by_recipe(
-        self, *, enabled_only: bool = False, executable_only: bool = False
-    ) -> set[str]:
-        return {
-            source_name
-            for operation in self._recipe.operations
-            if not enabled_only or operation.enabled
-            if not executable_only
-            or operation.kind != FigureOperationKind.CUSTOM
-            or operation.trusted
-            for source_name in self._operation_source_names(operation)
-        }
-
     def _source_used_by_operation(self, name: str) -> bool:
         return any(
-            name in self._operation_source_dependency_names(operation)
-            for operation in self._recipe.operations
+            name in self._document.operation_source_dependency_names(operation)
+            for operation in self._document.recipe.operations
         )
 
     def _source_usage_count(self, name: str) -> int:
         return sum(
-            name in self._operation_source_dependency_names(operation)
-            for operation in self._recipe.operations
+            name in self._document.operation_source_dependency_names(operation)
+            for operation in self._document.recipe.operations
         )
 
     def _sources_used_by_recipe(self) -> set[str]:
         return {
             source_name
-            for operation in self._recipe.operations
-            for source_name in self._operation_source_dependency_names(operation)
+            for operation in self._document.recipe.operations
+            for source_name in self._document.operation_source_dependency_names(
+                operation
+            )
         }
 
     def _source_removable(self, name: str) -> bool:
         return (
-            name in self._source_by_name()
-            and len(self._recipe.sources) > 1
+            name in self._document.source_by_name()
+            and len(self._document.recipe.sources) > 1
             and not self._source_used_by_operation(name)
             and not any(
                 source.name != name and source.selection_source == name
-                for source in self._recipe.sources
+                for source in self._document.recipe.sources
             )
         )
 
@@ -2916,8 +2775,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if error := _source_alias_error(alias):
             return error
         if alias != current and (
-            alias in {source.name for source in self._recipe.sources}
-            or alias in self._source_data
+            alias in {source.name for source in self._document.recipe.sources}
+            or alias in self._document.source_data
         ):
             return f"Source alias {alias!r} is already in use."
         return None
@@ -3028,7 +2887,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         rename_map = {old_name: new_name}
         sources: list[FigureSourceState] = []
         changed = False
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             updated_source = self._source_with_renamed_references(source, rename_map)
             if updated_source is not source:
                 changed = True
@@ -3041,7 +2900,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         operations: list[FigureOperationState] = []
         try:
-            for operation in self._recipe.operations:
+            for operation in self._document.recipe.operations:
                 operations.append(
                     self._operation_with_renamed_sources(operation, rename_map)
                 )
@@ -3052,20 +2911,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_source_selection_editor()
             return False
 
-        self._source_data = {
-            rename_map.get(name, name): data for name, data in self._source_data.items()
-        }
-        self._source_selection_base_data = {
+        self._document.source_data = {
             rename_map.get(name, name): data
-            for name, data in self._source_selection_base_data.items()
+            for name, data in self._document.source_data.items()
+        }
+        self._document.source_selection_base_data = {
+            rename_map.get(name, name): data
+            for name, data in self._document.source_selection_base_data.items()
         }
         updates: dict[str, typing.Any] = {
             "sources": tuple(sources),
             "operations": tuple(operations),
         }
-        if self._recipe.primary_source == old_name:
+        if self._document.recipe.primary_source == old_name:
             updates["primary_source"] = new_name
-        self._recipe = self._recipe.model_copy(update=updates)
+        self._document.recipe = self._document.recipe.model_copy(update=updates)
         self._finish_source_structure_change({new_name}, new_name)
         return True
 
@@ -3074,9 +2934,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         indices = self._selected_source_indices()
         if not indices:
             return
-        sources = list(self._recipe.sources)
+        sources = list(self._document.recipe.sources)
         reserved = {source.name for source in sources}
-        reserved.update(self._source_data)
+        reserved.update(self._document.source_data)
         duplicates: list[FigureSourceState] = []
         duplicated_names: set[str] = set()
         for index in indices:
@@ -3084,24 +2944,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             alias = self._source_copy_alias(source.name, reserved)
             duplicates.append(self._source_with_name(source, alias))
             duplicated_names.add(alias)
-            if source.name in self._source_data:
-                self._source_data[alias] = self._source_data[source.name].copy(
-                    deep=False
-                )
-            if source.name in self._source_selection_base_data:
-                self._source_selection_base_data[alias] = (
-                    self._source_selection_base_data[source.name].copy(deep=False)
+            if source.name in self._document.source_data:
+                self._document.source_data[alias] = self._document.source_data[
+                    source.name
+                ].copy(deep=False)
+            if source.name in self._document.source_selection_base_data:
+                self._document.source_selection_base_data[alias] = (
+                    self._document.source_selection_base_data[source.name].copy(
+                        deep=False
+                    )
                 )
         insert_index = max(indices) + 1
         sources[insert_index:insert_index] = duplicates
-        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": tuple(sources)}
+        )
         self._finish_source_structure_change(duplicated_names, duplicates[0].name)
 
     def _move_selected_sources(self, offset: int) -> None:
         indices = self._selected_source_indices()
         if not indices:
             return
-        sources = list(self._recipe.sources)
+        sources = list(self._document.recipe.sources)
         index_set = set(indices)
         selected_names = {sources[index].name for index in indices}
         moved = False
@@ -3132,7 +2996,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current_name = (
             current if current in selected_names else next(iter(selected_names))
         )
-        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": tuple(sources)}
+        )
         self._finish_source_structure_change(selected_names, current_name)
 
     @QtCore.Slot()
@@ -3154,7 +3020,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_source_list()
             return
         ordered_names = tuple(name for name in source_names if isinstance(name, str))
-        source_by_name = {source.name: source for source in self._recipe.sources}
+        source_by_name = {
+            source.name: source for source in self._document.recipe.sources
+        }
         if (
             len(ordered_names) != len(source_names)
             or len(ordered_names) != len(source_by_name)
@@ -3162,7 +3030,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self._refresh_source_list()
             return
-        current_order = tuple(source.name for source in self._recipe.sources)
+        current_order = tuple(source.name for source in self._document.recipe.sources)
         if ordered_names == current_order:
             return
         selected_name_set: set[str] = set()
@@ -3186,7 +3054,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
 
         sources = tuple(source_by_name[name] for name in ordered_names)
-        self._recipe = self._recipe.model_copy(update={"sources": sources})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": sources}
+        )
         self._finish_source_structure_change(selected_name_set, current_source_name)
 
     @QtCore.Slot(QtCore.QPoint)
@@ -3280,11 +3150,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_name = self._source_name_from_list_item(self.source_list.currentItem())
         if source_name is not None:
             return source_name
-        if self._recipe.primary_source in self._source_data:
-            return self._recipe.primary_source
-        if self._recipe.sources:
-            return self._recipe.sources[0].name
-        return next(iter(self._source_data), None)
+        if self._document.recipe.primary_source in self._document.source_data:
+            return self._document.recipe.primary_source
+        if self._document.recipe.sources:
+            return self._document.recipe.sources[0].name
+        return next(iter(self._document.source_data), None)
 
     def _refresh_source_detail_panel(self) -> None:
         inspector = getattr(self, "source_inspector", None)
@@ -3330,7 +3200,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
 
         target = selected_names[0]
-        source_states = self._source_by_name()
+        source_states = self._document.source_by_name()
         self._source_inspector_target = target
         source = source_states.get(target)
         self.source_detail_content.setProperty(
@@ -3354,7 +3224,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_selection_controls.setVisible(True)
         inspector.set_context(
             source_name=target,
-            data=self._source_data.get(target),
+            data=self._document.source_data.get(target),
             context_lines=self._source_detail_context_lines(target),
         )
 
@@ -3367,11 +3237,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not selected_names:
             return
 
-        source_by_name = self._source_by_name()
+        source_by_name = self._document.source_by_name()
         available_names = tuple(
             name
             for name in selected_names
-            if name in source_by_name and name in self._source_data
+            if name in source_by_name and name in self._document.source_data
         )
         self._add_form_section(
             layout,
@@ -3530,7 +3400,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_selection_dimension_tooltip(
         self, dim: str, source_names: Sequence[str]
     ) -> str:
-        source_by_name = self._source_by_name()
+        source_by_name = self._document.source_by_name()
         sizes: set[int] = set()
         dtypes: set[str] = set()
         endpoints: set[tuple[str, str]] = set()
@@ -3632,7 +3502,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _common_source_selection_dims(
         self, source_names: Sequence[str]
     ) -> tuple[str, ...]:
-        source_by_name = self._source_by_name()
+        source_by_name = self._document.source_by_name()
         common: list[str] | None = None
         for source_name in source_names:
             data = self._source_selection_input_data(
@@ -3666,9 +3536,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_validation_text(str(exc))
             return
 
-        candidate_data = dict(self._source_data)
-        candidate_bases = dict(self._source_selection_base_data)
-        candidate_sources = self._source_by_name()
+        candidate_data = dict(self._document.source_data)
+        candidate_bases = dict(self._document.source_selection_base_data)
+        candidate_sources = self._document.source_by_name()
         changed = False
         skipped: list[str] = []
         for source_name in self._selected_source_names():
@@ -3736,12 +3606,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_source_validation_text(status_text)
             self._refresh_source_selection_editor()
             return
-        self._source_data = candidate_data
-        self._source_selection_base_data = candidate_bases
-        self._recipe = self._recipe.model_copy(
+        self._document.source_data = candidate_data
+        self._document.source_selection_base_data = candidate_bases
+        self._document.recipe = self._document.recipe.model_copy(
             update={
                 "sources": tuple(
-                    candidate_sources[source.name] for source in self._recipe.sources
+                    candidate_sources[source.name]
+                    for source in self._document.recipe.sources
                 )
             }
         )
@@ -3767,15 +3638,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_selection_input_data(
         self, source_name: str, source: FigureSourceState | None
     ) -> xr.DataArray | None:
-        data = self._source_selection_base_data.get(source_name)
+        data = self._document.source_selection_base_data.get(source_name)
         if data is not None:
             return data
         selection_source = None if source is None else source.selection_source
         if selection_source is not None and selection_source != source_name:
-            data = self._source_data.get(selection_source)
+            data = self._document.source_data.get(selection_source)
             if data is not None:
                 return data
-        return self._source_data.get(source_name)
+        return self._document.source_data.get(source_name)
 
     @staticmethod
     def _source_lineage_names(
@@ -3875,7 +3746,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         refreshed, propagate that raw input through every dependent alias before any
         caller commits the candidate mappings.
         """
-        sources = dict(source_by_name or self._source_by_name())
+        sources = dict(source_by_name or self._document.source_by_name())
         candidate_data = dict(source_data)
         candidate_bases = dict(selection_base_data)
         explicit_names = set(changed_names)
@@ -3920,12 +3791,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _normalize_operation_source_selections(self) -> None:
         operations: list[FigureOperationState] = []
-        source_list = list(self._recipe.sources)
+        source_list = list(self._document.recipe.sources)
         source_by_name = {source.name: source for source in source_list}
         reserved = set(source_by_name)
-        reserved.update(self._source_data)
+        reserved.update(self._document.source_data)
         changed = False
-        for operation in self._recipe.operations:
+        for operation in self._document.recipe.operations:
             if not operation.map_selections:
                 operations.append(operation)
                 continue
@@ -3939,7 +3810,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             changed = changed or updated != operation
         if not changed:
             return
-        self._recipe = self._recipe.model_copy(
+        self._document.recipe = self._document.recipe.model_copy(
             update={"sources": tuple(source_list), "operations": tuple(operations)}
         )
 
@@ -4154,10 +4025,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 and source.qsel == selection.qsel
                 and source.mean_dims == selection.mean_dims
             ):
-                if source.name not in self._source_data:
-                    base_data = self._source_data.get(source_name)
+                if source.name not in self._document.source_data:
+                    base_data = self._document.source_data.get(source_name)
                     if base_data is not None:
-                        self._source_selection_base_data[source.name] = base_data
+                        self._document.source_selection_base_data[source.name] = (
+                            base_data
+                        )
                         try:
                             selected = self._source_data_from_selection(
                                 source.name, base_data, source
@@ -4165,7 +4038,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                         except (IndexError, KeyError, TypeError, ValueError):
                             pass
                         else:
-                            self._source_data[source.name] = selected
+                            self._document.source_data[source.name] = selected
                 return source.name
 
         alias = self._selected_source_alias(source_name, reserved)
@@ -4181,16 +4054,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         source_by_name[alias] = selected_source
         source_list.append(selected_source)
-        base_data = self._source_data.get(source_name)
+        base_data = self._document.source_data.get(source_name)
         if base_data is None:
             return alias
-        self._source_selection_base_data[alias] = base_data
+        self._document.source_selection_base_data[alias] = base_data
         try:
-            selected = _selected_data(self._source_data, selection)
+            selected = _selected_data(self._document.source_data, selection)
         except (IndexError, KeyError, TypeError, ValueError):
             return alias
         if selected is not None:
-            self._source_data[alias] = selected.copy(deep=False)
+            self._document.source_data[alias] = selected.copy(deep=False)
         return alias
 
     @staticmethod
@@ -4257,14 +4130,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _rebuild_axes_grid(self) -> None:
         self.axes_selector.set_grid(
-            self._recipe.setup.nrows,
-            self._recipe.setup.ncols,
+            self._document.recipe.setup.nrows,
+            self._document.recipe.setup.ncols,
         )
         self._refresh_gridspec_editor()
         self._sync_axes_selector()
 
     def _refresh_gridspec_editor(self) -> None:
-        setup = self._recipe.setup
+        setup = self._document.recipe.setup
         if setup.layout_mode != "gridspec":
             self.gridspec_editor_widget.setVisible(False)
             return
@@ -4273,7 +4146,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if grid is None:
             self._active_gridspec_grid_id = setup.gridspec.root.grid_id
             grid = setup.gridspec.root
-        reserved_names = self._source_names()
+        reserved_names = self._document.source_names()
         grid_names = _gridspec_grid_display_names(setup)
         regions = [
             _GridSpecRegionInfo(
@@ -4314,10 +4187,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_gridspec_status(grid)
 
     def _refresh_gridspec_status(self, grid: FigureGridSpecGridState) -> None:
-        reserved_names = self._source_names()
+        reserved_names = self._document.source_names()
         invalid_regions = [
             _gridspec_region_label(
-                self._recipe.setup,
+                self._document.recipe.setup,
                 grid,
                 axis.axes_id,
                 reserved_names=reserved_names,
@@ -4327,7 +4200,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ]
         invalid_regions.extend(
             _gridspec_region_label(
-                self._recipe.setup,
+                self._document.recipe.setup,
                 grid,
                 child.grid_id,
                 reserved_names=reserved_names,
@@ -4342,7 +4215,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 + ". Increase rows/columns or delete and redraw them."
             )
             return
-        if _gridspec_has_invalid_regions(self._recipe.setup.gridspec.root):
+        if _gridspec_has_invalid_regions(self._document.recipe.setup.gridspec.root):
             self.gridspec_status_label.setText(
                 "A nested grid contains regions outside its bounds."
             )
@@ -4364,14 +4237,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        path = _gridspec_grid_path(self._recipe.setup, self._active_gridspec_grid_id)
+        path = _gridspec_grid_path(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         for index, grid in enumerate(path):
             if index:
                 separator = QtWidgets.QLabel(">", self.gridspec_breadcrumb_widget)
                 self.gridspec_breadcrumb_layout.addWidget(separator)
             button = QtWidgets.QToolButton(self.gridspec_breadcrumb_widget)
             button.setText(
-                _gridspec_grid_display_name(self._recipe.setup, grid.grid_id)
+                _gridspec_grid_display_name(self._document.recipe.setup, grid.grid_id)
             )
             button.setToolTip("Open this GridSpec grid.")
             button.clicked.connect(
@@ -4386,13 +4261,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _refresh_gridspec_region_controls(self) -> None:
         region_id = self.gridspec_layout_widget.selected_region_id()
-        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        grid = _gridspec_grid_by_id(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         label = ""
         kind = ""
         placeholder = "Autogenerated"
         if grid is not None and region_id:
             code_names = _gridspec_axis_code_names(
-                self._recipe.setup, reserved_names=self._source_names()
+                self._document.recipe.setup,
+                reserved_names=self._document.source_names(),
             )
             for axis in grid.axes:
                 if axis.axes_id == region_id:
@@ -4437,14 +4315,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             selected_ids = set(current[1].axes.axes_ids)
         blocker = QtCore.QSignalBlocker(self.gridspec_axes_selector)
-        axes_ids = _gridspec_all_axes_ids(self._recipe.setup)
+        axes_ids = _gridspec_all_axes_ids(self._document.recipe.setup)
         self.gridspec_axes_selector.set_layout(
-            self._recipe.setup.gridspec.root,
+            self._document.recipe.setup.gridspec.root,
             {
                 axes_id: _gridspec_axis_display_name(
-                    self._recipe.setup,
+                    self._document.recipe.setup,
                     axes_id,
-                    reserved_names=self._source_names(),
+                    reserved_names=self._document.source_names(),
                 )
                 for axes_id in axes_ids
             },
@@ -4463,21 +4341,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _, operation = current
             spec = _registry.spec_for(operation.kind)
             if spec.uses_axes(operation):
-                if self._recipe.setup.layout_mode == "gridspec":
+                if self._document.recipe.setup.layout_mode == "gridspec":
                     selected_axes_ids = _gridspec_valid_axes_ids(
-                        self._recipe.setup, operation.axes.axes_ids
+                        self._document.recipe.setup, operation.axes.axes_ids
                     )
                     invalid_axes_ids = _gridspec_invalid_axes_ids(
-                        self._recipe.setup, operation.axes.axes_ids
+                        self._document.recipe.setup, operation.axes.axes_ids
                     )
                 else:
-                    selected_axes = set(operation.axes.valid_axes(self._recipe.setup))
-                    invalid_axes = operation.axes.invalid_axes(self._recipe.setup)
+                    selected_axes = set(
+                        operation.axes.valid_axes(self._document.recipe.setup)
+                    )
+                    invalid_axes = operation.axes.invalid_axes(
+                        self._document.recipe.setup
+                    )
                 expression = operation.axes.expression
 
         self._updating_controls = True
         try:
-            grid_mode = self._recipe.setup.layout_mode == "gridspec"
+            grid_mode = self._document.recipe.setup.layout_mode == "gridspec"
             self.axes_selector.setVisible(not grid_mode)
             self.axes_expression_edit.setVisible(not grid_mode)
             self.gridspec_axes_selector.setVisible(grid_mode)
@@ -4517,16 +4399,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if grid_mode:
                     axes_text = ", ".join(
                         _gridspec_axis_display_names(
-                            self._recipe.setup,
+                            self._document.recipe.setup,
                             selected_axes_ids,
-                            reserved_names=self._source_names(),
+                            reserved_names=self._document.source_names(),
                         )
                     )
                 else:
                     axes_text = _format_axes_tuple(
                         tuple(sorted(selected_axes)),
-                        nrows=self._recipe.setup.nrows,
-                        ncols=self._recipe.setup.ncols,
+                        nrows=self._document.recipe.setup.nrows,
+                        ncols=self._document.recipe.setup.ncols,
                     )
                 self.target_axes_status_label.setText(f"Targets: {axes_text}")
         finally:
@@ -4541,7 +4423,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not selected_ids and current_id is not None:
             selected_ids = {current_id}
         operation_ids = tuple(
-            operation.operation_id for operation in self._recipe.operations
+            operation.operation_id for operation in self._document.recipe.operations
         )
         current_item_ids = self.operation_list._operation_ids()
         reuse_items = current_item_ids == operation_ids
@@ -4552,17 +4434,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self.operation_list.addTopLevelItems(
                     [
                         QtWidgets.QTreeWidgetItem()
-                        for _operation in self._recipe.operations
+                        for _operation in self._document.recipe.operations
                     ]
                 )
-            for row, operation in enumerate(self._recipe.operations):
+            for row, operation in enumerate(self._document.recipe.operations):
                 item = self.operation_list.topLevelItem(row)
                 if item is not None:  # pragma: no branch
                     self._update_operation_list_item(item, operation)
             if not reuse_items:
                 self._set_selected_operation_ids_silent(selected_ids)
                 if current_id is not None:
-                    for row, operation in enumerate(self._recipe.operations):
+                    for row, operation in enumerate(self._document.recipe.operations):
                         if operation.operation_id == current_id:
                             self.operation_list.setCurrentItem(
                                 self.operation_list.topLevelItem(row)
@@ -4706,7 +4588,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 "text",
                 "—" if target_text.casefold() == "none" else target_text,
             )
-        setup = self._recipe.setup
+        setup = self._document.recipe.setup
         if setup.layout_mode == "gridspec":
             return _gridspec_target_preview_descriptor(
                 setup.gridspec.root,
@@ -4750,12 +4632,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> tuple[tuple[str, str], ...]:
         issues: list[tuple[str, str]] = []
         spec = _registry.spec_for(operation.kind)
-        if spec.has_invalid_target(self, operation):
+        if spec.has_invalid_target(self._document, operation):
             issues.append(("invalid_target", spec.target_text(self, operation)))
         missing_sources = tuple(
             source
-            for source in spec.source_names(operation)
-            if source not in self._source_data
+            for source in declared_operation_source_names(operation)
+            if source not in self._document.source_data
         )
         if missing_sources:
             issues.append(
@@ -4901,56 +4783,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _axes_target_text(self, selection: FigureAxesSelectionState) -> str:
         if selection.expression:
             return selection.expression
-        if self._recipe.setup.layout_mode == "gridspec":
+        if self._document.recipe.setup.layout_mode == "gridspec":
             invalid_ids = _gridspec_invalid_axes_ids(
-                self._recipe.setup, selection.axes_ids
+                self._document.recipe.setup, selection.axes_ids
             )
             if invalid_ids:
                 return _removed_axes_summary_text(len(invalid_ids))
-            valid_ids = _gridspec_valid_axes_ids(self._recipe.setup, selection.axes_ids)
+            valid_ids = _gridspec_valid_axes_ids(
+                self._document.recipe.setup, selection.axes_ids
+            )
             if not valid_ids:
                 return "none"
             return ", ".join(
                 _gridspec_axis_display_names(
-                    self._recipe.setup,
+                    self._document.recipe.setup,
                     valid_ids,
-                    reserved_names=self._source_names(),
+                    reserved_names=self._document.source_names(),
                 )
             )
-        invalid_axes = selection.invalid_axes(self._recipe.setup)
+        invalid_axes = selection.invalid_axes(self._document.recipe.setup)
         if invalid_axes:
             return f"removed axes {_format_axes_tuple(invalid_axes)}"
-        valid_axes = selection.valid_axes(self._recipe.setup)
+        valid_axes = selection.valid_axes(self._document.recipe.setup)
         if not valid_axes:
             return "none"
         return _format_axes_tuple(
             valid_axes,
-            nrows=self._recipe.setup.nrows,
-            ncols=self._recipe.setup.ncols,
+            nrows=self._document.recipe.setup.nrows,
+            ncols=self._document.recipe.setup.ncols,
         )
 
     def _operation_has_invalid_axes(self, operation: FigureOperationState) -> bool:
-        return _registry.spec_for(operation.kind).has_invalid_target(self, operation)
-
-    def _axes_selection_has_invalid_target(
-        self, selection: FigureAxesSelectionState
-    ) -> bool:
-        if selection.expression:
-            return False
-        if self._recipe.setup.layout_mode == "gridspec":
-            if not _gridspec_valid_axes_ids(self._recipe.setup, selection.axes_ids):
-                return True
-            return bool(
-                _gridspec_invalid_axes_ids(self._recipe.setup, selection.axes_ids)
-            )
-        return bool(selection.invalid_axes(self._recipe.setup)) or not bool(
-            selection.valid_axes(self._recipe.setup)
+        return _registry.spec_for(operation.kind).has_invalid_target(
+            self._document, operation
         )
 
     def _invalid_operation_indices(self) -> tuple[int, ...]:
         return tuple(
             index
-            for index, operation in enumerate(self._recipe.operations)
+            for index, operation in enumerate(self._document.recipe.operations)
             if operation.enabled
             and (
                 self._operation_has_invalid_axes(operation)
@@ -4961,7 +4832,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _invalid_operation_target_indices(self) -> tuple[int, ...]:
         return tuple(
             index
-            for index, operation in enumerate(self._recipe.operations)
+            for index, operation in enumerate(self._document.recipe.operations)
             if operation.enabled and self._operation_has_invalid_axes(operation)
         )
 
@@ -4983,9 +4854,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _current_operation(self) -> tuple[int, FigureOperationState] | None:
         row = self._current_operation_index()
-        if row < 0 or row >= len(self._recipe.operations):
+        if row < 0 or row >= len(self._document.recipe.operations):
             return None
-        return row, self._recipe.operations[row]
+        return row, self._document.recipe.operations[row]
 
     def _current_operation_index(self) -> int:
         item = self.operation_list.currentItem()
@@ -4998,7 +4869,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return () if current is None else (current[0],)
         return tuple(
             index
-            for index, operation in enumerate(self._recipe.operations)
+            for index, operation in enumerate(self._document.recipe.operations)
             if operation.operation_id in selected_ids
         )
 
@@ -5013,7 +4884,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if offset < 0:
             return any(index > 0 and index - 1 not in index_set for index in indices)
         return any(
-            index < len(self._recipe.operations) - 1 and index + 1 not in index_set
+            index < len(self._document.recipe.operations) - 1
+            and index + 1 not in index_set
             for index in indices
         )
 
@@ -5030,7 +4902,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if len(indices) <= 1:
             return True
         keys = {
-            self._operation_editor_schema_key(self._recipe.operations[index])
+            self._operation_editor_schema_key(self._document.recipe.operations[index])
             for index in indices
         }
         return len(keys) == 1
@@ -5043,7 +4915,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _editable_operations(self) -> tuple[tuple[int, FigureOperationState], ...]:
         return tuple(
-            (index, self._recipe.operations[index])
+            (index, self._document.recipe.operations[index])
             for index in self._editable_operation_indices()
         )
 
@@ -5163,7 +5035,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not operation_id_set:
             return False
         current = self._current_operation()
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         changed = False
         preview_affected = False
         for index, operation in enumerate(operations):
@@ -5179,7 +5051,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             operations[index] = updated
         if not changed:
             return False
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         self._refresh_operation_list()
         if current is not None:
             self._set_current_operation_row_silent(current[0])
@@ -5212,10 +5086,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
     ) -> None:
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         previous_operation = operations[index]
         operations[index] = operation
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         self._clear_operation_input_errors(
             (previous_operation.operation_id, operation.operation_id)
         )
@@ -5356,8 +5232,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         try:
             width_ratios = self._ratio_tuple_from_text(self.width_ratios_edit.text())
             height_ratios = self._ratio_tuple_from_text(self.height_ratios_edit.text())
-            if self._recipe.setup.layout_mode == "gridspec":
-                setup = self._recipe.setup.model_copy(
+            if self._document.recipe.setup.layout_mode == "gridspec":
+                setup = self._document.recipe.setup.model_copy(
                     update={
                         "figsize": (self.width_spin.value(), self.height_spin.value()),
                         "dpi": self.dpi_spin.value(),
@@ -5392,13 +5268,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     sharey=self._combo_bool_or_text(self.sharey_combo),
                     width_ratios=width_ratios,
                     height_ratios=height_ratios,
-                    gridspec=self._recipe.setup.gridspec,
+                    gridspec=self._document.recipe.setup.gridspec,
                 )
         except ValueError:
             return
-        if setup == self._recipe.setup:
+        if setup == self._document.recipe.setup:
             return
-        self._recipe = self._recipe.model_copy(update={"setup": setup})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"setup": setup}
+        )
         self._updating_controls = True
         try:
             self._sync_size_mm_controls(setup.figsize)
@@ -5429,7 +5307,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._grow_subplot_grid("column")
 
     def _grow_subplot_grid(self, direction: typing.Literal["row", "column"]) -> bool:
-        if self._recipe.setup.layout_mode != "subplots":
+        if self._document.recipe.setup.layout_mode != "subplots":
             return False
         if direction == "row":
             if self.nrows_spin.value() >= self.nrows_spin.maximum():
@@ -5469,10 +5347,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_controls:
             return
         mode = self.layout_mode_combo.currentText()
-        if mode == self._recipe.setup.layout_mode:
+        if mode == self._document.recipe.setup.layout_mode:
             return
         if mode == "gridspec":
-            setup = _gridspec_setup_from_subplots(self._recipe.setup)
+            setup = _gridspec_setup_from_subplots(self._document.recipe.setup)
             axes_ids = _gridspec_all_axes_ids(setup)
             axis_id_by_tuple = {
                 (row, col): axes_ids[row * setup.ncols + col]
@@ -5497,18 +5375,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
                 if _registry.spec_for(operation.kind).uses_axes(operation)
                 else operation
-                for operation in self._recipe.operations
+                for operation in self._document.recipe.operations
             )
             self._active_gridspec_grid_id = setup.gridspec.root.grid_id
         else:
-            setup = _subplots_setup_from_gridspec(self._recipe.setup)
+            setup = _subplots_setup_from_gridspec(self._document.recipe.setup)
             operations = tuple(
                 operation.model_copy(
                     update={
                         "axes": operation.axes.model_copy(
                             update={
                                 "axes": _gridspec_axes_subplot_targets(
-                                    self._recipe.setup, operation.axes.axes_ids
+                                    self._document.recipe.setup, operation.axes.axes_ids
                                 )
                                 or operation.axes.axes
                                 or ((0, 0),),
@@ -5519,9 +5397,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
                 if _registry.spec_for(operation.kind).uses_axes(operation)
                 else operation
-                for operation in self._recipe.operations
+                for operation in self._document.recipe.operations
             )
-        self._recipe = self._recipe.model_copy(
+        self._document.recipe = self._document.recipe.model_copy(
             update={"setup": setup, "operations": operations}
         )
         self._updating_controls = True
@@ -5605,7 +5483,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.gridspec_region_kind_combo.currentData(),
         )
         self.gridspec_layout_widget.set_creation_kind(kind)
-        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        grid = _gridspec_grid_by_id(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         if grid is not None:
             self._refresh_gridspec_status(grid)
 
@@ -5861,15 +5741,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_data_history_state(
         self,
     ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
-        return dict(self._source_data), dict(self._source_selection_base_data)
+        return dict(self._document.source_data), dict(
+            self._document.source_selection_base_data
+        )
 
     def _restore_source_data_history_state(
         self,
         state: tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]],
     ) -> None:
         source_data, selection_base_data = state
-        self._source_data = dict(source_data)
-        self._source_selection_base_data = dict(selection_base_data)
+        self._document.source_data = dict(source_data)
+        self._document.source_selection_base_data = dict(selection_base_data)
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -6011,7 +5893,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_controls or column != _OPERATION_LIST_STEP_COLUMN:
             return
         operation_id = self._operation_id_for_item(item)
-        for index, operation in enumerate(self._recipe.operations):
+        for index, operation in enumerate(self._document.recipe.operations):
             if operation.operation_id == operation_id:
                 updated = operation.model_copy(
                     update={
@@ -6021,9 +5903,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
                 if updated == operation:
                     return
-                operations = list(self._recipe.operations)
+                operations = list(self._document.recipe.operations)
                 operations[index] = updated
-                self._recipe = self._recipe.model_copy(
+                self._document.recipe = self._document.recipe.model_copy(
                     update={"operations": tuple(operations)}
                 )
                 if index == self._current_operation_index():
@@ -6043,10 +5925,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index, operation = current
         if not _registry.spec_for(operation.kind).uses_axes(operation):
             return
-        if self._recipe.setup.layout_mode == "gridspec":
+        if self._document.recipe.setup.layout_mode == "gridspec":
             selection = operation.axes.model_copy(
                 update={
-                    "axes_ids": _gridspec_all_axes_ids(self._recipe.setup),
+                    "axes_ids": _gridspec_all_axes_ids(self._document.recipe.setup),
                     "expression": "",
                 }
             )
@@ -6055,7 +5937,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             return
         selection = operation.axes.model_copy(
-            update={"axes": _all_axes(self._recipe.setup), "expression": ""}
+            update={"axes": _all_axes(self._document.recipe.setup), "expression": ""}
         )
         self._replace_operation(index, operation.model_copy(update={"axes": selection}))
 
@@ -6067,12 +5949,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index, operation = current
         if not _registry.spec_for(operation.kind).uses_axes(operation):
             return
-        if self._recipe.setup.layout_mode == "gridspec":
+        if self._document.recipe.setup.layout_mode == "gridspec":
             axes_ids = _gridspec_valid_axes_ids(
-                self._recipe.setup, operation.axes.axes_ids
+                self._document.recipe.setup, operation.axes.axes_ids
             )
             if not axes_ids:
-                axes_ids = _gridspec_all_axes_ids(self._recipe.setup)[:1]
+                axes_ids = _gridspec_all_axes_ids(self._document.recipe.setup)[:1]
             selection = operation.axes.model_copy(
                 update={"axes_ids": axes_ids, "expression": ""}
             )
@@ -6080,23 +5962,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 index, operation.model_copy(update={"axes": selection})
             )
             return
-        axes = operation.axes.valid_axes(self._recipe.setup)
+        axes = operation.axes.valid_axes(self._document.recipe.setup)
         if not axes:
             axes = ((0, 0),)
         selection = operation.axes.model_copy(update={"axes": axes, "expression": ""})
         self._replace_operation(index, operation.model_copy(update={"axes": selection}))
 
-    def _source_names(self) -> tuple[str, ...]:
-        names = tuple(source.name for source in self._recipe.sources)
-        if names:
-            return names
-        return tuple(self._source_data)
-
-    def _source_by_name(self) -> dict[str, FigureSourceState]:
-        return {source.name: source for source in self._recipe.sources}
-
     def _source_display_name(self, name: str) -> str:
-        sources = self._source_by_name()
+        sources = self._document.source_by_name()
         source = sources.get(name)
         return _source_display_label(source, name)
 
@@ -6104,7 +5977,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(self._source_display_name(name) for name in names)
 
     def _source_detail_context_lines(self, name: str) -> tuple[str, ...]:
-        source = self._source_by_name().get(name)
+        source = self._document.source_by_name().get(name)
         lines: list[str] = []
         if source is None:
             lines.append("This source is missing from the recipe")
@@ -6126,7 +5999,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_tooltip(self, name: str) -> str:
         lines = [
             source_metadata_tooltip(
-                self._source_by_name().get(name), name, self._source_data.get(name)
+                self._document.source_by_name().get(name),
+                name,
+                self._document.source_data.get(name),
             ),
             *self._source_detail_context_lines(name),
         ]
@@ -6135,10 +6010,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return "\n".join(lines)
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
-        if self._recipe.setup.layout_mode == "gridspec":
+        if self._document.recipe.setup.layout_mode == "gridspec":
             axes_ids = self.gridspec_axes_selector.selected_axes_ids()
             if not axes_ids:
-                axes_ids = _gridspec_all_axes_ids(self._recipe.setup)[:1]
+                axes_ids = _gridspec_all_axes_ids(self._document.recipe.setup)[:1]
             return FigureAxesSelectionState(axes_ids=axes_ids)
         axes = self.axes_selector.selected_axes()
         if not axes:
@@ -6161,7 +6036,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @QtCore.Slot(str, object)
     def _gridspec_region_changed(self, region_id: str, span_obj: object) -> None:
         span = typing.cast("FigureGridSpecSpanState", span_obj)
-        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        grid = _gridspec_grid_by_id(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         if grid is None or not _gridspec_region_valid(grid, span):
             self.gridspec_status_label.setText("Region is outside the active grid.")
             return
@@ -6190,7 +6067,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return grid_state.model_copy(update={"axes": axes, "child_grids": children})
 
         setup = _gridspec_replace_grid(
-            self._recipe.setup, self._active_gridspec_grid_id, update_grid
+            self._document.recipe.setup, self._active_gridspec_grid_id, update_grid
         )
         self._apply_gridspec_setup(setup, selected_region_id=region_id)
 
@@ -6201,12 +6078,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot(str)
     def _gridspec_open_grid(self, grid_id: str) -> None:
-        if _gridspec_grid_by_id(self._recipe.setup, grid_id) is None:
+        if _gridspec_grid_by_id(self._document.recipe.setup, grid_id) is None:
             return
         self._active_gridspec_grid_id = grid_id
         self._updating_controls = True
         try:
-            self._sync_active_grid_controls(self._recipe.setup)
+            self._sync_active_grid_controls(self._document.recipe.setup)
         finally:
             self._updating_controls = False
         self._refresh_gridspec_editor()
@@ -6219,7 +6096,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _gridspec_open_parent_grid(self) -> None:
-        path = _gridspec_grid_path(self._recipe.setup, self._active_gridspec_grid_id)
+        path = _gridspec_grid_path(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         if len(path) > 1:
             self._gridspec_open_grid(path[-2].grid_id)
 
@@ -6230,12 +6109,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         selected_region_id = self._nearest_gridspec_axes_after_delete(region_id)
         setup = _gridspec_remove_region(
-            self._recipe.setup, self._active_gridspec_grid_id, region_id
+            self._document.recipe.setup, self._active_gridspec_grid_id, region_id
         )
         self._apply_gridspec_setup(setup, selected_region_id=selected_region_id)
 
     def _nearest_gridspec_axes_after_delete(self, region_id: str) -> str:
-        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        grid = _gridspec_grid_by_id(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         if grid is None:
             return ""
         deleted_span: FigureGridSpecSpanState | None = None
@@ -6286,17 +6167,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         name = self.gridspec_region_label_edit.text().strip()
         error = _gridspec_axis_variable_name_error(
-            self._recipe.setup,
+            self._document.recipe.setup,
             region_id,
             name,
-            reserved_names=self._source_names(),
+            reserved_names=self._document.source_names(),
         )
         if error:
             self._set_gridspec_variable_name_invalid(True)
             self.gridspec_status_label.setText(error)
             return
         self._set_gridspec_variable_name_invalid(False)
-        setup = _gridspec_update_axis_variable_name(self._recipe.setup, region_id, name)
+        setup = _gridspec_update_axis_variable_name(
+            self._document.recipe.setup, region_id, name
+        )
         self._apply_gridspec_setup(setup, selected_region_id=region_id)
 
     def _set_gridspec_variable_name_invalid(self, invalid: bool) -> None:
@@ -6307,7 +6190,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         span: FigureGridSpecSpanState,
         kind: typing.Literal["axes", "grid"],
     ) -> None:
-        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        grid = _gridspec_grid_by_id(
+            self._document.recipe.setup, self._active_gridspec_grid_id
+        )
         if grid is None:
             return
         if not _gridspec_region_valid(grid, span):
@@ -6340,14 +6225,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
 
         setup = _gridspec_replace_grid(
-            self._recipe.setup, self._active_gridspec_grid_id, update_grid
+            self._document.recipe.setup, self._active_gridspec_grid_id, update_grid
         )
         self._apply_gridspec_setup(setup, selected_region_id=selected_region_id)
 
     def _apply_gridspec_setup(
         self, setup: FigureSubplotsState, *, selected_region_id: str
     ) -> None:
-        self._recipe = self._recipe.model_copy(update={"setup": setup})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"setup": setup}
+        )
         self._updating_controls = True
         try:
             self._sync_active_grid_controls(setup)
@@ -6426,8 +6313,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _add_operation(self, action_id: str) -> None:
         operation = _registry.spec_for_action(action_id).create_operation(self)
-        operations = (*self._recipe.operations, operation)
-        self._recipe = self._recipe.model_copy(update={"operations": operations})
+        operations = (*self._document.recipe.operations, operation)
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": operations}
+        )
         self._refresh_operation_list()
         self.operation_list.setCurrentItem(
             self.operation_list.topLevelItem(len(operations) - 1)
@@ -6464,28 +6353,34 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         indices = self._selected_operation_indices()
         if not indices:
             return None
-        operations = tuple(self._recipe.operations[index] for index in indices)
+        operations = tuple(self._document.recipe.operations[index] for index in indices)
         source_names = tuple(
             dict.fromkeys(
                 source_name
                 for operation in operations
-                for source_name in self._operation_source_dependency_names(operation)
+                for source_name in self._document.operation_source_dependency_names(
+                    operation
+                )
             )
         )
-        source_by_name = {source.name: source for source in self._recipe.sources}
+        source_by_name = {
+            source.name: source for source in self._document.recipe.sources
+        }
         sources = tuple(
             source_by_name.get(source_name, FigureSourceState(name=source_name))
             for source_name in source_names
         )
         source_data = {
-            source_name: self._source_data[source_name].copy(deep=False)
+            source_name: self._document.source_data[source_name].copy(deep=False)
             for source_name in source_names
-            if source_name in self._source_data
+            if source_name in self._document.source_data
         }
         selection_base_data = {
-            source_name: self._source_selection_base_data[source_name].copy(deep=False)
+            source_name: self._document.source_selection_base_data[source_name].copy(
+                deep=False
+            )
             for source_name in source_names
-            if source_name in self._source_selection_base_data
+            if source_name in self._document.source_selection_base_data
         }
         clipboard = self._clipboard()
         if clipboard is None:
@@ -6524,9 +6419,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         dict[str, str],
         dict[str, xr.DataArray],
     ]:
-        existing_source_names = {source.name for source in self._recipe.sources}
-        reserved = {source.name for source in self._recipe.sources}
-        reserved.update(self._source_data)
+        existing_source_names = {
+            source.name for source in self._document.recipe.sources
+        }
+        reserved = {source.name for source in self._document.recipe.sources}
+        reserved.update(self._document.source_data)
         unique_sources: list[FigureSourceState] = []
         seen_sources: set[str] = set()
         for source in sources:
@@ -6560,7 +6457,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 renamed_sources.append(renamed_source)
                 existing_source_names.add(pasted_name)
             if source.name in source_data and (
-                pasted_name not in self._source_data or not preserve_existing
+                pasted_name not in self._document.source_data or not preserve_existing
             ):
                 renamed_source_data[pasted_name] = source_data[source.name]
         return tuple(renamed_sources), rename_map, renamed_source_data
@@ -6647,7 +6544,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             for operation in operations
         )
-        operation_list = list(self._recipe.operations)
+        operation_list = list(self._document.recipe.operations)
         indices = self._selected_operation_indices()
         current = self._current_operation()
         if indices:
@@ -6658,21 +6555,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             insert_index = len(operation_list)
         operation_list[insert_index:insert_index] = pasted_operations
 
-        source_names = {source.name for source in self._recipe.sources}
-        source_list = list(self._recipe.sources)
+        source_names = {source.name for source in self._document.recipe.sources}
+        source_list = list(self._document.recipe.sources)
         for source in renamed_sources:
             if source.name in source_names:
                 continue
             source_names.add(source.name)
             source_list.append(source)
-        self._source_data.update(renamed_source_data)
+        self._document.source_data.update(renamed_source_data)
         renamed_selection_base_data = {
             rename_map.get(source_name, source_name): data
             for source_name, data in selection_base_data.items()
             if rename_map.get(source_name, source_name) in source_names
         }
-        self._source_selection_base_data.update(renamed_selection_base_data)
-        self._recipe = self._recipe.model_copy(
+        self._document.source_selection_base_data.update(renamed_selection_base_data)
+        self._document.recipe = self._document.recipe.model_copy(
             update={
                 "sources": tuple(source_list),
                 "operations": tuple(operation_list),
@@ -6693,10 +6590,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index_set = set(indices)
         operations = [
             operation
-            for index, operation in enumerate(self._recipe.operations)
+            for index, operation in enumerate(self._document.recipe.operations)
             if index not in index_set
         ]
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         selected_ids: set[str] = set()
         current_id: str | None = None
         if operations:
@@ -6714,7 +6613,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         indices = self._selected_operation_indices()
         if not indices:
             return
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         duplicates = [
             operations[index].model_copy(
                 update={"operation_id": uuid.uuid4().hex},
@@ -6724,7 +6623,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ]
         insert_index = max(indices) + 1
         operations[insert_index:insert_index] = duplicates
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         self._finish_operation_structure_change(
             {operation.operation_id for operation in duplicates},
             duplicates[0].operation_id,
@@ -6746,7 +6647,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if isinstance(operation_id, str)
         )
         operation_by_id = {
-            operation.operation_id: operation for operation in self._recipe.operations
+            operation.operation_id: operation
+            for operation in self._document.recipe.operations
         }
         if (
             len(ordered_ids) != len(operation_ids)
@@ -6756,7 +6658,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_operation_list()
             return
         current_order = tuple(
-            operation.operation_id for operation in self._recipe.operations
+            operation.operation_id for operation in self._document.recipe.operations
         )
         if ordered_ids == current_order:
             return
@@ -6783,14 +6685,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operations = tuple(
             operation_by_id[operation_id] for operation_id in ordered_ids
         )
-        self._recipe = self._recipe.model_copy(update={"operations": operations})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": operations}
+        )
         self._finish_operation_structure_change(selected_id_set, current_operation_id)
 
     def _move_current_operation(self, offset: int) -> None:
         indices = self._selected_operation_indices()
         if not indices:
             return
-        operations = list(self._recipe.operations)
+        operations = list(self._document.recipe.operations)
         index_set = set(indices)
         selected_ids = {operations[index].operation_id for index in indices}
         moved = False
@@ -6826,7 +6730,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if operation.operation_id in selected_ids
             )
         )
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": tuple(operations)}
+        )
         self._finish_operation_structure_change(selected_ids, current_id)
 
     def _finish_operation_structure_change(
@@ -6836,7 +6742,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if selected_ids:
             self._set_selected_operation_ids_silent(selected_ids)
         if current_id is not None:
-            for row, operation in enumerate(self._recipe.operations):
+            for row, operation in enumerate(self._document.recipe.operations):
                 if operation.operation_id == current_id:
                     self._set_current_operation_row_silent(row)
                     break
@@ -6856,13 +6762,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def add_operation(self, operation: FigureOperationState) -> None:
         """Append an operation to the recipe."""
-        self._recipe = self._recipe.model_copy(
-            update={"operations": (*self._recipe.operations, operation)}
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"operations": (*self._document.recipe.operations, operation)}
         )
         self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self.operation_list.setCurrentItem(
-            self.operation_list.topLevelItem(len(self._recipe.operations) - 1)
+            self.operation_list.topLevelItem(len(self._document.recipe.operations) - 1)
         )
         self._maybe_redraw_plot()
         self.sigInfoChanged.emit()
@@ -6881,9 +6787,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         identifies accepted additions and linked-source updates, including the stored
         recipe name chosen for each requested source.
         """
-        existing = {source.name: source for source in self._recipe.sources}
-        candidate_data = dict(self._source_data)
-        candidate_bases = dict(self._source_selection_base_data)
+        existing = {source.name: source for source in self._document.recipe.sources}
+        candidate_data = dict(self._document.source_data)
+        candidate_bases = dict(self._document.source_selection_base_data)
         added: list[tuple[str, str]] = []
         updated: list[tuple[str, str]] = []
         skipped: list[tuple[str, str]] = []
@@ -6995,10 +6901,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     "Could not update source data for: " + ", ".join(skipped_details)
                 )
             return result
-        self._source_data = candidate_data
-        self._source_selection_base_data = candidate_bases
+        self._document.source_data = candidate_data
+        self._document.source_selection_base_data = candidate_bases
         ordered_sources = tuple(existing[name] for name in existing)
-        self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": ordered_sources}
+        )
         self._normalize_operation_source_selections()
         self._refresh_source_list()
         self._update_source_section()
@@ -7054,7 +6962,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         recipe steps and generated code keep referring to the stored source name.
         Returns ``False`` when no matching stored source or backing data slot exists.
         """
-        source_list = list(self._recipe.sources)
+        source_list = list(self._document.recipe.sources)
         existing_source: FigureSourceState | None = None
         existing_index: int | None = None
         for candidate_index, candidate_source in enumerate(source_list):
@@ -7063,7 +6971,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 existing_index = candidate_index
                 break
         else:
-            if alias not in self._source_data:
+            if alias not in self._document.source_data:
                 return False
             existing_source = None
             source_list.append(self._source_with_name(source, alias))
@@ -7110,9 +7018,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_list[existing_index] = replacement
         source_list = list(self._normalized_source_states(source_list))
 
-        candidate_data = dict(self._source_data)
+        candidate_data = dict(self._document.source_data)
         candidate_data[replacement_name] = selected_data
-        candidate_bases = dict(self._source_selection_base_data)
+        candidate_bases = dict(self._document.source_selection_base_data)
         if _source_has_selection(replacement):
             candidate_bases[replacement_name] = data
         else:
@@ -7130,9 +7038,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         except ValueError as exc:
             self._set_source_status_text(f"Could not refresh source “{alias}”: {exc}")
             return False
-        self._source_data = candidate_data
-        self._source_selection_base_data = candidate_bases
-        self._recipe = self._recipe.model_copy(update={"sources": tuple(source_list)})
+        self._document.source_data = candidate_data
+        self._document.source_selection_base_data = candidate_bases
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": tuple(source_list)}
+        )
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
@@ -7150,14 +7060,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
 
         source_list = tuple(
-            source for source in self._recipe.sources if source.name != name
+            source for source in self._document.recipe.sources if source.name != name
         )
         updates: dict[str, typing.Any] = {"sources": source_list}
-        if self._recipe.primary_source == name:
+        if self._document.recipe.primary_source == name:
             updates["primary_source"] = source_list[0].name
-        self._recipe = self._recipe.model_copy(update=updates)
-        self._source_data.pop(name, None)
-        self._source_selection_base_data.pop(name, None)
+        self._document.recipe = self._document.recipe.model_copy(update=updates)
+        self._document.source_data.pop(name, None)
+        self._document.source_selection_base_data.pop(name, None)
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._refresh_source_list()
@@ -7433,7 +7343,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _selected_sources_for_operation(
         self, operation: FigureOperationState
     ) -> tuple[str, ...]:
-        return _registry.spec_for(operation.kind).source_names(operation)
+        return declared_operation_source_names(operation)
 
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
@@ -7452,7 +7362,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [
-            source for source in selected_sources if source not in self._source_data
+            source
+            for source in selected_sources
+            if source not in self._document.source_data
         ]
         if missing:
             self._set_step_source_status_text(
@@ -7971,20 +7883,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             figure.savefig(
                 filename,
-                dpi=self._recipe.export.dpi,
-                transparent=self._recipe.export.transparent,
-                bbox_inches=self._recipe.export.bbox_inches,
+                dpi=self._document.recipe.export.dpi,
+                transparent=self._document.recipe.export.transparent,
+                bbox_inches=self._document.recipe.export.bbox_inches,
             )
 
     @property
     def tool_data(self) -> xr.DataArray:
-        if self._recipe.primary_source in self._source_data:
-            return self._source_data[self._recipe.primary_source]
-        return next(iter(self._source_data.values()))
+        if self._document.recipe.primary_source in self._document.source_data:
+            return self._document.source_data[self._document.recipe.primary_source]
+        return next(iter(self._document.source_data.values()))
 
     @property
     def tool_status(self) -> FigureRecipeState:
-        return self._recipe
+        return self._document.recipe
 
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
@@ -7993,7 +7905,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             for operation in status.operations
         )
         sources = self._normalized_source_states(status.sources)
-        self._recipe = status.model_copy(
+        self._document.recipe = status.model_copy(
             update={"sources": sources, "operations": operations}
         )
         self._ensure_primary_source_data()
@@ -8006,8 +7918,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
-        self._source_data = dict(source_data)
-        self._source_selection_base_data.clear()
+        self._document.source_data = dict(source_data)
+        self._document.source_selection_base_data.clear()
         self._mark_preview_pixmap_stale()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
@@ -8015,7 +7927,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         changed = False
         sources: list[FigureSourceState] = []
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             updates: dict[str, typing.Any] = {}
             if source.node_uid is not None and source.node_uid in uid_map:
                 updates["node_uid"] = uid_map[source.node_uid]
@@ -8037,20 +7949,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 sources.append(source)
         if not changed:
             return
-        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self._document.recipe = self._document.recipe.model_copy(
+            update={"sources": tuple(sources)}
+        )
         self.sigInfoChanged.emit()
 
     def _ensure_primary_source_data(self) -> None:
-        if self._recipe.primary_source in self._source_data or not self._source_data:
+        if (
+            self._document.recipe.primary_source in self._document.source_data
+            or not self._document.source_data
+        ):
             return
-        recipe_sources = {source.name for source in self._recipe.sources}
-        fallback_name, fallback_data = next(iter(self._source_data.items()))
-        self._source_data[self._recipe.primary_source] = fallback_data
+        recipe_sources = {source.name for source in self._document.recipe.sources}
+        fallback_name, fallback_data = next(iter(self._document.source_data.items()))
+        self._document.source_data[self._document.recipe.primary_source] = fallback_data
         if fallback_name not in recipe_sources:
-            del self._source_data[fallback_name]
+            del self._document.source_data[fallback_name]
 
     def _recipe_source(self, source_name: str) -> FigureSourceState | None:
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             if source.name == source_name:
                 return source
         return None
@@ -8058,7 +7975,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _source_reference_payload(
         self, source_name: str
     ) -> dict[str, typing.Any] | None:
-        if not self._save_tool_data_references or source_name not in self._source_data:
+        if (
+            not self._save_tool_data_references
+            or source_name not in self._document.source_data
+        ):
             return None
         source = self._recipe_source(source_name)
         if source is None or source.node_uid is None:
@@ -8080,7 +8000,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> dict[str, typing.Any] | None:
         del data
         if variable_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
-            return self._source_reference_payload(self._recipe.primary_source)
+            return self._source_reference_payload(self._document.recipe.primary_source)
         return self._source_reference_payload(variable_name)
 
     @classmethod
@@ -8097,16 +8017,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
-        primary_source = self._recipe.primary_source
-        if primary_source in self._source_data:
+        primary_source = self._document.recipe.primary_source
+        if primary_source in self._document.source_data:
             primary_data, _already_selected = self._persistence_source_data(
                 primary_source
             )
         else:
             primary_data = self.tool_data
         items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: primary_data}
-        for source_name in self._source_data:
-            if source_name == self._recipe.primary_source:
+        for source_name in self._document.source_data:
+            if source_name == self._document.recipe.primary_source:
                 continue
             if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
                 raise ValueError(
@@ -8117,18 +8037,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return items
 
     def _persistence_source_data(self, source_name: str) -> tuple[xr.DataArray, bool]:
-        data = self._source_data[source_name]
+        data = self._document.source_data[source_name]
         source = self._recipe_source(source_name)
         if source is None or not _source_has_selection(source):
             return data, False
-        base_data = self._source_selection_base_data.get(source_name)
+        base_data = self._document.source_selection_base_data.get(source_name)
         if base_data is not None:
             return base_data, False
         if (
             source.selection_source is not None
             and source.selection_source != source_name
         ):
-            base_data = self._source_data.get(source.selection_source)
+            base_data = self._document.source_data.get(source.selection_source)
             if base_data is not None:
                 return base_data, False
         return data, True
@@ -8136,13 +8056,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _embedded_selected_source_names(self, ds: xr.Dataset) -> tuple[str, ...]:
         references = self._saved_tool_data_references(ds)
         selected_names: list[str] = []
-        for source in self._recipe.sources:
-            if source.name not in self._source_data:
+        for source in self._document.recipe.sources:
+            if source.name not in self._document.source_data:
                 continue
             _data, already_selected = self._persistence_source_data(source.name)
             variable_name = (
                 erlab.interactive.utils._SAVED_TOOL_DATA_NAME
-                if source.name == self._recipe.primary_source
+                if source.name == self._document.recipe.primary_source
                 else source.name
             )
             if already_selected and variable_name not in references:
@@ -8169,7 +8089,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _persistence_reference_node_uids(self) -> frozenset[str]:
         return frozenset(
             source.node_uid
-            for source in self._recipe.sources
+            for source in self._document.recipe.sources
             if source.node_uid is not None
         )
 
@@ -8192,23 +8112,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
-        source_data = dict(self._source_data)
-        selection_base_data = dict(self._source_selection_base_data)
+        source_data = dict(self._document.source_data)
+        selection_base_data = dict(self._document.source_selection_base_data)
         embedded_selected_names = self._persisted_selected_source_names(ds)
-        source_by_name = self._source_by_name()
+        source_by_name = self._document.source_by_name()
         persisted_inputs: dict[str, tuple[xr.DataArray, bool]] = {}
         changed = False
 
         def persisted_data(source: FigureSourceState) -> xr.DataArray | None:
             variable_name = (
                 erlab.interactive.utils._SAVED_TOOL_DATA_NAME
-                if source.name == self._recipe.primary_source
+                if source.name == self._document.recipe.primary_source
                 else source.name
             )
             data = data_items.get(variable_name)
             if data is None:
                 return None
-            if source.name != self._recipe.primary_source:
+            if source.name != self._document.recipe.primary_source:
                 return data
             current_primary = source_data.get(source.name)
             if current_primary is not None:
@@ -8218,7 +8138,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 tool_data_name = None
             return data.rename(tool_data_name)
 
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             data = persisted_data(source)
             if data is None:
                 continue
@@ -8248,7 +8168,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         resolved = {
             source.name
-            for source in self._recipe.sources
+            for source in self._document.recipe.sources
             if source.selection_source is None and source.name in source_data
         }
         queue: collections.deque[str] = collections.deque(resolved)
@@ -8260,7 +8180,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 parent_data = source_data.get(parent_name)
                 if parent_data is None:
                     continue
-                for source in self._recipe.sources:
+                for source in self._document.recipe.sources:
                     if (
                         source.name in resolved
                         or source.selection_source != parent_name
@@ -8292,7 +8212,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         pending = [
             source
-            for source in self._recipe.sources
+            for source in self._document.recipe.sources
             if source.name not in resolved and source.name in persisted_inputs
         ]
         while pending:
@@ -8343,7 +8263,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         unresolved = tuple(
             source.name
-            for source in self._recipe.sources
+            for source in self._document.recipe.sources
             if source.selection_source is not None and source.name not in source_data
         )
         if unresolved:
@@ -8356,7 +8276,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._queue_post_restore_redraw_if_needed(ds)
             return
         self.set_source_data(source_data)
-        self._source_selection_base_data.update(selection_base_data)
+        self._document.source_selection_base_data.update(selection_base_data)
         self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self._restore_persisted_preview_cache(ds)
@@ -8488,7 +8408,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         if self._closing:
             return
-        if not self._recipe.operations:
+        if not self._document.recipe.operations:
             self._clear_preview_pixmap_cache(stale=False)
             return
         if self._preview_pixmap_update_pending or not self._preview_pixmap_stale:
@@ -8559,9 +8479,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         with self._figure_options_context(), _figure_style_context():
             figure = Figure(
-                figsize=self._recipe.setup.figsize,
-                dpi=self._recipe.setup.dpi,
-                layout=typing.cast("typing.Any", self._recipe.setup.layout),
+                figsize=self._document.recipe.setup.figsize,
+                dpi=self._document.recipe.setup.dpi,
+                layout=typing.cast("typing.Any", self._document.recipe.setup.layout),
             )
             try:
                 canvas = FigureCanvasAgg(figure)
@@ -8590,7 +8510,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
             self._clear_preview_pixmap_cache(stale=False)
             return None
-        if not self._recipe.operations:
+        if not self._document.recipe.operations:
             self._clear_preview_pixmap_cache(stale=False)
             return None
         preview = self._canvas_preview_pixmap()
@@ -8626,10 +8546,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(thumbnail)
 
     def source_states(self) -> tuple[FigureSourceState, ...]:
-        return self._recipe.sources
+        return self._document.recipe.sources
 
     def source_data(self) -> dict[str, xr.DataArray]:
-        return dict(self._source_data)
+        return dict(self._document.source_data)
 
     @staticmethod
     def _source_selection_replay_operations(
@@ -8690,7 +8610,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         used_names: set[str],
     ) -> str:
         candidates: list[str] = []
-        data = self._source_data.get(source.name)
+        data = self._document.source_data.get(source.name)
         if data is not None and isinstance(data.name, str):
             candidates.append(data.name)
         candidates.append(source.name)
@@ -8799,29 +8719,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         frozenset[str],
         dict[str, str],
     ]:
-        source_by_name = self._source_by_name()
-        used_sources = self._direct_sources_used_by_recipe(
+        source_by_name = self._document.source_by_name()
+        used_sources = self._document.direct_sources_used_by_recipe(
             enabled_only=True, executable_only=True
         )
         used_code_names = set(_FIGURE_CODE_RESERVED_NAMES)
         used_code_names.update(
             bound_name
-            for operation in self._recipe.operations
+            for operation in self._document.recipe.operations
             if operation.enabled
             and operation.kind == FigureOperationKind.CUSTOM
             and operation.trusted
             for bound_name in _custom_code_bound_names(operation.code)
         )
-        if self._recipe.setup.layout_mode == "gridspec":
-            source_names = self._source_names()
+        if self._document.recipe.setup.layout_mode == "gridspec":
+            source_names = self._document.source_names()
             used_code_names.update(
                 _gridspec_reserved_axis_code_names(
-                    self._recipe.setup, reserved_names=source_names
+                    self._document.recipe.setup, reserved_names=source_names
                 )
             )
             used_code_names.update(
                 _gridspec_axis_code_names(
-                    self._recipe.setup, reserved_names=source_names
+                    self._document.recipe.setup, reserved_names=source_names
                 ).values()
             )
         script_inputs: list[provenance.ScriptInput] = []
@@ -8835,7 +8755,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             script_inputs.append(script_input)
             script_input_names.add(script_input.name)
 
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             if source.name not in used_sources:
                 continue
             display_name = self._source_display_code_name(
@@ -8899,18 +8819,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def set_missing_sources(self, names: set[str]) -> None:
         if not names:
             return
-        for source in self._recipe.sources:
+        for source in self._document.recipe.sources:
             if source.name in names:
-                self._source_data.pop(source.name, None)
-                self._source_selection_base_data.pop(source.name, None)
+                self._document.source_data.pop(source.name, None)
+                self._document.source_selection_base_data.pop(source.name, None)
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
-        source_by_name = self._source_by_name()
-        candidate_data = dict(self._source_data)
-        candidate_bases = dict(self._source_selection_base_data)
+        source_by_name = self._document.source_by_name()
+        candidate_data = dict(self._document.source_data)
+        candidate_bases = dict(self._document.source_selection_base_data)
         skipped: list[str] = []
         changed = False
         for source_name, data in source_data.items():
@@ -8955,8 +8875,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not changed:
             self._refresh_source_controls()
             return
-        self._source_data = candidate_data
-        self._source_selection_base_data = candidate_bases
+        self._document.source_data = candidate_data
+        self._document.source_selection_base_data = candidate_bases
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()

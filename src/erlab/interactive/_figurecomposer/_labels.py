@@ -887,7 +887,7 @@ def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
     original_operations = {
         operation.operation_id: operation for _index, operation in editable
     }
-    operations = list(tool._recipe.operations)
+    operations = list(tool._document.recipe.operations)
     newly_labeled_groups: dict[
         tuple[tuple[tuple[int, int], ...], tuple[str, ...], str],
         tuple[int, FigureOperationState],
@@ -942,7 +942,9 @@ def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
             preview_affected = True
     if not changed:
         return
-    tool._recipe = tool._recipe.model_copy(update={"operations": tuple(operations)})
+    tool._document.recipe = tool._document.recipe.model_copy(
+        update={"operations": tuple(operations)}
+    )
     tool._refresh_operation_list()
     tool._sync_axes_selector()
     tool._update_step_action_buttons()

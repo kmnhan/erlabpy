@@ -37,6 +37,14 @@ from erlab.interactive._figurecomposer._exceptions import (
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool, provenance
+from erlab.interactive.imagetool._figurecomposer_adapter import (
+    _multicursor_variable_key,
+    _norm_updates,
+    _operation_updates,
+    _plain_value,
+    _PlotOperationBuilder,
+    build_figure_composer_operation,
+)
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
@@ -72,11 +80,7 @@ from erlab.interactive.imagetool.dialogs import (
     SymmetrizeNfoldDialog,
     ThinDialog,
 )
-from erlab.interactive.imagetool.plot_items import (
-    ItoolPlotItem,
-    ItoolViewBox,
-    _PolyROIEditDialog,
-)
+from erlab.interactive.imagetool.plot_items import ItoolViewBox, _PolyROIEditDialog
 from erlab.interactive.imagetool.slicer import ArraySlicerState
 from erlab.interactive.imagetool.viewer import ImageSlicerArea
 from erlab.interactive.imagetool.viewer_state import (
@@ -564,7 +568,9 @@ def test_qsel_kwargs_multicursor_with_varying_dim(qtbot) -> None:
     win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
 
-    kwargs, variable = main_image._uniform_qsel_kwargs_multicursor()
+    kwargs, variable = _PlotOperationBuilder(
+        main_image
+    ).uniform_qsel_kwargs_multicursor()
     assert kwargs == {"beta": [1.0, 3.0]}
     assert variable == "beta"
 
@@ -584,7 +590,7 @@ def test_qsel_kwargs_multicursor_width_only_error(qtbot) -> None:
     win.array_slicer.set_bin(1, axis=2, value=1, update=True)
 
     with pytest.raises(ValueError, match="Cannot plot when"):
-        main_image._uniform_qsel_kwargs_multicursor()
+        _PlotOperationBuilder(main_image).uniform_qsel_kwargs_multicursor()
 
     win.close()
 
@@ -598,7 +604,7 @@ def test_qsel_kwargs_multicursor_rejects_nonuniform_axes(qtbot) -> None:
     main_image.display_axis = (1, 2)
 
     with pytest.raises(ValueError, match="indexing along non-uniform axes"):
-        main_image._uniform_qsel_kwargs_multicursor()
+        _PlotOperationBuilder(main_image).uniform_qsel_kwargs_multicursor()
 
     win.close()
 
@@ -615,7 +621,9 @@ def test_qsel_kwargs_multicursor_with_width_and_value_changes(qtbot) -> None:
     win.array_slicer.set_bin(0, axis=2, value=3, update=False)
     win.array_slicer.set_bin(1, axis=2, value=1, update=True)
 
-    kwargs, variable = main_image._uniform_qsel_kwargs_multicursor()
+    kwargs, variable = _PlotOperationBuilder(
+        main_image
+    ).uniform_qsel_kwargs_multicursor()
     assert list(kwargs.keys())[:2] == ["beta", "beta_width"]
     assert kwargs["beta"] == [1.0, 3.0]
     assert kwargs["beta_width"] == [3.0, 0.0]
@@ -650,7 +658,7 @@ def test_qsel_kwargs_multicursor_rejects_multiple_varying_dims(qtbot) -> None:
         match="Cannot plot when more than one dimension has differing values"
         " across cursors",
     ):
-        main_image._uniform_qsel_kwargs_multicursor()
+        _PlotOperationBuilder(main_image).uniform_qsel_kwargs_multicursor()
 
     win.close()
 
@@ -659,9 +667,7 @@ def test_multicursor_variable_key_with_width_first(qtbot) -> None:
     data = _TEST_DATA["3D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-    main_image = win.slicer_area.images[0]
-
-    assert main_image._multicursor_variable_key(["beta_width", "beta"]) == "beta"
+    assert _multicursor_variable_key(["beta_width", "beta"]) == "beta"
 
     win.close()
 
@@ -1228,7 +1234,7 @@ def test_figure_composer_multicursor_line_seeds_normalization_and_colors(
     line_plot.set_normalize(True)
     win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0]})
 
-    operation = line_plot.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(line_plot, source_name="data")
     assert operation.kind == FigureOperationKind.LINE
     assert operation.line_x == "alpha"
     assert operation.line_selection == {"eV": [1.0, 3.0]}
@@ -1250,7 +1256,7 @@ def test_figure_composer_multicursor_line_skips_default_colors(qtbot) -> None:
     win.slicer_area.set_value(axis=1, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
 
-    operation = line_plot.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(line_plot, source_name="data")
     assert operation.kind == FigureOperationKind.LINE
     assert operation.line_x == "alpha"
     assert operation.line_selection == {"eV": [1.0, 3.0]}
@@ -1267,7 +1273,7 @@ def test_figure_composer_line_without_multicursor_variation(qtbot) -> None:
     qtbot.addWidget(win)
     line_plot = win.slicer_area.get_axes(1)
 
-    operation = line_plot.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(line_plot, source_name="data")
     assert operation.kind == FigureOperationKind.LINE
     assert operation.line_x == "alpha"
     assert operation.line_selection == {"eV": 2.0}
@@ -1296,7 +1302,7 @@ def test_figure_composer_multicursor_image_seeds_norm_settings(qtbot) -> None:
     win.slicer_area.lock_levels(True)
     main_image.getViewBox().setAspectLocked(True)
 
-    operation = main_image.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(main_image, source_name="data")
     assert operation.kind == FigureOperationKind.PLOT_SLICES
     assert operation.transpose is True
     assert operation.same_limits is True
@@ -1320,7 +1326,7 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
 
     win.slicer_area.array_slicer.set_bin(0, 2, 3)
 
-    operation = main_image.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(main_image, source_name="data")
     assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert len(operation.map_selections) == 1
     assert operation.map_selections[0].qsel["beta"] == pytest.approx(2.0)
@@ -1331,7 +1337,7 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
 
 
 def test_figure_composer_operation_updates_keep_independent_state() -> None:
-    updates = ItoolPlotItem._figure_composer_operation_updates(
+    updates = _operation_updates(
         {
             "xlim": (1.0, 3.0),
             "ylim": (0.5, 2.5),
@@ -1358,7 +1364,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     qtbot.addWidget(win)
     main_image = win.slicer_area.images[0]
 
-    converted = ItoolPlotItem._figure_composer_plain_value(
+    converted = _plain_value(
         {
             "flag": np.bool_(True),
             "plain_int": 3,
@@ -1375,28 +1381,21 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
         "items": (1, 2.5),
     }
 
-    assert ItoolPlotItem._figure_composer_operation_updates({}) is None
-    assert ItoolPlotItem._figure_composer_norm_updates("not a call") is None
-    assert ItoolPlotItem._figure_composer_norm_updates("CenteredPowerNorm(1)") is None
-    assert ItoolPlotItem._figure_composer_norm_updates("other.Norm(1)") is None
-    assert ItoolPlotItem._figure_composer_norm_updates("eplt.PowerNorm(1)") is None
-    assert (
-        ItoolPlotItem._figure_composer_norm_updates("eplt.CenteredPowerNorm(**{})")
-        is None
-    )
-    assert (
-        ItoolPlotItem._figure_composer_norm_updates("eplt.CenteredPowerNorm(foo=bar)")
-        is None
-    )
-    norm_updates = ItoolPlotItem._figure_composer_norm_updates(
-        "eplt.CenteredPowerNorm(0.5, halfrange=1.0)"
-    )
+    assert _operation_updates({}) is None
+    assert _norm_updates("not a call") is None
+    assert _norm_updates("CenteredPowerNorm(1)") is None
+    assert _norm_updates("other.Norm(1)") is None
+    assert _norm_updates("eplt.PowerNorm(1)") is None
+    assert _norm_updates("eplt.CenteredPowerNorm(**{})") is None
+    assert _norm_updates("eplt.CenteredPowerNorm(foo=bar)") is None
+    norm_updates = _norm_updates("eplt.CenteredPowerNorm(0.5, halfrange=1.0)")
     assert norm_updates is not None
     assert norm_updates["norm_name"] == "CenteredPowerNorm"
     assert norm_updates["norm_gamma"] == pytest.approx(0.5)
     assert norm_updates["halfrange"] == pytest.approx(1.0)
 
-    operation = main_image._figure_composer_plot_slices_operation(
+    builder = _PlotOperationBuilder(main_image)
+    operation = builder.plot_slices_operation(
         source_name="data",
         variable_dim=None,
         dim_order_plot=["alpha", "eV"],
@@ -1411,7 +1410,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     assert operation.slice_width == pytest.approx(0.25)
     assert operation.slice_kwargs == {"temperature": "base"}
 
-    varying_width_operation = main_image._figure_composer_plot_slices_operation(
+    varying_width_operation = builder.plot_slices_operation(
         source_name="data",
         variable_dim="beta",
         dim_order_plot=["alpha", "eV"],
@@ -1421,7 +1420,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     assert varying_width_operation.slice_width is None
     assert varying_width_operation.slice_kwargs == {"beta_width": [0.25, 0.5]}
 
-    scalar_width_operation = main_image._figure_composer_plot_slices_operation(
+    scalar_width_operation = builder.plot_slices_operation(
         source_name="data",
         variable_dim="beta",
         dim_order_plot=["alpha", "eV"],
@@ -1430,7 +1429,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     assert scalar_width_operation.slice_width == pytest.approx(0.25)
     assert scalar_width_operation.slice_kwargs == {"beta": 1.0}
 
-    unparsed_width_operation = main_image._figure_composer_plot_slices_operation(
+    unparsed_width_operation = builder.plot_slices_operation(
         source_name="data",
         variable_dim=None,
         dim_order_plot=["alpha", "eV"],
@@ -1443,7 +1442,7 @@ def test_figure_composer_seed_helpers_promote_editable_selection_kwargs(
     win.slicer_area.add_cursor()
     win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=2, value=2.0, cursor=1)
-    map_selections = main_image._figure_composer_map_selections(
+    map_selections = builder.map_selections(
         source_name="data",
         non_display_axes=(2,),
         variable_dim="beta",
@@ -1491,7 +1490,9 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
     win.array_slicer.set_bin(0, axis=0, value=3, update=False)
     win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
-    expr = image_plot._selection_expr_for_cursor("data", 0, (0, 2))
+    expr = _PlotOperationBuilder(image_plot).selection_expr_for_cursor(
+        "data", 0, (0, 2)
+    )
     assert ".qsel.mean((" in expr
     result = _exec_data_fragment(win.slicer_area.data, expr)
     expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1509,7 +1510,7 @@ def test_selection_expr_for_cursor_uniform_axis_only(qtbot) -> None:
     qtbot.addWidget(win)
     image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), non-display alpha
 
-    expr = image_plot._selection_expr_for_cursor("data", 0, (1,))
+    expr = _PlotOperationBuilder(image_plot).selection_expr_for_cursor("data", 0, (1,))
     assert ".isel(" not in expr
     assert ".qsel(" in expr
 
@@ -1529,7 +1530,9 @@ def test_selection_expr_for_cursor_preserves_nonstring_qsel_dim(qtbot) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    expr = win.slicer_area.main_image._selection_expr_for_cursor("data", 0, (0,))
+    expr = _PlotOperationBuilder(win.slicer_area.main_image).selection_expr_for_cursor(
+        "data", 0, (0,)
+    )
     assert expr == 'data.qsel({"k-space": 0.0})'
 
     win.close()
@@ -1668,7 +1671,9 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     win.close()
 
 
-def test_figure_composer_operation_reports_uneditable_plot_slices_details() -> None:
+def test_figure_composer_operation_reports_uneditable_plot_slices_details(
+    monkeypatch,
+) -> None:
     class _PlotWithSelectionPlan:
         is_image = True
         display_axis = (0, 1)
@@ -1677,21 +1682,6 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details() -> N
             n_cursors=1,
         )
         array_slicer = types.SimpleNamespace(_nonuniform_axes=set())
-        _plot_slices_qsel_key_is_editable = staticmethod(
-            ItoolPlotItem._plot_slices_qsel_key_is_editable
-        )
-
-        def __init__(self, plan) -> None:
-            self._plan = plan
-
-        def _sync_figure_composer_view_limits(self) -> None:
-            return
-
-        def _selection_dim_name(self, axis: int) -> str:
-            return self.slicer_area.data.dims[axis]
-
-        def _multicursor_selection_plan(self, **_kwargs):
-            return self._plan
 
     for plan, detail in (
         (
@@ -1707,9 +1697,14 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details() -> N
             "Selection did not produce qsel coordinates",
         ),
     ):
+        monkeypatch.setattr(
+            _PlotOperationBuilder,
+            "multicursor_selection_plan",
+            lambda _self, _plan=plan, **_kwargs: _plan,
+        )
         with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
-            ItoolPlotItem.figure_composer_operation(
-                _PlotWithSelectionPlan(plan), source_name="data"
+            build_figure_composer_operation(
+                _PlotWithSelectionPlan(), source_name="data"
             )
         assert detail in str(exc_info.value)
 
@@ -1798,7 +1793,7 @@ def test_figure_composer_operation_uses_transposed_source_axis_order(qtbot) -> N
     win.slicer_area.transpose_main_image()
     win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.0, 2.0]})
 
-    operation = main_image.figure_composer_operation(source_name="data")
+    operation = build_figure_composer_operation(main_image, source_name="data")
 
     assert win.slicer_area._tool_source_parent_data().dims == ("eV", "alpha")
     assert operation.transpose is True

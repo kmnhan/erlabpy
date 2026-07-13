@@ -9,6 +9,7 @@ import numpy as np
 
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer._axes import _compact_axes_code
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -16,10 +17,6 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._figurecomposer._state import FigureLimit
-
-
-class FigureComposerInputError(ValueError):
-    """Invalid text entered into a Figure Composer editor control."""
 
 
 _DICT_INPUT_MESSAGE = (

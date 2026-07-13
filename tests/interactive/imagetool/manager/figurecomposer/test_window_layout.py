@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._reorder_list as figurecomposer_reorder_list
+
 from ._common import *
 
 
@@ -1639,7 +1641,7 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert tool._source_names() == ("known", "missing")
+    assert tool._document.source_names() == ("known", "missing")
     assert tool._source_display_names(("known", "missing"))
     assert tool._source_tooltip("known")
     tool._refresh_source_list()
@@ -1807,7 +1809,7 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
         ncols=1,
         child_grids=(child_with_invalid_axis,),
     )
-    grid_tool._recipe = grid_tool.tool_status.model_copy(
+    grid_tool.tool_status = grid_tool.tool_status.model_copy(
         update={
             "setup": FigureSubplotsState(
                 layout_mode="gridspec",
@@ -2736,6 +2738,25 @@ def test_figure_composer_defaults_skip_unavailable_stylesheets(
         "missing-style",
     )
     assert figurecomposer_defaults._default_figsize() == expected_figsize
+
+
+def test_figure_composer_defaults_avoid_stylesheet_registry_when_unconfigured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(figurecomposer_defaults, "_configured_stylesheets", tuple)
+
+    def unexpected_stylesheet_lookup(*_args, **_kwargs):
+        raise AssertionError("empty stylesheet settings must not load the registry")
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "available_stylesheets",
+        unexpected_stylesheet_lookup,
+    )
+
+    assert figurecomposer_defaults._available_configured_stylesheets() == ()
+    assert figurecomposer_defaults._unavailable_configured_stylesheets() == ()
+    assert figurecomposer_defaults._style_required_imports() == ()
 
 
 @pytest.mark.parametrize("dpi", [0, -1])
@@ -4650,7 +4671,7 @@ def test_figure_composer_step_editor_and_reorder_defensive_paths(
     page.changeEvent(QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
     assert scheduled == [(page, page._refresh_background)]
 
-    rows = figurecomposer_tool_module._FigureComposerReorderList(0)
+    rows = figurecomposer_reorder_list.ReorderList(0)
     qtbot.addWidget(rows)
     invalid_item = QtWidgets.QTreeWidgetItem(rows)
     invalid_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, 1)
@@ -4786,12 +4807,12 @@ def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None
 
     def axes_code(axes: tuple[tuple[int, int], ...]) -> str:
         return figurecomposer_code._axes_code(
-            tool, FigureAxesSelectionState(axes=axes), for_plot_slices=False
+            tool._document, FigureAxesSelectionState(axes=axes), for_plot_slices=False
         )
 
     def axes_sequence_code(axes: tuple[tuple[int, int], ...]) -> str:
         return figurecomposer_code._axes_sequence_code(
-            tool, FigureAxesSelectionState(axes=axes)
+            tool._document, FigureAxesSelectionState(axes=axes)
         )
 
     all_axes = tuple((row, col) for row in range(3) for col in range(4))
@@ -4816,7 +4837,7 @@ def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None
     assert axes_sequence_code(((0, 0), (0, 2))) == "(axs[0, 0], axs[0, 2])"
     assert (
         figurecomposer_code._axes_code(
-            tool,
+            tool._document,
             FigureAxesSelectionState(axes=((0, 1),)),
             for_plot_slices=True,
         )
@@ -4824,7 +4845,9 @@ def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None
     )
     assert (
         figurecomposer_code._axes_code(
-            tool, FigureAxesSelectionState(axes=all_axes), for_plot_slices=True
+            tool._document,
+            FigureAxesSelectionState(axes=all_axes),
+            for_plot_slices=True,
         )
         == "axs"
     )
@@ -4852,16 +4875,16 @@ def test_figure_composer_code_helpers_cover_selection_and_layout_edges(
     expression_selection = FigureAxesSelectionState(expression="custom_axes")
     assert (
         figurecomposer_code._axes_code(
-            tool, expression_selection, for_plot_slices=False
+            tool._document, expression_selection, for_plot_slices=False
         )
         == "custom_axes"
     )
-    assert figurecomposer_code._axes_sequence_code(tool, expression_selection) == (
-        "custom_axes"
-    )
+    assert figurecomposer_code._axes_sequence_code(
+        tool._document, expression_selection
+    ) == ("custom_axes")
     with pytest.raises(ValueError, match="outside the current layout"):
         figurecomposer_code._axes_code(
-            tool,
+            tool._document,
             FigureAxesSelectionState(axes=((2, 0),)),
             for_plot_slices=False,
         )
@@ -4913,7 +4936,7 @@ def test_figure_composer_code_helpers_cover_selection_and_layout_edges(
     )
     qtbot.addWidget(invalid_tool)
     with pytest.raises(ValueError, match="outside their grids"):
-        figurecomposer_code._setup_code(invalid_tool)
+        figurecomposer_code._setup_code(invalid_tool._document)
 
     child_without_span = FigureGridSpecGridState(
         grid_id="child",
@@ -4955,7 +4978,9 @@ def test_figure_composer_code_helpers_cover_selection_and_layout_edges(
         ),
     )
     qtbot.addWidget(grid_tool)
-    setup_code = "\n".join(figurecomposer_code._gridspec_setup_code_lines(grid_tool))
+    setup_code = "\n".join(
+        figurecomposer_code._gridspec_setup_code_lines(grid_tool._document)
+    )
     assert 'layout="compressed"' in setup_code
     assert "width_ratios=(2.0, 1.0)" in setup_code
     assert "height_ratios=(1.0, 3.0)" in setup_code
@@ -5209,9 +5234,11 @@ def test_figure_composer_subplots_codegen_regression(qtbot) -> None:
     exec(code, namespace)  # noqa: S102
     assert namespace["axs"].shape == (2, 2)
     empty_selection = FigureAxesSelectionState(axes=())
-    assert tool._axes_selection_has_invalid_target(empty_selection)
+    assert tool._document.axes_selection_has_invalid_target(empty_selection)
     with pytest.raises(ValueError, match="No axes are selected"):
-        figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
+        figurecomposer_code._axes_code(
+            tool._document, empty_selection, for_plot_slices=False
+        )
 
 
 def test_figure_composer_axes_status_uses_compact_labels(qtbot) -> None:
@@ -5479,7 +5506,7 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     assert not tool.gridspec_axes_selector.axis_rect("right-axis").isNull()
     assert (
         figurecomposer_code._axes_code(
-            tool,
+            tool._document,
             FigureAxesSelectionState(axes_ids=("left-axis",)),
             for_plot_slices=False,
         )
@@ -5487,7 +5514,7 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     )
     assert (
         figurecomposer_code._axes_code(
-            tool,
+            tool._document,
             FigureAxesSelectionState(axes_ids=("left-axis",)),
             for_plot_slices=True,
         )
@@ -5495,7 +5522,8 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     )
     assert (
         figurecomposer_code._axes_sequence_code(
-            tool, FigureAxesSelectionState(axes_ids=("left-axis", "right-axis"))
+            tool._document,
+            FigureAxesSelectionState(axes_ids=("left-axis", "right-axis")),
         )
         == "(left_panel, ax1)"
     )
@@ -5531,21 +5559,25 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     exec(code, namespace)  # noqa: S102
     assert len(namespace["fig"].axes) == 2
     empty_selection = FigureAxesSelectionState(axes_ids=())
-    assert tool._axes_selection_has_invalid_target(empty_selection)
+    assert tool._document.axes_selection_has_invalid_target(empty_selection)
     with pytest.raises(ValueError, match="No axes are selected"):
-        figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
+        figurecomposer_code._axes_code(
+            tool._document, empty_selection, for_plot_slices=False
+        )
     invalid_selection = FigureAxesSelectionState(
         axes_ids=("left-axis", "removed-internal-axis")
     )
     with pytest.raises(
         ValueError, match="1 selected GridSpec axis outside the current layout"
     ) as excinfo:
-        figurecomposer_code._axes_code(tool, invalid_selection, for_plot_slices=False)
+        figurecomposer_code._axes_code(
+            tool._document, invalid_selection, for_plot_slices=False
+        )
     assert "removed-internal-axis" not in str(excinfo.value)
     with pytest.raises(
         ValueError, match="1 selected GridSpec axis outside the current layout"
     ) as excinfo:
-        figurecomposer_code._axes_sequence_code(tool, invalid_selection)
+        figurecomposer_code._axes_sequence_code(tool._document, invalid_selection)
     assert "removed-internal-axis" not in str(excinfo.value)
     display_names = figurecomposer_gridspec._gridspec_axis_display_names(
         tool.tool_status.setup,
@@ -8201,7 +8233,7 @@ def test_figure_composer_layout_ratios_update_subplots_kwargs(qtbot) -> None:
 
     assert tool.tool_status.setup.width_ratios == (3.0, 2.0, 1.0)
     assert tool.tool_status.setup.height_ratios == (4.0, 1.0)
-    setup_kwargs = figurecomposer_rendering._setup_kwargs(tool)
+    setup_kwargs = figurecomposer_rendering._setup_kwargs(tool._document)
     assert setup_kwargs["width_ratios"] == (3.0, 2.0, 1.0)
     assert setup_kwargs["height_ratios"] == (4.0, 1.0)
 

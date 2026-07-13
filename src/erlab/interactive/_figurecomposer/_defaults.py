@@ -10,8 +10,6 @@ import warnings
 import matplotlib as mpl
 from matplotlib import style as mpl_style
 
-import erlab.interactive._stylesheets
-
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -59,12 +57,20 @@ def _configured_stylesheets() -> tuple[str, ...]:
 
 def _available_configured_stylesheets() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     available = erlab.interactive._stylesheets.available_stylesheets(configured)
     return tuple(name for name in configured if name in available)
 
 
 def _unavailable_configured_stylesheets() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     available = erlab.interactive._stylesheets.available_stylesheets(configured)
     return tuple(name for name in configured if name not in available)
 
@@ -158,6 +164,10 @@ def _style_code_lines() -> list[str]:
 
 def _style_required_imports() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     lines: list[str] = []
     if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(configured):
         lines.append("import erlab.plotting  # registers ERLab matplotlib stylesheets")

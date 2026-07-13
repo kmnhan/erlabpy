@@ -32,6 +32,7 @@ if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
     from qtpy import QtWidgets
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._state import (
         FigureOperationKind,
         FigureOperationState,
@@ -62,10 +63,9 @@ class OperationSpec:
     display_text: Callable[[FigureComposerTool, FigureOperationState], str]
     tooltip: Callable[[FigureComposerTool, FigureOperationState], str]
     target_text: Callable[[FigureComposerTool, FigureOperationState], str]
-    has_invalid_target: Callable[[FigureComposerTool, FigureOperationState], bool]
+    has_invalid_target: Callable[[FigureRecipeContext, FigureOperationState], bool]
     uses_axes: Callable[[FigureOperationState], bool]
     uses_source_section: Callable[[FigureOperationState], bool]
-    source_names: Callable[[FigureOperationState], tuple[str, ...]]
     build_source_editor: Callable[[FigureComposerTool, FigureOperationState], None]
     build_editor_sections: Callable[
         [FigureComposerTool, FigureOperationState], Sequence[StepSection]
@@ -89,10 +89,6 @@ def _empty_source_editor(
     return
 
 
-def _empty_source_names(_operation: FigureOperationState) -> tuple[str, ...]:
-    return ()
-
-
 def _empty_code_lines(
     _tool: FigureComposerTool, _operation: FigureOperationState
 ) -> list[str]:
@@ -100,7 +96,7 @@ def _empty_code_lines(
 
 
 def _no_invalid_target(
-    _tool: FigureComposerTool, _operation: FigureOperationState
+    _context: FigureRecipeContext, _operation: FigureOperationState
 ) -> bool:
     return False
 

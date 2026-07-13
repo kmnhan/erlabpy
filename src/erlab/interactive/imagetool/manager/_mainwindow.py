@@ -4,7 +4,6 @@ import contextlib
 import functools
 import gc
 import logging
-import re
 import sys
 import typing
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
+from erlab.interactive.imagetool.manager._figure_manager import _FigureManagerController
 from erlab.interactive.imagetool.manager._heartbeat import _RegistryHeartbeatController
 from erlab.interactive.imagetool.manager._interaction import _ManagerInteractionGate
 from erlab.interactive.imagetool.manager._lineage import _LineageController
@@ -42,7 +42,6 @@ from erlab.interactive.imagetool.manager._widgets import (
     _ApplicationQuitFilter,
     _ElidedValueLabel,
     _HeightForWidthFrame,
-    _manager_settings,
     _MetadataDerivationListWidget,
     _MetadataDerivationTreeItem,
     _SingleImagePreview,
@@ -99,22 +98,6 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_NEW_FIGURE_TARGET = "__new_figure__"
-_FIGURE_DIALOG_NEW = "new_figure"
-_FIGURE_DIALOG_ADD_STEP = "add_step"
-_FIGURE_DIALOG_ADD_SOURCE = "add_source"
-_FIGURE_DIALOG_REPLACE_SOURCE = "replace_source"
-_FIGURE_VIEW_MODE_SETTINGS_KEY = "figures/view_mode"
-_FIGURE_GALLERY_SIZE_SETTINGS_KEY = "figures/gallery_thumbnail_size"
-_FIGURE_VIEW_MODE_LIST = "list"
-_FIGURE_VIEW_MODE_GALLERY = "gallery"
-_FIGURE_VIEW_MODES = (_FIGURE_VIEW_MODE_LIST, _FIGURE_VIEW_MODE_GALLERY)
-_FIGURE_GALLERY_SIZE_MEDIUM = "medium"
-_FIGURE_GALLERY_THUMBNAIL_SIZES = {
-    "small": (112, 84),
-    _FIGURE_GALLERY_SIZE_MEDIUM: (152, 114),
-    "large": (216, 162),
-}
 _NOTE_COMMIT_DELAY_MS = 400
 
 
@@ -190,646 +173,6 @@ def _widget_accepts_text_paste(
         parent = current.parentWidget()
         current = parent if isinstance(parent, QtWidgets.QWidget) else None
     return False
-
-
-class _AppendFigureTargetDialog(QtWidgets.QDialog):
-    """Prompt for a Figure Composer target figure and source workflow."""
-
-    def __init__(
-        self,
-        manager: ImageToolManager,
-        figure_uids: tuple[str, ...],
-        operation: typing.Any | None,
-        *,
-        allow_new_figure: bool = False,
-        source_count: int = 1,
-        selected_figure_uid: str | None = None,
-    ) -> None:
-        from erlab.interactive._figurecomposer._widgets import (
-            _AxesSelectorWidget,
-            _GridSpecViewWidget,
-        )
-
-        super().__init__(manager)
-        self._manager = manager
-        self._figure_uids = figure_uids
-        self._operation = operation
-        self._allow_new_figure = allow_new_figure
-        self._source_count = source_count
-        self.setObjectName("managerAppendFigureTargetDialog")
-        self.setWindowTitle("Add to Figure" if allow_new_figure else "Append to Figure")
-        self.setModal(True)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
-
-        form = QtWidgets.QFormLayout()
-        form.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        layout.addLayout(form)
-
-        self.action_combo = QtWidgets.QComboBox(self)
-        self.action_combo.setObjectName("managerFigureActionCombo")
-        if allow_new_figure:
-            self.action_combo.addItem("New Figure", _FIGURE_DIALOG_NEW)
-            self.action_combo.addItem("Add New Step", _FIGURE_DIALOG_ADD_STEP)
-            self.action_combo.addItem("Add Source Only", _FIGURE_DIALOG_ADD_SOURCE)
-            self.action_combo.addItem("Replace Source", _FIGURE_DIALOG_REPLACE_SOURCE)
-            form.addRow("Action", self.action_combo)
-        else:
-            self.action_combo.addItem("Add New Step", _FIGURE_DIALOG_ADD_STEP)
-            self.action_combo.setVisible(False)
-
-        self.figure_combo = QtWidgets.QComboBox(self)
-        self.figure_combo.setObjectName("managerAppendFigureCombo")
-        for uid in figure_uids:
-            self.figure_combo.addItem(manager._child_node(uid).display_text, uid)
-        self.figure_combo.setVisible(self.figure_combo.count() > 1)
-        if self.figure_combo.count() > 1:
-            form.addRow("Figure", self.figure_combo)
-            self.figure_field_widget: QtWidgets.QWidget = self.figure_combo
-        else:
-            figure_label = QtWidgets.QLabel(
-                manager._child_node(figure_uids[0]).display_text, self
-            )
-            form.addRow(
-                "Figure",
-                figure_label,
-            )
-            self.figure_field_widget = figure_label
-        self.figure_label = form.labelForField(self.figure_field_widget)
-        if selected_figure_uid in figure_uids:
-            figure_index = self.figure_combo.findData(selected_figure_uid)
-            if figure_index >= 0:
-                self.figure_combo.setCurrentIndex(figure_index)
-
-        self.source_combo = QtWidgets.QComboBox(self)
-        self.source_combo.setObjectName("managerReplaceFigureSourceCombo")
-        form.addRow("Source", self.source_combo)
-        self.source_label = form.labelForField(self.source_combo)
-
-        self.selector_stack = QtWidgets.QStackedWidget(self)
-        self.selector_stack.setObjectName("managerAppendAxesSelectorStack")
-        self.axes_selector = _AxesSelectorWidget(self)
-        self.axes_selector.setObjectName("managerAppendAxesSelector")
-        self.gridspec_axes_selector = _GridSpecViewWidget(self, mode="select")
-        self.gridspec_axes_selector.setObjectName("managerAppendGridSpecAxesSelector")
-        self.selector_stack.addWidget(self.axes_selector)
-        self.selector_stack.addWidget(self.gridspec_axes_selector)
-        form.addRow("Axes", self.selector_stack)
-        self.axes_label = form.labelForField(self.selector_stack)
-
-        self.status_label = QtWidgets.QLabel(self)
-        self.status_label.setObjectName("managerAppendAxesStatusLabel")
-        layout.addWidget(self.status_label)
-
-        action_layout = QtWidgets.QHBoxLayout()
-        self.all_axes_button = QtWidgets.QToolButton(self)
-        self.all_axes_button.setObjectName("managerAppendAllAxesButton")
-        self.all_axes_button.setText("All axes")
-        self.all_axes_button.setToolTip("Select every available axes in this figure.")
-        action_layout.addWidget(self.all_axes_button)
-        self.clear_axes_button = QtWidgets.QToolButton(self)
-        self.clear_axes_button.setObjectName("managerAppendClearAxesButton")
-        self.clear_axes_button.setText("Clear")
-        self.clear_axes_button.setToolTip("Clear the current axes selection.")
-        action_layout.addWidget(self.clear_axes_button)
-        action_layout.addStretch(1)
-        layout.addLayout(action_layout)
-
-        self.button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
-            self,
-        )
-        self.button_box.setObjectName("managerAppendFigureButtonBox")
-        layout.addWidget(self.button_box)
-
-        self.action_combo.currentIndexChanged.connect(self._action_changed)
-        self.figure_combo.currentIndexChanged.connect(self._figure_changed)
-        self.source_combo.currentIndexChanged.connect(self._selection_changed)
-        self.axes_selector.sigSelectionChanged.connect(self._selection_changed)
-        self.axes_selector.sigAddRowRequested.connect(self._add_subplot_row)
-        self.axes_selector.sigAddColumnRequested.connect(self._add_subplot_column)
-        self.gridspec_axes_selector.sigSelectionChanged.connect(self._selection_changed)
-        self.all_axes_button.clicked.connect(self._select_all_axes)
-        self.clear_axes_button.clicked.connect(self._clear_axes)
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        self._set_default_action(selected_figure_uid)
-        self._figure_changed()
-
-    def figure_uid(self) -> str:
-        uid = self.figure_combo.currentData()
-        if isinstance(uid, str) and uid != _NEW_FIGURE_TARGET:
-            return uid
-        return self._figure_uids[0]
-
-    def selected_action(self) -> str:
-        action = self.action_combo.currentData()
-        return action if isinstance(action, str) else _FIGURE_DIALOG_ADD_STEP
-
-    def is_new_figure(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_NEW
-
-    def is_add_source_only(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_ADD_SOURCE
-
-    def is_replace_source(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_REPLACE_SOURCE
-
-    def selected_source_alias(self) -> str | None:
-        alias = self.source_combo.currentData()
-        return alias if isinstance(alias, str) else None
-
-    def axes_selection(self) -> typing.Any | None:
-        from erlab.interactive._figurecomposer import FigureAxesSelectionState
-
-        if self.selected_action() != _FIGURE_DIALOG_ADD_STEP:
-            return None
-        tool = self._figure_tool()
-        if tool is None:
-            return None
-        setup = tool.tool_status.setup
-        if setup.layout_mode == "gridspec":
-            axes_ids = self.gridspec_axes_selector.selected_axes_ids()
-            if not axes_ids:
-                return None
-            return FigureAxesSelectionState(axes_ids=axes_ids)
-        axes = self.axes_selector.selected_axes()
-        if not axes:
-            return None
-        return FigureAxesSelectionState(axes=axes)
-
-    def selected_target(self) -> tuple[str, typing.Any] | None:
-        if self.selected_action() != _FIGURE_DIALOG_ADD_STEP:
-            return None
-        selection = self.axes_selection()
-        if selection is None:
-            return None
-        return self.figure_uid(), selection
-
-    def _set_default_action(self, selected_figure_uid: str | None) -> None:
-        if not self._allow_new_figure:
-            return
-        default_action = _FIGURE_DIALOG_ADD_STEP
-        if (
-            selected_figure_uid in self._figure_uids
-            and self._source_count == 1
-            and self._figure_source_count(selected_figure_uid) == 1
-        ):
-            default_action = _FIGURE_DIALOG_REPLACE_SOURCE
-        action_index = self.action_combo.findData(default_action)
-        if action_index >= 0:
-            self.action_combo.setCurrentIndex(action_index)
-
-    def _figure_source_count(self, figure_uid: str | None) -> int:
-        if figure_uid is None:
-            return 0
-        current_index = self.figure_combo.currentIndex()
-        figure_index = self.figure_combo.findData(figure_uid)
-        if figure_index < 0:
-            return 0
-        try:
-            self.figure_combo.setCurrentIndex(figure_index)
-            tool = self._figure_tool()
-            if tool is None:
-                return 0
-            return len(tool._source_names())
-        finally:
-            self.figure_combo.setCurrentIndex(current_index)
-
-    def _action_requires_figure(self) -> bool:
-        return self.selected_action() in {
-            _FIGURE_DIALOG_ADD_STEP,
-            _FIGURE_DIALOG_ADD_SOURCE,
-            _FIGURE_DIALOG_REPLACE_SOURCE,
-        }
-
-    def _action_uses_axes(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_ADD_STEP
-
-    def _refresh_source_combo(self) -> None:
-        self.source_combo.blockSignals(True)
-        try:
-            self.source_combo.clear()
-            tool = self._figure_tool()
-            if tool is None:
-                return
-            for name in tool._source_names():
-                display = tool._source_display_name(name)
-                item_text = display if name in display else f"{display} ({name})"
-                self.source_combo.addItem(item_text, name)
-                index = self.source_combo.count() - 1
-                self.source_combo.setItemData(
-                    index,
-                    tool._source_tooltip(name),
-                    QtCore.Qt.ItemDataRole.ToolTipRole,
-                )
-        finally:
-            self.source_combo.blockSignals(False)
-
-    @QtCore.Slot()
-    def _figure_changed(self) -> None:
-        self._refresh_source_combo()
-        if not self._action_requires_figure():
-            self._selection_changed()
-            return
-        self.selector_stack.setVisible(True)
-        self.all_axes_button.setVisible(True)
-        self.clear_axes_button.setVisible(True)
-        tool = self._figure_tool()
-        if tool is None:
-            self._selection_changed()
-            return
-        setup = tool.tool_status.setup
-        if setup.layout_mode == "gridspec":
-            from erlab.interactive._figurecomposer._gridspec import (
-                _gridspec_all_axes_ids,
-                _gridspec_axis_display_names,
-                _gridspec_valid_axes_ids,
-            )
-
-            axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-            labels = dict(
-                zip(
-                    axes_ids,
-                    _gridspec_axis_display_names(setup, axes_ids),
-                    strict=True,
-                )
-            )
-            self.gridspec_axes_selector.set_layout(setup.gridspec.root, labels)
-            self.selector_stack.setCurrentWidget(self.gridspec_axes_selector)
-            self.gridspec_axes_selector.set_selected_axes_ids(
-                self._default_gridspec_axes(axes_ids)
-            )
-        else:
-            labels = {
-                (row, col): f"{row}, {col}"
-                for row in range(setup.nrows)
-                for col in range(setup.ncols)
-            }
-            self.axes_selector.set_grid(setup.nrows, setup.ncols, labels)
-            self.selector_stack.setCurrentWidget(self.axes_selector)
-            self.axes_selector.set_selected_axes(
-                self._default_subplot_axes(
-                    self._manager._figure_all_axes(setup.nrows, setup.ncols)
-                )
-            )
-        self._selection_changed()
-
-    @QtCore.Slot()
-    def _action_changed(self) -> None:
-        self._figure_changed()
-
-    @QtCore.Slot()
-    def _selection_changed(self, *_args: typing.Any) -> None:
-        action = self.selected_action()
-        new_figure = action == _FIGURE_DIALOG_NEW
-        uses_figure = self._action_requires_figure()
-        uses_axes = self._action_uses_axes()
-        replace_source = action == _FIGURE_DIALOG_REPLACE_SOURCE
-        figure_tool = self._figure_tool() if uses_figure else None
-        has_figure = figure_tool is not None
-
-        figure_visible = uses_figure
-        if self.figure_label is not None:
-            self.figure_label.setVisible(figure_visible)
-        self.figure_field_widget.setVisible(
-            figure_visible and self.figure_combo.count() <= 1
-        )
-        self.figure_combo.setVisible(figure_visible and self.figure_combo.count() > 1)
-
-        if self.axes_label is not None:
-            self.axes_label.setVisible(uses_axes and has_figure)
-        self.selector_stack.setVisible(uses_axes and has_figure)
-        self.all_axes_button.setVisible(uses_axes and has_figure)
-        self.clear_axes_button.setVisible(uses_axes and has_figure)
-
-        if self.source_label is not None:
-            self.source_label.setVisible(replace_source and has_figure)
-        self.source_combo.setVisible(replace_source and has_figure)
-
-        if new_figure:
-            self._ok_button().setEnabled(True)
-            self.status_label.setText("A new figure will be created.")
-            return
-        if not has_figure:
-            self._ok_button().setEnabled(False)
-            self.status_label.setText("The selected figure is unavailable.")
-            return
-        if action == _FIGURE_DIALOG_ADD_SOURCE:
-            self._ok_button().setEnabled(True)
-            self.status_label.setText("Source data will be added without a new step.")
-            return
-        if replace_source:
-            selected_alias = self.selected_source_alias()
-            enabled = self._source_count == 1 and selected_alias is not None
-            self._ok_button().setEnabled(enabled)
-            if self._source_count != 1:
-                self.status_label.setText(
-                    "Select one ImageTool source to replace one figure source."
-                )
-            elif selected_alias is None:
-                self.status_label.setText("Select the figure source to replace.")
-            else:
-                self.status_label.setText("The selected source will be replaced.")
-            return
-
-        selection = self.axes_selection()
-        self._ok_button().setEnabled(selection is not None)
-        if selection is None:
-            self.status_label.setText("Select at least one target axes.")
-            return
-        count = len(selection.axes_ids) if selection.axes_ids else len(selection.axes)
-        suffix = "axis" if count == 1 else "axes"
-        self.status_label.setText(f"{count} target {suffix} selected.")
-
-    @QtCore.Slot()
-    def _select_all_axes(self) -> None:
-        tool = self._figure_tool()
-        if tool is None:
-            return
-        setup = tool.tool_status.setup
-        if setup.layout_mode == "gridspec":
-            from erlab.interactive._figurecomposer._gridspec import (
-                _gridspec_all_axes_ids,
-                _gridspec_valid_axes_ids,
-            )
-
-            self.gridspec_axes_selector.set_selected_axes_ids(
-                _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup)),
-                emit=True,
-            )
-        else:
-            self.axes_selector.set_selected_axes(
-                self._manager._figure_all_axes(setup.nrows, setup.ncols),
-                emit=True,
-            )
-
-    @QtCore.Slot()
-    def _clear_axes(self) -> None:
-        if self.selector_stack.currentWidget() is self.gridspec_axes_selector:
-            self.gridspec_axes_selector.set_selected_axes_ids((), emit=True)
-        else:
-            self.axes_selector.set_selected_axes((), emit=True)
-
-    @QtCore.Slot()
-    def _add_subplot_row(self) -> None:
-        self._grow_subplot_grid("row")
-
-    @QtCore.Slot()
-    def _add_subplot_column(self) -> None:
-        self._grow_subplot_grid("column")
-
-    def _grow_subplot_grid(self, direction: typing.Literal["row", "column"]) -> None:
-        tool = self._figure_tool()
-        if tool is None or tool.tool_status.setup.layout_mode != "subplots":
-            return
-        selected = self.axes_selector.selected_axes()
-        if not tool._grow_subplot_grid(direction):
-            return
-        setup = tool.tool_status.setup
-        labels = {
-            (row, col): f"{row}, {col}"
-            for row in range(setup.nrows)
-            for col in range(setup.ncols)
-        }
-        self.axes_selector.set_grid(setup.nrows, setup.ncols, labels)
-        self.axes_selector.set_selected_axes(selected or ((0, 0),), emit=True)
-
-    def _figure_tool(self) -> typing.Any | None:
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        if not self._manager._is_figure_uid(self.figure_uid()):
-            return None
-        tool = self._manager._child_node(self.figure_uid()).tool_window
-        return tool if isinstance(tool, FigureComposerTool) else None
-
-    def _ok_button(self) -> QtWidgets.QPushButton:
-        button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
-        if button is None:
-            raise RuntimeError("Append dialog OK button is unavailable")
-        return button
-
-    def _default_subplot_axes(
-        self, axes: tuple[tuple[int, int], ...]
-    ) -> tuple[tuple[int, int], ...]:
-        if self._operation_defaults_to_all_axes() or len(axes) <= 1:
-            return axes
-        return axes[:1]
-
-    def _default_gridspec_axes(self, axes_ids: tuple[str, ...]) -> tuple[str, ...]:
-        if self._operation_defaults_to_all_axes() or len(axes_ids) <= 1:
-            return axes_ids
-        return axes_ids[:1]
-
-    def _operation_defaults_to_all_axes(self) -> bool:
-        if self._operation is None:
-            return True
-        from erlab.interactive._figurecomposer import FigureOperationKind
-
-        return self._operation.kind == FigureOperationKind.PLOT_SLICES
-
-
-class _FigureSourcePickerDialog(QtWidgets.QDialog):
-    """Select live ImageTool manager rows to add as Figure Composer sources."""
-
-    def __init__(
-        self, manager: ImageToolManager, *, prechecked_uids: Iterable[str] = ()
-    ) -> None:
-        super().__init__(manager)
-        self._manager = manager
-        self._prechecked_uids = set(prechecked_uids)
-        self._expanded_before_search: set[str] | None = None
-        self.setObjectName("managerFigureSourcePickerDialog")
-        self.setWindowTitle("Add Figure Sources")
-        self.setModal(True)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        self.search_edit = QtWidgets.QLineEdit(self)
-        self.search_edit.setObjectName("managerFigureSourcePickerSearch")
-        self.search_edit.setAccessibleName("Search ImageTools")
-        self.search_edit.setPlaceholderText("Search ImageTools")
-        self.search_edit.setClearButtonEnabled(True)
-        self.search_edit.textChanged.connect(self._filter_tree)
-        layout.addWidget(self.search_edit)
-        self.tree = QtWidgets.QTreeWidget(self)
-        self.tree.setObjectName("managerFigureSourcePickerTree")
-        self.tree.setColumnCount(1)
-        self.tree.setHeaderHidden(True)
-        self.tree.setUniformRowHeights(True)
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.tree.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
-        )
-        self.tree.itemChanged.connect(self._item_changed)
-        layout.addWidget(self.tree)
-
-        self.status_label = QtWidgets.QLabel(self)
-        self.status_label.setObjectName("managerFigureSourcePickerStatus")
-        layout.addWidget(self.status_label)
-
-        self.button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
-            self,
-        )
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
-
-        self._populate_tree()
-        self.tree.collapseAll()
-        self._expand_prechecked_ancestors()
-        self._refresh_ok_state()
-
-    def _populate_tree(self) -> None:
-        for index in self._manager._tool_graph.root_indices_for_workspace():
-            wrapper = self._manager._tool_graph.root_wrappers.get(index)
-            if wrapper is None:
-                continue
-            item = self._add_node_item(self.tree.invisibleRootItem(), wrapper)
-            self._populate_child_items(item, wrapper)
-
-    def _populate_child_items(
-        self,
-        parent_item: QtWidgets.QTreeWidgetItem,
-        parent_node: _ImageToolWrapper | _ManagedWindowNode,
-    ) -> None:
-        for uid in parent_node._childtool_indices:
-            node = self._manager._tool_graph.nodes.get(uid)
-            if not isinstance(node, _ManagedWindowNode):
-                continue
-            if self._manager._is_figure_node(node):
-                continue
-            item = self._add_node_item(parent_item, node)
-            self._populate_child_items(item, node)
-
-    def _add_node_item(
-        self,
-        parent: QtWidgets.QTreeWidget | QtWidgets.QTreeWidgetItem | None,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-    ) -> QtWidgets.QTreeWidgetItem:
-        item = QtWidgets.QTreeWidgetItem(parent, [node.display_text])
-        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node.uid)
-        flags = QtCore.Qt.ItemFlag.ItemIsEnabled
-        if node.is_imagetool:
-            flags |= QtCore.Qt.ItemFlag.ItemIsUserCheckable
-            item.setCheckState(
-                0,
-                QtCore.Qt.CheckState.Checked
-                if node.uid in self._prechecked_uids
-                else QtCore.Qt.CheckState.Unchecked,
-            )
-        else:
-            item.setToolTip(0, "Only ImageTool rows can be added as figure sources.")
-            item.setForeground(0, QtGui.QBrush(QtGui.QColor("gray")))
-        item.setFlags(flags)
-        return item
-
-    def selected_targets(self) -> tuple[str, ...]:
-        output: list[str] = []
-        root = self.tree.invisibleRootItem()
-        if root is None:  # pragma: no cover
-            return ()
-        self._collect_checked_targets(root, output)
-        return tuple(output)
-
-    def _collect_checked_targets(
-        self, item: QtWidgets.QTreeWidgetItem, output: list[str]
-    ) -> None:
-        uid = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if isinstance(uid, str) and item.checkState(0) == QtCore.Qt.CheckState.Checked:
-            node = self._manager._tool_graph.nodes.get(uid)
-            if node is not None and node.is_imagetool and uid not in output:
-                output.append(uid)
-        for row in range(item.childCount()):
-            child = item.child(row)
-            if child is not None:
-                self._collect_checked_targets(child, output)
-
-    def _tree_items(self) -> Iterator[QtWidgets.QTreeWidgetItem]:
-        iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
-        while (item := iterator.value()) is not None:
-            yield item
-            iterator += 1
-
-    def _expanded_uids(self) -> set[str]:
-        return {
-            uid
-            for item in self._tree_items()
-            if item.isExpanded()
-            and isinstance(uid := item.data(0, QtCore.Qt.ItemDataRole.UserRole), str)
-        }
-
-    def _restore_expanded_uids(self, expanded_uids: set[str]) -> None:
-        for item in self._tree_items():
-            uid = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            item.setExpanded(isinstance(uid, str) and uid in expanded_uids)
-
-    def _expand_prechecked_ancestors(self) -> None:
-        for item in self._tree_items():
-            if item.checkState(0) != QtCore.Qt.CheckState.Checked:
-                continue
-            parent = item.parent()
-            while parent is not None:
-                parent.setExpanded(True)
-                parent = parent.parent()
-
-    @QtCore.Slot(str)
-    def _filter_tree(self, text: str) -> None:
-        query = text.strip().casefold()
-        root = self.tree.invisibleRootItem()
-        if root is None:  # pragma: no cover
-            return
-        if not query:
-            for item in self._tree_items():
-                item.setHidden(False)
-            if self._expanded_before_search is not None:
-                expanded = self._expanded_before_search
-                self._expanded_before_search = None
-                self.tree.collapseAll()
-                self._restore_expanded_uids(expanded)
-            return
-        if self._expanded_before_search is None:
-            self._expanded_before_search = self._expanded_uids()
-        for row in range(root.childCount()):
-            child = root.child(row)
-            if child is not None:
-                self._filter_tree_item(child, query)
-
-    def _filter_tree_item(self, item: QtWidgets.QTreeWidgetItem, query: str) -> bool:
-        child_match = False
-        for row in range(item.childCount()):
-            child = item.child(row)
-            if child is not None:
-                child_match |= self._filter_tree_item(child, query)
-        matches = query in item.text(0).casefold()
-        visible = matches or child_match
-        item.setHidden(not visible)
-        item.setExpanded(child_match)
-        return visible
-
-    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
-    def _item_changed(self, _item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
-        self._refresh_ok_state()
-
-    def _refresh_ok_state(self) -> None:
-        selected = self.selected_targets()
-        ok_button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
-        if ok_button is not None:
-            ok_button.setEnabled(bool(selected))
-        count = len(selected)
-        if count:
-            suffix = "source" if count == 1 else "sources"
-            self.status_label.setText(f"{count} ImageTool {suffix} selected.")
-        else:
-            self.status_label.setText("Select at least one ImageTool source.")
 
 
 class ImageToolManager(_ImageToolManagerBase):
@@ -969,11 +312,6 @@ class ImageToolManager(_ImageToolManagerBase):
             ),
         }
         self._standalone_app_actions: dict[str, QtWidgets.QAction] = {}
-        self._figure_view_mode = self._read_figure_view_mode_setting()
-        self._figure_gallery_thumbnail_size_name = (
-            self._read_figure_gallery_size_setting()
-        )
-        self._updating_figure_view_controls = False
         self._workspace_ui_refresh_defer_depth = 0
         self._deferred_workspace_figures_refresh = False
         self._deferred_workspace_figure_select_uid: str | None = None
@@ -1379,9 +717,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._install_selection_shortcuts(self.tree_view)
         self.tree_view._selection_model.selectionChanged.connect(self._update_actions)
         self.tree_view._selection_model.selectionChanged.connect(self._update_info)
-        self.tree_view._selection_model.selectionChanged.connect(
-            self._clear_figure_selection_from_tree
-        )
         self.tree_view._model.dataChanged.connect(self._update_info)
 
         self.left_tabs = QtWidgets.QTabWidget(left_container)
@@ -1585,8 +920,10 @@ class ImageToolManager(_ImageToolManagerBase):
         self._note_commit_timer.setSingleShot(True)
         self._note_commit_timer.setInterval(_NOTE_COMMIT_DELAY_MS)
         self._note_commit_timer.timeout.connect(self._commit_note_editor)
-        self._refreshing_figure_list = False
-        self._figure_menu: QtWidgets.QMenu | None = None
+        self._figure_controller = _FigureManagerController(self, self)
+        self.tree_view._selection_model.selectionChanged.connect(
+            self._figure_controller.clear_selection_from_tree
+        )
         self._metadata_copy_selected_action = QtGui.QAction("Copy", self)
         self._metadata_copy_selected_action.setObjectName(
             "manager_copy_selected_code_action"
@@ -1881,114 +1218,17 @@ class ImageToolManager(_ImageToolManagerBase):
             if uid in self._tool_graph.nodes and self._is_figure_uid(uid)
         ]
 
-    @staticmethod
-    def _settings_string(key: str, default: str) -> str:
-        value = _manager_settings().value(key, default)
-        return value if isinstance(value, str) else default
-
-    def _read_figure_view_mode_setting(self) -> str:
-        mode = self._settings_string(
-            _FIGURE_VIEW_MODE_SETTINGS_KEY, _FIGURE_VIEW_MODE_GALLERY
-        )
-        return mode if mode in _FIGURE_VIEW_MODES else _FIGURE_VIEW_MODE_GALLERY
-
-    def _read_figure_gallery_size_setting(self) -> str:
-        size_name = self._settings_string(
-            _FIGURE_GALLERY_SIZE_SETTINGS_KEY, _FIGURE_GALLERY_SIZE_MEDIUM
-        )
-        if size_name in _FIGURE_GALLERY_THUMBNAIL_SIZES:
-            return size_name
-        return _FIGURE_GALLERY_SIZE_MEDIUM
-
     def _style_pixel_metric(self, metric: QtWidgets.QStyle.PixelMetric) -> int:
         return self._qt_style().pixelMetric(metric)
 
     def _qt_style(self) -> QtWidgets.QStyle:
         style = self.style() or QtWidgets.QApplication.style()
-        if style is None:  # pragma: no cover
+        if style is None:
             raise RuntimeError("No active Qt style")
         return style
 
-    def _create_figures_ui(self) -> None:
-        if hasattr(self, "figure_tab"):
-            return
-
-        self.figure_tab = QtWidgets.QWidget(self.left_tabs)
-        self.figure_tab.setObjectName("manager_figures_tab")
-        figure_layout = QtWidgets.QVBoxLayout(self.figure_tab)
-        figure_layout.setContentsMargins(0, 0, 0, 0)
-        figure_layout.setSpacing(0)
-        self.figure_view_controls = QtWidgets.QWidget(self.figure_tab)
-        self.figure_view_controls.setObjectName("manager_figures_view_controls")
-        figure_view_layout = QtWidgets.QHBoxLayout(self.figure_view_controls)
-        figure_view_layout.setContentsMargins(0, 0, 0, 0)
-        figure_view_layout.setSpacing(
-            self._style_pixel_metric(
-                QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
-            )
-        )
-        self.figure_view_button_group = QtWidgets.QButtonGroup(
-            self.figure_view_controls
-        )
-        self.figure_view_button_group.setExclusive(True)
-        self.figure_view_list_button = self._figure_view_mode_button(
-            "List",
-            erlab.interactive.utils.qtawesome.icon("ph.list-bullets"),
-            _FIGURE_VIEW_MODE_LIST,
-        )
-        self.figure_view_gallery_button = self._figure_view_mode_button(
-            "Gallery",
-            erlab.interactive.utils.qtawesome.icon("ph.grid-four"),
-            _FIGURE_VIEW_MODE_GALLERY,
-        )
-        for button in (self.figure_view_list_button, self.figure_view_gallery_button):
-            self.figure_view_button_group.addButton(button)
-            figure_view_layout.addWidget(button)
-        self.figure_gallery_size_label = QtWidgets.QLabel(
-            "Thumbnail", self.figure_view_controls
-        )
-        self.figure_gallery_size_combo = QtWidgets.QComboBox(self.figure_view_controls)
-        self.figure_gallery_size_combo.setObjectName("manager_figures_gallery_size")
-        self.figure_gallery_size_combo.setToolTip("Choose gallery thumbnail size.")
-        self.figure_gallery_size_label.setBuddy(self.figure_gallery_size_combo)
-        for label, key in (
-            ("Small", "small"),
-            ("Medium", "medium"),
-            ("Large", "large"),
-        ):
-            self.figure_gallery_size_combo.addItem(label, key)
-        self.figure_gallery_size_combo.currentIndexChanged.connect(
-            self._figure_gallery_size_changed
-        )
-        figure_view_layout.addStretch(1)
-        figure_view_layout.addWidget(self.figure_gallery_size_label)
-        figure_view_layout.addWidget(self.figure_gallery_size_combo)
-        figure_layout.addWidget(self.figure_view_controls)
-        self.figure_list = QtWidgets.QListWidget(self.figure_tab)
-        self.figure_list.setObjectName("manager_figures_list")
-        self.figure_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self.figure_list.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.SelectedClicked
-        )
-        self.figure_list.setContextMenuPolicy(
-            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.figure_list.itemSelectionChanged.connect(self._figure_selection_changed)
-        self.figure_list.itemChanged.connect(self._figure_item_changed)
-        self.figure_list.itemDoubleClicked.connect(self._show_figure_item)
-        self.figure_list.customContextMenuRequested.connect(self._show_figure_menu)
-        self._install_selection_shortcuts(self.figure_list)
-        figure_layout.addWidget(self.figure_list)
-        self._apply_figure_view_controls()
-        self._apply_figure_list_view_configuration()
-
     def _install_selection_shortcuts(self, widget: QtWidgets.QWidget) -> None:
-        def add_shortcut(
-            sequence: str,
-            callback: Callable[[], None],
-        ) -> None:
+        def add_shortcut(sequence: str, callback: Callable[[], None]) -> None:
             shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(sequence), widget)
             shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(callback)
@@ -2002,506 +1242,32 @@ class ImageToolManager(_ImageToolManagerBase):
             add_shortcut("Return", self.show_selected)
             add_shortcut("Enter", self.show_selected)
 
-    def _destroy_figures_ui(self) -> None:
-        self._close_figure_menu()
-        figure_tab = getattr(self, "figure_tab", None)
-        if figure_tab is None:
-            return
+    def _figure_ui_refresh_is_deferred(self) -> bool:
+        return self._workspace_ui_refresh_defer_depth > 0
 
-        self._refreshing_figure_list = True
-        figure_list = getattr(self, "figure_list", None)
-        if figure_list is not None and erlab.interactive.utils.qt_is_valid(figure_list):
-            figure_list.blockSignals(True)
-            with contextlib.suppress(TypeError, RuntimeError):
-                figure_list.itemSelectionChanged.disconnect(
-                    self._figure_selection_changed
-                )
-            with contextlib.suppress(TypeError, RuntimeError):
-                figure_list.itemChanged.disconnect(self._figure_item_changed)
-            with contextlib.suppress(TypeError, RuntimeError):
-                figure_list.itemDoubleClicked.disconnect(self._show_figure_item)
-            with contextlib.suppress(TypeError, RuntimeError):
-                figure_list.customContextMenuRequested.disconnect(
-                    self._show_figure_menu
-                )
-        gallery_size_combo = getattr(self, "figure_gallery_size_combo", None)
-        if gallery_size_combo is not None and erlab.interactive.utils.qt_is_valid(
-            gallery_size_combo
-        ):
-            with contextlib.suppress(TypeError, RuntimeError):
-                gallery_size_combo.currentIndexChanged.disconnect(
-                    self._figure_gallery_size_changed
-                )
-        for button_name in (
-            "figure_view_list_button",
-            "figure_view_gallery_button",
-        ):
-            button = getattr(self, button_name, None)
-            if button is not None and erlab.interactive.utils.qt_is_valid(button):
-                with contextlib.suppress(TypeError, RuntimeError):
-                    button.clicked.disconnect()
-
-        tab_index = self.left_tabs.indexOf(figure_tab)
-        if tab_index >= 0:
-            if self.left_tabs.currentIndex() == tab_index:
-                self.left_tabs.setCurrentIndex(0)
-            self.left_tabs.removeTab(tab_index)
-        figure_tab.hide()
-        figure_tab.deleteLater()
-        for attr in (
-            "figure_tab",
-            "figure_view_controls",
-            "figure_view_button_group",
-            "figure_view_list_button",
-            "figure_view_gallery_button",
-            "figure_gallery_size_label",
-            "figure_gallery_size_combo",
-            "figure_list",
-        ):
-            if hasattr(self, attr):
-                delattr(self, attr)
-        self._refreshing_figure_list = False
-
-    def _figure_view_mode_button(
-        self, text: str, icon: QtGui.QIcon, mode: str
-    ) -> QtWidgets.QToolButton:
-        button = QtWidgets.QToolButton(self.figure_view_controls)
-        button.setObjectName(f"manager_figures_{mode}_view_button")
-        button.setIcon(icon)
-        button.setCheckable(True)
-        button.setAutoRaise(True)
-        button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setAccessibleName(f"{text} view")
-        button.setToolTip(f"Show figures in {text.lower()} view.")
-        button.clicked.connect(
-            lambda _checked=False, mode=mode: self._set_figure_view_mode(mode)
-        )
-        return button
-
-    def _set_figure_view_mode(self, mode: str) -> None:
-        if mode not in _FIGURE_VIEW_MODES or mode == self._figure_view_mode:
-            return
-        self._figure_view_mode = mode
-        _manager_settings().setValue(_FIGURE_VIEW_MODE_SETTINGS_KEY, mode)
-        self._apply_figure_view_controls()
-        self._sync_figures_ui()
-
-    @QtCore.Slot(int)
-    def _figure_gallery_size_changed(self, _index: int) -> None:
-        if self._updating_figure_view_controls:
-            return
-        size_name = self.figure_gallery_size_combo.currentData()
-        if (
-            not isinstance(size_name, str)
-            or size_name not in _FIGURE_GALLERY_THUMBNAIL_SIZES
-            or size_name == self._figure_gallery_thumbnail_size_name
-        ):
-            return
-        self._figure_gallery_thumbnail_size_name = size_name
-        _manager_settings().setValue(_FIGURE_GALLERY_SIZE_SETTINGS_KEY, size_name)
-        self._apply_figure_view_controls()
-        self._sync_figures_ui()
-
-    def _apply_figure_view_controls(self) -> None:
-        if not hasattr(self, "figure_view_list_button"):
-            return
-        self._updating_figure_view_controls = True
-        try:
-            self.figure_view_list_button.setChecked(
-                self._figure_view_mode == _FIGURE_VIEW_MODE_LIST
-            )
-            self.figure_view_gallery_button.setChecked(
-                self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY
-            )
-            gallery_mode = self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY
-            self.figure_gallery_size_label.setVisible(gallery_mode)
-            self.figure_gallery_size_combo.setVisible(gallery_mode)
-            self.figure_gallery_size_combo.setEnabled(gallery_mode)
-            for index in range(self.figure_gallery_size_combo.count()):
-                if (
-                    self.figure_gallery_size_combo.itemData(index)
-                    == self._figure_gallery_thumbnail_size_name
-                ):
-                    self.figure_gallery_size_combo.setCurrentIndex(index)
-                    break
-        finally:
-            self._updating_figure_view_controls = False
-
-    def _figure_gallery_thumbnail_size(self) -> QtCore.QSize:
-        width, height = _FIGURE_GALLERY_THUMBNAIL_SIZES[
-            self._figure_gallery_thumbnail_size_name
-        ]
-        return QtCore.QSize(width, height)
-
-    def _figure_gallery_grid_size(self) -> QtCore.QSize:
-        thumbnail_size = self._figure_gallery_thumbnail_size()
-        spacing = self._style_pixel_metric(
-            QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
-        )
-        label_height = self.figure_list.fontMetrics().height() * 2
-        return QtCore.QSize(
-            thumbnail_size.width() + spacing * 4,
-            thumbnail_size.height() + label_height + spacing * 3,
-        )
-
-    def _apply_figure_list_view_configuration(self) -> None:
-        self.figure_list.setVerticalScrollMode(
-            QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
-        )
-        if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
-            self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
-            self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
-            self.figure_list.setMovement(QtWidgets.QListView.Movement.Static)
-            self.figure_list.setFlow(QtWidgets.QListView.Flow.LeftToRight)
-            self.figure_list.setWrapping(True)
-            self.figure_list.setSpacing(
-                self._style_pixel_metric(
-                    QtWidgets.QStyle.PixelMetric.PM_LayoutHorizontalSpacing
-                )
-            )
-            self.figure_list.setUniformItemSizes(True)
-            self.figure_list.setIconSize(self._figure_gallery_thumbnail_size())
-            self.figure_list.setGridSize(self._figure_gallery_grid_size())
-            self.figure_list.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
-            return
-        self.figure_list.setViewMode(QtWidgets.QListView.ViewMode.ListMode)
-        self.figure_list.setResizeMode(QtWidgets.QListView.ResizeMode.Fixed)
-        self.figure_list.setMovement(QtWidgets.QListView.Movement.Static)
-        self.figure_list.setFlow(QtWidgets.QListView.Flow.TopToBottom)
-        self.figure_list.setWrapping(False)
-        self.figure_list.setSpacing(0)
-        self.figure_list.setUniformItemSizes(False)
-        self.figure_list.setIconSize(QtCore.QSize())
-        self.figure_list.setGridSize(QtCore.QSize())
-
-    def _set_figures_tab_available(self, available: bool) -> None:
-        if not available:
-            self._destroy_figures_ui()
-            left_tab_bar = self.left_tabs.tabBar()
-            if left_tab_bar is not None:  # pragma: no branch
-                left_tab_bar.setVisible(False)
-            self.left_tabs.updateGeometry()
-            return
-
-        self._create_figures_ui()
-        tab_index = self.left_tabs.indexOf(self.figure_tab)
-        if tab_index < 0:
-            tab_index = self.left_tabs.addTab(self.figure_tab, "Figures")
-        self.figure_tab.show()
-        self.left_tabs.setTabVisible(tab_index, True)
-        left_tab_bar = self.left_tabs.tabBar()
-        if left_tab_bar is not None:  # pragma: no branch
-            left_tab_bar.setVisible(True)
-        self.left_tabs.updateGeometry()
-
-    def _figure_gallery_icon(self, uid: str) -> QtGui.QIcon:
-        if not erlab.interactive.utils.qt_is_valid(self):
-            return QtGui.QIcon()
-        if not self._is_figure_uid(uid):
-            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        node = self._child_node(uid)
-        tool_window = node.tool_window
-        if tool_window is None or not erlab.interactive.utils.qt_is_valid(tool_window):
-            pending_preview = node.pending_workspace_tool_preview_image()
-            if pending_preview is not None:
-                return QtGui.QIcon(
-                    self._figure_gallery_thumbnail_pixmap(pending_preview[1])
-                )
-            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        thumbnail_pixmap = self._figure_gallery_tool_thumbnail_pixmap(tool_window)
-        if thumbnail_pixmap is None or thumbnail_pixmap.isNull():
-            return QtGui.QIcon(self._figure_gallery_placeholder_pixmap())
-        return QtGui.QIcon(thumbnail_pixmap)
-
-    def _figure_gallery_placeholder_pixmap(self) -> QtGui.QPixmap:
-        thumbnail_size = self._figure_gallery_thumbnail_size()
-        pixmap = QtGui.QPixmap(thumbnail_size)
-        pixmap.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
-        painter = QtGui.QPainter(pixmap)
-        try:
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-            rect = QtCore.QRectF(pixmap.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            painter.setPen(self.palette().color(QtGui.QPalette.ColorRole.Mid))
-            painter.drawRoundedRect(rect, 3.0, 3.0)
-        finally:
-            painter.end()
-        return pixmap
-
-    def _figure_gallery_tool_thumbnail_pixmap(
-        self, tool_window: object
-    ) -> QtGui.QPixmap | None:
-        if isinstance(
-            tool_window, QtCore.QObject
-        ) and not erlab.interactive.utils.qt_is_valid(tool_window):
-            return None
-        thumbnail_size = self._figure_gallery_thumbnail_size()
-        thumbnail_provider = getattr(tool_window, "preview_thumbnail_pixmap", None)
-        if callable(thumbnail_provider):
-            thumbnail = thumbnail_provider(thumbnail_size)
-            if thumbnail is not None and not thumbnail.isNull():
-                return self._figure_gallery_thumbnail_pixmap(thumbnail)
-        preview_pixmap = getattr(tool_window, "preview_pixmap", None)
-        if preview_pixmap is None or preview_pixmap.isNull():
-            return None
-        return self._figure_gallery_thumbnail_pixmap(preview_pixmap)
-
-    def _figure_gallery_thumbnail_pixmap(
-        self, source_pixmap: QtGui.QPixmap
-    ) -> QtGui.QPixmap:
-        thumbnail_size = self._figure_gallery_thumbnail_size()
-        canvas = QtGui.QPixmap(thumbnail_size)
-        canvas.fill(self.palette().color(QtGui.QPalette.ColorRole.Base))
-        dpr = source_pixmap.devicePixelRatioF()
-        if dpr <= 0.0:
-            dpr = 1.0
-        source_size = QtCore.QSizeF(
-            source_pixmap.width() / dpr,
-            source_pixmap.height() / dpr,
-        )
-        if source_size.isEmpty():
-            return canvas
-        target_size = QtCore.QSizeF(source_size)
-        target_size.scale(
-            QtCore.QSizeF(thumbnail_size),
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-        )
-        target_rect = QtCore.QRectF(
-            QtCore.QPointF(
-                (thumbnail_size.width() - target_size.width()) / 2.0,
-                (thumbnail_size.height() - target_size.height()) / 2.0,
-            ),
-            target_size,
-        )
-        painter = QtGui.QPainter(canvas)
-        try:
-            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-            painter.drawPixmap(
-                target_rect,
-                source_pixmap,
-                QtCore.QRectF(QtCore.QPointF(0.0, 0.0), source_size),
-            )
-        finally:
-            painter.end()
-        return canvas
-
-    def _figure_list_item(self, uid: str) -> QtWidgets.QListWidgetItem:
-        node = self._child_node(uid)
-        item = QtWidgets.QListWidgetItem(node.display_text)
-        item.setData(QtCore.Qt.ItemDataRole.UserRole, uid)
-        item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
-        if self._figure_view_mode == _FIGURE_VIEW_MODE_GALLERY:
-            item.setIcon(self._figure_gallery_icon(uid))
-            item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignHCenter
-                | QtCore.Qt.AlignmentFlag.AlignBottom
-            )
-        return item
-
-    def _next_figure_display_name(self) -> str:
-        highest = 0
-        for uid in self._figure_uids():
-            match = re.fullmatch(r"Figure (\d+)", self._child_node(uid).display_text)
-            if match is not None:
-                highest = max(highest, int(match.group(1)))
-        return f"Figure {highest + 1}"
-
-    def _duplicated_figure_display_name(self, display_name: str) -> str:
-        if re.fullmatch(r"Figure \d+", display_name):
-            return self._next_figure_display_name()
-
-        existing_names = {
-            self._child_node(uid).display_text for uid in self._figure_uids()
-        }
-        base_name = f"{display_name} copy"
-        if base_name not in existing_names:
-            return base_name
-
-        suffix = 2
-        while f"{base_name} {suffix}" in existing_names:
-            suffix += 1
-        return f"{base_name} {suffix}"
-
-    def _sync_figures_ui(self, *, select_uid: str | None = None) -> None:
-        if self._workspace_ui_refresh_defer_depth > 0:
-            self._deferred_workspace_figures_refresh = True
-            if select_uid is not None:
-                self._deferred_workspace_figure_select_uid = select_uid
-            return
-
-        figure_uids = self._figure_uids()
-        selected_uids = (
-            {select_uid}
-            if select_uid is not None
-            else set(self._selected_figure_uids())
-        )
-
-        has_figures = bool(figure_uids)
-        self._set_figures_tab_available(has_figures)
-        if not has_figures:
-            return
-        self.figure_view_controls.setVisible(has_figures)
-        self._apply_figure_view_controls()
-        self._apply_figure_list_view_configuration()
-
-        self._refreshing_figure_list = True
-        self.figure_list.blockSignals(True)
-        try:
-            self.figure_list.clear()
-            for uid in figure_uids:
-                item = self._figure_list_item(uid)
-                self.figure_list.addItem(item)
-                if uid in selected_uids:
-                    item.setSelected(True)
-                    self.figure_list.setCurrentItem(item)
-        finally:
-            self.figure_list.blockSignals(False)
-            self._refreshing_figure_list = False
-
+    def _defer_figure_ui_refresh(self, select_uid: str | None) -> None:
+        self._deferred_workspace_figures_refresh = True
         if select_uid is not None:
-            self.left_tabs.setCurrentWidget(self.figure_tab)
+            self._deferred_workspace_figure_select_uid = select_uid
 
-    def _figure_list_item_for_uid(self, uid: str) -> QtWidgets.QListWidgetItem | None:
-        if not hasattr(self, "figure_list"):
-            return None
-        for row in range(self.figure_list.count()):
-            item = self.figure_list.item(row)
-            if item is not None and self._figure_uid_from_item(item) == uid:
-                return item
-        return None
+    def _defer_figure_gallery_icon_update(self, uid: str) -> None:
+        self._deferred_workspace_gallery_icon_uids.add(uid)
 
-    def _update_figure_gallery_icon(self, uid: str) -> None:
-        if self._workspace_ui_refresh_defer_depth > 0:
-            self._deferred_workspace_gallery_icon_uids.add(uid)
-            return
-        if (
-            not erlab.interactive.utils.qt_is_valid(self)
-            or not hasattr(self, "figure_list")
-            or not erlab.interactive.utils.qt_is_valid(self.figure_list)
-            or self._refreshing_figure_list
-            or self._figure_view_mode != _FIGURE_VIEW_MODE_GALLERY
-            or not self._is_figure_uid(uid)
-        ):
-            return
-        item = self._figure_list_item_for_uid(uid)
-        if item is not None:
-            self.figure_list.blockSignals(True)
-            try:
-                item.setIcon(self._figure_gallery_icon(uid))
-            finally:
-                self.figure_list.blockSignals(False)
+    def _tree_has_selection(self) -> bool:
+        return bool(self.tree_view.selectedIndexes())
 
-    def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
-        if self._workspace_ui_refresh_defer_depth > 0:
-            self._deferred_workspace_gallery_icon_uids.add(uid)
+    def _clear_tree_selection(self) -> None:
+        selection_model = self.tree_view.selectionModel()
+        if selection_model is None:
             return
-        self._queue_idle_work(
-            ("figure-gallery-icon", uid),
-            functools.partial(self._update_figure_gallery_icon, uid),
-        )
-
-    def _figure_uid_from_item(
-        self, item: QtWidgets.QListWidgetItem | None
-    ) -> str | None:
-        if item is None:
-            return None
-        uid = item.data(QtCore.Qt.ItemDataRole.UserRole)
-        return uid if isinstance(uid, str) else None
-
-    def _select_figure_uid(self, uid: str) -> None:
-        self._sync_figures_ui(select_uid=uid)
-        self.tree_view.deselect_all()
-        self._update_actions()
-        self._update_info()
-
-    @QtCore.Slot()
-    def _clear_figure_selection_from_tree(self) -> None:
-        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
-            return
-        if not self.tree_view.selectedIndexes():
-            return
-        if not self.figure_list.selectedItems():
-            return
-        self.figure_list.blockSignals(True)
+        selection_model.blockSignals(True)
         try:
-            self.figure_list.clearSelection()
+            self.tree_view.clearSelection()
         finally:
-            self.figure_list.blockSignals(False)
-        self._update_actions()
-        self._update_info()
+            selection_model.blockSignals(False)
 
-    @QtCore.Slot()
-    def _figure_selection_changed(self) -> None:
-        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
-            return
-        if self.figure_list.selectedItems():
-            selection_model = self.tree_view.selectionModel()
-            if selection_model is None:  # pragma: no cover
-                return
-            selection_model.blockSignals(True)
-            try:
-                self.tree_view.clearSelection()
-            finally:
-                selection_model.blockSignals(False)
-        self._update_actions()
-        self._update_info()
-
-    @QtCore.Slot(QtWidgets.QListWidgetItem)
-    def _figure_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
-        if self._refreshing_figure_list or not hasattr(self, "figure_list"):
-            return
-        uid = self._figure_uid_from_item(item)
-        if uid is None or not self._is_figure_uid(uid):
-            return
-        self._child_node(uid).name = item.text()
-        self._update_info(uid=uid)
-
-    @QtCore.Slot(QtWidgets.QListWidgetItem)
-    def _show_figure_item(self, item: QtWidgets.QListWidgetItem) -> None:
-        if not hasattr(self, "figure_list"):
-            return
-        uid = self._figure_uid_from_item(item)
-        if uid is not None and self._is_figure_uid(uid):
-            self.show_childtool(uid)
-
-    @QtCore.Slot(QtCore.QPoint)
-    def _show_figure_menu(self, position: QtCore.QPoint) -> None:
-        if not hasattr(self, "figure_list"):
-            return
-        self._close_figure_menu()
-        menu = QtWidgets.QMenu("Figures", self.figure_list)
-        self._figure_menu = menu
-        menu.aboutToHide.connect(lambda *, popup=menu: self._release_figure_menu(popup))
-        menu.addAction(self.show_action)
-        menu.addAction(self.hide_action)
-        menu.addSeparator()
-        menu.addAction(self.duplicate_action)
-        menu.addAction(self.remove_action)
-        menu.addAction(self.rename_action)
-        menu.addSeparator()
-        menu.addAction(self.edit_note_action)
-        menu.addAction(self.copy_note_action)
-        viewport = self.figure_list.viewport()
-        if viewport is None:  # pragma: no cover
-            self._release_figure_menu(menu)
-            return
-        menu.popup(viewport.mapToGlobal(position))
-
-    def _close_figure_menu(self) -> None:
-        menu = self._figure_menu
-        if menu is None:
-            return
-        if not erlab.interactive.utils.qt_is_valid(menu):
-            self._figure_menu = None
-            return
-        menu.close()
-        if self._figure_menu is menu:
-            self._release_figure_menu(menu)
-
-    def _release_figure_menu(self, menu: QtWidgets.QMenu) -> None:
-        if self._figure_menu is menu:
-            self._figure_menu = None
-        if erlab.interactive.utils.qt_is_valid(menu):
-            menu.deleteLater()
+    def _deselect_tree(self) -> None:
+        self.tree_view.deselect_all()
 
     @staticmethod
     def _figure_all_axes(nrows: int, ncols: int) -> tuple[tuple[int, int], ...]:
@@ -2621,6 +1387,9 @@ class ImageToolManager(_ImageToolManagerBase):
         from erlab.interactive._figurecomposer._seeding import (
             plot_slices_operation_with_source_styles,
         )
+        from erlab.interactive.imagetool._figurecomposer_adapter import (
+            build_figure_composer_operation,
+        )
 
         if not source_names:
             return None
@@ -2634,8 +1403,8 @@ class ImageToolManager(_ImageToolManagerBase):
             plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
             if not plot.is_image:
                 return None
-            source_operation = plot.figure_composer_operation(
-                source_name=source_names[index]
+            source_operation = build_figure_composer_operation(
+                plot, source_name=source_names[index]
             )
             if source_operation.kind not in {
                 FigureOperationKind.PLOT_ARRAY,
@@ -2927,7 +1696,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not result:
             return result
         self._mark_workspace_dirty(uid=figure_uid, state=True)
-        self._select_figure_uid(figure_uid)
+        self._figure_controller.select_uid(figure_uid)
         if show:
             node.show()
         return result
@@ -3008,7 +1777,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool.replace_source(alias, replacement, data):
             return False
         self._mark_workspace_dirty(uid=figure_uid, state=True)
-        self._select_figure_uid(figure_uid)
+        self._figure_controller.select_uid(figure_uid)
         if show:
             node.show()
         return True
@@ -3057,9 +1826,11 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def _request_add_sources_to_figure(self, figure_uid: str) -> bool:
+        from erlab.interactive.imagetool.manager import _figure_dialogs
+
         if not self._is_figure_uid(figure_uid):
             return False
-        dialog = _FigureSourcePickerDialog(
+        dialog = _figure_dialogs._FigureSourcePickerDialog(
             self, prechecked_uids=self._selected_figure_source_uids()
         )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -3169,7 +1940,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool.replace_source(source_name, source, data):
             return False
         self._mark_workspace_dirty(uid=figure_uid, data=True, state=True)
-        self._update_figure_gallery_icon(figure_uid)
+        self._figure_controller.update_gallery_icon(figure_uid)
         return True
 
     def _refresh_figure_source_controls(self) -> None:
@@ -3307,14 +2078,16 @@ class ImageToolManager(_ImageToolManagerBase):
                 primary_source=primary_source,
             )
         tool._tool_display_name = (
-            title if title is not None else self._next_figure_display_name()
+            title if title is not None else self._figure_controller.next_display_name()
         )
         uid = self.add_figuretool(tool, show=show)
-        self._select_figure_uid(uid)
+        self._figure_controller.select_uid(uid)
         return uid
 
     @QtCore.Slot()
     def create_figure_from_selection(self) -> None:
+        from erlab.interactive.imagetool.manager import _figure_dialogs
+
         targets = self._selected_figure_source_targets()
         if not targets:
             return
@@ -3328,7 +2101,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self.create_figure_from_targets(resolved_targets)
             return
 
-        dialog = _AppendFigureTargetDialog(
+        dialog = _figure_dialogs._AppendFigureTargetDialog(
             self,
             figure_uids,
             None,
@@ -3339,13 +2112,13 @@ class ImageToolManager(_ImageToolManagerBase):
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         action = dialog.selected_action()
-        if action == _FIGURE_DIALOG_NEW:
+        if action == _figure_dialogs._FIGURE_DIALOG_NEW:
             self.create_figure_from_targets(resolved_targets)
             return
-        if action == _FIGURE_DIALOG_ADD_SOURCE:
+        if action == _figure_dialogs._FIGURE_DIALOG_ADD_SOURCE:
             self._add_sources_to_figure(dialog.figure_uid(), sources, source_data)
             return
-        if action == _FIGURE_DIALOG_REPLACE_SOURCE:
+        if action == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE:
             alias = dialog.selected_source_alias()
             if alias is None:
                 return
@@ -3410,6 +2183,8 @@ class ImageToolManager(_ImageToolManagerBase):
     def _prompt_append_figure_target(
         self, operation: typing.Any | None, *, figure_uid: str | None = None
     ) -> tuple[str, typing.Any] | None:
+        from erlab.interactive.imagetool.manager import _figure_dialogs
+
         figure_uids = self._figure_uids()
         if not figure_uids:
             return None
@@ -3425,7 +2200,9 @@ class ImageToolManager(_ImageToolManagerBase):
             if automatic is not None:
                 return figure_uids[0], automatic
 
-        dialog = _AppendFigureTargetDialog(self, tuple(figure_uids), operation)
+        dialog = _figure_dialogs._AppendFigureTargetDialog(
+            self, tuple(figure_uids), operation
+        )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_target()
@@ -3544,7 +2321,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return False
         if add_result.skipped:
             self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
-            self._select_figure_uid(resolved_figure_uid)
+            self._figure_controller.select_uid(resolved_figure_uid)
             if show:
                 node.show()
             return True
@@ -3582,7 +2359,7 @@ class ImageToolManager(_ImageToolManagerBase):
             tool.add_operation(appended)
 
         self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
-        self._select_figure_uid(resolved_figure_uid)
+        self._figure_controller.select_uid(resolved_figure_uid)
         if show:
             node.show()
         return True
@@ -4701,13 +3478,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._deferred_workspace_actions_refresh = False
 
         if figure_refresh:
-            self._sync_figures_ui(select_uid=figure_select_uid)
+            self._figure_controller.sync(select_uid=figure_select_uid)
         for uid in dependency_uids:
             self._refresh_dependency_dependents(uid)
         if source_controls:
             self._refresh_figure_source_controls()
         for uid in gallery_icon_uids:
-            self._update_figure_gallery_icon(uid)
+            self._figure_controller.update_gallery_icon(uid)
         if actions_refresh:
             self._update_actions()
         if info_uids:
@@ -4931,22 +3708,25 @@ class ImageToolManager(_ImageToolManagerBase):
         ]
         focus_widget: QtWidgets.QWidget
         if first_is_figure:
-            self._sync_figures_ui()
+            self._figure_controller.sync()
             self.tree_view.deselect_all()
-            self.figure_list.clearSelection()
+            pane = self._figure_controller.pane
+            if pane is None:
+                return False
+            pane.list_widget.clearSelection()
             items = [
                 typing.cast(
                     "QtWidgets.QListWidgetItem",
-                    self._figure_list_item_for_uid(node.uid),
+                    self._figure_controller.item_for_uid(node.uid),
                 )
                 for node in nodes
             ]
-            self.figure_list.setCurrentItem(items[0])
+            pane.list_widget.setCurrentItem(items[0])
             for item in items:
                 item.setSelected(True)
-            self.left_tabs.setCurrentWidget(self.figure_tab)
-            self.figure_list.scrollToItem(items[0])
-            focus_widget = self.figure_list
+            self.left_tabs.setCurrentWidget(pane)
+            pane.list_widget.scrollToItem(items[0])
+            focus_widget = pane.list_widget
             self._update_actions()
             self._update_info()
         else:
@@ -5264,11 +4044,11 @@ class ImageToolManager(_ImageToolManagerBase):
             note=note,
         )
         if not tool._tool_display_name:
-            tool._tool_display_name = self._next_figure_display_name()
+            tool._tool_display_name = self._figure_controller.next_display_name()
         self._register_figure_node(node)
         self._configure_materialized_figure_tool(node, tool)
         self._mark_node_added(node.uid)
-        self._sync_figures_ui(select_uid=node.uid if show else None)
+        self._figure_controller.sync(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid

@@ -27,7 +27,6 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
     StepSection,
     _empty_source_editor,
-    _empty_source_names,
     _uses_no_source_section,
 )
 from erlab.interactive._figurecomposer._rendering import (
@@ -51,6 +50,7 @@ from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -234,13 +234,13 @@ def _single_axis_code(
 ) -> str | None:
     if operation.axes.expression:
         return None
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         if len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids)) != 1:
             return None
     elif len(operation.axes.valid_axes(setup)) != 1:
         return None
-    return _axes_code(tool, operation.axes, for_plot_slices=False)
+    return _axes_code(tool._document, operation.axes, for_plot_slices=False)
 
 
 def _bz_code_lines(
@@ -258,7 +258,7 @@ def _bz_code_lines(
     call = _plot_call_code(operation, axis_code="ax")
     lines.extend(
         (
-            f"for ax in {_axes_sequence_code(tool, operation.axes)}:",
+            f"for ax in {_axes_sequence_code(tool._document, operation.axes)}:",
             f"    {call}",
         )
     )
@@ -779,9 +779,9 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return tool._axes_selection_has_invalid_target(operation.axes)
+    return context.axes_selection_has_invalid_target(operation.axes)
 
 
 def _section_summary(
@@ -839,7 +839,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=lambda _operation: True,
     uses_source_section=_uses_no_source_section,
-    source_names=_empty_source_names,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

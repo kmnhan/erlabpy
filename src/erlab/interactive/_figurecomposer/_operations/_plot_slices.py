@@ -124,6 +124,7 @@ if typing.TYPE_CHECKING:
 
     import matplotlib.axes
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -197,7 +198,7 @@ def _operation_dim_names(
         return tuple(dims)
     return tuple(
         _available_source_dims(
-            tool._source_data, _plot_slices_selection_sources(operation)
+            tool._document.source_data, _plot_slices_selection_sources(operation)
         )
     )
 
@@ -2665,7 +2666,7 @@ def _build_plot_slices_editor(
         object_name="figureComposerPlotSlicesSelectionValuesSection",
     )
     dims = _available_source_dims(
-        tool._source_data, _plot_slices_selection_sources(operation)
+        tool._document.source_data, _plot_slices_selection_sources(operation)
     )
     dim_mixed = tool._batch_is_mixed(operation, lambda target: target.slice_dim)
     dim_combo = tool._combo(
@@ -4318,9 +4319,9 @@ def _operation_maps(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[xr.DataArray]:
     return [
-        _public_source_data(tool._source_data[name])
+        _public_source_data(tool._document.source_data[name])
         for name in operation.sources
-        if name in tool._source_data
+        if name in tool._document.source_data
     ]
 
 
@@ -4334,7 +4335,9 @@ def _plot_slices_code(
     maps_code = sources[0] if len(sources) == 1 else f"[{', '.join(sources)}]"
 
     kwargs = _plot_slices_code_kwargs(tool, operation)
-    kwargs["axes"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=True))
+    kwargs["axes"] = _RawCode(
+        _axes_code(tool._document, operation.axes, for_plot_slices=True)
+    )
     kwargs_text = _code_kwargs(kwargs)
     return f"eplt.plot_slices({maps_code}, {kwargs_text})"
 
@@ -4466,7 +4469,9 @@ def _plot_slices_transformed_code_lines(
     lines.extend(_plot_slices_line_color_code_lines(tool, operation))
 
     kwargs = _plot_slices_transformed_code_kwargs(tool, operation)
-    kwargs["axes"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=True))
+    kwargs["axes"] = _RawCode(
+        _axes_code(tool._document, operation.axes, for_plot_slices=True)
+    )
     kwargs_text = _code_kwargs(kwargs)
     lines.extend(_plot_slices_call_lines(maps_code, kwargs_text))
     return lines
@@ -4525,8 +4530,10 @@ _SECTION_TOOLTIPS = {
 
 
 def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationState:
-    source_names = tool._source_names()
-    first_source = source_names[0] if source_names else tool._recipe.primary_source
+    source_names = tool._document.source_names()
+    first_source = (
+        source_names[0] if source_names else tool._document.recipe.primary_source
+    )
     return FigureOperationState.plot_slices(
         label="plot_slices",
         sources=(first_source,),
@@ -4559,13 +4566,9 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return tool._axes_selection_has_invalid_target(operation.axes)
-
-
-def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    return _plot_slices_selection_sources(operation)
+    return context.axes_selection_has_invalid_target(operation.axes)
 
 
 def _plot_source_check_state(
@@ -4642,7 +4645,7 @@ def _plot_source_move(
 ) -> None:
     if tool._updating_controls:
         return
-    available_sources = set(tool._source_names())
+    available_sources = set(tool._document.source_names())
 
     def update_operation(
         _index: int, target: FigureOperationState
@@ -4684,7 +4687,7 @@ def _plot_source_order_matches(
     editable = tool._editable_operations()
     if len(editable) <= 1:
         return True
-    available_sources = set(tool._source_names())
+    available_sources = set(tool._document.source_names())
     expected = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
@@ -4704,7 +4707,7 @@ def _plot_source_order_matches(
 def _plot_source_row_names(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
-    source_names = tool._source_names()
+    source_names = tool._document.source_names()
     selected_sources = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
@@ -4852,7 +4855,7 @@ def _build_source_editor(
     selected_sources = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
-        if source in tool._source_names()
+        if source in tool._document.source_names()
     )
     order_controls_enabled = _plot_source_order_matches(tool, operation)
     if row_names:
@@ -4988,7 +4991,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=lambda _operation: True,
     uses_source_section=lambda _operation: True,
-    source_names=_source_names,
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

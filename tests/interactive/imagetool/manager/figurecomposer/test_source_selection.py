@@ -19,10 +19,10 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._editor_controls import MIXED_VALUE
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._operations import (
     _source_selection as source_selection,
 )
-from erlab.interactive._figurecomposer._text import FigureComposerInputError
 
 
 def _operation_factory(

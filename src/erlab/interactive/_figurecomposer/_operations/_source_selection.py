@@ -13,14 +13,12 @@ from erlab.interactive._figurecomposer._editor_controls import (
     MIXED_VALUES_TEXT,
     ComboBoxDataControlAdapter,
 )
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._state import (
     FigureDataSelectionState,
     FigureOperationState,
 )
-from erlab.interactive._figurecomposer._text import (
-    FigureComposerInputError,
-    _dict_from_text,
-)
+from erlab.interactive._figurecomposer._text import _dict_from_text
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence

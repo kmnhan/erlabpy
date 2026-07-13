@@ -61,25 +61,20 @@ if typing.TYPE_CHECKING:
     import matplotlib.axes
     import xarray as xr
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 def _create_plot_array_operation(tool: FigureComposerTool) -> FigureOperationState:
-    source_names = tool._source_names()
-    first_source = source_names[0] if source_names else tool._recipe.primary_source
+    source_names = tool._document.source_names()
+    first_source = (
+        source_names[0] if source_names else tool._document.recipe.primary_source
+    )
     return FigureOperationState.plot_array(
         label="plot_array",
         source=first_source,
         axes=tool._selected_axes_state(),
     )
-
-
-def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    names: list[str] = []
-    for source_name in operation.sources:
-        if source_name not in names:
-            names.append(source_name)
-    return tuple(names)
 
 
 def _primary_source(operation: FigureOperationState) -> str | None:
@@ -95,9 +90,9 @@ def _selected_plot_array_data(
     squeeze: bool = True,
 ) -> xr.DataArray | None:
     source_name = _primary_source(operation)
-    if source_name is None or source_name not in tool._source_data:
+    if source_name is None or source_name not in tool._document.source_data:
         return None
-    data = _public_source_data(tool._source_data[source_name])
+    data = _public_source_data(tool._document.source_data[source_name])
     return data.squeeze(drop=True) if squeeze else data
 
 
@@ -139,21 +134,21 @@ def _plot_array_source_code(
     return code
 
 
-def _axes_count(tool: FigureComposerTool, operation: FigureOperationState) -> int:
+def _axes_count(context: FigureRecipeContext, operation: FigureOperationState) -> int:
     selection = operation.axes
     if selection.expression:
         return 1
-    setup = tool._recipe.setup
+    setup = context.recipe.setup
     if setup.layout_mode == "gridspec":
         return len(_gridspec_valid_axes_ids(setup, selection.axes_ids))
     return len(selection.valid_axes(setup))
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return tool._axes_selection_has_invalid_target(operation.axes) or (
-        _axes_count(tool, operation) != 1
+    return context.axes_selection_has_invalid_target(operation.axes) or (
+        _axes_count(context, operation) != 1
     )
 
 
@@ -201,7 +196,7 @@ def _build_source_editor(
 ) -> None:
     source_mixed = tool._batch_is_mixed(operation, _primary_source)
     source_combo = tool._source_combo(
-        tool._source_names(),
+        tool._document.source_names(),
         None if source_mixed else _primary_source(operation),
         lambda source: _update_current_source(tool, source),
         parent=tool.step_source_controls,
@@ -311,7 +306,9 @@ def _plot_array_code_lines(
     if data_code is None:
         return []
     kwargs = _plot_array_code_kwargs(operation)
-    kwargs["ax"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=False))
+    kwargs["ax"] = _RawCode(
+        _axes_code(tool._document, operation.axes, for_plot_slices=False)
+    )
     kwargs_text = _code_kwargs(kwargs)
     if kwargs_text:
         return [f"eplt.plot_array({data_code}, {kwargs_text})"]
@@ -887,7 +884,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=lambda _operation: True,
     uses_source_section=lambda _operation: True,
-    source_names=_source_names,
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

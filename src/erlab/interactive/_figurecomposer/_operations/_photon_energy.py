@@ -50,6 +50,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
     from qtpy import QtWidgets
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -89,7 +90,7 @@ def _source_data(
 ) -> xr.DataArray:
     if operation.hv_overlay_source is None:
         raise ValueError("Select a source data array for the photon-energy overlay")
-    data = tool._source_data.get(operation.hv_overlay_source)
+    data = tool._document.source_data.get(operation.hv_overlay_source)
     if data is None:
         source_name = tool._source_display_name(operation.hv_overlay_source)
         raise ValueError(f"Source {source_name!r} is missing")
@@ -199,13 +200,13 @@ def _single_axis_code(
 ) -> str | None:
     if operation.axes.expression:
         return None
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         if len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids)) != 1:
             return None
     elif len(operation.axes.valid_axes(setup)) != 1:
         return None
-    return _axes_code(tool, operation.axes, for_plot_slices=False)
+    return _axes_code(tool._document, operation.axes, for_plot_slices=False)
 
 
 def _photon_energy_code_lines(
@@ -235,7 +236,7 @@ def _photon_energy_code_lines(
             lines.append(_legend_call_code(operation, axis_name=axis_code))
         return lines
 
-    lines.append(f"for ax in {_axes_sequence_code(tool, operation.axes)}:")
+    lines.append(f"for ax in {_axes_sequence_code(tool._document, operation.axes)}:")
     lines.extend(
         (
             "    for i in range(len(kz_values.hv)):",
@@ -464,9 +465,9 @@ def _seed_source(tool: FigureComposerTool) -> str | None:
         sources = tool._selected_sources_for_operation(current[1])
         if sources:
             return sources[0]
-    source_names = tuple(tool._source_names())
-    if tool._recipe.primary_source in source_names:
-        return tool._recipe.primary_source
+    source_names = tuple(tool._document.source_names())
+    if tool._document.recipe.primary_source in source_names:
+        return tool._document.recipe.primary_source
     return source_names[0] if source_names else None
 
 
@@ -509,17 +510,9 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return tool._axes_selection_has_invalid_target(operation.axes)
-
-
-def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    return (
-        (operation.hv_overlay_source,)
-        if operation.hv_overlay_source is not None
-        else ()
-    )
+    return context.axes_selection_has_invalid_target(operation.axes)
 
 
 def _build_source_editor(
@@ -529,7 +522,7 @@ def _build_source_editor(
         operation, lambda target: target.hv_overlay_source
     )
     source_combo = tool._source_combo(
-        tool._source_names(),
+        tool._document.source_names(),
         None if source_mixed else operation.hv_overlay_source,
         lambda source: tool._update_current_operation_rebuild(hv_overlay_source=source),
         parent=tool.step_source_controls,
@@ -590,7 +583,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=lambda _operation: True,
     uses_source_section=lambda _operation: True,
-    source_names=_source_names,
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+
 from ._common import *
 
 
@@ -96,7 +98,9 @@ def test_figure_composer_line_preserves_multi_cursor_legacy_selections(
 
     [loaded_operation] = tool.tool_status.operations
     assert loaded_operation.map_selections == selections
-    assert figurecomposer_line_profile._source_names(loaded_operation) == ("profile",)
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
+        loaded_operation
+    ) == ("profile",)
     profiles = figurecomposer_line_profile._line_data_items(tool, loaded_operation)
     assert len(profiles) == 2
     xr.testing.assert_identical(profiles[0], data.qsel(cut=0.0))
@@ -168,8 +172,8 @@ def test_imagetool_line_profile_seeds_public_nonuniform_coordinate(qtbot) -> Non
     assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(source_tool)
 
-    operation = source_tool.slicer_area.profiles[0].figure_composer_operation(
-        source_name="data"
+    operation = figurecomposer_adapter.build_figure_composer_operation(
+        source_tool.slicer_area.profiles[0], source_name="data"
     )
 
     assert operation.kind == FigureOperationKind.LINE
@@ -1370,7 +1374,9 @@ def test_figure_composer_line_profile_helper_edges() -> None:
         },
         name="data",
     )
-    tool = types.SimpleNamespace(_source_data={"data": data})
+    tool = types.SimpleNamespace(
+        _document=types.SimpleNamespace(source_data={"data": data})
+    )
     operation = FigureOperationState.line(label="profiles", source="data").model_copy(
         update={"line_iter_dim": "eV", "line_x": "kx"}
     )
@@ -1717,11 +1723,13 @@ def test_figure_composer_plot_slices_line_color_codegen_helper_variants() -> Non
         name="data",
     )
     tool = types.SimpleNamespace(
-        _source_data={
-            "a": data,
-            "b": data + 10.0,
-            "line": xr.DataArray([1.0, 2.0], dims=("kx",), name="line"),
-        },
+        _document=types.SimpleNamespace(
+            source_data={
+                "a": data,
+                "b": data + 10.0,
+                "line": xr.DataArray([1.0, 2.0], dims=("kx",), name="line"),
+            }
+        ),
         _source_display_name=lambda name: name.upper(),
         _editable_operations=lambda: (),
     )

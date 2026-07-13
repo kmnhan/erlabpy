@@ -2344,7 +2344,9 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
         }
     )
 
-    assert figurecomposer_method._source_names(operation) == ("x_data", "y_data")
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
+        operation
+    ) == ("x_data", "y_data")
     renamed = FigureComposerTool._operation_with_renamed_sources(
         operation, {"x_data": "x_copy", "y_data": "y_copy"}
     )
@@ -2367,7 +2369,9 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
             ),
         }
     )
-    assert figurecomposer_method._source_names(errorbar_operation) == (
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
+        errorbar_operation
+    ) == (
         "x_data",
         "y_data",
         "stderr_data",
@@ -2410,9 +2414,11 @@ def test_figure_composer_axes_plot_data_helper_edges() -> None:
         )
     )
     tool = types.SimpleNamespace(
-        _source_data={"source": source_with_grid_coord},
+        _document=types.SimpleNamespace(
+            source_data={"source": source_with_grid_coord},
+            source_names=lambda: ("source",),
+        ),
         _source_display_name=lambda name: f"display {name}",
-        _source_names=lambda: ("source",),
         _source_tooltip=lambda name: f"tooltip {name}",
     )
 
@@ -2421,9 +2427,11 @@ def test_figure_composer_axes_plot_data_helper_edges() -> None:
     assert figurecomposer_method._plot_value_options(tool, None) == ()
     assert figurecomposer_method._plot_value_options(tool, "missing") == ()
     option_tool = types.SimpleNamespace(
-        _source_data={"source": source_with_2d_coord},
+        _document=types.SimpleNamespace(
+            source_data={"source": source_with_2d_coord},
+            source_names=lambda: ("source",),
+        ),
         _source_display_name=lambda name: f"display {name}",
-        _source_names=lambda: ("source",),
         _source_tooltip=lambda name: f"tooltip {name}",
     )
     assert ("coord", "grid") not in {
@@ -2526,11 +2534,10 @@ def test_figure_composer_axes_plot_data_update_helpers() -> None:
 
     class UpdateTool:
         def __init__(self) -> None:
-            self._source_data = {"data": data}
+            self._document = types.SimpleNamespace(
+                source_data={"data": data}, source_names=lambda: ("data",)
+            )
             self.operation = operation
-
-        def _source_names(self) -> tuple[str, ...]:
-            return ("data",)
 
         def _update_operations(
             self,
@@ -2568,7 +2575,7 @@ def test_figure_composer_axes_plot_data_update_helpers() -> None:
     assert tool.operation.method_plot_x is None
 
     assert (
-        figurecomposer_method._source_names(
+        figurecomposer_operation_metadata.declared_operation_source_names(
             FigureOperationState.method(
                 family=FigureMethodFamily.AXES,
                 name="missing",
@@ -2669,7 +2676,9 @@ def test_figure_composer_axes_plot_combo_helper_edges(qtbot) -> None:
 
     class ComboTool:
         def __init__(self) -> None:
-            self._source_data = {"source": source}
+            self._document = types.SimpleNamespace(
+                source_data={"source": source}, source_names=lambda: ("source",)
+            )
             self.operation_editor = QtWidgets.QWidget()
             self.operation = FigureOperationState.method(
                 family=FigureMethodFamily.AXES,

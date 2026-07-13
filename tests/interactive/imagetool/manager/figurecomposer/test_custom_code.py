@@ -26,8 +26,13 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         ),
         trusted=True,
     )
-    assert figurecomposer_custom_code._section_summary(tool, "missing", operation) == ""
-    assert figurecomposer_custom_code._required_imports(tool, operation) == (
+    assert (
+        figurecomposer_custom_code_operation._section_summary(
+            tool, "missing", operation
+        )
+        == ""
+    )
+    assert figurecomposer_custom_code_operation._required_imports(tool, operation) == (
         "import numpy as np",
         "import xarray as xr",
         "import erlab.plotting as eplt",
@@ -69,15 +74,15 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         figurecomposer_custom_code._custom_code_bound_names("bad code !!")
         == frozenset()
     )
-    assert figurecomposer_custom_code._custom_axes_alias_lines(tool) == []
+    assert figurecomposer_custom_code_operation._custom_axes_alias_lines(tool) == []
     assert (
-        figurecomposer_custom_code._code_lines(
+        figurecomposer_custom_code_operation._code_lines(
             tool, operation.model_copy(update={"trusted": False})
         )
         == []
     )
     assert (
-        figurecomposer_custom_code._required_imports(
+        figurecomposer_custom_code_operation._required_imports(
             tool, operation.model_copy(update={"code": ""})
         )
         == ()
@@ -112,12 +117,14 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         ),
     )
     qtbot.addWidget(grid_tool)
-    assert figurecomposer_custom_code._custom_axes_alias_lines(grid_tool) == [
+    assert figurecomposer_custom_code_operation._custom_axes_alias_lines(grid_tool) == [
         "axs = {",
         "    'axis-a': ax0,",
         "}",
     ]
-    assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
+    assert (
+        figurecomposer_custom_code_operation._custom_first_axis_code(grid_tool) == "ax0"
+    )
 
 
 def test_figure_composer_custom_code_names_cover_nested_class_and_flow() -> None:
@@ -450,7 +457,7 @@ def test_figure_composer_custom_code_read_write_source_is_dependency(
     )
     qtbot.addWidget(tool)
 
-    assert tool._operation_source_names(operation) == ("data",)
+    assert tool._document.operation_source_names(operation) == ("data",)
     assert tool._source_usage_count("data") == 1
     assert not tool.remove_source("data")
 

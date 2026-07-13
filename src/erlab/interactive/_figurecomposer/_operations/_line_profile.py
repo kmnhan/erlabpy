@@ -108,6 +108,7 @@ if typing.TYPE_CHECKING:
     import matplotlib.axes
     import xarray as xr
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._state import FigureLimit
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
@@ -196,7 +197,7 @@ def _line_choice_data(
 ) -> xr.DataArray | None:
     if operation.line_source is None:
         return None
-    data = tool._source_data.get(operation.line_source)
+    data = tool._document.source_data.get(operation.line_source)
     if data is None:
         return None
     data = _public_source_data(data)
@@ -243,7 +244,7 @@ def _available_line_offset_coords(
 ) -> list[str]:
     if operation.line_source is None or operation.line_iter_dim is None:
         return []
-    data = tool._source_data.get(operation.line_source)
+    data = tool._document.source_data.get(operation.line_source)
     if data is None:
         return []
     data = _public_source_data(data)
@@ -390,13 +391,17 @@ def _build_line_editor(
     )
     iter_dim_options = [
         "",
-        *_available_source_dims(tool._source_data, (operation.line_source or "",)),
+        *_available_source_dims(
+            tool._document.source_data, (operation.line_source or "",)
+        ),
     ]
     iter_dim_options_match = tool._batch_options_match(
         operation,
         lambda target: [
             "",
-            *_available_source_dims(tool._source_data, (target.line_source or "",)),
+            *_available_source_dims(
+                tool._document.source_data, (target.line_source or "",)
+            ),
         ],
     )
     iter_dim_mixed = tool._batch_is_mixed(
@@ -1259,10 +1264,11 @@ def _line_data_items_with_sources(
                 tool._source_display_name(selection.source),
             )
             for selection in operation.map_selections
-            if (selected := _selected_data(tool._source_data, selection)) is not None
+            if (selected := _selected_data(tool._document.source_data, selection))
+            is not None
         ]
     elif operation.line_source is not None:
-        data = tool._source_data.get(operation.line_source)
+        data = tool._document.source_data.get(operation.line_source)
         if data is None:
             return []
         data = _public_source_data(data)
@@ -1298,7 +1304,7 @@ def _line_source_expression_and_data(
 ) -> tuple[str, xr.DataArray] | None:
     if operation.line_source is None:
         return None
-    data = tool._source_data.get(operation.line_source)
+    data = tool._document.source_data.get(operation.line_source)
     if data is None:
         return None
     data = _public_source_data(data)
@@ -1557,7 +1563,8 @@ def _line_selection_code(
     selected_items = tuple(
         (selection, selected)
         for selection in operation.map_selections
-        if (selected := _selected_data(tool._source_data, selection)) is not None
+        if (selected := _selected_data(tool._document.source_data, selection))
+        is not None
     )
     lines = ["profiles = ["]
     lines.extend(
@@ -1602,7 +1609,7 @@ def _regular_line_code(
         loop_values=loop_values,
     )
     lines.extend(style_lines)
-    lines.append(f"for ax in {_axes_sequence_code(tool, operation.axes)}:")
+    lines.append(f"for ax in {_axes_sequence_code(tool._document, operation.axes)}:")
     lines.extend(_loop_header_lines(loop_names, loop_values, indent="    "))
     coordinate = _line_coordinate_code(operation)
     if operation.line_values_axis == "x":
@@ -1640,7 +1647,7 @@ def _regular_line_single_axis_code(
         loop_values=loop_values,
     )
     lines.extend(style_lines)
-    axis_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+    axis_code = _axes_code(tool._document, operation.axes, for_plot_slices=False)
     coordinate = _line_coordinate_code(operation)
     lines.extend(_loop_header_lines(loop_names, loop_values))
     if operation.line_values_axis == "x":
@@ -1891,7 +1898,7 @@ def _one_axis_many_profiles_code(
         loop_values=loop_values,
     )
     lines.extend(style_lines)
-    axis_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+    axis_code = _axes_code(tool._document, operation.axes, for_plot_slices=False)
     coordinate = _line_coordinate_code(operation)
     lines.extend(_loop_header_lines(loop_names, loop_values))
     if operation.line_values_axis == "x":
@@ -1933,7 +1940,7 @@ def _line_plot_code(
 
 
 def _line_artist_code_name(tool: FigureComposerTool) -> str:
-    source_names = set(tool._source_names())
+    source_names = set(tool._document.source_names())
     name = "_line"
     suffix = 1
     while name in source_names:
@@ -1967,7 +1974,7 @@ def _selected_axes_count(
 ) -> int | None:
     if operation.axes.expression:
         return None
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         return len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids))
     return len(operation.axes.valid_axes(setup))
@@ -1993,7 +2000,7 @@ def _one_profile_per_axis_iterables_code(
     axes_count: int | None,
     profile_count: int,
 ) -> tuple[list[str], str, str]:
-    axes_code = _axes_sequence_code(tool, operation.axes)
+    axes_code = _axes_sequence_code(tool._document, operation.axes)
     if axes_count is None:
         return (
             [
@@ -2034,8 +2041,10 @@ def _line_coordinate_code(operation: FigureOperationState) -> str:
 
 
 def _create_line_operation(tool: FigureComposerTool) -> FigureOperationState:
-    source_names = tool._source_names()
-    first_source = source_names[0] if source_names else tool._recipe.primary_source
+    source_names = tool._document.source_names()
+    first_source = (
+        source_names[0] if source_names else tool._document.recipe.primary_source
+    )
     return FigureOperationState.line(
         label="line",
         source=first_source,
@@ -2084,7 +2093,7 @@ def _seeded_line_operation_defaults(
 def _default_profile_x_dim(
     tool: FigureComposerTool, source_name: str, operation: FigureOperationState
 ) -> str | None:
-    data = tool._source_data.get(source_name)
+    data = tool._document.source_data.get(source_name)
     if data is None:
         return None
     data = _public_source_data(data)
@@ -2109,17 +2118,9 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return tool._axes_selection_has_invalid_target(operation.axes)
-
-
-def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    if len(operation.map_selections) > 1:
-        return tuple(
-            dict.fromkeys(selection.source for selection in operation.map_selections)
-        )
-    return _line_selection_sources(operation)
+    return context.axes_selection_has_invalid_target(operation.axes)
 
 
 def _build_source_editor(
@@ -2127,7 +2128,7 @@ def _build_source_editor(
 ) -> None:
     source_mixed = tool._batch_is_mixed(operation, lambda target: target.line_source)
     source_combo = tool._source_combo(
-        tool._source_names(),
+        tool._document.source_names(),
         None if source_mixed else operation.line_source,
         lambda source: tool._update_current_operation(line_source=source),
         parent=tool.step_source_controls,
@@ -2221,7 +2222,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=lambda _operation: True,
     uses_source_section=lambda _operation: True,
-    source_names=_source_names,
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

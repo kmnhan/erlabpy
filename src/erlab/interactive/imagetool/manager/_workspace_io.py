@@ -1483,7 +1483,7 @@ class _WorkspaceIOController:
                     if not tool._tool_display_name:
                         tool._tool_display_name = node.name
                     self._manager._configure_materialized_figure_tool(node, tool)
-                    self._manager._sync_figures_ui(select_uid=None)
+                    self._manager._figure_controller.sync(select_uid=None)
                 else:
                     parent = self._manager._node_for_target(node.parent_uid)
                     node.window = tool
@@ -3348,7 +3348,7 @@ class _WorkspaceIOController:
                 note=attrs.get("manager_node_note"),
             )
             self._manager._register_figure_node(node)
-            self._manager._sync_figures_ui(select_uid=None)
+            self._manager._figure_controller.sync(select_uid=None)
         else:
             parent_node = self._manager._node_for_target(parent_target)
             node = _ManagedWindowNode(

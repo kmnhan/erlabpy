@@ -1,11 +1,140 @@
 # ruff: noqa: F403, F405
 
+from erlab.interactive._figurecomposer._document import FigureDocument
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+
 from ._common import *
+
+
+def test_figure_document_orders_source_dependencies_and_rejects_cycles() -> None:
+    source = xr.DataArray(np.arange(3.0), dims="x", name="source")
+    sources = (
+        FigureSourceState(name="base"),
+        FigureSourceState(name="selected", selection_source="base"),
+    )
+    document = FigureDocument(
+        FigureRecipeState(sources=sources, primary_source="base"),
+        source_data={"base": source, "selected": source},
+    )
+
+    assert document.source_dependency_names(("selected",)) == ("base", "selected")
+
+    document.recipe = document.recipe.model_copy(
+        update={
+            "sources": (
+                sources[0].model_copy(update={"selection_source": "selected"}),
+                sources[1],
+            )
+        }
+    )
+    with pytest.raises(FigureComposerInputError, match="selected -> base -> selected"):
+        document.source_dependency_names(("selected",), reject_cycles=True)
+
+
+def test_operation_metadata_covers_every_operation_kind() -> None:
+    plot_array = FigureOperationState.plot_array(
+        label="array", source="first"
+    ).model_copy(update={"sources": ("first", "first", "second")})
+    plot_slices = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("second", "first", "second"),
+        map_selections=(FigureDataSelectionState(source="ignored"),),
+    )
+    line = FigureOperationState.line(label="line", source="ignored").model_copy(
+        update={
+            "map_selections": (
+                FigureDataSelectionState(source="second"),
+                FigureDataSelectionState(source="first"),
+                FigureDataSelectionState(source="second"),
+            )
+        }
+    )
+    photon_energy = FigureOperationState.photon_energy_overlay(source="first")
+    method = FigureOperationState.method(
+        family=FigureMethodFamily.AXES, name="errorbar"
+    ).model_copy(
+        update={
+            "method_plot_data_mode": "from_data",
+            "method_plot_x": FigureMethodPlotValueState(source="first"),
+            "method_plot_y": FigureMethodPlotValueState(source="second"),
+            "method_plot_xerr": FigureMethodPlotValueState(source="second"),
+            "method_plot_yerr": FigureMethodPlotValueState(source="third"),
+        }
+    )
+    custom = FigureOperationState.custom(
+        label="custom", code="result = second + first", trusted=False
+    )
+    operations = (
+        FigureOperationState(kind=FigureOperationKind.SET_PALETTE, label="palette"),
+        plot_array,
+        plot_slices,
+        line,
+        FigureOperationState.bz_overlay(),
+        photon_energy,
+        method,
+        custom,
+    )
+    expected = {
+        FigureOperationKind.SET_PALETTE: (),
+        FigureOperationKind.PLOT_ARRAY: ("first", "second"),
+        FigureOperationKind.PLOT_SLICES: ("second", "first"),
+        FigureOperationKind.LINE: ("second", "first"),
+        FigureOperationKind.BZ_OVERLAY: (),
+        FigureOperationKind.PHOTON_ENERGY_OVERLAY: ("first",),
+        FigureOperationKind.METHOD: ("first", "second", "third"),
+        FigureOperationKind.CUSTOM: (),
+    }
+
+    assert {operation.kind for operation in operations} == set(FigureOperationKind)
+    assert {
+        operation.kind: (
+            figurecomposer_operation_metadata.declared_operation_source_names(operation)
+        )
+        for operation in operations
+    } == expected
+    assert figurecomposer_operation_metadata.recipe_operation_source_names(
+        custom, ("first", "second", "unused")
+    ) == ("first", "second")
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
+        line.model_copy(
+            update={"map_selections": (FigureDataSelectionState(source="second"),)}
+        )
+    ) == ("ignored",)
+    assert (
+        figurecomposer_operation_metadata.declared_operation_source_names(
+            photon_energy.model_copy(update={"hv_overlay_source": None})
+        )
+        == ()
+    )
+    for non_source_method in (
+        method.model_copy(update={"method_plot_data_mode": "entered"}),
+        method.model_copy(update={"method_name": "legend"}),
+        method.model_copy(update={"method_family": FigureMethodFamily.FIGURE}),
+    ):
+        assert (
+            figurecomposer_operation_metadata.declared_operation_source_names(
+                non_source_method
+            )
+            == ()
+        )
+
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="first"),
+                FigureSourceState(name="second"),
+            ),
+            operations=(custom,),
+        )
+    )
+    assert document.operation_source_names(custom) == ("first", "second")
+    assert document.direct_sources_used_by_recipe() == {"first", "second"}
+    assert document.direct_sources_used_by_recipe(executable_only=True) == set()
 
 
 def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
     modules = (
-        figurecomposer_custom_code,
+        figurecomposer_custom_code_operation,
         figurecomposer_line_profile,
         figurecomposer_method,
         figurecomposer_photon_energy,

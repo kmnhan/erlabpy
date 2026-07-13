@@ -35,6 +35,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
     )
+    from erlab.interactive.imagetool.manager._figure_manager import (
+        _FigureManagerController,
+    )
     from erlab.interactive.imagetool.manager._heartbeat import (
         _RegistryHeartbeatController,
     )
@@ -107,14 +110,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     edit_note_action: QtGui.QAction
     copy_note_action: QtGui.QAction
     clear_note_action: QtGui.QAction
-    figure_list: QtWidgets.QListWidget
-    figure_tab: QtWidgets.QWidget
-    figure_view_button_group: QtWidgets.QButtonGroup
-    figure_view_controls: QtWidgets.QWidget
-    figure_view_gallery_button: QtWidgets.QToolButton
-    figure_view_list_button: QtWidgets.QToolButton
-    figure_gallery_size_combo: QtWidgets.QComboBox
-    figure_gallery_size_label: QtWidgets.QLabel
     hide_action: QtGui.QAction
     left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
@@ -165,6 +160,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _dependency_tracker: _ManagerDependencyTracker
     _details_panel: _DetailsPanelController
     _file_handlers: set[_MultiFileHandler]
+    _figure_controller: _FigureManagerController
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
     _link_registry: _ManagerLinkRegistry
@@ -194,7 +190,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]]
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
     _recent_name_filter: str | None
-    _refreshing_figure_list: bool
     _registry_heartbeat: _RegistryHeartbeatController
     _registry_heartbeat_timer: QtCore.QTimer
     _interaction_gate: _ManagerInteractionGate
@@ -325,15 +320,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return self._is_figure_node(node)
 
     def _selected_figure_uids(self) -> list[str]:
-        figure_list = getattr(self, "figure_list", None)
-        if figure_list is None:
-            return []
-        output: list[str] = []
-        for item in figure_list.selectedItems():
-            uid = item.data(QtCore.Qt.ItemDataRole.UserRole)
-            if isinstance(uid, str) and self._is_figure_uid(uid):
-                output.append(uid)
-        return output
+        return self._figure_controller.selected_uids()
 
     def _selected_imagetool_targets(self) -> list[int | str]:
         targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)

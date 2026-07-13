@@ -437,7 +437,7 @@ def test_figure_composer_restored_selected_source_applies_source_selection(
         tool.source_data()["data_3_selected"], data.qsel(eV=0.0)
     )
     xr.testing.assert_identical(
-        tool._source_selection_base_data["data_3_selected"], data
+        tool._document.source_selection_base_data["data_3_selected"], data
     )
     assert tool.tool_status.operations[0].sources == ("data_3_selected",)
     assert tool.tool_status.operations[0].map_selections == ()
@@ -829,7 +829,7 @@ def test_figure_composer_default_plot_array_uses_one_axis_in_multi_axis_setup(
     operation = tool.tool_status.operations[0]
     assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert operation.axes.axes == ((0, 0),)
-    assert not figurecomposer_plot_array._has_invalid_target(tool, operation)
+    assert not figurecomposer_plot_array._has_invalid_target(tool._document, operation)
 
     captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
 
@@ -1123,7 +1123,9 @@ def test_figure_composer_plot_array_invalid_target_and_shape(qtbot) -> None:
         primary_source="image",
     )
     qtbot.addWidget(multi_axes_tool)
-    assert figurecomposer_plot_array._has_invalid_target(multi_axes_tool, multi_axes)
+    assert figurecomposer_plot_array._has_invalid_target(
+        multi_axes_tool._document, multi_axes
+    )
     with pytest.raises(ValueError, match="target axes"):
         multi_axes_tool.generated_code()
 
@@ -1179,14 +1181,17 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
             FigureDataSelectionState(source="derived", qsel={"beta": 0.0}),
         ),
     )
-    assert figurecomposer_plot_array._source_names(operation) == ("image",)
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
+        operation
+    ) == ("image",)
 
     empty_operation = FigureOperationState(
         kind=FigureOperationKind.PLOT_ARRAY,
         label="empty",
     )
     empty_tool = typing.cast(
-        "FigureComposerTool", types.SimpleNamespace(_source_data={})
+        "FigureComposerTool",
+        types.SimpleNamespace(_document=types.SimpleNamespace(source_data={})),
     )
     assert figurecomposer_plot_array._primary_source(empty_operation) is None
     assert (
@@ -1218,7 +1223,10 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         source="image",
         axes=FigureAxesSelectionState(expression="axs[0, 0]"),
     )
-    assert figurecomposer_plot_array._axes_count(base_tool, expression_operation) == 1
+    assert (
+        figurecomposer_plot_array._axes_count(base_tool._document, expression_operation)
+        == 1
+    )
 
     root = FigureGridSpecGridState(
         nrows=1,
@@ -1254,7 +1262,9 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         source="image",
         axes=FigureAxesSelectionState(axes_ids=("left", "missing")),
     )
-    assert figurecomposer_plot_array._axes_count(grid_tool, grid_operation) == 1
+    assert (
+        figurecomposer_plot_array._axes_count(grid_tool._document, grid_operation) == 1
+    )
 
     no_update_tool = types.SimpleNamespace(
         _update_operations=lambda *_args, **_kwargs: pytest.fail(

@@ -5034,6 +5034,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Get a rendered preview pixmap for the ImageTool manager."""
         return None
 
+    def preview_thumbnail_pixmap(self, _size: QtCore.QSize) -> QtGui.QPixmap | None:
+        """Get a preview suitable for a manager thumbnail of the requested size.
+
+        Subclasses may override this to provide a cached or cheaper thumbnail. The
+        default preserves the generic :attr:`preview_pixmap` preview contract.
+        """
+        return self.preview_pixmap
+
     @property
     def info_text(self) -> str:
         """Get the HTML text to be shown in the ImageTool manager."""

@@ -68,16 +68,13 @@ class _ActionsController:
         if len(selected_images) + len(selected_tools) == 1:
             target = selected_images[0] if selected_images else selected_tools[0]
             if isinstance(target, str) and self._manager._is_figure_uid(target):
-                figure_list = getattr(self._manager, "figure_list", None)
-                if figure_list is None:
+                pane = self._manager._figure_controller.pane
+                if pane is None:
                     return
-                for row in range(figure_list.count()):
-                    item = figure_list.item(row)
-                    if item is None:
-                        continue
-                    if item.data(QtCore.Qt.ItemDataRole.UserRole) == target:
-                        figure_list.editItem(item)
-                        return
+                item = self._manager._figure_controller.item_for_uid(target)
+                if item is not None:
+                    pane.list_widget.editItem(item)
+                return
             self._manager.tree_view.edit(
                 self._manager.tree_view._model._row_index(target)
             )
@@ -120,7 +117,7 @@ class _ActionsController:
                 new_uid = self._manager.duplicate_childtool(uid)
 
                 if self._manager._is_figure_uid(new_uid):
-                    self._manager._select_figure_uid(new_uid)
+                    self._manager._figure_controller.select_uid(new_uid)
                     continue
 
                 qmodelindex = self._manager.tree_view._model._row_index(new_uid)
@@ -757,7 +754,9 @@ class _ActionsController:
             if node.parent_uid is None and self._manager._is_figure_node(node):
                 duplicated_tool = tool.duplicate()
                 duplicated_tool._tool_display_name = (
-                    self._manager._duplicated_figure_display_name(node.display_text)
+                    self._manager._figure_controller.duplicated_display_name(
+                        node.display_text
+                    )
                 )
                 new_target = self._manager.add_figuretool(
                     duplicated_tool, note=node.note
@@ -1563,7 +1562,7 @@ class _ActionsController:
         self._manager.tree_view.childtool_added(node.uid, index)
         self._manager._mark_node_added(node.uid)
         if self._manager._is_figure_node(node):
-            self._manager._sync_figures_ui(select_uid=node.uid if show else None)
+            self._manager._figure_controller.sync(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid
@@ -1755,7 +1754,7 @@ class _ActionsController:
             return
         self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
         if was_figure:
-            self._manager._sync_figures_ui()
+            self._manager._figure_controller.sync()
         self._manager._update_actions()
 
     def eventFilter(

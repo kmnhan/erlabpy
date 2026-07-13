@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+
 from ._common import *
 
 
@@ -546,7 +548,9 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     qtbot.addWidget(tool)
 
     tool.slicer_area.set_value(axis=0, value=30.0, cursor=0)
-    operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
+    operation = figurecomposer_adapter.build_figure_composer_operation(
+        tool.slicer_area.images[2], source_name="data"
+    )
 
     assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert len(operation.map_selections) == 1
@@ -572,7 +576,9 @@ def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
     qtbot.addWidget(tool)
 
     tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
-    operation = tool.slicer_area.images[2].figure_composer_operation(source_name="data")
+    operation = figurecomposer_adapter.build_figure_composer_operation(
+        tool.slicer_area.images[2], source_name="data"
+    )
 
     assert operation.kind == FigureOperationKind.PLOT_ARRAY
     assert operation.map_selections == (
@@ -590,7 +596,9 @@ def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
         FigureComposerPlotSlicesSelectionError,
         match="Cannot plot when more than one dimension",
     ):
-        tool.slicer_area.images[0].figure_composer_operation(source_name="data")
+        figurecomposer_adapter.build_figure_composer_operation(
+            tool.slicer_area.images[0], source_name="data"
+        )
 
 
 def test_imagetool_plot_slices_selection_warning_shows_error_detail(
@@ -609,7 +617,7 @@ def test_imagetool_plot_slices_selection_warning_shows_error_detail(
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warning)
 
-    imagetool_plot_items.ItoolPlotItem._show_plot_slices_selection_error(
+    figurecomposer_adapter.show_plot_slices_selection_error(
         parent,
         FigureComposerPlotSlicesSelectionError(
             "Cannot plot when more than one dimension"
@@ -1522,7 +1530,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
         source_data={},
     )
     qtbot.addWidget(empty_tool)
-    empty_tool._source_data = {}
+    empty_tool._document.source_data = {}
     empty_shape = figurecomposer_plot_slices._plot_slices_shape(
         empty_tool, empty_tool.tool_status.operations[0]
     )
@@ -2873,7 +2881,7 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         name="data",
     )
     tool = types.SimpleNamespace(
-        _source_data={"data": data},
+        _document=types.SimpleNamespace(source_data={"data": data}),
         _source_display_name=lambda name: name,
         _editable_operations=lambda: (),
     )
@@ -2947,7 +2955,7 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
     )
 
     missing_source_tool = types.SimpleNamespace(
-        _source_data={},
+        _document=types.SimpleNamespace(source_data={}),
         _source_display_name=lambda name: name,
         _editable_operations=lambda: (),
     )
@@ -2971,7 +2979,7 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         name="string_coord",
     )
     string_tool = types.SimpleNamespace(
-        _source_data={"data": string_coord},
+        _document=types.SimpleNamespace(source_data={"data": string_coord}),
         _source_display_name=lambda name: name,
         _editable_operations=lambda: (),
     )
@@ -3156,7 +3164,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         name="data",
     )
     tool = types.SimpleNamespace(
-        _source_data={"a": data},
+        _document=types.SimpleNamespace(source_data={"a": data}),
         _source_display_name=lambda name: name,
         _editable_operations=lambda: (),
     )
@@ -4214,9 +4222,7 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
 
 
 def test_figure_composer_imagetool_norm_parser_uses_structured_fields() -> None:
-    from erlab.interactive.imagetool.plot_items import ItoolPlotItem
-
-    updates = ItoolPlotItem._figure_composer_norm_updates(
+    updates = figurecomposer_adapter._norm_updates(
         "|eplt.CenteredPowerNorm(0.5, vcenter=0.0, halfrange=1.0)|"
     )
 
@@ -4230,29 +4236,27 @@ def test_figure_composer_imagetool_norm_parser_uses_structured_fields() -> None:
 
 
 def test_figure_composer_imagetool_value_and_norm_parsers_cover_edges() -> None:
-    from erlab.interactive.imagetool.plot_items import ItoolPlotItem
-
     class Floatable:
         def __float__(self) -> float:
             return 1.5
 
     fallback = object()
-    assert ItoolPlotItem._figure_composer_plain_value(None) is None
-    assert ItoolPlotItem._figure_composer_plain_value(np.bool_(True)) is True
-    assert ItoolPlotItem._figure_composer_plain_value([np.int64(1)]) == [1]
-    assert ItoolPlotItem._figure_composer_plain_value((np.float64(2.0),)) == (2.0,)
-    assert ItoolPlotItem._figure_composer_plain_value({"a": np.int64(3)}) == {"a": 3}
-    assert ItoolPlotItem._figure_composer_plain_value(np.int64(4)) == 4
-    assert ItoolPlotItem._figure_composer_plain_value(np.float64(5.0)) == 5.0
-    assert ItoolPlotItem._figure_composer_plain_value(Floatable()) == 1.5
-    assert ItoolPlotItem._figure_composer_plain_value(fallback) is fallback
-    assert ItoolPlotItem._figure_composer_indexer_state(slice(1, 3, 2)) == {
+    assert figurecomposer_adapter._plain_value(None) is None
+    assert figurecomposer_adapter._plain_value(np.bool_(True)) is True
+    assert figurecomposer_adapter._plain_value([np.int64(1)]) == [1]
+    assert figurecomposer_adapter._plain_value((np.float64(2.0),)) == (2.0,)
+    assert figurecomposer_adapter._plain_value({"a": np.int64(3)}) == {"a": 3}
+    assert figurecomposer_adapter._plain_value(np.int64(4)) == 4
+    assert figurecomposer_adapter._plain_value(np.float64(5.0)) == 5.0
+    assert figurecomposer_adapter._plain_value(Floatable()) == 1.5
+    assert figurecomposer_adapter._plain_value(fallback) is fallback
+    assert figurecomposer_adapter._indexer_state(slice(1, 3, 2)) == {
         "kind": "slice",
         "start": 1,
         "stop": 3,
         "step": 2,
     }
-    assert ItoolPlotItem._figure_composer_indexer_state(2) == 2
+    assert figurecomposer_adapter._indexer_state(2) == 2
 
     invalid_norms = (
         "not valid python",
@@ -4263,202 +4267,20 @@ def test_figure_composer_imagetool_value_and_norm_parsers_cover_edges() -> None:
         "eplt.CenteredPowerNorm(**kwargs)",
     )
     for norm_code in invalid_norms:
-        assert ItoolPlotItem._figure_composer_norm_updates(norm_code) is None
+        assert figurecomposer_adapter._norm_updates(norm_code) is None
 
-    assert ItoolPlotItem._figure_composer_operation_updates({"norm": object()}) is None
+    assert figurecomposer_adapter._operation_updates({"norm": object()}) is None
     assert (
-        ItoolPlotItem._figure_composer_operation_updates({"norm": "eplt.PowerNorm(1)"})
-        is None
+        figurecomposer_adapter._operation_updates({"norm": "eplt.PowerNorm(1)"}) is None
     )
-    assert (
-        ItoolPlotItem._figure_composer_operation_updates({"cmap": "|dynamic_cmap|"})
-        is None
-    )
-    assert ItoolPlotItem._figure_composer_operation_updates(
+    assert figurecomposer_adapter._operation_updates({"cmap": "|dynamic_cmap|"}) is None
+    assert figurecomposer_adapter._operation_updates(
         {"gamma": np.float64(0.5), "alpha": np.int64(2)}
     ) == {
         "norm_name": "PowerNorm",
         "norm_gamma": 0.5,
         "extra_kwargs": {"alpha": 2},
     }
-
-
-def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> None:
-    import types
-
-    from erlab.interactive.imagetool.plot_items import ItoolPlotItem
-
-    fake = types.SimpleNamespace(
-        slicer_area=types.SimpleNamespace(current_cursor=0, n_cursors=2),
-        slicer_data_items=[types.SimpleNamespace(normalize=True)],
-        _crop_indexers={"kx": slice(-1.0, 1.0)},
-    )
-    fake._figure_composer_operation_updates = (
-        ItoolPlotItem._figure_composer_operation_updates
-    )
-    fake._figure_composer_plain_value = ItoolPlotItem._figure_composer_plain_value
-    fake._figure_composer_plot_slices_kwargs = lambda _dim_order_plot: {
-        "gamma": 0.5,
-        "colorbar": "right",
-    }
-    fake._figure_composer_line_style_updates = lambda: {"line_colors": ("red", "blue")}
-    fake._figure_composer_line_limit_updates = lambda x_dim: (
-        {"xlim": (-1.0, 1.0)} if x_dim == "kx" else {}
-    )
-
-    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV")
-    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("eV_width")
-    assert ItoolPlotItem._plot_slices_qsel_key_is_editable("Track Shift")
-    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx")
-    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable("sample_temp_idx_width")
-    assert not ItoolPlotItem._plot_slices_qsel_key_is_editable(("bad", "key"))
-
-    selected_maps_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim=None,
-        dim_order_plot=["kx", "ky"],
-        selected_maps=["data"],
-        map_selections=(FigureDataSelectionState(source="data", qsel={"eV": 0.0}),),
-    )
-    assert selected_maps_operation.map_selections == (
-        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
-    )
-    assert selected_maps_operation.norm_name == "PowerNorm"
-    assert selected_maps_operation.norm_gamma == 0.5
-    assert selected_maps_operation.colorbar == "right"
-
-    no_selection_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim=None,
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs=None,
-    )
-    assert no_selection_operation.map_selections == ()
-
-    invalid_key_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs={("bad", "key"): [0.0, 1.0]},
-    )
-    assert tuple(
-        selection.qsel for selection in invalid_key_operation.map_selections
-    ) == (
-        {"('bad', 'key')": 0.0},
-        {"('bad', 'key')": 1.0},
-    )
-
-    non_identifier_key_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim=None,
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs={"Track Shift": 2.0},
-    )
-    assert non_identifier_key_operation.map_selections == ()
-    assert non_identifier_key_operation.slice_dim == "Track Shift"
-    assert non_identifier_key_operation.slice_values == (2.0,)
-
-    slice_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs={"eV": [0.0, 1.0], "eV_width": [0.1, 0.1], "beta": 2.0},
-    )
-    assert slice_operation.slice_dim == "eV"
-    assert slice_operation.slice_values == (0.0, 1.0)
-    assert slice_operation.slice_width == 0.1
-    assert slice_operation.slice_kwargs == {"beta": 2.0}
-
-    unequal_width_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs={"eV": [0.0, 1.0], "eV_width": [0.1, 0.2]},
-    )
-    assert unequal_width_operation.slice_width is None
-    assert unequal_width_operation.slice_kwargs == {"eV_width": [0.1, 0.2]}
-
-    inferred_slice_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
-        fake,
-        source_name="data",
-        variable_dim=None,
-        dim_order_plot=["kx", "ky"],
-        qsel_kwargs={"beta": [0.0, 1.0], "beta_width": [0.2, 0.2]},
-    )
-    assert inferred_slice_operation.slice_dim == "beta"
-    assert inferred_slice_operation.slice_values == (0.0, 1.0)
-    assert inferred_slice_operation.slice_width == 0.2
-    assert inferred_slice_operation.slice_kwargs == {}
-
-    selected_lines_operation = ItoolPlotItem._figure_composer_line_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        x_dim="kx",
-        selected_lines=["data"],
-        map_selections=(FigureDataSelectionState(source="data", qsel={"eV": 0.0}),),
-    )
-    assert selected_lines_operation.line_x == "kx"
-    assert selected_lines_operation.map_selections == (
-        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
-    )
-    assert selected_lines_operation.line_normalize == "mean"
-    assert selected_lines_operation.line_colors == ("red", "blue")
-    assert selected_lines_operation.xlim == (-1.0, 1.0)
-
-    no_qsel_line_operation = ItoolPlotItem._figure_composer_line_operation(
-        fake,
-        source_name="data",
-        variable_dim=None,
-        x_dim="kx",
-        qsel_kwargs=None,
-    )
-    assert no_qsel_line_operation.line_selection == {}
-    assert no_qsel_line_operation.line_iter_dim is None
-
-    qsel_line_operation = ItoolPlotItem._figure_composer_line_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        x_dim="kx",
-        qsel_kwargs={"eV": [0.0, 1.0], "beta": 2.0},
-    )
-    assert qsel_line_operation.line_selection == {"eV": [0.0, 1.0], "beta": 2.0}
-    assert qsel_line_operation.line_iter_dim == "eV"
-
-    non_identifier_key_line_operation = ItoolPlotItem._figure_composer_line_operation(
-        fake,
-        source_name="data",
-        variable_dim="Track Shift",
-        x_dim="kx",
-        qsel_kwargs={"Track Shift": [0.0, 1.0], "beta": 2.0},
-    )
-    assert non_identifier_key_line_operation.map_selections == ()
-    assert non_identifier_key_line_operation.line_selection == {
-        "Track Shift": [0.0, 1.0],
-        "beta": 2.0,
-    }
-    assert non_identifier_key_line_operation.line_iter_dim == "Track Shift"
-
-    invalid_key_line_operation = ItoolPlotItem._figure_composer_line_operation(
-        fake,
-        source_name="data",
-        variable_dim="eV",
-        x_dim="kx",
-        qsel_kwargs={("bad", "key"): [0.0, 1.0]},
-    )
-    assert tuple(
-        selection.qsel for selection in invalid_key_line_operation.map_selections
-    ) == (
-        {"('bad', 'key')": 0.0},
-        {"('bad', 'key')": 1.0},
-    )
 
 
 def test_figure_composer_plot_slices_spaced_qsel_dimension_codegen_executes(

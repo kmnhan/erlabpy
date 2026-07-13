@@ -94,6 +94,10 @@ from erlab.interactive._figurecomposer._line_style import (
     color_kw_value_from_text,
     normalize_style_value,
 )
+from erlab.interactive._figurecomposer._operation_metadata import (
+    is_axes_errorbar_data_method,
+    is_axes_plot_data_method,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -155,6 +159,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
     from matplotlib.axes import Axes
 
+    from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -2501,7 +2506,8 @@ def _first_live_axis(
         selection = selection.model_copy(
             update={
                 "axes_ids": _gridspec_valid_axes_ids(
-                    tool._recipe.setup, _gridspec_all_axes_ids(tool._recipe.setup)
+                    tool._document.recipe.setup,
+                    _gridspec_all_axes_ids(tool._document.recipe.setup),
                 )[:1]
             }
         )
@@ -2581,9 +2587,9 @@ def _target_text(tool: FigureComposerTool, operation: FigureOperationState) -> s
 
 
 def _has_invalid_target(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return _uses_axes(operation) and tool._axes_selection_has_invalid_target(
+    return _uses_axes(operation) and context.axes_selection_has_invalid_target(
         operation.axes
     )
 
@@ -3682,11 +3688,11 @@ _PLOT_ERROR_DATA_AXES: typing.TypeAlias = typing.Literal["xerr", "yerr"]
 
 
 def _is_axes_plot_method(spec: MethodSpec) -> bool:
-    return spec.family == FigureMethodFamily.AXES and spec.name in {"plot", "errorbar"}
+    return is_axes_plot_data_method(spec.family, spec.name)
 
 
 def _is_axes_errorbar_method(spec: MethodSpec) -> bool:
-    return spec.family == FigureMethodFamily.AXES and spec.name == "errorbar"
+    return is_axes_errorbar_data_method(spec.family, spec.name)
 
 
 def _plot_method_call_name(spec: MethodSpec) -> str:
@@ -3996,7 +4002,7 @@ def _plot_value_options(
 ) -> tuple[tuple[str, tuple[str, str | None]], ...]:
     if source is None:
         return ()
-    data = tool._source_data.get(source)
+    data = tool._document.source_data.get(source)
     if data is None:
         return ()
     data = _public_source_data(data)
@@ -4045,7 +4051,7 @@ def _plot_source_combo(
         combo.addItem(f"No {_plot_axis_label(axis)} DataArray", None)
     elif current is None:
         combo.addItem(f"Choose {_plot_axis_label(axis)} DataArray", None)
-    source_names = tool._source_names()
+    source_names = tool._document.source_names()
     for source in source_names:
         combo.addItem(tool._source_display_name(source), source)
         combo.setItemData(
@@ -4218,7 +4224,7 @@ def _plot_values_item_tooltip(
     value: tuple[str, str | None],
 ) -> str:
     return source_value_tooltip(
-        None if source is None else tool._source_data.get(source),
+        None if source is None else tool._document.source_data.get(source),
         value,
         axis=axis,
     )
@@ -4377,7 +4383,7 @@ def _update_current_plot_data_mode(tool: FigureComposerTool, mode: str) -> None:
     ) -> FigureOperationState:
         updates: dict[str, typing.Any] = {"method_plot_data_mode": mode}
         if mode == "from_data" and operation.method_plot_y is None:
-            source_names = tool._source_names()
+            source_names = tool._document.source_names()
             if source_names:
                 updates["method_plot_y"] = _default_plot_value_state(
                     tool, source_names[0]
@@ -4439,7 +4445,7 @@ def _plot_source_label(tool: FigureComposerTool, source: str) -> str:
 def _plot_value_data(
     tool: FigureComposerTool, state: FigureMethodPlotValueState
 ) -> xr.DataArray:
-    source = tool._source_data.get(state.source)
+    source = tool._document.source_data.get(state.source)
     if source is None:
         raise ValueError(
             f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
@@ -4468,7 +4474,7 @@ def _plot_value_data(
 def _plot_value_code_and_data(
     tool: FigureComposerTool, state: FigureMethodPlotValueState
 ) -> tuple[_RawCode, xr.DataArray]:
-    source = tool._source_data.get(state.source)
+    source = tool._document.source_data.get(state.source)
     if source is None:
         raise ValueError(
             f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
@@ -5671,18 +5677,22 @@ def _method_code(
             args, kwargs = _code_args_kwargs(tool, operation, spec, axis_code="ax")
             call = _call_code(f"ax.{spec.call_name}", args, kwargs)
             return [
-                f"for ax in {_axes_sequence_code(tool, operation.axes)}:",
+                f"for ax in {_axes_sequence_code(tool._document, operation.axes)}:",
                 f"    {call}",
             ]
         case MethodCallPolicy.AXES_POSITIONAL:
-            axes_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+            axes_code = _axes_code(
+                tool._document, operation.axes, for_plot_slices=False
+            )
             args, kwargs = _code_args_kwargs(tool, operation, spec)
             args_text = _code_args((_RawCode(axes_code), *args))
             kwargs_text = _code_kwargs(kwargs)
             parts = [part for part in (args_text, kwargs_text) if part]
             return [f"eplt.{spec.call_name}({', '.join(parts)})"]
         case MethodCallPolicy.AX_KEYWORD:
-            axes_code = _axes_code(tool, operation.axes, for_plot_slices=False)
+            axes_code = _axes_code(
+                tool._document, operation.axes, for_plot_slices=False
+            )
             args, kwargs = _code_args_kwargs(tool, operation, spec)
             kwargs["ax"] = _RawCode(axes_code)
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
@@ -5698,7 +5708,7 @@ def _method_code(
             kwargs["ax"] = _RawCode("ax")
             call = f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"
             return [
-                f"for ax in {_axes_sequence_code(tool, operation.axes)}:",
+                f"for ax in {_axes_sequence_code(tool._document, operation.axes)}:",
                 f"    {call}",
             ]
         case MethodCallPolicy.BOUND_FIGURE:
@@ -5720,13 +5730,13 @@ def _single_axis_code(
         return None
     if operation.axes.expression:
         return None
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         if len(_gridspec_valid_axes_ids(setup, operation.axes.axes_ids)) != 1:
             return None
     elif len(operation.axes.valid_axes(setup)) != 1:
         return None
-    return _axes_code(tool, operation.axes, for_plot_slices=False)
+    return _axes_code(tool._document, operation.axes, for_plot_slices=False)
 
 
 def _call_parts(args: Sequence[typing.Any], kwargs: dict[str, typing.Any]) -> str:
@@ -5759,25 +5769,6 @@ def _required_imports(
     return tuple(imports)
 
 
-def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
-    try:
-        spec = _method_spec(operation)
-    except ValueError:
-        return ()
-    if not (
-        _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data"
-    ):
-        return ()
-    names: list[str] = []
-    states = [operation.method_plot_x, operation.method_plot_y]
-    if _is_axes_errorbar_method(spec):
-        states.extend((operation.method_plot_xerr, operation.method_plot_yerr))
-    for state in states:
-        if state is not None and state.source not in names:
-            names.append(state.source)
-    return tuple(names)
-
-
 SPEC = OperationSpec(
     kind=FigureOperationKind.METHOD,
     add_actions=(
@@ -5791,7 +5782,6 @@ SPEC = OperationSpec(
     has_invalid_target=_has_invalid_target,
     uses_axes=_uses_axes,
     uses_source_section=_uses_no_source_section,
-    source_names=_source_names,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_build_method_editor,
     section_summary=_section_summary,
