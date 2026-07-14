@@ -18,8 +18,10 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    page = tool.operation_panel.editor_stack.currentWidget()
     assert page is not None
 
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
@@ -129,8 +131,10 @@ def test_figure_composer_set_palette_custom_colors_editor_and_codegen(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    page = tool.operation_panel.editor_stack.currentWidget()
     assert page is not None
 
     mode_combo = page.findChild(
@@ -200,8 +204,10 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    page = tool.operation_panel.editor_stack.currentWidget()
     assert page is not None
     mode_combo = page.findChild(
         QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
@@ -218,8 +224,8 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     assert len(operation.palette_colors) == 3
     qtbot.waitUntil(
         lambda: (
-            tool.step_editor_stack.currentWidget() is not None
-            and tool.step_editor_stack.currentWidget().findChild(
+            tool.operation_panel.editor_stack.currentWidget() is not None
+            and tool.operation_panel.editor_stack.currentWidget().findChild(
                 figurecomposer_widgets._ColorListEditorWidget,
                 "figureComposerSetPaletteColorsWidget",
             )
@@ -227,7 +233,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
         ),
         timeout=1000,
     )
-    page = tool.step_editor_stack.currentWidget()
+    page = tool.operation_panel.editor_stack.currentWidget()
     assert page is not None
     colors_widget = page.findChild(
         figurecomposer_widgets._ColorListEditorWidget,
@@ -350,8 +356,10 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     )
     tool = FigureComposerTool(profile, recipe=recipe, source_data={"profile": profile})
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    page = tool.operation_panel.editor_stack.currentWidget()
     assert page is not None
 
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
@@ -384,7 +392,7 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     assert not preview.isEnabled()
     assert message is not None
     assert message.property("missing_dependency") == "seaborn"
-    item = tool.operation_list.topLevelItem(0)
+    item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
     assert item.text(0).startswith("Skipped Set Palette:")
 

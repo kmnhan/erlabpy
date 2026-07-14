@@ -75,6 +75,9 @@ from erlab.interactive._figurecomposer import (
     _operation_metadata as figurecomposer_operation_metadata,
 )
 from erlab.interactive._figurecomposer import (
+    _operation_panel as figurecomposer_operation_panel,
+)
+from erlab.interactive._figurecomposer import (
     _source_inspector as figurecomposer_source_inspector,
 )
 from erlab.interactive._figurecomposer import (
@@ -141,6 +144,24 @@ _COLLAPSED_LAYOUT_WARNING = (
     "constrained_layout not applied because axes sizes collapsed to zero.  "
     "Try making figure larger or Axes decorations smaller."
 )
+
+
+def _operation_section_button(
+    tool: FigureComposerTool, key: str
+) -> QtWidgets.QToolButton:
+    button = tool.findChild(QtWidgets.QToolButton, f"figureComposerSection_{key}")
+    if button is None:
+        raise AssertionError(f"operation section {key!r} is not mounted")
+    return button
+
+
+def _operation_section_buttons(
+    tool: FigureComposerTool,
+) -> tuple[QtWidgets.QToolButton, ...]:
+    return tuple(
+        _operation_section_button(tool, key)
+        for key in tool.operation_panel.section_keys
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -284,36 +305,36 @@ def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
 
 
 def _select_operation_rows(tool: FigureComposerTool, rows: tuple[int, ...]) -> None:
-    was_blocked = tool.operation_list.blockSignals(True)
+    was_blocked = tool.operation_panel.operation_list.blockSignals(True)
     try:
-        tool.operation_list.clearSelection()
+        tool.operation_panel.operation_list.clearSelection()
         if rows:
-            tool.operation_list.setCurrentItem(
-                tool.operation_list.topLevelItem(rows[0])
+            tool.operation_panel.operation_list.setCurrentItem(
+                tool.operation_panel.operation_list.topLevelItem(rows[0])
             )
             for row in rows:
-                item = tool.operation_list.topLevelItem(row)
+                item = tool.operation_panel.operation_list.topLevelItem(row)
                 assert item is not None
                 item.setSelected(True)
     finally:
-        tool.operation_list.blockSignals(was_blocked)
-    tool._operation_selection_changed()
+        tool.operation_panel.operation_list.blockSignals(was_blocked)
+    tool.operation_panel._selection_did_change()
 
 
 def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     return tuple(
         row
-        for row in range(tool.operation_list.topLevelItemCount())
-        if tool.operation_list.topLevelItem(row).isSelected()
+        for row in range(tool.operation_panel.operation_list.topLevelItemCount())
+        if tool.operation_panel.operation_list.topLevelItem(row).isSelected()
     )
 
 
 def _operation_status_codes(tool: FigureComposerTool, row: int) -> tuple[str, ...]:
-    item = tool.operation_list.topLevelItem(row)
+    item = tool.operation_panel.operation_list.topLevelItem(row)
     assert item is not None
     value = item.data(
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN,
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_ROLE,
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN,
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_ROLE,
     )
     assert isinstance(value, tuple)
     return value

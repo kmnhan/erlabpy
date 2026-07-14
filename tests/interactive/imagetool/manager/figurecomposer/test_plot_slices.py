@@ -40,8 +40,10 @@ def test_figure_composer_plot_slices_migrates_shared_map_selection_to_slice_stat
     assert loaded_operation.slice_kwargs == {}
     assert figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation).valid
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("selection")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("selection")
     assert (
         tool.findChild(
             QtWidgets.QWidget,
@@ -243,8 +245,10 @@ def test_figure_composer_plot_slices_source_selector_updates_sliced_sources(
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("sources")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("sources")
 
     checks = _plot_source_checks(tool)
     checks["second"].setCheckState(QtCore.Qt.CheckState.Checked)
@@ -300,7 +304,7 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
         source_data={"first_source": first, "second_source": second},
     )
     qtbot.addWidget(tool)
-    tool._select_step_section("sources")
+    tool.operation_panel.select_section("sources")
 
     selector = tool.step_source_controls.findChild(
         QtWidgets.QWidget, "figureComposerPlotSlicesSourceSelector"
@@ -380,8 +384,10 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
             primary_source="data",
         )
         qtbot.addWidget(tool)
-        tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-        tool._select_step_section("colors")
+        tool.operation_panel.operation_list.setCurrentItem(
+            tool.operation_panel.operation_list.topLevelItem(0)
+        )
+        tool.operation_panel.select_section("colors")
 
         cmap_combo = next(
             (
@@ -528,7 +534,7 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
     )
     qtbot.addWidget(tool)
 
-    assert tool.operation_list.topLevelItemCount() == 1
+    assert tool.operation_panel.operation_list.topLevelItemCount() == 1
     assert "sample_temp_idx" not in tool.generated_code()
 
 
@@ -1294,7 +1300,9 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert figurecomposer_plot_slices._norm_clip_from_text("False") is False
     assert figurecomposer_plot_slices._norm_clip_from_text("default") is None
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
     figurecomposer_plot_slices._update_current_norm_name(tool, "CenteredPowerNorm")
     assert tool.tool_status.operations[1].norm_name == "CenteredPowerNorm"
     figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.75)
@@ -1404,10 +1412,12 @@ def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
     )
     np.testing.assert_allclose(full_kwargs["eV"], data.coords["eV"].values)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     assert selection_page is not None
     values_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
@@ -1884,7 +1894,7 @@ def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
     )
     qtbot.addWidget(tool)
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("sources")
+    tool.operation_panel.select_section("sources")
 
     checks = _plot_source_checks(tool)
     assert checks["first_source"].checkState() == (
@@ -1994,12 +2004,18 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChildren(NavigationToolbar2QT) == []
     assert set(tool.findChildren(QtWidgets.QSplitter)) == {
         tool.source_panel.source_splitter,
-        tool.recipe_splitter,
+        tool.operation_panel.splitter,
     }
-    assert tool.recipe_splitter.widget(0) is tool.operation_list
-    assert tool.recipe_splitter.widget(1) is tool.step_inspector
-    assert tool.step_editor_scroll.widget() is tool.step_editor_stack
-    assert not tool.step_editor_scroll.isAncestorOf(tool.step_navigator)
+    assert (
+        tool.operation_panel.splitter.widget(0) is tool.operation_panel.operation_list
+    )
+    assert tool.operation_panel.splitter.widget(1) is tool.operation_panel.inspector
+    assert (
+        tool.operation_panel.editor_scroll.widget() is tool.operation_panel.editor_stack
+    )
+    assert not tool.operation_panel.editor_scroll.isAncestorOf(
+        tool.operation_panel.navigator
+    )
     editor_tabs = tool.findChild(QtWidgets.QTabWidget, "figureComposerEditorTabs")
     assert editor_tabs is tool.editor_tabs
     assert [
@@ -2009,7 +2025,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "figureComposerLayoutPage",
         "figureComposerRecipePage",
     ]
-    assert editor_tabs.currentWidget() is tool.recipe_page
+    assert editor_tabs.currentWidget() is tool.operation_panel
     assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
     layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
     assert layout_grid.rowCount() == 10
@@ -2068,20 +2084,20 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     add_step_button = tool.findChild(
         QtWidgets.QToolButton, "figureComposerAddStepButton"
     )
-    assert add_step_button is tool.add_step_button
-    assert add_step_button.parent() is tool.recipe_page
+    assert add_step_button is tool.operation_panel.add_step_button
+    assert add_step_button.parent() is tool.operation_panel
     assert add_step_button.menu() is None
     assert add_step_button.property("uses_inline_menu_arrow") is True
-    assert tool.add_step_menu.parent() is add_step_button
+    assert tool.operation_panel.add_step_menu.parent() is add_step_button
     assert add_step_button.toolButtonStyle() == (
         QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly
     )
     step_toolbar_buttons = (
-        tool.add_step_button,
-        tool.copy_operation_button,
-        tool.cut_operation_button,
-        tool.paste_operation_button,
-        tool.remove_operation_button,
+        tool.operation_panel.add_step_button,
+        tool.operation_panel.copy_button,
+        tool.operation_panel.cut_button,
+        tool.operation_panel.paste_button,
+        tool.operation_panel.delete_button,
     )
     assert all(button.styleSheet() == "" for button in step_toolbar_buttons)
     assert {button.toolButtonStyle() for button in step_toolbar_buttons} == {
@@ -2094,7 +2110,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         button.sizePolicy().verticalPolicy() for button in step_toolbar_buttons
     } == {QtWidgets.QSizePolicy.Policy.Fixed}
     assert len({button.sizeHint().height() for button in step_toolbar_buttons}) == 1
-    assert [action.data() for action in tool.add_step_menu.actions()] == [
+    assert [
+        action.data() for action in tool.operation_panel.add_step_menu.actions()
+    ] == [
         "set_palette",
         "plot_array",
         "plot_slices",
@@ -2106,7 +2124,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "method:figure",
         "custom",
     ]
-    assert [action.text() for action in tool.add_step_menu.actions()] == [
+    assert [
+        action.text() for action in tool.operation_panel.add_step_menu.actions()
+    ] == [
         "Set Palette",
         "Image Plot",
         "Slice Plot",
@@ -2121,18 +2141,21 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QTabWidget, "figureComposerInspectorTabs") is None
     assert tool.findChild(QtWidgets.QToolBox) is None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerStepNavigator") is not None
-    assert tool.step_editor_stack.objectName() == "figureComposerStepSectionStack"
-    assert tool.step_section_keys == [
+    assert (
+        tool.operation_panel.editor_stack.objectName()
+        == "figureComposerStepSectionStack"
+    )
+    assert tool.operation_panel.section_keys == (
         "sources",
         "axes",
         "selection",
         "view",
         "colors",
         "advanced",
-    ]
+    )
     assert [
-        tool.step_editor_stack.widget(index).objectName()
-        for index in range(tool.step_editor_stack.count())
+        tool.operation_panel.editor_stack.widget(index).objectName()
+        for index in range(tool.operation_panel.editor_stack.count())
     ] == [
         "figureComposerStepSourcesPage",
         "figureComposerTargetAxesPage",
@@ -2186,7 +2209,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert colorbar_kwargs_edit.parent() is colors_page
     assert all(
         isinstance(button.property("section_title"), str)
-        for button in tool.step_section_buttons.values()
+        for button in _operation_section_buttons(tool)
     )
     assert tool.axes_selector.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
     annotate_kwargs_edit.setFocus()
@@ -2231,16 +2254,16 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.dpi_spin,
         )
     )
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
     tool._update_current_operation(axis="equal")
     assert tool.findChild(QtWidgets.QToolBox) is None
-    assert tool._current_step_section_key == "colors"
+    assert tool.operation_panel.current_section_key == "colors"
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    tool._select_step_section("view")
-    view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    view_page = tool.operation_panel.editor_stack.currentWidget()
     xlim_edit = view_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesXLimEdit"
     )
@@ -2265,37 +2288,37 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert restored_status.operations[0].ylim == 2.5
     assert "ylim=2.5" in tool.generated_code()
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesViewPage"
     )
     qtbot.mouseClick(
-        tool.step_section_buttons["colors"], QtCore.Qt.MouseButton.LeftButton
+        _operation_section_button(tool, "colors"), QtCore.Qt.MouseButton.LeftButton
     )
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    operation_item = tool.operation_list.topLevelItem(0)
+    operation_item = tool.operation_panel.operation_list.topLevelItem(0)
     operation_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert tool.tool_status.operations[0].enabled is False
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
     operation_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
     assert tool.tool_status.operations[0].enabled is True
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    tool._select_step_section("axes")
+    tool.operation_panel.select_section("axes")
     tool.axes_expression_edit.setFocus()
     tool.axes_expression_edit.setText("axs[:, 0]")
     tool.axes_expression_edit.editingFinished.emit()
     qtbot.wait(1)
     assert tool.tool_status.operations[0].axes.expression == "axs[:, 0]"
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerTargetAxesPage"
     )
     tool._target_current_operation_all_axes()
@@ -2332,11 +2355,11 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot.wait(1)
     assert tool.tool_status.operations[0].axes.axes == ((0, 0), (0, 1))
     assert (
-        tool.step_editor_stack.currentWidget().objectName()
+        tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerTargetAxesPage"
     )
     tool._target_current_operation_all_axes()
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
     cmap_combo = tool.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
@@ -2802,8 +2825,8 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     assert [line.get_linestyle() for line in rendered_lines] == ["--", "--"]
     assert rendered_lines[1].get_linewidth() == 2.5
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineColorModeCombo"
@@ -3232,9 +3255,11 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> 
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("selection")
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     dimension_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
@@ -3256,8 +3281,8 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> 
     assert slice_kwargs_edit is not None
     assert slice_kwargs_edit.text() == "beta=slice(-0.5, 0.5)"
 
-    tool._select_step_section("advanced")
-    extra_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+    tool.operation_panel.select_section("advanced")
+    extra_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
     )
     assert extra_kwargs_edit is not None
@@ -3287,9 +3312,11 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("advanced")
-    extra_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("advanced")
+    extra_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
     )
     assert extra_kwargs_edit is not None
@@ -3311,8 +3338,8 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
         lambda: not tool._operation_editor_update_pending,
         timeout=1000,
     )
-    tool._select_step_section("selection")
-    slice_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+    tool.operation_panel.select_section("selection")
+    slice_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
     assert slice_kwargs_edit is not None
@@ -3359,24 +3386,28 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("colors")
-    first_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("colors")
+    first_page = tool.operation_panel.editor_stack.currentWidget()
     first_cmap_combo = first_page.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
     assert first_cmap_combo is not None
     assert first_cmap_combo.currentText() == "viridis"
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
-    tool._select_step_section("colors")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
+    tool.operation_panel.select_section("colors")
 
     assert tool.tool_status.operations[0].cmap == "viridis"
     assert tool.tool_status.operations[1].cmap == "magma_r"
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     cmap_combo = colors_page.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
@@ -3403,7 +3434,7 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
         "plasma",
         "plasma_r",
     ]
-    halfrange_edit = tool.step_editor_stack.currentWidget().findChild(
+    halfrange_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
     )
     assert halfrange_edit is not None
@@ -3514,8 +3545,8 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     assert "Selection:" not in shape_summary.text()
     assert order_combo is not None
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     line_color_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
     )
@@ -3567,8 +3598,8 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
         is None
     )
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
@@ -3634,9 +3665,9 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     )
     qtbot.addWidget(tool)
 
-    assert "transform" in tool.step_section_keys
-    tool._select_step_section("transform")
-    transform_page = tool.step_editor_stack.currentWidget()
+    assert "transform" in tool.operation_panel.section_keys
+    tool.operation_panel.select_section("transform")
+    transform_page = tool.operation_panel.editor_stack.currentWidget()
     assert transform_page.objectName() == "figureComposerPlotSlicesTransformPage"
     assert (
         transform_page.findChild(
@@ -3658,8 +3689,8 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
         is None
     )
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
@@ -3757,8 +3788,8 @@ def test_figure_composer_plot_slices_line_panels_ignore_image_cmap(qtbot) -> Non
     )
     qtbot.addWidget(tool)
 
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     line_color_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
     )
@@ -3814,8 +3845,8 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
 
     assert (
         colors_page.findChild(
@@ -3839,18 +3870,18 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     )
     assert mixed_label is not None
 
-    tool._select_step_section("view")
-    view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    view_page = tool.operation_panel.editor_stack.currentWidget()
     assert view_page.findChild(QtWidgets.QComboBox, "figureComposerAxisCombo")
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
     )
 
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     assert selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
@@ -3888,9 +3919,9 @@ def test_figure_composer_plot_slices_image_panels_hide_line_transforms(
     )
     qtbot.addWidget(tool)
 
-    assert "transform" not in tool.step_section_keys
-    tool._select_step_section("colors")
-    colors_page = tool.step_editor_stack.currentWidget()
+    assert "transform" not in tool.operation_panel.section_keys
+    tool.operation_panel.select_section("colors")
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
@@ -4065,9 +4096,9 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_recipe(
         ),
     )
     qtbot.addWidget(tool)
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
 
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     panel_check = colors_page.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
     )
@@ -4075,14 +4106,14 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_recipe(
     panel_check.setChecked(True)
     qtbot.waitUntil(
         lambda: (
-            tool.step_editor_stack.currentWidget().findChild(
+            tool.operation_panel.editor_stack.currentWidget().findChild(
                 QtWidgets.QWidget, "figureComposerPlotSlicesPanelLineStyleEditor"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     panel_list = colors_page.findChild(
         QtWidgets.QListWidget, "figureComposerPlotSlicesPanelLineStyleList"
     )
@@ -4158,15 +4189,17 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("view")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_panel.select_section("view")
     annotate_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAnnotateKwEdit"
     )
     assert annotate_kwargs_edit is not None
     assert annotate_kwargs_edit.text() == 'fontsize=8, color="black"'
 
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
     colorbar_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerColorbarKwEdit"
     )
@@ -4178,13 +4211,13 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert norm_kwargs_edit is not None
     assert norm_kwargs_edit.text() == 'custom="extra"'
 
-    tool._select_step_section("advanced")
+    tool.operation_panel.select_section("advanced")
     extra_kwargs_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerExtraKwEdit")
     assert extra_kwargs_edit is not None
     assert extra_kwargs_edit.text() == "alpha=0.5, zorder=2"
 
     _select_operation_rows(tool, (1,))
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
     gradient_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerGradientKwEdit"
     )
@@ -4192,8 +4225,8 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert gradient_kwargs_edit.text() == 'color="C0", alpha=0.25'
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         selection_page.findChild(
             QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
@@ -4212,8 +4245,10 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
         "kx": 0.0,
     }
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(3))
-    tool._select_step_section("method")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(3)
+    )
+    tool.operation_panel.select_section("method")
     erlab_method_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerERLabMethodKwEdit"
     )
@@ -4427,9 +4462,9 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
     tool._update_operation_editor()
-    tool._select_step_section("colors")
+    tool.operation_panel.select_section("colors")
 
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
     assert norm_combo.currentText() == "PowerNorm"
@@ -4460,14 +4495,14 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_name == "CenteredInversePowerNorm"
     qtbot.waitUntil(
         lambda: (
-            tool.step_editor_stack.currentWidget().findChild(
+            tool.operation_panel.editor_stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     vcenter_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
     )
@@ -4481,14 +4516,14 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_name == "CenteredPowerNorm"
     qtbot.waitUntil(
         lambda: (
-            tool.step_editor_stack.currentWidget().findChild(
+            tool.operation_panel.editor_stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,
@@ -4518,7 +4553,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_kwargs == {"custom": "extra"}
 
     def norm_kwargs_text_updated() -> bool:
-        refreshed_edit = tool.step_editor_stack.currentWidget().findChild(
+        refreshed_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
             QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"
         )
         return refreshed_edit is not None and refreshed_edit.text() == 'custom="extra"'
@@ -4527,32 +4562,32 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         norm_kwargs_text_updated,
         timeout=1000,
     )
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     norm_kwargs_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"
     )
     assert norm_kwargs_edit is not None
     assert norm_kwargs_edit.text() == 'custom="extra"'
 
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
     _activate_combo_text(norm_combo, "Normalize")
     assert tool.tool_status.operations[0].norm_name == "Normalize"
     qtbot.waitUntil(
         lambda: (
-            tool.step_editor_stack.currentWidget().findChild(
+            tool.operation_panel.editor_stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerVminNormEdit"
             )
             is not None
-            and tool.step_editor_stack.currentWidget().findChild(
+            and tool.operation_panel.editor_stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
             )
             is None
         ),
         timeout=1000,
     )
-    colors_page = tool.step_editor_stack.currentWidget()
+    colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,

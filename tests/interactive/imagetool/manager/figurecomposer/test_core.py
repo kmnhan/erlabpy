@@ -157,6 +157,344 @@ def test_figure_document_duplicate_move_reorder_and_remove_sources() -> None:
     assert not document.remove_source("other")
 
 
+def test_figure_document_updates_and_inserts_operations_by_identity() -> None:
+    operations = tuple(
+        FigureOperationState(
+            kind=FigureOperationKind.SET_PALETTE,
+            label=label,
+            operation_id=operation_id,
+        )
+        for operation_id, label in (
+            ("first-id", "first"),
+            ("second-id", "second"),
+            ("third-id", "third"),
+        )
+    )
+    duplicate_recipe = FigureRecipeState(operations=(operations[0], operations[0]))
+    with pytest.raises(ValueError, match="must be unique"):
+        FigureDocument(duplicate_recipe)
+
+    document = FigureDocument(FigureRecipeState(operations=operations))
+    before = document.recipe
+    with pytest.raises(ValueError, match="must be unique"):
+        document.recipe = duplicate_recipe
+    assert document.recipe == before
+
+    assert document.operation_index("second-id") == 1
+    assert document.operation_index("missing-id") is None
+    assert document.operation_by_id("second-id") is operations[1]
+    assert document.operation_by_id("missing-id") is None
+
+    updated_indices: list[int] = []
+
+    def update_label(
+        index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updated_indices.append(index)
+        return operation.model_copy(update={"label": f"{operation.label} updated"})
+
+    assert document.update_operations_by_ids(
+        ("third-id", "missing-id", "second-id", "second-id"), update_label
+    )
+    assert updated_indices == [1, 2]
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "first-id",
+        "second-id",
+        "third-id",
+    )
+    assert tuple(operation.label for operation in document.recipe.operations) == (
+        "first",
+        "second updated",
+        "third updated",
+    )
+    assert not document.update_operations_by_ids(
+        ("second-id",), lambda _index, operation: operation
+    )
+    before = document.recipe
+    with pytest.raises(ValueError, match="cannot change its ID"):
+        document.update_operations_by_ids(
+            ("second-id",),
+            lambda _index, operation: operation.model_copy(
+                update={"operation_id": "replacement-id"}
+            ),
+        )
+    assert document.recipe == before
+
+    replacement = document.recipe.operations[0].model_copy(
+        update={"label": "replacement"}
+    )
+    assert document.replace_operation(0, replacement)
+    assert not document.replace_operation(0, replacement)
+    assert document.recipe.operations[0].operation_id == "first-id"
+    assert not document.replace_operations(document.recipe.operations)
+    before = document.recipe
+    with pytest.raises(ValueError, match="must be unique"):
+        document.replace_operations(
+            (document.recipe.operations[0], document.recipe.operations[0])
+        )
+    assert document.recipe == before
+    with pytest.raises(IndexError, match="operation index"):
+        document.replace_operation(-1, replacement)
+    with pytest.raises(ValueError, match="already in use"):
+        document.replace_operation(
+            0,
+            replacement.model_copy(update={"operation_id": "second-id"}),
+        )
+
+    appended = FigureOperationState(
+        kind=FigureOperationKind.SET_PALETTE,
+        label="appended",
+        operation_id="appended-id",
+    )
+    assert document.append_operation(appended) == 3
+    inserted = (
+        FigureOperationState(
+            kind=FigureOperationKind.SET_PALETTE,
+            label="inserted one",
+            operation_id="inserted-one-id",
+        ),
+        FigureOperationState(
+            kind=FigureOperationKind.SET_PALETTE,
+            label="inserted two",
+            operation_id="inserted-two-id",
+        ),
+    )
+    assert document.insert_operations(1, inserted) == (
+        "inserted-one-id",
+        "inserted-two-id",
+    )
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "first-id",
+        "inserted-one-id",
+        "inserted-two-id",
+        "second-id",
+        "third-id",
+        "appended-id",
+    )
+    assert document.insert_operations(0, ()) == ()
+    with pytest.raises(IndexError, match="insertion index"):
+        document.insert_operations(len(document.recipe.operations) + 1, inserted)
+    with pytest.raises(ValueError, match="already in use"):
+        document.append_operation(appended)
+    with pytest.raises(ValueError, match="must be unique"):
+        document.insert_operations(0, (inserted[0], inserted[0]))
+
+
+def test_figure_document_duplicates_removes_reorders_and_moves_operations() -> None:
+    operations = tuple(
+        FigureOperationState(
+            kind=FigureOperationKind.SET_PALETTE,
+            label=operation_id,
+            operation_id=operation_id,
+        )
+        for operation_id in ("a", "b", "c", "d", "e")
+    )
+    document = FigureDocument(FigureRecipeState(operations=operations))
+
+    duplicate_ids = document.duplicate_operations((3, 1))
+    assert len(duplicate_ids) == 2
+    assert set(duplicate_ids).isdisjoint(
+        operation.operation_id for operation in operations
+    )
+    assert (
+        document.recipe.operations[4].model_copy(update={"operation_id": "b"})
+        == operations[1]
+    )
+    assert (
+        document.recipe.operations[5].model_copy(update={"operation_id": "d"})
+        == operations[3]
+    )
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "a",
+        "b",
+        "c",
+        "d",
+        *duplicate_ids,
+        "e",
+    )
+    before = document.recipe
+    with pytest.raises(IndexError, match="operation index"):
+        document.duplicate_operations((-1,))
+    assert document.recipe == before
+
+    assert document.remove_operation_indices((5, 2, 2)) == (
+        "c",
+        duplicate_ids[1],
+    )
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "a",
+        "b",
+        "d",
+        duplicate_ids[0],
+        "e",
+    )
+    assert document.remove_operation_indices(()) == ()
+    with pytest.raises(IndexError, match="operation index"):
+        document.remove_operation_indices((99,))
+
+    reordered = ("e", "a", "b", "d", duplicate_ids[0])
+    assert document.reorder_operations(reordered)
+    assert not document.reorder_operations(reordered)
+    before = document.recipe
+    with pytest.raises(ValueError, match="exact permutation"):
+        document.reorder_operations(("e", "a", "b", "d"))
+    assert document.recipe == before
+
+    assert document.can_move_operations(("a", "b"), 1)
+    assert document.move_operations(("a", "b"), 1)
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "e",
+        "d",
+        "a",
+        "b",
+        duplicate_ids[0],
+    )
+    assert document.move_operations(("a", "b"), -1)
+    assert tuple(
+        operation.operation_id for operation in document.recipe.operations
+    ) == (
+        "e",
+        "a",
+        "b",
+        "d",
+        duplicate_ids[0],
+    )
+    assert not document.can_move_operations(("e",), -1)
+    assert not document.move_operations(("e",), -1)
+    assert not document.can_move_operations(("missing",), 1)
+    assert not document.move_operations(("missing",), 1)
+    with pytest.raises(ValueError, match="must be -1 or 1"):
+        document.can_move_operations(("a",), 0)
+    with pytest.raises(ValueError, match="must be -1 or 1"):
+        document.move_operations(("a",), 2)
+
+
+def test_figure_document_pastes_operations_and_sources_atomically() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                FigureOperationState(
+                    kind=FigureOperationKind.SET_PALETTE,
+                    label="palette",
+                    operation_id="existing-operation",
+                ),
+            ),
+        ),
+        source_data={"data": data, "data_copy": data},
+    )
+    copied = FigureOperationState.plot_array(label="image", source="data")
+    before = document.recipe
+    with pytest.raises(IndexError, match="insertion index"):
+        document.paste_operations(
+            3,
+            (copied,),
+            (FigureSourceState(name="data"),),
+            {"data": data},
+            {"data": data},
+        )
+    assert document.recipe == before
+
+    result = document.paste_operations(
+        1,
+        (copied,),
+        (
+            FigureSourceState(name="data"),
+            FigureSourceState(name="data"),
+        ),
+        {"data": data},
+        {"data": data},
+    )
+    assert result.source_data_changed
+    assert len(result.operation_ids) == 1
+    assert result.operation_ids[0] not in {
+        "existing-operation",
+        copied.operation_id,
+    }
+    assert tuple(source.name for source in document.recipe.sources) == (
+        "data",
+        "data_copy_2",
+    )
+    assert document.recipe.operations[1].sources == ("data_copy_2",)
+    xr.testing.assert_identical(document.source_data["data_copy_2"], data)
+    xr.testing.assert_identical(
+        document.source_selection_base_data["data_copy_2"], data
+    )
+
+    metadata_source = FigureSourceState(name="metadata_only")
+    preserved = FigureDocument(
+        FigureRecipeState(sources=(metadata_source,)),
+        source_data={"existing_data": data},
+    )
+    preserved_result = preserved.paste_operations(
+        0,
+        (FigureOperationState.custom(label="code", code="pass", trusted=True),),
+        (metadata_source,),
+        {"metadata_only": data},
+        {},
+        preserve_existing=True,
+    )
+    assert preserved_result.source_data_changed
+    assert tuple(source.name for source in preserved.recipe.sources) == (
+        "metadata_only",
+    )
+    xr.testing.assert_identical(preserved.source_data["metadata_only"], data)
+
+    preserved_data = FigureDocument(
+        FigureRecipeState(sources=(FigureSourceState(name="data"),)),
+        source_data={"data": data},
+    )
+    replacement = data + 10
+    preserved_data_result = preserved_data.paste_operations(
+        0,
+        (FigureOperationState.plot_array(label="image", source="data"),),
+        (FigureSourceState(name="data"),),
+        {"data": replacement},
+        {},
+        preserve_existing=True,
+    )
+    assert not preserved_data_result.source_data_changed
+    xr.testing.assert_identical(preserved_data.source_data["data"], data)
+
+    fresh_base = data + 20
+    stale_base = data + 30
+    selected_source = FigureSourceState(
+        name="selected",
+        selection_source="data",
+        qsel={"x": 0.0},
+    )
+    preserved_selection = FigureDocument(
+        FigureRecipeState(
+            sources=(FigureSourceState(name="data"), selected_source),
+        ),
+        source_data={"data": fresh_base, "selected": fresh_base.qsel(x=0.0)},
+        source_selection_base_data={"selected": fresh_base},
+    )
+    preserved_selection_result = preserved_selection.paste_operations(
+        0,
+        (FigureOperationState.plot_array(label="image", source="selected"),),
+        (FigureSourceState(name="data"), selected_source),
+        {"data": stale_base, "selected": stale_base.qsel(x=0.0)},
+        {"selected": stale_base},
+        preserve_existing=True,
+    )
+    assert not preserved_selection_result.source_data_changed
+    xr.testing.assert_identical(
+        preserved_selection.source_selection_base_data["selected"], fresh_base
+    )
+
+
 def test_figure_document_add_and_replace_recompute_dependents_atomically() -> None:
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -635,8 +973,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (2,))
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -657,14 +995,14 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert tool.tool_status.operations[2].line_x is None
     _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
-    selection_page = tool.step_editor_stack.currentWidget()
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
     _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
-    selection_page = tool.step_editor_stack.currentWidget()
+    selection_page = tool.operation_panel.editor_stack.currentWidget()
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -681,8 +1019,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert all(
         widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QCheckBox)
     )
-    tool._select_step_section("view")
-    view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    view_page = tool.operation_panel.editor_stack.currentWidget()
     data_values_axis_combo = view_page.findChild(
         QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
     )
@@ -696,10 +1034,13 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     _select_operation_rows(tool, (3,))
-    assert tool.operation_list.topLevelItem(3).text(0) == "eplt.clean_labels"
-    assert tool.step_section_buttons["method"].text() == "eplt.clean_labels"
-    tool._select_step_section("method")
-    erlab_method_page = tool.step_editor_stack.currentWidget()
+    assert (
+        tool.operation_panel.operation_list.topLevelItem(3).text(0)
+        == "eplt.clean_labels"
+    )
+    assert _operation_section_button(tool, "method").text() == "eplt.clean_labels"
+    tool.operation_panel.select_section("method")
+    erlab_method_page = tool.operation_panel.editor_stack.currentWidget()
     assert all(
         widget.toolTip()
         for widget in erlab_method_page.findChildren(QtWidgets.QComboBox)

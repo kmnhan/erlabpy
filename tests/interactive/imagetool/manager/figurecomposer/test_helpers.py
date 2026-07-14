@@ -76,7 +76,9 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     tool._updating_controls = True
     figurecomposer_line_style.update_current_line_kw(
@@ -155,10 +157,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    line_selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    line_selection_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_selection_page is not None
     _assert_step_editor_section(
         line_selection_page, "figureComposerLineSelectionDataSection"
@@ -166,8 +170,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         line_selection_page, "figureComposerLineSelectionProfilesSection"
     )
-    tool._select_step_section("view")
-    line_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    line_view_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_view_page is not None
     assert (
         line_view_page.findChild(
@@ -175,17 +179,20 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         )
         is None
     )
-    tool._select_step_section("style")
-    line_style_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("style")
+    line_style_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_style_page is not None
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLegendSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleColorSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLineSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleFillSection")
-    tool._select_step_section("other")
-    line_other_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("other")
+    line_other_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_other_page is not None
-    assert tool.step_section_buttons["other"].property("section_title") == "Transform"
+    assert (
+        _operation_section_button(tool, "other").property("section_title")
+        == "Transform"
+    )
     assert (
         line_other_page.findChild(
             QtWidgets.QWidget, "figureComposerLineOtherTransformSection"
@@ -193,10 +200,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    line_slices_selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("selection")
+    line_slices_selection_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_slices_selection_page is not None
     _assert_step_editor_section(
         line_slices_selection_page,
@@ -206,8 +215,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_slices_selection_page,
         "figureComposerPlotSlicesSelectionValuesSection",
     )
-    tool._select_step_section("view")
-    line_slices_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    line_slices_view_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_slices_view_page is not None
     _assert_step_editor_section(
         line_slices_view_page, "figureComposerPlotSlicesViewPanelsSection"
@@ -215,8 +224,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         line_slices_view_page, "figureComposerPlotSlicesViewAxesSection"
     )
-    tool._select_step_section("colors")
-    line_slices_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    line_slices_colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_slices_colors_page is not None
     _assert_step_editor_section(
         line_slices_colors_page,
@@ -234,8 +243,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_slices_colors_page,
         "figureComposerPlotSlicesStylePanelOverridesSection",
     )
-    tool._select_step_section("transform")
-    line_slices_transform_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("transform")
+    line_slices_transform_page = tool.operation_panel.editor_stack.currentWidget()
     assert line_slices_transform_page is not None
     assert (
         line_slices_transform_page.objectName()
@@ -248,10 +257,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(2))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(2)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("colors")
-    image_slices_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    image_slices_colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert image_slices_colors_page is not None
     _assert_step_editor_section(
         image_slices_colors_page,
@@ -266,19 +277,23 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         "figureComposerPlotSlicesColorsPanelOverridesSection",
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(3))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(3)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("method")
-    method_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("method")
+    method_page = tool.operation_panel.editor_stack.currentWidget()
     assert method_page is not None
     _assert_step_editor_section(method_page, "figureComposerMethodCallSection")
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
     _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(4))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(4)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("view")
-    plot_array_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("view")
+    plot_array_view_page = tool.operation_panel.editor_stack.currentWidget()
     assert plot_array_view_page is not None
     _assert_step_editor_section(
         plot_array_view_page, "figureComposerPlotArrayViewImageSection"
@@ -286,8 +301,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         plot_array_view_page, "figureComposerPlotArrayViewAxesSection"
     )
-    tool._select_step_section("colors")
-    plot_array_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_panel.select_section("colors")
+    plot_array_colors_page = tool.operation_panel.editor_stack.currentWidget()
     assert plot_array_colors_page is not None
     _assert_step_editor_section(
         plot_array_colors_page,

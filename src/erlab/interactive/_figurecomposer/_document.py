@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import typing
+import uuid
 
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._gridspec import (
@@ -30,7 +31,7 @@ from erlab.interactive._figurecomposer._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     import xarray as xr
 
@@ -65,6 +66,13 @@ class FigureSourceUpdateResult(typing.NamedTuple):
 
     def __bool__(self) -> bool:
         return bool(self.updated)
+
+
+class FigureOperationPasteResult(typing.NamedTuple):
+    """Outcome of inserting copied operations and their source dependencies."""
+
+    operation_ids: tuple[str, ...]
+    source_data_changed: bool
 
 
 class FigureRecipeContext(typing.Protocol):
@@ -107,11 +115,37 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
-        self.recipe = recipe.model_copy(
+        self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
+        self._validate_operation_id_sequence(self._recipe.operations)
         self.source_data = dict(source_data or {})
         self.source_selection_base_data = dict(source_selection_base_data or {})
+
+    @property
+    def recipe(self) -> FigureRecipeState:
+        """Current validated figure recipe."""
+        return self._recipe
+
+    @recipe.setter
+    def recipe(self, recipe: FigureRecipeState) -> None:
+        self._validate_operation_id_sequence(recipe.operations)
+        self._recipe = recipe
+
+    def replace_recipe(self, recipe: FigureRecipeState) -> bool:
+        """Replace the complete recipe after validating document invariants."""
+        if recipe == self._recipe:
+            return False
+        self.recipe = recipe
+        return True
+
+    @staticmethod
+    def _validate_operation_id_sequence(
+        operations: Sequence[FigureOperationState],
+    ) -> None:
+        operation_ids = tuple(operation.operation_id for operation in operations)
+        if len(set(operation_ids)) != len(operation_ids):
+            raise ValueError("operation IDs must be unique")
 
     def source_names(self) -> tuple[str, ...]:
         names = tuple(source.name for source in self.recipe.sources)
@@ -249,6 +283,334 @@ class FigureDocument:
             source_by_name, roots
         )
         return tuple(propagated[source.name] for source in canonical)
+
+    def operation_index(self, operation_id: str) -> int | None:
+        """Return the recipe index for *operation_id*, if it is present."""
+        for index, operation in enumerate(self.recipe.operations):
+            if operation.operation_id == operation_id:
+                return index
+        return None
+
+    def operation_by_id(self, operation_id: str) -> FigureOperationState | None:
+        """Return the operation identified by *operation_id*, if it is present."""
+        index = self.operation_index(operation_id)
+        if index is None:
+            return None
+        return self.recipe.operations[index]
+
+    def _operation_indices(self, indices: Iterable[int]) -> tuple[int, ...]:
+        """Validate and normalize operation indices into recipe order."""
+        requested = set(indices)
+        operation_count = len(self.recipe.operations)
+        if any(index < 0 or index >= operation_count for index in requested):
+            raise IndexError("operation index out of range")
+        return tuple(index for index in range(operation_count) if index in requested)
+
+    def _validate_new_operation_ids(
+        self,
+        operations: Sequence[FigureOperationState],
+        *,
+        replacing_index: int | None = None,
+    ) -> None:
+        self._validate_operation_id_sequence(operations)
+        new_ids = tuple(operation.operation_id for operation in operations)
+        existing_ids = {
+            operation.operation_id
+            for index, operation in enumerate(self.recipe.operations)
+            if index != replacing_index
+        }
+        if existing_ids.intersection(new_ids):
+            raise ValueError("operation ID is already in use")
+
+    def update_operations_by_ids(
+        self,
+        operation_ids: Iterable[str],
+        updater: Callable[[int, FigureOperationState], FigureOperationState],
+    ) -> bool:
+        """Update matching operations in recipe order."""
+        operation_id_set = set(operation_ids)
+        if not operation_id_set:
+            return False
+        operations = list(self.recipe.operations)
+        changed = False
+        for index, operation in enumerate(operations):
+            if operation.operation_id not in operation_id_set:
+                continue
+            updated = updater(index, operation)
+            if updated.operation_id != operation.operation_id:
+                raise ValueError("an in-place operation update cannot change its ID")
+            if updated == operation:
+                continue
+            operations[index] = updated
+            changed = True
+        if not changed:
+            return False
+        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        return True
+
+    def replace_operation(self, index: int, operation: FigureOperationState) -> bool:
+        """Replace one operation at *index*."""
+        (index,) = self._operation_indices((index,))
+        operations = list(self.recipe.operations)
+        if operations[index] == operation:
+            return False
+        self._validate_new_operation_ids((operation,), replacing_index=index)
+        operations[index] = operation
+        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        return True
+
+    def replace_operations(self, operations: Sequence[FigureOperationState]) -> bool:
+        """Replace the complete operation sequence after validating identities."""
+        updated = tuple(operations)
+        self._validate_operation_id_sequence(updated)
+        if updated == self.recipe.operations:
+            return False
+        self.recipe = self.recipe.model_copy(update={"operations": updated})
+        return True
+
+    def append_operation(self, operation: FigureOperationState) -> int:
+        """Append *operation* and return its recipe index."""
+        index = len(self.recipe.operations)
+        self.insert_operations(index, (operation,))
+        return index
+
+    def insert_operations(
+        self, index: int, operations: Sequence[FigureOperationState]
+    ) -> tuple[str, ...]:
+        """Insert caller-created operations at *index* and return their IDs."""
+        if index < 0 or index > len(self.recipe.operations):
+            raise IndexError("operation insertion index out of range")
+        inserted = tuple(operations)
+        if not inserted:
+            return ()
+        self._validate_new_operation_ids(inserted)
+        recipe_operations = list(self.recipe.operations)
+        recipe_operations[index:index] = inserted
+        self.recipe = self.recipe.model_copy(
+            update={"operations": tuple(recipe_operations)}
+        )
+        return tuple(operation.operation_id for operation in inserted)
+
+    def _operation_copies(
+        self, operations: Sequence[FigureOperationState]
+    ) -> tuple[FigureOperationState, ...]:
+        reserved_ids = {operation.operation_id for operation in self.recipe.operations}
+        copies: list[FigureOperationState] = []
+        for operation in operations:
+            operation_id = uuid.uuid4().hex
+            while operation_id in reserved_ids:  # pragma: no cover - UUID collision
+                operation_id = uuid.uuid4().hex
+            reserved_ids.add(operation_id)
+            copies.append(
+                operation.model_copy(update={"operation_id": operation_id}, deep=True)
+            )
+        return tuple(copies)
+
+    def remove_operation_indices(self, indices: Sequence[int]) -> tuple[str, ...]:
+        """Remove recipe indices and return removed IDs in recipe order."""
+        index_set = set(self._operation_indices(indices))
+        if not index_set:
+            return ()
+        removed = tuple(
+            operation.operation_id
+            for index, operation in enumerate(self.recipe.operations)
+            if index in index_set
+        )
+        operations = tuple(
+            operation
+            for index, operation in enumerate(self.recipe.operations)
+            if index not in index_set
+        )
+        self.recipe = self.recipe.model_copy(update={"operations": operations})
+        return removed
+
+    def duplicate_operations(self, indices: Sequence[int]) -> tuple[str, ...]:
+        """Deep-copy selected operations with fresh identities."""
+        ordered_indices = self._operation_indices(indices)
+        if not ordered_indices:
+            return ()
+        duplicate_operations = self._operation_copies(
+            tuple(self.recipe.operations[index] for index in ordered_indices)
+        )
+        return self.insert_operations(ordered_indices[-1] + 1, duplicate_operations)
+
+    def paste_operations(
+        self,
+        index: int,
+        operations: Sequence[FigureOperationState],
+        sources: Sequence[FigureSourceState],
+        source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
+        *,
+        preserve_existing: bool = False,
+    ) -> FigureOperationPasteResult:
+        """Insert copied operations and source dependencies as one transaction."""
+        if index < 0 or index > len(self.recipe.operations):
+            raise IndexError("operation insertion index out of range")
+
+        existing_source_names = {source.name for source in self.recipe.sources}
+        reserved_source_names = set(existing_source_names)
+        reserved_source_names.update(self.source_data)
+        unique_sources: list[FigureSourceState] = []
+        seen_sources: set[str] = set()
+        for source in sources:
+            if source.name in seen_sources:
+                continue
+            seen_sources.add(source.name)
+            unique_sources.append(source)
+
+        rename_map: dict[str, str] = {}
+        for source in unique_sources:
+            if preserve_existing and source.name in reserved_source_names:
+                rename_map[source.name] = source.name
+                continue
+            pasted_name = source.name
+            if pasted_name in reserved_source_names:
+                stem = f"{source.name}_copy"
+                pasted_name = stem
+                suffix = 2
+                while pasted_name in reserved_source_names:
+                    pasted_name = f"{stem}_{suffix}"
+                    suffix += 1
+            reserved_source_names.add(pasted_name)
+            rename_map[source.name] = pasted_name
+
+        source_list = list(self.recipe.sources)
+        renamed_source_data: dict[str, xr.DataArray] = {}
+        for source in unique_sources:
+            pasted_name = rename_map[source.name]
+            renamed_source = self.source_with_renamed_references(source, rename_map)
+            if pasted_name not in existing_source_names:
+                source_list.append(renamed_source)
+                existing_source_names.add(pasted_name)
+            if source.name in source_data and (
+                pasted_name not in self.source_data or not preserve_existing
+            ):
+                renamed_source_data[pasted_name] = source_data[source.name]
+
+        copied_operations = self._operation_copies(
+            tuple(
+                rename_operation_sources(operation, rename_map)
+                for operation in operations
+            )
+        )
+        self._validate_new_operation_ids(copied_operations)
+        operation_list = list(self.recipe.operations)
+        operation_list[index:index] = copied_operations
+
+        renamed_selection_base_data: dict[str, xr.DataArray] = {}
+        for source_name, data in selection_base_data.items():
+            pasted_name = rename_map.get(source_name, source_name)
+            if pasted_name not in existing_source_names:
+                continue
+            if preserve_existing and pasted_name in self.source_selection_base_data:
+                continue
+            renamed_selection_base_data[pasted_name] = data
+        updated_source_data = dict(self.source_data)
+        updated_source_data.update(renamed_source_data)
+        updated_selection_base_data = dict(self.source_selection_base_data)
+        updated_selection_base_data.update(renamed_selection_base_data)
+        updated_recipe = self.recipe.model_copy(
+            update={
+                "sources": tuple(source_list),
+                "operations": tuple(operation_list),
+            }
+        )
+
+        self.recipe = updated_recipe
+        self.source_data = updated_source_data
+        self.source_selection_base_data = updated_selection_base_data
+        return FigureOperationPasteResult(
+            tuple(operation.operation_id for operation in copied_operations),
+            bool(renamed_source_data or renamed_selection_base_data),
+        )
+
+    def reorder_operations(self, ordered_ids: Sequence[str]) -> bool:
+        """Reorder operations using an exact permutation of their IDs."""
+        operation_by_id = {
+            operation.operation_id: operation for operation in self.recipe.operations
+        }
+        current_ids = tuple(
+            operation.operation_id for operation in self.recipe.operations
+        )
+        ids = tuple(ordered_ids)
+        if (
+            len(operation_by_id) != len(current_ids)
+            or len(ids) != len(current_ids)
+            or len(set(ids)) != len(ids)
+            or set(ids) != set(current_ids)
+        ):
+            raise ValueError("operation order must be an exact permutation")
+        if ids == current_ids:
+            return False
+        self.recipe = self.recipe.model_copy(
+            update={
+                "operations": tuple(
+                    operation_by_id[operation_id] for operation_id in ids
+                )
+            }
+        )
+        return True
+
+    def can_move_operations(self, operation_ids: Iterable[str], offset: int) -> bool:
+        """Return whether any selected operation can move by one position."""
+        if offset not in {-1, 1}:
+            raise ValueError("operation move offset must be -1 or 1")
+        selected_ids = set(operation_ids)
+        indices = tuple(
+            index
+            for index, operation in enumerate(self.recipe.operations)
+            if operation.operation_id in selected_ids
+        )
+        if not indices:
+            return False
+        index_set = set(indices)
+        if offset < 0:
+            return any(index > 0 and index - 1 not in index_set for index in indices)
+        return any(
+            index < len(self.recipe.operations) - 1 and index + 1 not in index_set
+            for index in indices
+        )
+
+    def move_operations(self, operation_ids: Iterable[str], offset: int) -> bool:
+        """Move selected operations one position, preserving relative order."""
+        if offset not in {-1, 1}:
+            raise ValueError("operation move offset must be -1 or 1")
+        selected_ids = set(operation_ids)
+        indices = tuple(
+            index
+            for index, operation in enumerate(self.recipe.operations)
+            if operation.operation_id in selected_ids
+        )
+        if not indices:
+            return False
+        operations = list(self.recipe.operations)
+        index_set = set(indices)
+        moved = False
+        if offset < 0:
+            for index in indices:
+                if index > 0 and index - 1 not in index_set:
+                    operations[index - 1], operations[index] = (
+                        operations[index],
+                        operations[index - 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index - 1)
+                    moved = True
+        else:
+            for index in reversed(indices):
+                if index < len(operations) - 1 and index + 1 not in index_set:
+                    operations[index + 1], operations[index] = (
+                        operations[index],
+                        operations[index + 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index + 1)
+                    moved = True
+        if not moved:
+            return False
+        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        return True
 
     def operation_source_names(
         self, operation: FigureOperationState

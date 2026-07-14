@@ -76,7 +76,6 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _render_preview,
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -1871,10 +1870,7 @@ def _image_style_target_label(
 def _operation_by_id(
     tool: FigureComposerTool, operation_id: str
 ) -> FigureOperationState | None:
-    for operation in tool._document.recipe.operations:
-        if operation.operation_id == operation_id:
-            return operation
-    return None
+    return tool._document.operation_by_id(operation_id)
 
 
 def _replace_operation_by_id(
@@ -1884,15 +1880,14 @@ def _replace_operation_by_id(
     *,
     rebuild_editor: bool = False,
 ) -> None:
-    for index, operation in enumerate(tool._document.recipe.operations):
-        if operation.operation_id == operation_id:
-            _replace_recipe_operation(
-                tool,
-                index,
-                updated,
-                rebuild_editor=rebuild_editor,
-            )
-            return
+    index = tool._document.operation_index(operation_id)
+    if index is not None:
+        _replace_recipe_operation(
+            tool,
+            index,
+            updated,
+            rebuild_editor=rebuild_editor,
+        )
 
 
 def _is_single_image_plot_slices_target(
@@ -1959,16 +1954,10 @@ def _replace_recipe_operation(
 ) -> None:
     if index < 0 or index >= len(tool._document.recipe.operations):
         return
-    current = tool._current_operation()
-    current_id = current[1].operation_id if current is not None else None
-    selected_ids = tool._selected_operation_ids()
-    operations = list(tool._document.recipe.operations)
-    operations[index] = operation
-    _set_operations(
-        tool,
-        tuple(operations),
-        current_id,
-        selected_ids,
+    operation_id = tool._document.recipe.operations[index].operation_id
+    tool._update_operations_by_ids(
+        (operation_id,),
+        lambda _index, _operation: operation,
         rebuild_editor=rebuild_editor,
     )
 
@@ -2040,7 +2029,6 @@ def _upsert_method_operation(
     current = tool._current_operation()
     current_id = current[1].operation_id if current is not None else None
     selected_ids = tool._selected_operation_ids()
-    operations = list(tool._document.recipe.operations)
     updates: dict[str, typing.Any] = {
         "label": label or name,
         "method_args": tuple(args),
@@ -2050,29 +2038,32 @@ def _upsert_method_operation(
         updates["axes"] = axes
     if enabled is not None:
         updates["enabled"] = enabled
-    for index, operation in enumerate(operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if (
             operation.kind == FigureOperationKind.METHOD
             and operation.method_family == family
             and operation.method_name == name
             and _method_axes_match(operation.axes, axes)
         ):
-            operations[index] = operation.model_copy(update=updates)
-            break
-    else:
-        new_operation = FigureOperationState.method(
-            family=family,
-            name=name,
-            label=label,
-            axes=axes,
-            args=args,
-            kwargs=kwargs,
-        )
-        if enabled is not None:
-            new_operation = new_operation.model_copy(update={"enabled": enabled})
-        operations.append(new_operation)
-        index = len(operations) - 1
-    _set_operations(tool, tuple(operations), current_id, selected_ids)
+            tool._update_operations_by_ids(
+                (operation.operation_id,),
+                lambda _index, target: target.model_copy(update=updates),
+                rebuild_editor=True,
+            )
+            return index
+
+    new_operation = FigureOperationState.method(
+        family=family,
+        name=name,
+        label=label,
+        axes=axes,
+        args=args,
+        kwargs=kwargs,
+    )
+    if enabled is not None:
+        new_operation = new_operation.model_copy(update={"enabled": enabled})
+    index = tool._document.append_operation(new_operation)
+    tool._finish_operation_structure_change(selected_ids, current_id)
     return index
 
 
@@ -2084,54 +2075,22 @@ def _set_method_operation_enabled(
     axes: FigureAxesSelectionState | None,
     enabled: bool,
 ) -> None:
-    current = tool._current_operation()
-    current_id = current[1].operation_id if current is not None else None
-    selected_ids = tool._selected_operation_ids()
-    operations = list(tool._document.recipe.operations)
-    changed = False
-    for index, operation in enumerate(operations):
+    operation_ids = tuple(
+        operation.operation_id
+        for operation in tool._document.recipe.operations
         if (
             operation.kind == FigureOperationKind.METHOD
             and operation.method_family == family
             and operation.method_name == name
             and _method_axes_match(operation.axes, axes)
             and operation.enabled != enabled
-        ):
-            operations[index] = operation.model_copy(update={"enabled": enabled})
-            changed = True
-    if changed:
-        _set_operations(tool, tuple(operations), current_id, selected_ids)
-
-
-def _set_operations(
-    tool: FigureComposerTool,
-    operations: tuple[FigureOperationState, ...],
-    current_id: str | None,
-    selected_ids: set[str],
-    *,
-    rebuild_editor: bool = True,
-) -> None:
-    tool._document.recipe = tool._document.recipe.model_copy(
-        update={"operations": operations}
+        )
     )
-    tool._refresh_operation_list()
-    if selected_ids:
-        tool._set_selected_operation_ids_silent(selected_ids)
-    if current_id is not None:
-        for row, operation in enumerate(tool._document.recipe.operations):
-            if operation.operation_id == current_id:
-                tool._set_current_operation_row_silent(row)
-                break
-    tool._sync_axes_selector()
-    tool._update_step_action_buttons()
-    tool._refresh_step_section_button_texts()
-    current = tool._current_operation()
-    tool._update_source_status(current[1] if current is not None else None)
-    if rebuild_editor:
-        tool._update_operation_editor_safely()
-    _render_preview(tool)
-    tool.sigInfoChanged.emit()
-    tool._write_state()
+    tool._update_operations_by_ids(
+        operation_ids,
+        lambda _index, operation: operation.model_copy(update={"enabled": enabled}),
+        rebuild_editor=True,
+    )
 
 
 def _layout_axes(tool: FigureComposerTool) -> np.ndarray | dict[str, Axes] | None:
