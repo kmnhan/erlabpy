@@ -3,6 +3,7 @@
 import textwrap
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
 from ._common import *
 
@@ -458,7 +459,7 @@ def test_figure_composer_custom_code_read_write_source_is_dependency(
     qtbot.addWidget(tool)
 
     assert tool._document.operation_source_names(operation) == ("data",)
-    assert tool._source_usage_count("data") == 1
+    assert tool._document.source_usage_count("data") == 1
     assert not tool.remove_source("data")
 
 
@@ -485,7 +486,7 @@ def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert tool._rename_source_alias("data", "renamed")
+    assert tool._document.rename_source("data", "renamed")
     renamed_code = tool.tool_status.operations[0].code
     assert renamed_code == code.replace("float(data.mean())", "float(renamed.mean())")
 
@@ -524,10 +525,10 @@ def test_figure_composer_source_rename_rejects_ambiguous_python(
     )
     qtbot.addWidget(tool)
 
-    assert not tool._rename_source_alias("data", "renamed")
+    with pytest.raises(FigureComposerInputError):
+        tool._document.rename_source("data", "renamed")
     assert tool.tool_status.sources[0].name == "data"
     assert tool.tool_status.operations[0].code == code
-    assert not tool.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
@@ -737,7 +738,7 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.custom(
         label="code",
         code=(
@@ -915,7 +916,7 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
     )
     qtbot.addWidget(tool)
 
-    assert tool._source_usage_count("custom_source") == 2
+    assert tool._document.source_usage_count("custom_source") == 2
     assert not tool.remove_source("custom_source")
     _select_operation_rows(tool, (0,))
     tool._copy_selected_operations()
@@ -1131,17 +1132,17 @@ def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> 
         ),
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"data"}, "data")
+    tool.source_panel.set_selected_names(("data",), current_name="data")
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
-    alias_edit = tool.source_alias_edit
+    alias_edit = tool.source_panel.source_alias_edit
 
     alias_edit.setText("renamed")
     alias_edit.editingFinished.emit()
 
     assert alias_edit.text() == "data"
     assert tool.tool_status.sources[0].name == "data"
-    assert not tool.source_validation_label.isHidden()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:

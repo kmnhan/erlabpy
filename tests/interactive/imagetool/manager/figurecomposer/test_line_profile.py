@@ -210,7 +210,7 @@ def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None
         },
         name="profile",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.line(
         label="line",
         source="data",

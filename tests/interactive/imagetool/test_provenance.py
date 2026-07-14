@@ -540,6 +540,78 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         )
 
 
+def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
+    public = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
+    )
+    uniform = erlab.utils.array._make_dims_uniform(public)
+    legacy_call = "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
+    payload = {
+        "schema_version": 2,
+        "kind": "script",
+        "start_label": "Restore legacy ImageTool data",
+        "active_name": "derived",
+        "operations": [
+            {
+                "op": "script_code",
+                "label": "Restore nonuniform dimensions",
+                "code": f"derived = {legacy_call}",
+            }
+        ],
+    }
+
+    spec = provenance.parse_tool_provenance_spec(payload)
+
+    assert spec is not None
+    migrated_code = spec.derivation_code()
+    assert "erlab.interactive.imagetool.slicer.restore_nonuniform_dims" not in (
+        migrated_code
+    )
+    assert "erlab.utils.array._restore_nonuniform_dims(data)" in migrated_code
+    namespace = _exec_generated_code(migrated_code, {"data": uniform})
+    xr.testing.assert_identical(namespace["derived"], public)
+
+    seed_spec = provenance.parse_tool_provenance_spec(
+        {
+            "schema_version": 2,
+            "kind": "script",
+            "start_label": "Restore legacy ImageTool data",
+            "seed_code": f"derived = {legacy_call}",
+            "active_name": "derived",
+            "operations": [],
+        }
+    )
+    assert seed_spec is not None
+    assert seed_spec.seed_code is not None
+    assert "erlab.utils.array._restore_nonuniform_dims(data)" in seed_spec.seed_code
+
+    file_source = provenance.FileLoadSource.model_validate(
+        {
+            "path": "scan.nc",
+            "loader_label": "Load scan.nc",
+            "loader_text": "xarray.load_dataarray",
+            "kwargs_text": "{}",
+            "load_code": f"derived = {legacy_call}",
+        }
+    )
+    assert file_source.load_code is not None
+    assert "erlab.utils.array._restore_nonuniform_dims(data)" in file_source.load_code
+
+    preserved_code = (
+        f'# café: keep "{legacy_call}" as documentation\n'
+        f"derived  =  {legacy_call}  # keep formatting\n"
+    )
+    assert _provenance_framework._migrate_legacy_nonuniform_restore_code(
+        preserved_code
+    ) == (
+        f'# café: keep "{legacy_call}" as documentation\n'
+        "derived  =  erlab.utils.array._restore_nonuniform_dims(data)  "
+        "# keep formatting\n"
+    )
+
+
 def test_registered_provenance_define_operation_code_api() -> None:
 
     structured_operation_types = [
@@ -735,6 +807,89 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
     xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
 
 
+@pytest.mark.parametrize("record_mapping", [False, True])
+def test_nonuniform_restore_statement_code_is_safe_to_reingest(
+    record_mapping: bool,
+) -> None:
+    public = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
+    )
+    internal = erlab.utils.array._make_dims_uniform(public)
+    operation = provenance.RestoreNonuniformDimsOperation(
+        dimension_mapping=(
+            erlab.utils.array._nonuniform_dim_mapping(internal)
+            if record_mapping
+            else None
+        )
+    )
+
+    with pytest.raises(NotImplementedError):
+        provenance.operations_expression_code((operation,), "data")
+
+    code = operation.replay_code("data", output_name="derived")
+    spec = provenance.script(
+        start_label="Restore ImageTool dimensions",
+        seed_code=code,
+        active_name="derived",
+    )
+
+    assert "lambda" not in code
+    assert not provenance.script_provenance_requires_trust(
+        spec, external_input_names={"data"}
+    )
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(spec, {"data": internal}),
+        public,
+    )
+
+
+def test_nonuniform_restore_expression_is_linear_and_restores_applicable_dims() -> None:
+    public = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 0.4, 2.0]},
+    )
+    internal = erlab.utils.array._make_dims_uniform(public)
+    recorded_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
+    mapping = {**recorded_mapping, "missing_idx": "missing"}
+    code = _provenance_framework._restore_nonuniform_dims_expression("data", mapping)
+
+    attributes = tuple(
+        node.attr
+        for node in ast.walk(ast.parse(code))
+        if isinstance(node, ast.Attribute)
+    )
+    assert attributes.count("swap_dims") == 1
+    assert attributes.count("drop_vars") == 1
+    assert len(code) < 5_000
+
+    partially_restored = erlab.utils.array._restore_nonuniform_dims(
+        internal, {"x_idx": "x"}
+    )
+    namespace = _exec_generated_code(
+        f"result = {code}",
+        {"data": partially_restored},
+    )
+    xr.testing.assert_identical(namespace["result"], public)
+
+
+def test_nonuniform_restore_expression_preserves_inapplicable_coordinates() -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0], "x_idx": ("x", [10, 11, 12])},
+    )
+    code = _provenance_framework._restore_nonuniform_dims_expression(
+        "data", {"x_idx": "x"}
+    )
+
+    namespace = _exec_generated_code(f"result = {code}", {"data": data})
+
+    xr.testing.assert_identical(namespace["result"], data)
+
+
 def test_statement_operation_replay_code_mutates_working_copy() -> None:
     data = _kspace_data()
     operation = provenance.KspaceWorkFunctionOperation(work_function=4.2)
@@ -846,7 +1001,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         },
         name="data",
     )
-    nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(nonuniform_public)
+    nonuniform = erlab.utils.array._make_dims_uniform(nonuniform_public)
     selection_spec = erlab.interactive.imagetool.provenance.selection(
         provenance.QSelOperation(kwargs={"beta": 2.0}),
         provenance.IselOperation(kwargs={"alpha": slice(1, 3)}),
@@ -1603,7 +1758,7 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
         coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
         name="data",
     )
-    uniform = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    uniform = erlab.utils.array._make_dims_uniform(public)
 
     spec = provenance.public_data(
         provenance.CoarsenOperation(
@@ -1630,7 +1785,9 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
 
     restored_spec = provenance.full_data(
         provenance.AverageOperation(dims=("y",)),
-        provenance.RestoreNonuniformDimsOperation(),
+        provenance.RestoreNonuniformDimsOperation(
+            dimension_mapping=erlab.utils.array._nonuniform_dim_mapping(uniform)
+        ),
     )
     reparsed_restored = provenance.parse_tool_provenance_spec(
         restored_spec.model_dump(mode="json")
@@ -1643,7 +1800,47 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     )
     restored_code = reparsed_restored.display_code(parent_data=uniform)
     assert restored_code is not None
-    assert "restore_nonuniform_dims" in restored_code
+    assert "restore_nonuniform_dims" not in restored_code
+    assert ".swap_dims(" in restored_code
+    assert ".drop_vars(" in restored_code
+    restored_namespace = _exec_generated_code(restored_code, {"data": uniform})
+    xr.testing.assert_identical(restored_namespace["derived"], public.qsel.mean("y"))
+
+
+def test_recorded_nonuniform_mapping_is_not_restored_after_rotation_drops_coord() -> (
+    None
+):
+    public = xr.DataArray(
+        np.arange(20.0).reshape(5, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
+        name="scan",
+    )
+    internal = erlab.utils.array._make_dims_uniform(public)
+    mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
+    rotation = provenance.RotateOperation(
+        angle=10.0,
+        axes=("x_idx", "y"),
+        center=(0.0, 0.0),
+    )
+    rotated = rotation.apply(internal, parent_data=internal)
+    expected = erlab.utils.array._restore_nonuniform_dims(rotated)
+    spec = provenance.full_data(
+        rotation,
+        provenance.RestoreNonuniformDimsOperation(dimension_mapping=mapping),
+    )
+
+    assert "x_idx" in rotated.dims
+    assert "x" not in rotated.coords
+    assert expected.dims == ("x_idx", "y")
+    xr.testing.assert_identical(spec.apply(internal), expected)
+
+    code = typing.cast("str", spec.display_code(parent_data=internal))
+    namespace = _exec_generated_code(code, {"data": internal})
+
+    assert "erlab.utils.array._restore_nonuniform_dims" not in code
+    assert "erlab.interactive.imagetool.slicer" not in code
+    xr.testing.assert_identical(namespace["derived"], expected)
 
 
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
@@ -1932,7 +2129,8 @@ def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None
     unknown_code = typing.cast("str", spec.display_code())
     assert ".transpose(" in unknown_code
     assert ".squeeze()" in unknown_code
-    assert "restore_nonuniform_dims" in unknown_code
+    assert "def _restore_image_tool_dimensions" in unknown_code
+    assert "erlab.utils.array._restore_nonuniform_dims" not in unknown_code
 
     data = _base_data()
     assert [entry.label for entry in spec.display_entries(parent_data=data)] == [
@@ -3812,7 +4010,7 @@ def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
 
     xr.testing.assert_identical(
         selection_view.apply(data, parent_data=data),
-        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data),
+        erlab.utils.array._restore_nonuniform_dims(data),
     )
     assert (
         selection_view.derivation_label() == "Start from selected parent ImageTool data"
@@ -3823,10 +4021,8 @@ def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     )
     assert full_view.derivation_label() == "Start from current parent ImageTool data"
     assert full_view.expression_code("data") == "data.copy(deep=False)"
-    assert (
+    with pytest.raises(NotImplementedError):
         selection_view.expression_code("data")
-        == "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
-    )
     assert tuple(provenance.iter_operation_refs(None)) == ()
 
 
@@ -4664,8 +4860,12 @@ derived = data
     with pytest.raises(ValueError, match="not valid Python"):
         provenance._validate_script_replay_code("derived =")
     provenance._validate_script_replay_code(
-        "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data"
+        "try:\n    import numpy as np\nexcept ImportError:\n    pass\nderived = data"
     )
+    with pytest.raises(TypeError, match="unsupported Import"):
+        provenance._validate_script_replay_code(
+            "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data"
+        )
     with pytest.raises(TypeError, match="unsupported Try"):
         provenance._validate_script_replay_code(
             "try:\n"
@@ -4752,6 +4952,134 @@ def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> Non
     xr.testing.assert_identical(
         left,
         xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]}),
+    )
+
+
+def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+
+    def script_with_code(code: str) -> provenance.ToolProvenanceSpec:
+        return provenance.script(
+            provenance.ScriptCodeOperation(label="Import", code=code),
+            start_label="Run script",
+            active_name="derived",
+            script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        )
+
+    safe_import = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Use NumPy",
+            code="import numpy as np\nderived = data_0 + np.float64(1.0)",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    safe_erlab_import = script_with_code("import erlab\nderived = data_0.copy()")
+    optional_approved_import = script_with_code(
+        "try:\n"
+        "    import xarray as xr\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "derived = data_0 + xr.DataArray(1.0)"
+    )
+    optional_external_import = script_with_code(
+        "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data_0"
+    )
+    unsafe_from_import = script_with_code(
+        "from numpy import __builtins__ as exposed\n"
+        "derived = data_0 + exposed['eval']('40 + 2')"
+    )
+    unsafe_dotted_import = script_with_code(
+        "import numpy.testing._private.utils as exposed\n"
+        "derived = data_0 + int(exposed.os.path.exists('/'))"
+    )
+    unsafe_internal_import = script_with_code(
+        "import erlab.interactive.imagetool._provenance_framework as exposed\n"
+        "derived = data_0 + exposed.np.float64(1.0)"
+    )
+    unsafe_dunder_alias = script_with_code(
+        "import numpy as __builtins__\nderived = data_0"
+    )
+    poisoned_import_policy = script_with_code(
+        "framework = erlab.interactive.imagetool._provenance_framework\n"
+        "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {\n"
+        "    'numpy': framework.importlib.import_module('os'),\n"
+        "}\n"
+        "import numpy as imported_numpy\n"
+        "derived = data_0 + imported_numpy.float64(1.0)"
+    )
+
+    assert provenance.script_provenance_replayable(safe_import)
+    assert not provenance.script_provenance_requires_trust(safe_import)
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(safe_import, {"data_0": data}),
+        data + 1.0,
+    )
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(safe_erlab_import, {"data_0": data}),
+        data,
+    )
+    assert provenance.script_provenance_replayable(optional_approved_import)
+    assert not provenance.script_provenance_requires_trust(optional_approved_import)
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(optional_approved_import, {"data_0": data}),
+        data + 1.0,
+    )
+    assert "__import__" not in _provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS
+    assert not hasattr(_provenance_framework, "_SCRIPT_REPLAY_PREBOUND_IMPORTS")
+
+    try:
+        xr.testing.assert_identical(
+            provenance.replay_script_provenance(
+                poisoned_import_policy,
+                {"data_0": data},
+            ),
+            data + 1.0,
+        )
+        xr.testing.assert_identical(
+            provenance.replay_script_provenance(safe_import, {"data_0": data}),
+            data + 1.0,
+        )
+    finally:
+        if hasattr(_provenance_framework, "_SCRIPT_REPLAY_PREBOUND_IMPORTS"):
+            del _provenance_framework._SCRIPT_REPLAY_PREBOUND_IMPORTS
+
+    for unsafe, message in (
+        (optional_external_import, "unsupported Import"),
+        (unsafe_from_import, "unsupported ImportFrom"),
+        (unsafe_dotted_import, "unsupported Import"),
+        (unsafe_internal_import, "unsupported Import"),
+        (unsafe_dunder_alias, "unsupported Import"),
+    ):
+        assert not provenance.script_provenance_replayable(unsafe)
+        assert provenance.script_provenance_requires_trust(unsafe)
+        with pytest.raises(TypeError, match=message):
+            provenance.replay_script_provenance(unsafe, {"data_0": data})
+
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(
+            optional_external_import,
+            {"data_0": data},
+            trusted_user_code=True,
+        ),
+        data,
+    )
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(
+            unsafe_from_import,
+            {"data_0": data},
+            trusted_user_code=True,
+        ),
+        data + 42.0,
+    )
+    xr.testing.assert_identical(
+        provenance.replay_script_provenance(
+            unsafe_dotted_import,
+            {"data_0": data},
+            trusted_user_code=True,
+        ),
+        data + 1.0,
     )
 
 

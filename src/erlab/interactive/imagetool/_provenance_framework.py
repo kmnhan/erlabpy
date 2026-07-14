@@ -174,7 +174,20 @@ import xarray as xr
 import erlab
 from erlab.interactive.imagetool import _replay_graph
 
+if typing.TYPE_CHECKING:
+    import types
+
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
+_LEGACY_NONUNIFORM_RESTORE_PATH = (
+    "erlab",
+    (
+        "interactive",
+        "imagetool",
+        "slicer",
+        "restore_nonuniform_dims",
+    ),
+)
+_PRIVATE_NONUNIFORM_RESTORE_EXPRESSION = "erlab.utils.array._restore_nonuniform_dims"
 FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "loadable",
     "no-file-load-source",
@@ -214,15 +227,10 @@ _SCRIPT_REPLAY_ALLOWED_BUILTINS = {
     "slice": slice,
     "str": str,
     "sum": sum,
+    "TypeError": TypeError,
     "tuple": tuple,
+    "ValueError": ValueError,
     "zip": zip,
-}
-_SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS = {
-    "erlab",
-    "matplotlib",
-    "numpy",
-    "seaborn",
-    "xarray",
 }
 _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.AsyncFor,
@@ -714,15 +722,158 @@ def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -
     return f"derived = {_format_selection_expr('derived', method, kwargs)}"
 
 
+def _nonuniform_dim_mapping_condition(
+    array_name: str,
+    index_code: str,
+    restored_code: str,
+) -> str:
+    return (
+        f"{index_code} in {array_name}.dims and "
+        f"{restored_code} in {array_name}.coords and "
+        f"{array_name}.coords[{restored_code}].ndim == 1 and "
+        f"{array_name}.coords[{restored_code}].dims == ({index_code},) and "
+        f"{array_name}.coords[{restored_code}].size == "
+        f"{array_name}.sizes[{index_code}]"
+    )
+
+
+def _restore_nonuniform_dims_expression(
+    input_name: str,
+    dimension_mapping: Mapping[Hashable, Hashable],
+) -> str:
+    """Emit a self-contained expression restoring recorded index dimensions.
+
+    This is used for concise copied selection expressions whose receiver is a stable
+    data variable. Applicable dimensions are restored together so expression size grows
+    linearly with the recorded mapping instead of nesting the preceding expression for
+    every dimension. Structured provenance operations use statement code when the
+    receiver itself may need single evaluation.
+    """
+    if not dimension_mapping:
+        return input_name
+
+    receiver = _expression_receiver_code(input_name)
+    mapping_items = ", ".join(
+        f"({_provenance_value_code(index_dim)}, {_provenance_value_code(restored_dim)})"
+        for index_dim, restored_dim in dimension_mapping.items()
+    )
+    mapping_code = f"({mapping_items},)"
+    condition = _nonuniform_dim_mapping_condition(
+        receiver, "index_dimension", "dimension"
+    )
+    applicable_mapping = (
+        "{index_dimension: dimension "
+        f"for index_dimension, dimension in {mapping_code} if {condition}}}"
+    )
+    obsolete_dimensions = (
+        "[index_dimension "
+        f"for index_dimension, dimension in {mapping_code} if {condition}]"
+    )
+    return (
+        f"{receiver}.swap_dims({applicable_mapping}).drop_vars("
+        f'{obsolete_dimensions}, errors="ignore")'
+    )
+
+
+def _known_nonuniform_restore_statement_code(
+    input_name: str,
+    *,
+    output_name: str,
+    dimension_mapping: Mapping[Hashable, Hashable],
+) -> str:
+    """Emit public xarray statements restoring recorded index dimensions."""
+    lines = (
+        []
+        if input_name == output_name and dimension_mapping
+        else [f"{output_name} = {input_name}"]
+    )
+    for index_dim, restored_dim in dimension_mapping.items():
+        index_code = _provenance_value_code(index_dim)
+        restored_code = _provenance_value_code(restored_dim)
+        condition = _nonuniform_dim_mapping_condition(
+            output_name, index_code, restored_code
+        )
+        lines.extend(
+            (
+                f"if {condition}:",
+                f"    {output_name} = {output_name}.swap_dims("
+                f"{{{index_code}: {restored_code}}}).drop_vars("
+                f'{index_code}, errors="ignore")',
+            )
+        )
+    return "\n".join(lines)
+
+
+_NONUNIFORM_RESTORE_FUNCTION_NAME = "_restore_image_tool_dimensions"
+
+
+def _nonuniform_restore_support_code(
+    function_name: str = _NONUNIFORM_RESTORE_FUNCTION_NAME,
+) -> str:
+    """Emit standalone public-API code for detecting ImageTool index dimensions."""
+    return f'''def {function_name}(array):
+    """Restore nonuniform dimensions replaced for ImageTool rendering."""
+    import numpy as np
+
+    dimension_mapping = {{}}
+    for index_dimension in array.dims:
+        if not str(index_dimension).endswith("_idx"):
+            continue
+        dimension = str(index_dimension).removesuffix("_idx")
+        coordinate = array.coords.get(dimension)
+        if coordinate is None:
+            continue
+        if (
+            coordinate.ndim != 1
+            or coordinate.dims != (index_dimension,)
+            or coordinate.size != array.sizes[index_dimension]
+        ):
+            continue
+        try:
+            values = coordinate.values.astype(np.float64)
+        except (TypeError, ValueError):
+            continue
+        if values.size == 1:
+            continue
+        differences = np.diff(values)
+        if differences[0] == 0.0 or not np.allclose(
+            differences,
+            differences[0],
+            rtol=3e-5,
+            atol=3e-5,
+            equal_nan=True,
+        ):
+            dimension_mapping[index_dimension] = dimension
+    if not dimension_mapping:
+        return array
+    return array.swap_dims(dimension_mapping).drop_vars(
+        tuple(dimension_mapping), errors="ignore"
+    )'''
+
+
+def _dynamic_nonuniform_restore_replay_code(
+    input_name: str,
+    *,
+    output_name: str,
+    copy_input: bool = False,
+) -> str:
+    """Emit a standalone dynamic restore for legacy derivation-code fallbacks."""
+    input_expression = f"{input_name}.copy(deep=False)" if copy_input else input_name
+    return "\n".join(
+        (
+            _nonuniform_restore_support_code(),
+            f"{output_name} = {_NONUNIFORM_RESTORE_FUNCTION_NAME}({input_expression})",
+        )
+    )
+
+
 def _starting_data_for_source_kind(
     source_kind: _SourceKind,
     parent_data: xr.DataArray,
 ) -> xr.DataArray:
     if source_kind == "full_data":
         return parent_data.copy(deep=False)
-    return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-        parent_data.copy(deep=False)
-    )
+    return erlab.utils.array._restore_nonuniform_dims(parent_data.copy(deep=False))
 
 
 def _validate_active_name(value: typing.Any) -> str | None:
@@ -1212,6 +1363,41 @@ def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
         receiver_name, path = resolved
         return receiver_name, (*path, node.attr)
     return None
+
+
+def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
+    """Rewrite the removed public restore helper in persisted executable code."""
+    if code is None or "restore_nonuniform_dims" not in code:
+        return code
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    replacements: list[tuple[int, int]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if _receiver_path(node) != _LEGACY_NONUNIFORM_RESTORE_PATH:
+            continue
+        if node.end_lineno is None or node.end_col_offset is None:
+            continue  # pragma: no cover - populated by supported Python versions
+        start = line_starts[node.lineno - 1] + node.col_offset
+        end = line_starts[node.end_lineno - 1] + node.end_col_offset
+        replacements.append((start, end))
+
+    if not replacements:
+        return code
+
+    replacement = _PRIVATE_NONUNIFORM_RESTORE_EXPRESSION.encode()
+    for start, end in sorted(replacements, reverse=True):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
 
 
 def _operation_from_self_assignment_call(
@@ -2015,6 +2201,9 @@ def operations_expression_code(
 
     ``source_name`` is the public/source array name passed to operations that need
     context beyond the transformed input, such as coordinate-order restoration.
+    Operations that require control flow or multiple statements raise
+    :class:`NotImplementedError`; use their :meth:`ToolProvenanceOperation.replay_code`
+    instead.
     """
     if not operations:
         return ""
@@ -2218,7 +2407,10 @@ def parse_tool_provenance_operation(
             f"Unknown provenance operation {op!r}; "
             f"expected one of {sorted(_OPERATION_TYPES)}"
         )
-    return operation_type.model_validate(value)
+    payload = dict(value)
+    if op == "script_code" and isinstance(payload.get("code"), str):
+        payload["code"] = _migrate_legacy_nonuniform_restore_code(payload["code"])
+    return operation_type.model_validate(payload)
 
 
 def _normalize_script_code_operations(
@@ -2427,10 +2619,22 @@ class _SourceViewOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        input_expression = f"{input_name}.copy(deep=False)"
         if self.source_kind == "full_data":
-            return f"{input_name}.copy(deep=False)"
-        return (
-            f"erlab.interactive.imagetool.slicer.restore_nonuniform_dims({input_name})"
+            return input_expression
+        raise NotImplementedError
+
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        return _dynamic_nonuniform_restore_replay_code(
+            input_name,
+            output_name=output_name,
+            copy_input=True,
         )
 
 
@@ -2454,6 +2658,13 @@ class FileLoadSource(pydantic.BaseModel):
     @classmethod
     def _validate_path(cls, value: typing.Any) -> str:
         return str(value)
+
+    @pydantic.field_validator("load_code", mode="before")
+    @classmethod
+    def _migrate_load_code(cls, value: typing.Any) -> typing.Any:
+        if value is None or isinstance(value, str):
+            return _migrate_legacy_nonuniform_restore_code(value)
+        return value
 
 
 class ScriptInput(pydantic.BaseModel):
@@ -2639,6 +2850,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     @classmethod
     def _validate_active_name_field(cls, value: typing.Any) -> str | None:
         return _validate_active_name(value)
+
+    @pydantic.field_validator("seed_code", mode="before")
+    @classmethod
+    def _migrate_seed_code(cls, value: typing.Any) -> typing.Any:
+        if value is None or isinstance(value, str):
+            return _migrate_legacy_nonuniform_restore_code(value)
+        return value
 
     @pydantic.field_validator("operations", mode="before")
     @classmethod
@@ -4214,20 +4432,20 @@ def replay_file_provenance(
         raise TypeError("Expected structured file provenance") from exc
 
 
-def _validate_script_replay_code(code: str) -> None:
+def _parse_validated_script_replay_code(code: str) -> ast.Module:
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise ValueError(f"Script replay code is not valid Python: {exc}") from exc
 
     def validate_import(node: ast.Import | ast.ImportFrom) -> None:
-        if isinstance(node, ast.Import):
-            roots = {alias.name.partition(".")[0] for alias in node.names}
-        else:
-            if node.level != 0 or node.module is None:
-                raise TypeError("Script replay code contains unsupported ImportFrom")
-            roots = {node.module.partition(".")[0]}
-        if not roots <= _SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS:
+        if isinstance(node, ast.ImportFrom):
+            raise TypeError("Script replay code contains unsupported ImportFrom")
+        if any(
+            alias.name not in ("erlab", "numpy", "xarray")
+            or (alias.asname is not None and alias.asname.startswith("__"))
+            for alias in node.names
+        ):
             raise TypeError(
                 f"Script replay code contains unsupported {type(node).__name__}"
             )
@@ -4253,12 +4471,49 @@ def _validate_script_replay_code(code: str) -> None:
         ):
             raise TypeError("Script replay code contains unsupported Try")
 
+    def validate_numeric_conversion_try(node: ast.Try) -> None:
+        if (
+            node.orelse
+            or node.finalbody
+            or len(node.body) != 1
+            or len(node.handlers) != 1
+        ):
+            raise TypeError("Script replay code contains unsupported Try")
+        statement = node.body[0]
+        handler = node.handlers[0]
+        exception_names = (
+            tuple(item.id for item in handler.type.elts if isinstance(item, ast.Name))
+            if isinstance(handler.type, ast.Tuple)
+            else ((handler.type.id,) if isinstance(handler.type, ast.Name) else ())
+        )
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or not isinstance(statement.value, ast.Call)
+            or not isinstance(statement.value.func, ast.Attribute)
+            or statement.value.func.attr != "astype"
+            or len(statement.value.args) != 1
+            or statement.value.keywords
+            or exception_names != ("TypeError", "ValueError")
+            or handler.name is not None
+            or len(handler.body) != 1
+            or not isinstance(handler.body[0], ast.Continue)
+        ):
+            raise TypeError("Script replay code contains unsupported Try")
+
+    def validate_safe_try(node: ast.Try) -> None:
+        try:
+            validate_optional_import_try(node)
+        except TypeError:
+            validate_numeric_conversion_try(node)
+
     for node in ast.walk(module):
         if isinstance(node, ast.Import | ast.ImportFrom):
             validate_import(node)
             continue
         if isinstance(node, ast.Try):
-            validate_optional_import_try(node)
+            validate_safe_try(node)
             continue
         if isinstance(node, _SCRIPT_REPLAY_FORBIDDEN_NODES):
             raise TypeError(
@@ -4274,6 +4529,51 @@ def _validate_script_replay_code(code: str) -> None:
             and node.func.id in _SCRIPT_REPLAY_FORBIDDEN_CALLS
         ):
             raise ValueError(f"Script replay code cannot call {node.func.id!r}")
+
+    return module
+
+
+def _validate_script_replay_code(code: str) -> None:
+    _parse_validated_script_replay_code(code)
+
+
+class _ScriptReplayImportLowerer(ast.NodeTransformer):
+    """Replace approved imports with assignments to executor-owned bindings."""
+
+    def visit_Import(self, node: ast.Import) -> list[ast.Assign]:
+        assignments: list[ast.Assign] = []
+        for alias in node.names:
+            if alias.name == "erlab":
+                binding_name = "__erlab_replay_import_erlab"
+            elif alias.name == "numpy":
+                binding_name = "__erlab_replay_import_numpy"
+            elif alias.name == "xarray":
+                binding_name = "__erlab_replay_import_xarray"
+            else:  # pragma: no cover - validation rejects every other import
+                raise TypeError("Script replay code contains unsupported Import")
+            assignments.append(
+                ast.copy_location(
+                    ast.Assign(
+                        targets=[
+                            ast.Name(
+                                id=alias.asname or alias.name,
+                                ctx=ast.Store(),
+                            )
+                        ],
+                        value=ast.Name(id=binding_name, ctx=ast.Load()),
+                    ),
+                    node,
+                )
+            )
+        return assignments
+
+
+def _compile_untrusted_script_replay_code(code: str) -> types.CodeType:
+    """Validate and compile replay code without executing Python imports."""
+    module = _parse_validated_script_replay_code(code)
+    lowered = typing.cast("ast.Module", _ScriptReplayImportLowerer().visit(module))
+    ast.fix_missing_locations(lowered)
+    return compile(lowered, "<ImageTool script provenance>", "exec")
 
 
 def script_provenance_replayable(

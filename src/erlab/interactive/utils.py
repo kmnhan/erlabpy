@@ -1151,12 +1151,6 @@ class _ToolSourceUpdateDialog(MessageDialog):
         self.accept()
 
 
-def _is_kwarg_name(value: typing.Any) -> bool:
-    return (
-        isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
-    )
-
-
 def format_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
@@ -1169,7 +1163,7 @@ def format_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(_is_kwarg_name(k) for k in d):
+    if all(erlab.utils.misc._is_valid_identifier(k) for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(
         f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
@@ -1187,7 +1181,7 @@ def format_call_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
     """
     string_keys = [k for k in d if isinstance(k, str)]
     if len(string_keys) == len(d):
-        if all(_is_kwarg_name(k) for k in string_keys):
+        if all(erlab.utils.misc._is_valid_identifier(k) for k in string_keys):
             return format_kwargs(d)
         return f"**{format_kwargs(d)}"
     return format_kwargs(d)
@@ -1488,7 +1482,7 @@ def _handle_xarray_dict_or_kwargs(
     dictionary contains at least one key that contains spaces, a conversion of kwargs to
     the first positional argument is attempted.
     """
-    if len(args) != 0 or all(_is_kwarg_name(k) for k in kwargs):
+    if len(args) != 0 or all(erlab.utils.misc._is_valid_identifier(k) for k in kwargs):
         return args, kwargs
 
     params = inspect.signature(func).parameters
@@ -1604,7 +1598,7 @@ def _gen_single_function_code(
 
     invalid_kwargs: dict[str, typing.Any] = {}
     for k, v in kwargs.items():
-        if _is_kwarg_name(k):
+        if erlab.utils.misc._is_valid_identifier(k):
             code += f"{TAB}{k}={_parse_single_arg(v)},\n"
         else:
             invalid_kwargs[k] = v
@@ -6262,18 +6256,7 @@ class IdentifierValidator(QtGui.QValidator):
         return QtGui.QValidator.State.Acceptable, input_str, pos
 
     def fixup(self, input_str: str | None) -> str:
-        if input_str is None:
-            return self.fixup("")
-        input_str = input_str.strip()
-        # Replace spaces and invalid chars with underscores
-        fixed = re.sub(r"\W|^(?=\d)", "_", input_str)
-        # Remove leading underscores if the rest is empty or all underscores
-        if not fixed or fixed.lstrip("_") == "":
-            fixed = "var"
-        # Avoid Python keywords
-        if keyword.iskeyword(fixed):
-            fixed += "_"
-        return fixed
+        return erlab.utils.misc._normalize_identifier(input_str)
 
 
 class _GuidelineTargetItem(pg.TargetItem):

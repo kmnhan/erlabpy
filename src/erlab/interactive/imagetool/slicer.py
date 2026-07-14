@@ -63,91 +63,6 @@ def check_cursors_compatible(old: xr.DataArray, new: xr.DataArray) -> bool:
     return True
 
 
-def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
-    if arr.size == 1:
-        # A single-element coordinate array is considered uniform
-        return True
-    dif = np.diff(arr)
-    if dif[0] == 0.0:
-        # Treat constant coordinate array as non-uniform
-        return False
-    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
-
-
-def _nonuniform_dim_name(darr: xr.DataArray, dim: Hashable) -> str | None:
-    if not str(dim).endswith("_idx"):
-        return None
-    stripped = str(dim).removesuffix("_idx")
-    coord = darr.coords.get(stripped)
-    if coord is None:
-        return None
-    if coord.ndim != 1 or coord.dims != (dim,) or coord.size != darr.sizes[dim]:
-        return None
-    try:
-        values = coord.values.astype(np.float64)
-    except (TypeError, ValueError):
-        return None
-    if _is_uniform(values):
-        return None
-    return stripped
-
-
-def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
-    """Ensure that all dimensions of the given DataArray are uniform.
-
-    This function checks each dimension of the input DataArray to determine if its
-    coordinate is evenly spaced. If a dimension is found to be non-uniform, a new
-    coordinate named ``{dim}_idx`` is created with indices ranging from 0 to N-1, where
-    N is the length of the original coordinate. The original dimension is then swapped
-    with the new uniform dimension, and is left in the DataArray as a coordinate.
-
-    Parameters
-    ----------
-    darr
-        The input DataArray to be processed.
-
-    Returns
-    -------
-    DataArray
-        A new DataArray with all dimensions made uniform.
-    """
-    nonuniform_dims: list[str] = [
-        str(d) for d in darr.dims if not _is_uniform(darr[d].values.astype(np.float64))
-    ]
-    for d in nonuniform_dims:
-        darr = darr.assign_coords(
-            {d + "_idx": (d, list(np.arange(len(darr[d]), dtype=np.float32)))}
-        ).swap_dims({d: d + "_idx"})
-
-    return darr
-
-
-def restore_nonuniform_dims(darr: xr.DataArray) -> xr.DataArray:
-    """Undo the effect of :func:`make_dims_uniform`.
-
-    Restore non-uniform dimensions by swapping dimensions that end with ``'_idx'`` with
-    their corresponding coordinates and dropping the uniform dimensions.
-
-    Parameters
-    ----------
-    darr
-        The input DataArray with dimensions that may end with ``'_idx'``.
-
-    Returns
-    -------
-    DataArray
-        The DataArray with ``'_idx'`` dimensions swapped with their corresponding
-        coordinates and the ``'_idx'`` dimensions dropped.
-    """
-    nonuniform_dims: list[Hashable] = []
-    for d in darr.dims:
-        stripped = _nonuniform_dim_name(darr, d)
-        if stripped is not None:
-            nonuniform_dims.append(d)
-            darr = darr.swap_dims({d: stripped})
-    return darr.drop_vars(nonuniform_dims)
-
-
 def _drop_unmatched_stack_dim(data: xr.DataArray, other: xr.DataArray) -> xr.DataArray:
     if (
         "stack_dim" in data.dims
@@ -161,8 +76,8 @@ def _drop_unmatched_stack_dim(data: xr.DataArray, other: xr.DataArray) -> xr.Dat
 def _cursor_compatibility_pair(
     old: xr.DataArray, new: xr.DataArray
 ) -> tuple[xr.DataArray, xr.DataArray]:
-    old_view = restore_nonuniform_dims(old.copy(deep=False))
-    new_view = restore_nonuniform_dims(new.copy(deep=False))
+    old_view = erlab.utils.array._restore_nonuniform_dims(old.copy(deep=False))
+    new_view = erlab.utils.array._restore_nonuniform_dims(new.copy(deep=False))
     old_view = _drop_unmatched_stack_dim(old_view, new_view)
     new_view = _drop_unmatched_stack_dim(new_view, old_view)
     return old_view, new_view
@@ -920,7 +835,7 @@ class ArraySlicer(QtCore.QObject):
 
         # Handle loading non-uniform data saved in older versions.
         # erlab>=3.2.0 should not save non-uniform data in the first place.
-        data = restore_nonuniform_dims(data)
+        data = erlab.utils.array._restore_nonuniform_dims(data)
 
         # Convert coords to C-contiguous array
         data = erlab.utils.array.sort_coord_order(
@@ -935,7 +850,7 @@ class ArraySlicer(QtCore.QObject):
         if data.dtype not in (np.float32, np.float64):
             data = data.astype(np.float64)
 
-        return make_dims_uniform(data)
+        return erlab.utils.array._make_dims_uniform(data)
 
     def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
@@ -944,11 +859,11 @@ class ArraySlicer(QtCore.QObject):
         """Rebuild eager lookup tables derived from the current DataArray layout."""
         # These small lookup caches are coupled to the current dimension order and are
         # rebuilt wholesale whenever the backing DataArray changes.
-        # Identify non-uniform axes created by make_dims_uniform while avoiding false
-        # positives when users provide their own *_idx dimensions.
+        # Identify non-uniform axes created by the private conversion while avoiding
+        # false positives when users provide their own *_idx dimensions.
         self._nonuniform_axes = []
         for i, d in enumerate(self._obj.dims):
-            if _nonuniform_dim_name(self._obj, d) is not None:
+            if erlab.utils.array._nonuniform_dim_name(self._obj, d) is not None:
                 self._nonuniform_axes.append(i)
         self._nonuniform_axes_set: set[int] = set(self._nonuniform_axes)
         self._all_axes: tuple[int, ...] = tuple(range(self._obj.ndim))
@@ -1442,7 +1357,7 @@ class ArraySlicer(QtCore.QObject):
         ]  # Select only relevant binned dimensions
         sliced = self._obj.isel(isel_kw).qsel.mean(binned_dims)
         if self._nonuniform_axes:
-            return restore_nonuniform_dims(sliced)
+            return erlab.utils.array._restore_nonuniform_dims(sliced)
         return sliced
 
     @QtCore.Slot(int, tuple, result=np.ndarray)

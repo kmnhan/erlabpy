@@ -1441,7 +1441,7 @@ class KspaceTool(KspaceToolGUI):
             # Detected input name must be single identifier.
             # Otherwise the generated code will not apply offsets correctly.
             input_name = str(self._argnames["data"])
-            if not erlab.interactive.utils._is_kwarg_name(input_name):
+            if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
         return input_name
 
@@ -1487,7 +1487,7 @@ class KspaceTool(KspaceToolGUI):
         input_ref = self._copy_input_reference(input_name)
         input_data_name = (
             input_ref
-            if erlab.interactive.utils._is_kwarg_name(input_ref)
+            if erlab.utils.misc._is_valid_identifier(input_ref)
             else "input_data"
         )
         return f"{input_data_name}_kconv"

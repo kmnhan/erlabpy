@@ -1151,8 +1151,8 @@ def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
     qtbot.addWidget(destination)
     _clear_clipboard()
 
-    assert not source_tool._source_removable("hvdep_kconv")
-    assert source_tool._source_removable("unused")
+    assert not source_tool._document.source_is_removable("hvdep_kconv")
+    assert source_tool._document.source_is_removable("unused")
 
     _select_operation_rows(source_tool, (0,))
     source_tool.copy_operation_button.click()

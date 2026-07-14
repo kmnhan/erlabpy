@@ -18,7 +18,7 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool import _provenance_framework, provenance
 from erlab.interactive.imagetool.viewer_linking import record_history, suppress_history
 from erlab.interactive.imagetool.viewer_state import (
     GuidelineState,
@@ -1189,9 +1189,7 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         data = self._current_data_cropped if alt_pressed else self._current_data
-        data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-            data.copy(deep=False)
-        )
+        data = erlab.utils.array._restore_nonuniform_dims(data.copy(deep=False))
 
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()
@@ -1264,15 +1262,15 @@ class ItoolPlotItem(pg.PlotItem):
         if not data_name:
             data_name = placeholder
         sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
-        selection_expr = f"{data_name}{sel_code}"
-        if not selection_expr:
-            return ""
+        if not data_name:
+            return sel_code
+        selection_expr = data_name
         if self.array_slicer._nonuniform_axes:
-            restore_func = "erlab.interactive.imagetool.slicer.restore_nonuniform_dims"
-            if data_name:
-                return f"{restore_func}({selection_expr})"
-            return f"{sel_code}.pipe({restore_func})"
-        return selection_expr
+            selection_expr = _provenance_framework._restore_nonuniform_dims_expression(
+                selection_expr,
+                erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
+            )
+        return f"{selection_expr}{sel_code}"
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False

@@ -2347,7 +2347,7 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
     assert figurecomposer_operation_metadata.declared_operation_source_names(
         operation
     ) == ("x_data", "y_data")
-    renamed = FigureComposerTool._operation_with_renamed_sources(
+    renamed = figurecomposer_operation_metadata.rename_operation_sources(
         operation, {"x_data": "x_copy", "y_data": "y_copy"}
     )
 
@@ -2376,7 +2376,7 @@ def test_figure_composer_axes_plot_picked_data_sources_are_renamed() -> None:
         "y_data",
         "stderr_data",
     )
-    renamed_errorbar = FigureComposerTool._operation_with_renamed_sources(
+    renamed_errorbar = figurecomposer_operation_metadata.rename_operation_sources(
         errorbar_operation,
         {"x_data": "x_copy", "y_data": "y_copy", "stderr_data": "stderr_copy"},
     )

@@ -311,8 +311,8 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert set(checks) == {"first_source", "second_source"}
     assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
     assert checks["second_source"].checkState() == QtCore.Qt.CheckState.Unchecked
-    assert tool.source_status_label.text() == ""
-    assert tool.source_status_label.isHidden()
+    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
     checks["second_source"].setCheckState(QtCore.Qt.CheckState.Checked)
 
@@ -510,7 +510,7 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.plot_slices(
         label="plot_slices",
         sources=("data",),
@@ -1993,7 +1993,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChildren(FigureCanvasQTAgg) == []
     assert tool.findChildren(NavigationToolbar2QT) == []
     assert set(tool.findChildren(QtWidgets.QSplitter)) == {
-        tool.source_splitter,
+        tool.source_panel.source_splitter,
         tool.recipe_splitter,
     }
     assert tool.recipe_splitter.widget(0) is tool.operation_list

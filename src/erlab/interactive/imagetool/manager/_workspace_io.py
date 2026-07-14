@@ -486,7 +486,7 @@ class _WorkspaceIOController:
 
         saved_dims = tuple(str(dim) for dim in raw_dims)
         # Match ArraySlicer dimension promotion before applying its saved order.
-        data = erlab.interactive.imagetool.slicer.make_dims_uniform(data)
+        data = erlab.utils.array._make_dims_uniform(data)
         dims_by_text = {str(dim): dim for dim in data.dims}
         if (
             len(saved_dims) != data.ndim
@@ -680,7 +680,7 @@ class _WorkspaceIOController:
                 if attrs is None:
                     attrs = ds.attrs
                 data = cls._pending_workspace_data_with_saved_dim_order(data, attrs)
-                data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+                data = erlab.utils.array._restore_nonuniform_dims(data)
                 additional_info = [f"Added {node.added_time_display}"]
                 try:
                     metadata_data = cls._pending_workspace_data_with_loaded_coords(data)

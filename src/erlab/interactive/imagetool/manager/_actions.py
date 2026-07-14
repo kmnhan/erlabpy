@@ -453,10 +453,8 @@ class _ActionsController:
                 )
                 source_data = slicer_area.data
                 if source_spec.kind == "public_data":
-                    source_data = (
-                        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                            source_data
-                        )
+                    source_data = erlab.utils.array._restore_nonuniform_dims(
+                        source_data
                     )
                 self._validate_batch_target_operations(
                     source_spec.operations,

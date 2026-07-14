@@ -1160,7 +1160,7 @@ class _ManagedWindowNode(QtCore.QObject):
         details = self._load_source_details()
         if details is None or details.load_code is None:
             return None
-        if not erlab.interactive.utils._is_kwarg_name(assign):
+        if not erlab.utils.misc._is_valid_identifier(assign):
             raise ValueError("assign must be a valid Python identifier")
         if assign == "data":
             return details.load_code

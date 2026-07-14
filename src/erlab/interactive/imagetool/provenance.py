@@ -139,6 +139,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     _coerce_float_sequence,
     _console_mapping_values,
     _console_values_equal,
+    _dynamic_nonuniform_restore_replay_code,
     _encode_provenance_hashable,
     _ensure_float_tuple,
     _expression_receiver_code,
@@ -147,6 +148,7 @@ from erlab.interactive.imagetool._provenance_framework import (
     _format_selection_step,
     _is_identifier_string_mapping,
     _is_whole_array_rename_entry,
+    _known_nonuniform_restore_statement_code,
     _load_file_source_data,
     _normalize_provenance_hashable,
     _parse_replay_input,
@@ -666,9 +668,10 @@ class RenameOperation(ToolProvenanceOperation):
 class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
     op: typing.Literal["restore_nonuniform_dims"] = "restore_nonuniform_dims"
     batch_available: typing.ClassVar[bool] = True
+    dimension_mapping: ProvenanceHashableMapping | None = None
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
-        return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        return erlab.utils.array._restore_nonuniform_dims(data, self.dimension_mapping)
 
     def derivation_label(self) -> str:
         return "Restore nonuniform dimensions"
@@ -676,8 +679,24 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        return (
-            f"erlab.interactive.imagetool.slicer.restore_nonuniform_dims({input_name})"
+        raise NotImplementedError
+
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        if self.dimension_mapping is not None:
+            return _known_nonuniform_restore_statement_code(
+                input_name,
+                output_name=output_name,
+                dimension_mapping=self.dimension_mapping,
+            )
+        return _dynamic_nonuniform_restore_replay_code(
+            input_name,
+            output_name=output_name,
         )
 
 

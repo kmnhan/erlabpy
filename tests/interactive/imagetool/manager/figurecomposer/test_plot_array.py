@@ -13,7 +13,9 @@ def _source_selection_widget(
     widget = next(
         (
             candidate
-            for candidate in tool.source_selection_controls.findChildren(widget_type)
+            for candidate in tool.source_panel.source_selection_controls.findChildren(
+                widget_type
+            )
             if not candidate.signalsBlocked()
             if candidate.property("figure_composer_source_selection_dim") == dim
             if field is None
@@ -137,7 +139,7 @@ def test_figure_composer_source_selection_editor_updates_source_snapshot(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.sources_page)
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
 
     eV_mode = typing.cast(
         "QtWidgets.QComboBox",
@@ -197,7 +199,7 @@ def test_figure_composer_source_qsel_to_keep_clears_selection(qtbot) -> None:
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.sources_page)
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
 
     _activate_source_selection_mode(tool, "eV", "qsel")
     qsel_edit = _source_selection_edit(tool, "eV", "value")
@@ -247,7 +249,7 @@ def test_figure_composer_source_keep_clears_stale_qsel_input_error(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.sources_page)
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
 
     _activate_source_selection_mode(tool, "eV", "qsel")
     qsel_edit = _source_selection_edit(tool, "eV", "value")
@@ -260,13 +262,13 @@ def test_figure_composer_source_keep_clears_stale_qsel_input_error(
     qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("")
     qsel_edit.editingFinished.emit()
-    assert "selection value" in tool.source_validation_label.text()
+    assert "selection value" in tool.source_panel.source_validation_label.text()
 
     _activate_source_selection_mode(tool, "eV", "keep")
 
     [source] = tool.source_states()
     assert source.qsel == {}
-    assert tool.source_validation_label.text() == ""
+    assert tool.source_panel.source_validation_label.text() == ""
 
 
 def test_figure_composer_source_qsel_width_editor_updates_selection(
@@ -306,8 +308,10 @@ def test_figure_composer_source_qsel_width_editor_updates_selection(
     xr.testing.assert_identical(selected, data.qsel(eV=0.0, eV_width=0.2))
     assert "data_selected = data.qsel(eV=0.0, eV_width=0.2)" in tool.generated_code()
 
-    tool.editor_tabs.setCurrentWidget(tool.sources_page)
-    tool._select_source_list_row_silent("data_selected")
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
+    tool.source_panel.set_selected_names(
+        ("data_selected",), current_name="data_selected"
+    )
     tool._refresh_source_selection_editor()
     mode_combo = typing.cast(
         "QtWidgets.QComboBox",

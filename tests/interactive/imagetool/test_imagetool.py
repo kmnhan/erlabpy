@@ -395,7 +395,7 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
             assert not selection_code
         else:
             xarray.testing.assert_identical(
-                _exec_data_fragment(win.slicer_area.data, selection_code),
+                _exec_data_fragment(data, selection_code),
                 main_image.current_data,
             )
 
@@ -537,6 +537,31 @@ def test_copy_selection_code_descending_coords(qtbot, monkeypatch) -> None:
         data.sel(x=slice(3.0, 1.0), y=slice(2.0, 0.0)),
     )
     win.close()
+
+
+@pytest.mark.parametrize(
+    ("x_values", "expected"),
+    [
+        ([0.0, 1.0, 2.0, 3.0], ".qsel(x=1.0)"),
+        ([0.0, 0.5, 2.0, 5.0], ".isel(x=1)"),
+    ],
+    ids=("uniform", "nonuniform"),
+)
+def test_empty_selection_code_placeholder_returns_suffix(
+    qtbot, x_values: list[float], expected: str
+) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("z", "y", "x"),
+        coords={"z": [0.0, 1.0], "y": [0.0, 1.0, 2.0], "x": x_values},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    selection_code = win.slicer_area.main_image.get_selection_code(placeholder="")
+
+    assert selection_code == expected
 
 
 def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:
@@ -1495,7 +1520,7 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
     )
     assert ".qsel.mean((" in expr
     result = _exec_data_fragment(win.slicer_area.data, expr)
-    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+    expected = erlab.utils.array._restore_nonuniform_dims(
         win.slicer_area.data.copy(deep=False)
     ).isel({'a"b': slice(1, 4), "c": slice(1, 4)})
     expected = expected.qsel.mean(('a"b', "c"))
@@ -7215,9 +7240,7 @@ def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
     dialog.dim_checks["y"].setChecked(True)
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
-    public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-        win.slicer_area.data
-    )
+    public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
     source_spec = dialog.source_spec("ignored")
     code = dialog.make_code()
 
@@ -7261,9 +7284,7 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
     dialog.dim_checks["y"].setChecked(True)
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
-    public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-        win.slicer_area.data
-    )
+    public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
     source_spec = dialog.source_spec("ignored")
     code = dialog.make_code()
 
@@ -7695,7 +7716,7 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
     dialog.dim_checks["y"].setChecked(True)
 
     spec = dialog.source_spec("ignored")
-    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+    expected = erlab.utils.array._restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
     )
     refreshed = spec.apply(win.slicer_area.data)
@@ -7710,7 +7731,9 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
 
     display_code = spec.display_code(parent_data=win.slicer_area.data)
     assert display_code is not None
-    assert "restore_nonuniform_dims" in display_code
+    assert "restore_nonuniform_dims" not in display_code
+    assert ".swap_dims(" in display_code
+    assert ".drop_vars(" in display_code
     display_namespace = _exec_generated_code(
         display_code,
         {"data": win.slicer_area.data.copy(deep=True)},
@@ -7720,6 +7743,45 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
     xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
 
     dialog.close()
+    win.close()
+
+
+def test_rotation_keeps_initial_and_replayed_nonuniform_results_identical(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(5, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = RotationDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.angle_spin.setValue(10.0)
+    dialog.reshape_check.setChecked(True)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    internal = win.slicer_area.data.copy(deep=True)
+    dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
+    rotated = dialog.process_data(internal)
+    expected = erlab.utils.array._restore_nonuniform_dims(rotated, dimension_mapping)
+    source_spec = dialog.source_spec()
+
+    assert "x" not in rotated.coords
+    assert expected.dims == ("x_idx", "y")
+    xarray.testing.assert_identical(source_spec.apply(internal), expected)
+
+    display_code = source_spec.display_code(parent_data=internal)
+    assert display_code is not None
+    display_namespace = _exec_generated_code(display_code, {"data": internal})
+    xarray.testing.assert_identical(display_namespace["derived"], expected)
+
+    dialog.accept()
+
+    assert win.slicer_area.data.dims == expected.dims
+    xarray.testing.assert_allclose(win.slicer_area.data, expected)
     win.close()
 
 
@@ -7740,7 +7802,7 @@ def test_aggregate_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> 
     _set_combo_data(dialog.reducer_combo, "sum")
 
     spec = dialog.source_spec("ignored")
-    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+    expected = erlab.utils.array._restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
     )
     refreshed = spec.apply(win.slicer_area.data)
@@ -9667,14 +9729,14 @@ def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot, monkeypatch) ->
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-    restore_nonuniform_dims = erlab.interactive.imagetool.slicer.restore_nonuniform_dims
+    restore_nonuniform_dims = erlab.utils.array._restore_nonuniform_dims
 
     def restore_transposed(source: xr.DataArray) -> xr.DataArray:
         return restore_nonuniform_dims(source).transpose("y", "x")
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.slicer,
-        "restore_nonuniform_dims",
+        erlab.utils.array,
+        "_restore_nonuniform_dims",
         restore_transposed,
     )
 
@@ -10048,9 +10110,7 @@ def test_interpolation_dialog_edge_validation_paths(qtbot, monkeypatch) -> None:
         ),
     ]
     xarray.testing.assert_identical(
-        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-            win.slicer_area._data
-        ).rename(None),
+        erlab.utils.array._restore_nonuniform_dims(win.slicer_area._data).rename(None),
         data,
     )
 
@@ -11730,7 +11790,7 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
 
     accept_dialog(win.mnb._divide_by_coord, pre_call=_set_dialog_params)
 
-    restored = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+    restored = erlab.utils.array._restore_nonuniform_dims(
         win.slicer_area._data.rename(None)
     )
     xarray.testing.assert_identical(restored, (data / data.mesh_current).rename(None))

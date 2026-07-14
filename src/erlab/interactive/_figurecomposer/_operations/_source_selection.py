@@ -14,6 +14,10 @@ from erlab.interactive._figurecomposer._editor_controls import (
     ComboBoxDataControlAdapter,
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._sources import (
+    selection_has_effect,
+    selection_width_key,
+)
 from erlab.interactive._figurecomposer._state import (
     FigureDataSelectionState,
     FigureOperationState,
@@ -52,10 +56,6 @@ _SELECTION_WIDTH_TOOLTIP = (
     "Optional qsel width centered on the value. Leave blank for nearest "
     "coordinate selection."
 )
-
-
-def selection_has_effect(selection: FigureDataSelectionState) -> bool:
-    return bool(selection.isel or selection.qsel or selection.mean_dims)
 
 
 def selection_content_equal(
@@ -222,10 +222,6 @@ def selection_dim_value_text(selection: FigureDataSelectionState, dim: str) -> s
     return ""
 
 
-def selection_width_key(dim: str) -> str:
-    return f"{dim}_width"
-
-
 def selection_dim_width_text(selection: FigureDataSelectionState, dim: str) -> str:
     width_key = selection_width_key(dim)
     if width_key in selection.qsel:
@@ -254,40 +250,6 @@ def selection_width_from_text(text: str) -> typing.Any:
     if isinstance(value, slice):
         raise FigureComposerInputError(_SELECTION_WIDTH_MESSAGE)
     return value
-
-
-def selection_with_dimension(
-    selection: FigureDataSelectionState,
-    dim: str,
-    mode: str,
-    value: typing.Any = None,
-    width: typing.Any = None,
-) -> FigureDataSelectionState:
-    isel = dict(selection.isel)
-    qsel = dict(selection.qsel)
-    mean_dims = [target for target in selection.mean_dims if target != dim]
-    isel.pop(dim, None)
-    qsel.pop(dim, None)
-    qsel.pop(selection_width_key(dim), None)
-    if mode == "isel":
-        isel[dim] = value
-    elif mode == "qsel":
-        if isinstance(value, slice) and width is not None:
-            raise FigureComposerInputError(
-                "A qsel slice cannot also use a width argument."
-            )
-        qsel[dim] = value
-        if width is not None:
-            qsel[selection_width_key(dim)] = width
-    elif mode == "mean":
-        mean_dims.append(dim)
-    return selection.model_copy(
-        update={
-            "isel": isel,
-            "qsel": qsel,
-            "mean_dims": tuple(mean_dims),
-        }
-    )
 
 
 def selection_mode_combo(

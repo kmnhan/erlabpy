@@ -15502,9 +15502,7 @@ def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
         assert pending.dims == tool.slicer_area.data.dims
         assert pending.chunks is not None
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                pending.compute()
-            ),
+            erlab.utils.array._restore_nonuniform_dims(pending.compute()),
             data,
         )
         info = controller._pending_workspace_imagetool_info_text(node)

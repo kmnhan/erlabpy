@@ -74,7 +74,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._tool import FigureSourceAddResult
+    from erlab.interactive._figurecomposer._document import FigureSourceAddResult
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
@@ -1624,11 +1624,11 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> typing.Any:
         if not source_name_map:
             return operation
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        return FigureComposerTool._operation_with_renamed_sources(
-            operation, source_name_map
+        from erlab.interactive._figurecomposer._operation_metadata import (
+            rename_operation_sources,
         )
+
+        return rename_operation_sources(operation, source_name_map)
 
     def _figure_source_uid_for_target(self, target: int | str) -> str | None:
         try:
@@ -1729,7 +1729,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return False
         tool = node.tool_window if node is not None else None
         if isinstance(tool, FigureComposerTool):
-            source_error = tool.source_status_label.text() if result.skipped else ""
+            source_error = tool.source_status_text if result.skipped else ""
             added = len(result.added)
             updated = len(result.updated)
             parts: list[str] = []

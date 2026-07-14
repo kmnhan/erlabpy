@@ -132,7 +132,7 @@ def test_manager_default_figure_seed_uses_public_nonuniform_dims(
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
 
     with manager_context() as manager:
         operation = manager._make_figure_operations_for_sources(
@@ -3342,41 +3342,46 @@ def test_manager_figure_sources_reveal_associated_imagetool_rows(
         assert not figure_tool._source_reveal_available("first")
         figure_tool._source_reveal_available_callback = original_reveal_available
 
-        figure_tool._set_selected_source_names_silent({"first"}, "first")
-        figure_tool._duplicate_selected_sources()
+        figure_tool.source_panel.set_selected_names(("first",), current_name="first")
+        figure_tool.source_panel.duplicate_requested.emit(("first",))
         source_names = {source.name for source in figure_tool.source_states()}
-        figure_tool._set_selected_source_names_silent(source_names, "first")
+        figure_tool.source_panel.set_selected_names(
+            tuple(source_names), current_name="first"
+        )
         figure_tool._refresh_source_controls()
-        assert figure_tool.reveal_sources_button.isEnabled()
-        assert not figure_tool.reveal_sources_button.autoRaise()
+        assert figure_tool.source_panel.reveal_sources_button.isEnabled()
+        assert not figure_tool.source_panel.reveal_sources_button.autoRaise()
         assert (
-            figure_tool.reveal_sources_button.toolButtonStyle()
+            figure_tool.source_panel.reveal_sources_button.toolButtonStyle()
             == QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly
         )
 
-        figure_tool.reveal_sources_button.click()
+        figure_tool.source_panel.reveal_sources_button.click()
 
         assert manager.tree_view.selected_imagetool_indices == [0, 1]
         assert manager.left_tabs.currentWidget() is manager.tree_view
 
         manager.tree_view.clearSelection()
-        figure_tool._show_source_context_menu(QtCore.QPoint(0, 0))
-        assert figure_tool._source_context_menu is not None
+        figure_tool.source_panel.source_list.context_menu_requested.emit(
+            QtCore.QPoint(0, 0)
+        )
+        source_menu = figure_tool.source_panel.context_menu
+        assert source_menu is not None
         reveal_action = next(
             action
-            for action in figure_tool._source_context_menu.actions()
+            for action in source_menu.actions()
             if action.objectName() == "figureComposerContextRevealSourceAction"
         )
         assert reveal_action.isEnabled()
         reveal_action.trigger()
         assert manager.tree_view.selected_imagetool_indices == [0, 1]
-        figure_tool._source_context_menu.close()
+        source_menu.close()
 
         manager.remove_imagetool(1)
-        figure_tool._set_selected_source_names_silent({"second"}, "second")
+        figure_tool.source_panel.set_selected_names(("second",), current_name="second")
         figure_tool._refresh_source_controls()
-        assert not figure_tool.reveal_sources_button.isEnabled()
-        figure_tool._reveal_selected_sources()
+        assert not figure_tool.source_panel.reveal_sources_button.isEnabled()
+        figure_tool.source_panel.reveal_requested.emit(("second",))
 
 
 def test_manager_figure_source_row_refresh_updates_only_selected_source(
@@ -3419,11 +3424,11 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
         with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
             itool(updated_second, manager=True, replace=1)
 
-        figure_tool._set_selected_source_names_silent({"first"}, "first")
+        figure_tool.source_panel.set_selected_names(("first",), current_name="first")
         figure_tool._refresh_source_controls()
-        assert figure_tool.refresh_sources_button.isEnabled()
+        assert figure_tool.source_panel.refresh_sources_button.isEnabled()
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            figure_tool.refresh_sources_button.click()
+            figure_tool.source_panel.refresh_sources_button.click()
 
         source_data = figure_tool.source_data()
         xr.testing.assert_identical(source_data["first"], updated_first)
@@ -3447,8 +3452,8 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
 
         manager.remove_imagetool(0)
         figure_tool._refresh_source_controls()
-        assert not figure_tool.refresh_sources_button.isEnabled()
-        first_item = figure_tool.source_list.topLevelItem(0)
+        assert not figure_tool.source_panel.refresh_sources_button.isEnabled()
+        first_item = figure_tool.source_panel.source_list.topLevelItem(0)
         assert first_item is not None
         assert first_item.icon(0).isNull()
 
@@ -3502,19 +3507,19 @@ def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
         with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
             itool(updated_second, manager=True, replace=1)
 
-        figure_tool._set_selected_source_names_silent(
-            {"first", "second", "detached"}, "first"
+        figure_tool.source_panel.set_selected_names(
+            ("first", "second", "detached"), current_name="first"
         )
         figure_tool._refresh_source_controls()
-        assert figure_tool.refresh_sources_button.isEnabled()
-        figure_tool.refresh_sources_button.click()
+        assert figure_tool.source_panel.refresh_sources_button.isEnabled()
+        figure_tool.source_panel.refresh_sources_button.click()
 
         source_data = figure_tool.source_data()
         xr.testing.assert_identical(source_data["first"], updated_first)
         xr.testing.assert_identical(source_data["second"], updated_second)
         xr.testing.assert_identical(source_data["detached"], detached)
         assert figure_tool.tool_status.operations == operations
-        assert not figure_tool.source_status_label.isHidden()
+        assert not figure_tool.source_panel.source_status_label.isHidden()
         assert figure_tool._operation_render_errors == {}
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
@@ -3564,7 +3569,7 @@ def test_manager_figure_sources_use_readable_unique_aliases(
             "data_3",
         )
         assert tuple(figure_tool.source_data()) == source_names
-        reference_item = figure_tool.source_list.topLevelItem(1)
+        reference_item = figure_tool.source_panel.source_list.topLevelItem(1)
         assert reference_item is not None
         assert reference_item.text(0) == "reference_map"
         assert "Original name: reference map" in reference_item.toolTip(0)
@@ -3984,7 +3989,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
         monkeypatch.setattr(
             _figure_dialogs, "_FigureSourcePickerDialog", RejectingPicker
         )
-        figure_tool.add_source_button.click()
+        figure_tool.source_panel.add_source_button.click()
 
         assert len(figure_tool.tool_status.operations) == operation_count
         assert {source.name for source in figure_tool.source_states()} == {"first"}
@@ -4003,7 +4008,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
             _figure_dialogs, "_FigureSourcePickerDialog", AcceptingPicker
         )
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            figure_tool.add_source_button.click()
+            figure_tool.source_panel.add_source_button.click()
 
         assert len(figure_tool.tool_status.operations) == operation_count
         xr.testing.assert_identical(
@@ -4041,8 +4046,10 @@ def test_manager_figure_source_add_reports_partial_rejection(
         assert figure_uid is not None
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
-        figure_tool._set_selected_source_names_silent({"first"}, "first")
-        figure_tool._update_selected_source_dimension("x", "qsel", "0.0", "")
+        figure_tool.source_panel.set_selected_names(("first",), current_name="first")
+        figure_tool.source_panel.selection_dimension_requested.emit(
+            ("first",), "x", "qsel", "0.0", ""
+        )
         original_first = figure_tool.source_data()["first"]
         original_operations = figure_tool.tool_status.operations
 
@@ -4055,7 +4062,7 @@ def test_manager_figure_source_add_reports_partial_rejection(
         xr.testing.assert_identical(figure_tool.source_data()["first"], original_first)
         xr.testing.assert_identical(figure_tool.source_data()["second"], second)
         assert figure_tool.tool_status.operations == original_operations
-        status = figure_tool.source_status_label.text()
+        status = figure_tool.source_panel.source_status_label.text()
         assert "Added 1 ImageTool source" in status
         assert "Skipped 1 ImageTool source update" in status
         assert "Could not update source data for: first" in status
@@ -4073,7 +4080,7 @@ def test_manager_figure_source_add_reports_partial_rejection(
         )
         assert figure_tool.tool_status.operations == original_operations
         assert "Could not update source data for: first" in (
-            figure_tool.source_status_label.text()
+            figure_tool.source_panel.source_status_label.text()
         )
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
@@ -4105,8 +4112,10 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
         assert figure_uid is not None
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
-        figure_tool._set_selected_source_names_silent({"data"}, "data")
-        figure_tool._update_selected_source_dimension("x", "qsel", "0.0", "")
+        figure_tool.source_panel.set_selected_names(("data",), current_name="data")
+        figure_tool.source_panel.selection_dimension_requested.emit(
+            ("data",), "x", "qsel", "0.0", ""
+        )
         original_data = figure_tool.source_data()["data"]
         original_operations = figure_tool.tool_status.operations
 
@@ -4119,7 +4128,7 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
         )
         xr.testing.assert_identical(figure_tool.source_data()["data"], original_data)
         assert "Could not update source data for: data" in (
-            figure_tool.source_status_label.text()
+            figure_tool.source_panel.source_status_label.text()
         )
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid not in snapshot["dirty_data"]
@@ -4135,7 +4144,7 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
         xr.testing.assert_identical(figure_tool.source_data()["data"], original_data)
         assert figure_tool.tool_status.operations == original_operations
         assert "Could not update source data for: data" in (
-            figure_tool.source_status_label.text()
+            figure_tool.source_panel.source_status_label.text()
         )
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid not in snapshot["dirty_data"]
@@ -4222,9 +4231,13 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
         assert manager._add_imagetool_sources_to_figure(
             figure_uid, (second_uid, figure_uid), show=False
         )
-        assert "Updated 1 ImageTool source" in figure_tool.source_status_label.text()
         assert (
-            "Skipped 1 unsupported selection" in figure_tool.source_status_label.text()
+            "Updated 1 ImageTool source"
+            in figure_tool.source_panel.source_status_label.text()
+        )
+        assert (
+            "Skipped 1 unsupported selection"
+            in figure_tool.source_panel.source_status_label.text()
         )
 
 
@@ -4264,11 +4277,13 @@ def test_manager_figure_remove_unused_source_persists_workspace(
         assert source.name in figure_tool.source_data()
         manager._mark_workspace_clean()
 
-        figure_tool._set_selected_source_names_silent({source.name}, source.name)
+        figure_tool.source_panel.set_selected_names(
+            (source.name,), current_name=source.name
+        )
         figure_tool._refresh_source_controls()
-        assert figure_tool.remove_selected_source_button.isEnabled()
+        assert figure_tool.source_panel.remove_selected_source_button.isEnabled()
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
-            figure_tool.remove_selected_source_button.click()
+            figure_tool.source_panel.remove_selected_source_button.click()
 
         assert source.name not in figure_tool.source_data()
         assert source.name not in {

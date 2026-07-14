@@ -1,5 +1,8 @@
 # ruff: noqa: F403, F405
 
+import subprocess
+import textwrap
+
 from erlab.interactive._figurecomposer._document import FigureDocument
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
@@ -29,6 +32,224 @@ def test_figure_document_orders_source_dependencies_and_rejects_cycles() -> None
     )
     with pytest.raises(FigureComposerInputError, match="selected -> base -> selected"):
         document.source_dependency_names(("selected",), reject_cycles=True)
+
+
+def test_figure_document_sources_import_without_qt_widgets() -> None:
+    code = textwrap.dedent(
+        """
+        import sys
+
+        from erlab.interactive._figurecomposer._document import FigureDocument
+        from erlab.interactive._figurecomposer._sources import _source_alias_error
+        from erlab.interactive._figurecomposer._state import (
+            FigureExportState,
+            FigureRecipeState,
+            FigureSubplotsState,
+        )
+
+        recipe = FigureRecipeState(
+            setup=FigureSubplotsState(
+                figsize=(6.4, 4.8), dpi=100.0, layout=None
+            ),
+            export=FigureExportState(
+                dpi="figure", transparent=False, bbox_inches="tight"
+            ),
+        )
+        assert FigureDocument(recipe)
+        assert _source_alias_error("data") is None
+        assert "erlab.interactive._figurecomposer._widgets" not in sys.modules
+        assert "erlab.interactive._stylesheets" not in sys.modules
+        assert "erlab.interactive._figurecomposer._tool" not in sys.modules
+        """
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_figure_document_renames_source_references_atomically() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data", label="data"),
+                FigureSourceState(name="selected", selection_source="data"),
+            ),
+            operations=(
+                FigureOperationState.plot_array(label="array", source="selected"),
+                FigureOperationState.custom(
+                    label="python", code="result = data + selected", trusted=True
+                ),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": data, "selected": data},
+        source_selection_base_data={"selected": data},
+    )
+
+    assert document.source_usage_count("data") == 2
+    assert not document.source_is_removable("data")
+    assert document.rename_source("data", "renamed")
+    assert tuple(document.source_by_name()) == ("renamed", "selected")
+    assert document.source_by_name()["renamed"].label == "renamed"
+    assert document.source_by_name()["selected"].selection_source == "renamed"
+    assert document.recipe.primary_source == "renamed"
+    assert tuple(document.source_data) == ("renamed", "selected")
+    assert document.recipe.operations[1].code == "result = renamed + selected"
+
+    recipe = document.recipe.model_copy(
+        update={
+            "operations": (
+                FigureOperationState.custom(
+                    label="ambiguous", code="renamed = renamed + 1", trusted=True
+                ),
+            )
+        }
+    )
+    document.recipe = recipe
+    before_data = dict(document.source_data)
+    with pytest.raises(FigureComposerInputError, match="also binds"):
+        document.rename_source("renamed", "other")
+    assert document.recipe == recipe
+    assert document.source_data == before_data
+
+
+def test_figure_document_duplicate_move_reorder_and_remove_sources() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="base"),
+                FigureSourceState(name="selected", selection_source="base"),
+                FigureSourceState(name="other"),
+            ),
+            operations=(FigureOperationState.line(label="line", source="other"),),
+            primary_source="base",
+        ),
+        source_data={"base": data, "selected": data, "other": data},
+        source_selection_base_data={"selected": data},
+    )
+
+    assert document.duplicate_sources(("selected",)) == ("selected_copy",)
+    assert document.source_by_name()["selected_copy"].selection_source == "base"
+    assert document.source_data["selected_copy"] is not data
+    assert document.can_move_sources(("selected_copy",), 1)
+    assert document.move_sources(("selected_copy",), 1)
+    with pytest.raises(ValueError, match="must be -1 or 1"):
+        document.can_move_sources(("selected_copy",), 0)
+    with pytest.raises(ValueError, match="must be -1 or 1"):
+        document.move_sources(("selected_copy",), 2)
+    assert tuple(document.source_by_name()) == (
+        "base",
+        "selected",
+        "other",
+        "selected_copy",
+    )
+    assert document.reorder_sources(("other", "base", "selected", "selected_copy"))
+    with pytest.raises(ValueError, match="exact permutation"):
+        document.reorder_sources(("other", "base"))
+
+    assert document.remove_sources(("base", "selected", "selected_copy")) == (
+        "selected",
+        "selected_copy",
+        "base",
+    )
+    assert tuple(document.source_by_name()) == ("other",)
+    assert document.recipe.primary_source == "other"
+    assert not document.remove_source("other")
+
+
+def test_figure_document_add_and_replace_recompute_dependents_atomically() -> None:
+    base = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("u", "v"),
+        coords={"u": [0.0, 1.0], "v": [0.0, 1.0, 2.0]},
+        name="base",
+    )
+    selected = base.qsel(u=1.0)
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="base", node_uid="node"),
+                FigureSourceState(
+                    name="selected",
+                    selection_source="base",
+                    qsel={"u": 1.0},
+                ),
+            ),
+            primary_source="base",
+        ),
+        source_data={"base": base, "selected": selected},
+        source_selection_base_data={"selected": base},
+    )
+
+    refreshed = base + 10.0
+    result = document.add_sources(
+        (FigureSourceState(name="incoming", node_uid="node"),),
+        {"incoming": refreshed},
+    )
+    assert result.updated == (("incoming", "base"),)
+    xr.testing.assert_identical(document.source_data["selected"], refreshed.qsel(u=1.0))
+
+    before_recipe = document.recipe
+    before_data = dict(document.source_data)
+    incompatible = refreshed.isel(u=0, drop=True)
+    result = document.replace_source(
+        "base", FigureSourceState(name="bad", node_uid="other"), incompatible
+    )
+    assert not result
+    assert result.skipped
+    assert document.recipe == before_recipe
+    for name, expected in before_data.items():
+        xr.testing.assert_identical(document.source_data[name], expected)
+
+    replacement = base + 20.0
+    result = document.replace_source(
+        "base", FigureSourceState(name="replacement", node_uid="other"), replacement
+    )
+    assert result.updated == ("base",)
+    xr.testing.assert_identical(
+        document.source_data["selected"], replacement.qsel(u=1.0)
+    )
+
+
+def test_figure_document_updates_source_selection_per_compatible_source() -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims="x",
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    scalar = xr.DataArray(1.0, name="scalar")
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data"),
+                FigureSourceState(name="scalar"),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": data, "scalar": scalar},
+    )
+
+    result = document.update_source_selection_dimension(
+        ("data", "scalar", "missing"), "x", "isel", 1
+    )
+
+    assert result.updated == ("data",)
+    assert {name for name, _detail in result.skipped} == {"scalar", "missing"}
+    assert document.source_by_name()["data"].isel == {"x": 1}
+    xr.testing.assert_identical(document.source_data["data"], data.isel(x=1))
+    xr.testing.assert_identical(document.source_data["scalar"], scalar)
+
+    recipe = document.recipe
+    source_data = dict(document.source_data)
+    result = document.update_source_selection_dimension(
+        ("data",), "x", "qsel", slice(0.0, 1.0), 0.1
+    )
+    assert not result
+    assert result.skipped
+    assert document.recipe == recipe
+    for name, expected in source_data.items():
+        xr.testing.assert_identical(document.source_data[name], expected)
 
 
 def test_operation_metadata_covers_every_operation_kind() -> None:

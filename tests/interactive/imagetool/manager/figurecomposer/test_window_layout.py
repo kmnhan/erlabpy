@@ -1646,8 +1646,10 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     assert tool._source_tooltip("known")
     tool._refresh_source_list()
     source_names = {
-        tool.source_list.topLevelItem(row).data(0, QtCore.Qt.ItemDataRole.UserRole)
-        for row in range(tool.source_list.topLevelItemCount())
+        tool.source_panel.source_list.topLevelItem(row).data(
+            0, QtCore.Qt.ItemDataRole.UserRole
+        )
+        for row in range(tool.source_panel.source_list.topLevelItemCount())
     }
     assert source_names == {"known", "extra", "missing"}
 
@@ -3505,9 +3507,7 @@ def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> Non
     assert all(entry[0] != "axis" for entry in thin_descriptor[2])
 
 
-def test_figure_composer_operation_row_target_and_source_drag_edges(
-    qtbot, monkeypatch
-) -> None:
+def test_figure_composer_operation_row_target_and_source_drag_edges(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="data")
     tool = FigureComposerTool(
         data,
@@ -3535,8 +3535,9 @@ def test_figure_composer_operation_row_target_and_source_drag_edges(
     assert not any(entry[-1] for entry in descriptor[2])
 
     mime = QtCore.QMimeData()
-    monkeypatch.setattr(tool, "_source_drop_available", lambda data: data is mime)
-    monkeypatch.setattr(tool, "_add_sources_from_mime", lambda data: data is mime)
+    tool.source_panel.set_drop_handlers(
+        lambda data: data is mime, lambda data: data is mime
+    )
 
     def drag_enter_event() -> QtGui.QDragEnterEvent:
         return QtGui.QDragEnterEvent(
@@ -3566,21 +3567,21 @@ def test_figure_composer_operation_row_target_and_source_drag_edges(
         )
 
     filtered_event = drag_enter_event()
-    assert tool.eventFilter(tool, filtered_event)
+    assert tool.source_panel.eventFilter(tool, filtered_event)
     assert filtered_event.isAccepted()
 
     for handler, event in (
-        (tool.dragEnterEvent, drag_enter_event()),
-        (tool.dragMoveEvent, drag_move_event()),
-        (tool.dropEvent, drop_event()),
+        (tool.source_panel.dragEnterEvent, drag_enter_event()),
+        (tool.source_panel.dragMoveEvent, drag_move_event()),
+        (tool.source_panel.dropEvent, drop_event()),
     ):
         handler(event)
         assert event.isAccepted()
 
-    monkeypatch.setattr(tool, "_source_drop_available", lambda _data: False)
-    tool.dragEnterEvent(drag_enter_event())
-    tool.dragMoveEvent(drag_move_event())
-    tool.dropEvent(drop_event())
+    tool.source_panel.set_drop_handlers(lambda _data: False, lambda _data: False)
+    tool.source_panel.dragEnterEvent(drag_enter_event())
+    tool.source_panel.dragMoveEvent(drag_move_event())
+    tool.source_panel.dropEvent(drop_event())
 
 
 def test_figure_composer_operation_target_preview_uses_axes_selector_palette(

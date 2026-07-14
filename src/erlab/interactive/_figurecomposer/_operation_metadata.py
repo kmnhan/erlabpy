@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import typing
 
-from erlab.interactive._figurecomposer._custom_code import _custom_code_names
+from erlab.interactive._figurecomposer._custom_code import (
+    _custom_code_names,
+    _renamed_source_loads,
+)
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._state import (
     FigureMethodFamily,
     FigureOperationKind,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from erlab.interactive._figurecomposer._state import FigureOperationState
 
@@ -75,3 +79,61 @@ def recipe_operation_source_names(
         loaded_names = _custom_code_names(operation.code)
         names.extend(name for name in available_source_names if name in loaded_names)
     return _unique_source_names(names)
+
+
+def rename_operation_sources(
+    operation: FigureOperationState, rename_map: Mapping[str, str]
+) -> FigureOperationState:
+    """Return an operation with every source reference renamed atomically."""
+    updates: dict[str, typing.Any] = {}
+    if operation.kind == FigureOperationKind.CUSTOM:
+        try:
+            code = _renamed_source_loads(operation.code, dict(rename_map))
+        except ValueError as exc:
+            raise FigureComposerInputError(
+                "Could not rename source references in Python step "
+                f"{operation.label!r}: {exc}."
+            ) from exc
+        if code != operation.code:
+            updates["code"] = code
+    if operation.sources:
+        sources = tuple(
+            rename_map.get(source_name, source_name)
+            for source_name in operation.sources
+        )
+        if sources != operation.sources:
+            updates["sources"] = sources
+    if operation.map_selections:
+        map_selections = tuple(
+            selection.model_copy(update={"source": source})
+            if (source := rename_map.get(selection.source, selection.source))
+            != selection.source
+            else selection
+            for selection in operation.map_selections
+        )
+        if map_selections != operation.map_selections:
+            updates["map_selections"] = map_selections
+    if operation.line_source is not None:
+        line_source = rename_map.get(operation.line_source, operation.line_source)
+        if line_source != operation.line_source:
+            updates["line_source"] = line_source
+    for field in (
+        "method_plot_x",
+        "method_plot_y",
+        "method_plot_xerr",
+        "method_plot_yerr",
+    ):
+        state = getattr(operation, field)
+        if state is not None:
+            source = rename_map.get(state.source, state.source)
+            if source != state.source:
+                updates[field] = state.model_copy(update={"source": source})
+    if operation.hv_overlay_source is not None:
+        hv_overlay_source = rename_map.get(
+            operation.hv_overlay_source, operation.hv_overlay_source
+        )
+        if hv_overlay_source != operation.hv_overlay_source:
+            updates["hv_overlay_source"] = hv_overlay_source
+    if not updates:
+        return operation
+    return operation.model_copy(update=updates)

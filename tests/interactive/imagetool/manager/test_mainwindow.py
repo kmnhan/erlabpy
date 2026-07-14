@@ -29,10 +29,10 @@ from erlab.interactive._figurecomposer import (
     FigureSourceState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._document import FigureSourceAddResult
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
-from erlab.interactive._figurecomposer._tool import FigureSourceAddResult
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool

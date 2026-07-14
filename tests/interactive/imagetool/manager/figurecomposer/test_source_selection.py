@@ -10,6 +10,7 @@ import pydantic
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 from erlab.interactive._figurecomposer import (
     FigureDataSelectionState,
@@ -124,8 +125,8 @@ def test_source_selection_state_helpers_cover_shared_and_per_source_paths(
     first_for_b = first.model_copy(update={"source": "b"})
     second = FigureDataSelectionState(source="b", isel={"eV": 1})
 
-    assert not source_selection.selection_has_effect(empty)
-    assert source_selection.selection_has_effect(first)
+    assert not figurecomposer_sources.selection_has_effect(empty)
+    assert figurecomposer_sources.selection_has_effect(first)
     assert source_selection.selection_content_equal(first, first_for_b)
     assert source_selection.shared_selection(()) == FigureDataSelectionState(source="")
     assert source_selection.shared_selection((first, first_for_b)) == first.model_copy(
@@ -310,7 +311,7 @@ def test_source_selection_dimension_parsing_and_updates() -> None:
     assert source_selection.selection_dim_value_text(selection, "kx") == "1"
     assert source_selection.selection_dim_value_text(selection, "eV") == "0.0"
     assert source_selection.selection_dim_value_text(selection, "missing") == ""
-    assert source_selection.selection_width_key("eV") == "eV_width"
+    assert figurecomposer_sources.selection_width_key("eV") == "eV_width"
     assert source_selection.selection_dim_width_text(selection, "eV") == "0.2"
     assert source_selection.selection_dim_width_text(selection, "kx") == ""
 
@@ -326,24 +327,24 @@ def test_source_selection_dimension_parsing_and_updates() -> None:
     with pytest.raises(FigureComposerInputError):
         source_selection.selection_width_from_text("bad(")
 
-    assert source_selection.selection_with_dimension(
+    assert figurecomposer_sources.selection_with_dimension(
         selection, "kx", "keep"
     ) == FigureDataSelectionState(
         source="data", qsel={"eV": 0.0, "eV_width": 0.2}, mean_dims=("ky",)
     )
-    assert source_selection.selection_with_dimension(
+    assert figurecomposer_sources.selection_with_dimension(
         selection, "eV", "isel", value=2
     ) == FigureDataSelectionState(
         source="data", isel={"kx": 1, "eV": 2}, mean_dims=("ky",)
     )
-    assert source_selection.selection_with_dimension(
+    assert figurecomposer_sources.selection_with_dimension(
         selection, "kx", "qsel", value=0.0, width=0.1
     ) == FigureDataSelectionState(
         source="data",
         qsel={"eV": 0.0, "eV_width": 0.2, "kx": 0.0, "kx_width": 0.1},
         mean_dims=("ky",),
     )
-    assert source_selection.selection_with_dimension(
+    assert figurecomposer_sources.selection_with_dimension(
         selection, "kx", "mean"
     ) == FigureDataSelectionState(
         source="data",
@@ -351,7 +352,7 @@ def test_source_selection_dimension_parsing_and_updates() -> None:
         mean_dims=("ky", "kx"),
     )
     with pytest.raises(FigureComposerInputError):
-        source_selection.selection_with_dimension(
+        figurecomposer_sources.selection_with_dimension(
             selection, "eV", "qsel", value=slice(0, 2), width=0.1
         )
 

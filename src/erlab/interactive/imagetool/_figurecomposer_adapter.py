@@ -20,6 +20,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureDataSelectionState,
     FigureOperationState,
 )
+from erlab.interactive.imagetool import _provenance_framework
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -401,7 +402,7 @@ class _PlotOperationBuilder:
     def public_nonuniform_qsel_kwargs_multicursor(
         self, non_display_axes: tuple[int, ...]
     ) -> tuple[dict[Hashable, float | list[float]], Hashable | None]:
-        public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        public_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area._tool_source_parent_data()
         )
         all_qsel_kwargs: list[dict[Hashable, float]] = []
@@ -516,11 +517,12 @@ class _PlotOperationBuilder:
                     if index != axis
                 )
                 qsel_kwargs.update(self.array_slicer.qsel_args(cursor, display_axes))
-        selected = (
-            f"erlab.interactive.imagetool.slicer.restore_nonuniform_dims({data_name})"
-            if uses_nonuniform_axes
-            else data_name
-        )
+        selected = data_name
+        if uses_nonuniform_axes:
+            selected = _provenance_framework._restore_nonuniform_dims_expression(
+                selected,
+                erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
+            )
         if isel_kwargs:
             selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
         if qsel_kwargs:
