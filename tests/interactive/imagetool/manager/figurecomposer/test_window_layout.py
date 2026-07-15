@@ -8610,16 +8610,23 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
         "activePopupWidget",
         staticmethod(lambda: active_popup[0]),
     )
+    monkeypatch.setattr(tool.operation_editor, "_queue_retired_drain", lambda: None)
 
     tool.operation_editor.request_update_rebuild(slice_values=(0.0, 1.0))
-    qtbot.waitUntil(old_page.isHidden, timeout=1000)
+    qtbot.waitUntil(
+        lambda: old_page in tool.operation_editor._retired_widgets,
+        timeout=1000,
+    )
     assert erlab.interactive.utils.qt_is_valid(old_page)
     active_popup[0] = QtWidgets.QMenu(tool)
 
-    qtbot.wait(150)
+    tool.operation_editor._drain_retired_widgets()
+    assert old_page in tool.operation_editor._retired_widgets
     assert erlab.interactive.utils.qt_is_valid(old_page)
 
     active_popup[0] = None
+    tool.operation_editor._drain_retired_widgets()
+    assert old_page not in tool.operation_editor._retired_widgets
     qtbot.waitUntil(
         lambda: not erlab.interactive.utils.qt_is_valid(old_page),
         timeout=1000,
