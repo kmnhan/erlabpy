@@ -15,7 +15,7 @@ import keyword
 import symtable
 import typing
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 
 import xarray as xr
 
@@ -34,6 +34,7 @@ from erlab.interactive.imagetool._provenance._code import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
+    _assignment_code,
     _is_internal_sort_coord_order_entry,
     _script_input_reference_text,
     parse_tool_provenance_spec,
@@ -589,10 +590,10 @@ def _validate_script_provenance(
         has_replay_step = True
         available_names.add(current_name)
         preferred_name = operation.preferred_replay_output_name()
-        if preferred_name == spec.active_name:
+        if preferred_name is not None:
             current_name = preferred_name
             available_names.add(preferred_name)
-            active_available = True
+            active_available = preferred_name == spec.active_name
         else:
             active_available = active_available or current_name == spec.active_name
     if not has_replay_step:
@@ -839,6 +840,7 @@ def _operation_replay_code(
     active_name: str,
     context_name: str,
     parent_name: str | None = None,
+    reserved_names: Collection[str] = (),
 ) -> str:
     input_name = active_name if parent_name is None else parent_name
     try:
@@ -846,6 +848,7 @@ def _operation_replay_code(
             input_name,
             output_name=active_name,
             source_name=context_name,
+            reserved_names=reserved_names,
         )
     except (AttributeError, NotImplementedError) as exc:
         raise ReplayGraphError("Operation does not provide replay code") from exc
@@ -1151,7 +1154,7 @@ def _compile_spec(
                 continue
 
             preferred_name = operation.preferred_replay_output_name()
-            if pending_codes and preferred_name == active_name:
+            if pending_codes and preferred_name is not None:
                 flush_script()
 
             if pending_codes:
@@ -1167,6 +1170,7 @@ def _compile_spec(
                         operation,
                         active_name=pending_output_name,
                         context_name=pending_output_name,
+                        reserved_names=graph.reserved_names,
                     )
                 )
                 pending_code_hoist_imports.append(False)
@@ -1174,11 +1178,12 @@ def _compile_spec(
 
             ensure_script_current_key()
             current_key = typing.cast("str", script_current_key)
-            operation_name = (
-                preferred_name
-                if preferred_name == active_name
-                else current_name or active_name
-            )
+            if preferred_name is not None:
+                operation_name = preferred_name
+            elif index == len(operations) - 1:
+                operation_name = active_name
+            else:
+                operation_name = current_name or active_name
             script_current_key = graph.add_node(
                 _canonical_key(
                     "operation",
@@ -1313,6 +1318,12 @@ def _node_names(
         emitted_alias_key = emitted_key(key)
         if public_name not in copied_names_by_key.get(emitted_alias_key, set()):
             preferred_names.setdefault(emitted_alias_key, public_name)
+    for node in graph.nodes:
+        if node.kind != "operation":
+            continue
+        preferred_output_name = node.payload["operation"].preferred_replay_output_name()
+        if preferred_output_name is not None:
+            preferred_names[node.key] = preferred_output_name
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
@@ -1540,7 +1551,9 @@ def _inline_single_use_replay_names(code: str) -> str:
                     for item in intervening
                 )
                 or any(
-                    _statement_store_count(item, source_name) for item in intervening
+                    _statement_store_count(item, target_name)
+                    or _statement_store_count(item, source_name)
+                    for item in intervening
                 )
             ):
                 continue
@@ -1583,6 +1596,144 @@ def _remove_noop_assignments(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
+def _standalone_statement_span(
+    code: str, statement: ast.stmt
+) -> tuple[int, int] | None:
+    """Return the byte span of a statement that occupies complete source lines."""
+    if statement.end_lineno is None or statement.end_col_offset is None:
+        return None
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    start = line_starts[statement.lineno - 1] + statement.col_offset
+    end = line_starts[statement.end_lineno - 1] + statement.end_col_offset
+    line_start = line_starts[statement.lineno - 1]
+    line_end = line_starts[statement.end_lineno]
+    if encoded[line_start:start].strip() or encoded[end:line_end].strip():
+        return None
+    return line_start, line_end
+
+
+def _replace_statement_load_name(
+    code: str,
+    statement: ast.stmt,
+    *,
+    target_name: str,
+    source_name: str,
+) -> str:
+    """Replace identifier loads in one statement without reformatting its source."""
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    spans = sorted(
+        (
+            line_starts[node.lineno - 1] + node.col_offset,
+            line_starts[node.end_lineno - 1] + node.end_col_offset,
+        )
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == target_name
+        and node.end_lineno is not None
+        and node.end_col_offset is not None
+    )
+    replacement = source_name.encode()
+    for start, end in reversed(spans):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _replace_ast_names(
+    code: str,
+    module: ast.Module,
+    replacements: Mapping[str, str],
+) -> str:
+    """Replace parsed name nodes without changing unrelated source formatting."""
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    spans = sorted(
+        (
+            line_starts[node.lineno - 1] + node.col_offset,
+            line_starts[node.end_lineno - 1] + node.end_col_offset,
+            replacements[node.id].encode(),
+        )
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name)
+        and node.id in replacements
+        and node.end_lineno is not None
+        and node.end_col_offset is not None
+    )
+    for start, end, replacement in reversed(spans):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _format_long_call_assignments(code: str, *, line_length: int = 88) -> str:
+    """Wrap top-level call assignments made too long by semantic renaming."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    encoded = code.encode()
+    replacements: list[tuple[int, int, bytes]] = []
+    for statement in module.body:
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or not isinstance(statement.value, ast.Call)
+        ):
+            continue
+        statement_code = ast.get_source_segment(code, statement)
+        expression_code = ast.get_source_segment(code, statement.value)
+        span = _standalone_statement_span(code, statement)
+        if (
+            statement_code is None
+            or expression_code is None
+            or span is None
+            or max(map(len, statement_code.splitlines())) <= line_length
+        ):
+            continue
+        formatted = _assignment_code(
+            statement.targets[0].id,
+            expression_code,
+            line_length=line_length,
+        )
+        start, end = span
+        suffix = b"\n" if encoded[start:end].endswith(b"\n") else b""
+        replacements.append((start, end, formatted.encode() + suffix))
+    for start, end, replacement in reversed(replacements):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _inline_standalone_alias(
+    code: str,
+    alias_statement: ast.stmt,
+    use_statement: ast.stmt,
+    *,
+    target_name: str,
+    source_name: str,
+) -> str | None:
+    """Inline one standalone alias without changing surrounding formatting."""
+    alias_span = _standalone_statement_span(code, alias_statement)
+    if alias_span is None:
+        return None
+    code = _replace_statement_load_name(
+        code,
+        use_statement,
+        target_name=target_name,
+        source_name=source_name,
+    )
+    alias_start, alias_end = alias_span
+    encoded = code.encode()
+    return (encoded[:alias_start] + encoded[alias_end:]).decode().strip("\n")
+
+
 def _inline_simple_name_aliases(code: str) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1616,10 +1767,12 @@ def _inline_simple_name_aliases(code: str) -> str:
         return None
 
     def receiver_load_count(stmt: ast.stmt, target_name: str) -> int:
-        if (
-            isinstance(stmt, ast.Assign)
-            and receiver_root_name(stmt.value) == target_name
-        ):
+        if not isinstance(stmt, ast.Assign):
+            return 0
+        load_count = _statement_load_count(stmt, target_name)
+        if receiver_root_name(stmt.value) == target_name:
+            return load_count
+        if load_count == 1:
             return 1
         return 0
 
@@ -1634,6 +1787,47 @@ def _inline_simple_name_aliases(code: str) -> str:
             source_name = stmt.value.id
             if target_name == source_name:
                 continue
+
+            later_statements = module.body[idx + 1 :]
+            load_indices = [
+                later_idx
+                for later_idx, later_stmt in enumerate(
+                    later_statements,
+                    start=idx + 1,
+                )
+                if _statement_load_count(later_stmt, target_name)
+            ]
+            if len(load_indices) == 1:
+                use_idx = load_indices[0]
+                preceding = module.body[idx + 1 : use_idx]
+                if not any(
+                    _statement_store_count(item, target_name)
+                    or _statement_store_count(item, source_name)
+                    for item in preceding
+                ):
+                    inlined_code = _inline_standalone_alias(
+                        code,
+                        stmt,
+                        module.body[use_idx],
+                        target_name=target_name,
+                        source_name=source_name,
+                    )
+                    if inlined_code is not None:
+                        code = inlined_code
+                        module = ast.parse(code, mode="exec")
+                    else:
+                        inliner = SimpleAliasInliner(target_name, source_name)
+                        cloned = ast.parse(
+                            ast.unparse(module.body[use_idx]), mode="exec"
+                        ).body[0]
+                        module.body[use_idx] = ast.fix_missing_locations(
+                            typing.cast("ast.stmt", inliner.visit(cloned))
+                        )
+                        del module.body[idx]
+                        code = ast.unparse(ast.fix_missing_locations(module))
+                        module = ast.parse(code, mode="exec")
+                    changed = True
+                    break
 
             rewrite_end: int | None = None
             can_rewrite = True
@@ -1684,6 +1878,19 @@ def _inline_simple_name_aliases(code: str) -> str:
             ):
                 continue
 
+            inlined_code = _inline_standalone_alias(
+                code,
+                stmt,
+                rewrite_statements[0],
+                target_name=target_name,
+                source_name=source_name,
+            )
+            if inlined_code is not None:
+                code = inlined_code
+                module = ast.parse(code, mode="exec")
+                changed = True
+                break
+
             inliner = SimpleAliasInliner(target_name, source_name)
             rewritten: list[ast.stmt] = []
             for item in rewrite_statements:
@@ -1695,6 +1902,8 @@ def _inline_simple_name_aliases(code: str) -> str:
                 )
             module.body[idx + 1 : rewrite_end + 1] = rewritten
             del module.body[idx]
+            code = ast.unparse(ast.fix_missing_locations(module))
+            module = ast.parse(code, mode="exec")
             changed = True
             break
         else:
@@ -1702,7 +1911,7 @@ def _inline_simple_name_aliases(code: str) -> str:
 
     if not changed:
         return code
-    return ast.unparse(ast.fix_missing_locations(module))
+    return code
 
 
 def _compact_replay_temp_names(code: str) -> str:
@@ -1737,15 +1946,8 @@ def _compact_replay_temp_names(code: str) -> str:
     if not replacements or all(key == value for key, value in replacements.items()):
         return code
 
-    class ReplayTempCompactor(ast.NodeTransformer):
-        def visit_Name(self, node: ast.Name) -> ast.Name:
-            replacement = replacements.get(node.id)
-            if replacement is None:
-                return node
-            return ast.copy_location(ast.Name(replacement, ctx=node.ctx), node)
-
-    compacted = typing.cast("ast.Module", ReplayTempCompactor().visit(module))
-    return ast.unparse(ast.fix_missing_locations(compacted))
+    renamed = _replace_ast_names(code, module, replacements)
+    return _format_long_call_assignments(renamed)
 
 
 def _code_has_scoped_definition(code: str) -> bool:
@@ -2175,7 +2377,8 @@ def _rename_display_replay_temps(
         replacements[temporary_name] = candidate
         used_names.add(candidate)
 
-    return _replace_code_identifiers(code, replacements)
+    renamed = _replace_ast_names(code, module, replacements)
+    return _format_long_call_assignments(renamed)
 
 
 def emit_replay_code(
@@ -2291,6 +2494,11 @@ def emit_replay_code(
                         active_name=name,
                         context_name=context_name,
                         parent_name=parent_name,
+                        reserved_names=(
+                            graph.reserved_names
+                            | reserved_binding_names
+                            | set(names.values())
+                        ),
                     )
                 )
         elif node.kind == "script":

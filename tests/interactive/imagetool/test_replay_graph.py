@@ -4,7 +4,7 @@ import re
 import textwrap
 import types
 import typing
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 import numpy as np
 import pytest
@@ -73,6 +73,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    ImageDerivativeOperation,
     IselOperation,
     QSelOperation,
     RenameOperation,
@@ -363,6 +364,34 @@ class Child(Base, metaclass=data_5):
         _validate_script_provenance(
             script(start_label="Run script", active_name="derived")
         )
+    derivative_operation = ImageDerivativeOperation(
+        method="diffn",
+        kwargs={"coord": "x", "order": 2},
+    )
+    with pytest.raises(ReplayGraphError, match="no replay code"):
+        _validate_script_provenance(
+            script(
+                derivative_operation,
+                start_label="Run script",
+                seed_code="derived = data",
+                active_name="derived",
+                script_inputs=(ScriptInput(name="data", label="Input"),),
+            )
+        )
+    _validate_script_provenance(
+        script(
+            derivative_operation,
+            ScriptCodeOperation(
+                label="Use derivative output",
+                code="derived = result",
+                visible=False,
+            ),
+            start_label="Run script",
+            seed_code="derived = data",
+            active_name="derived",
+            script_inputs=(ScriptInput(name="data", label="Input"),),
+        )
+    )
     with pytest.raises(ReplayGraphError, match="non-replayable"):
         _validate_script_provenance(
             script(
@@ -751,6 +780,7 @@ def test_replay_graph_operation_code_error_edges() -> None:
             *,
             output_name: str | None = None,
             source_name: str | None = None,
+            reserved_names: Collection[str] = (),
         ) -> str:
             raise NotImplementedError
 
@@ -764,6 +794,7 @@ def test_replay_graph_operation_code_error_edges() -> None:
             *,
             output_name: str | None = None,
             source_name: str | None = None,
+            reserved_names: Collection[str] = (),
         ) -> str | None:
             return self._code
 
@@ -790,10 +821,12 @@ def test_replay_graph_operation_code_uses_parameterized_names() -> None:
             *,
             output_name: str | None = None,
             source_name: str | None = None,
+            reserved_names: Collection[str] = (),
         ) -> str:
             assert input_name == "parent_data"
             assert output_name == "active_data"
             assert source_name == "source_data"
+            assert not reserved_names
             return f"{output_name} = {input_name} + {source_name}"
 
     code = _operation_replay_code(
@@ -1615,7 +1648,8 @@ def test_replay_graph_rebases_context_in_script_input_code(
     code = emit_replay_code(graph, output_name="derived")
 
     assert "data.coords" not in code
-    assert "derived.coords.keys()" in code
+    assert "tmp.coords.keys()" in code
+    assert "derived = tmp" not in code
     namespace = _exec_generated_code(code)
     xr.testing.assert_identical(
         namespace["derived"],
@@ -1803,6 +1837,13 @@ def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
         "result = _itool_replay_0 + other"
     )
     assert _inline_single_use_replay_names(effectful_attributes) == effectful_attributes
+    shadowed_temporary = (
+        "_itool_replay_0 = source\n_itool_replay_0 = other\nresult = _itool_replay_0"
+    )
+    cleaned_shadowed_temporary = _inline_single_use_replay_names(shadowed_temporary)
+    namespace = {"source": object(), "other": object()}
+    exec(cleaned_shadowed_temporary, {}, namespace)  # noqa: S102
+    assert namespace["result"] is namespace["other"]
 
     assert (
         _compact_replay_temp_names(

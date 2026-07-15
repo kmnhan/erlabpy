@@ -118,7 +118,7 @@ import inspect
 import keyword
 import typing
 import uuid
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -961,6 +961,51 @@ def _console_mapping_values(
     return mapped
 
 
+def _assignment_code(
+    output_name: str,
+    expression: str,
+    *,
+    line_length: int = 88,
+) -> str:
+    """Assign an expression while preserving readable call formatting."""
+    code = f"{output_name} = {expression}"
+    if "\n" in expression or len(code) <= line_length:
+        return code
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return code
+    if not isinstance(parsed.body, ast.Call):
+        return code
+
+    function_code = ast.get_source_segment(expression, parsed.body.func)
+    if function_code is None:
+        return code
+    arguments: list[str] = []
+    for argument in parsed.body.args:
+        argument_code = ast.get_source_segment(expression, argument)
+        if argument_code is None:
+            return code
+        if isinstance(argument, ast.GeneratorExp):
+            argument_code = f"({argument_code})"
+        arguments.append(argument_code)
+    for keyword_arg in parsed.body.keywords:
+        value_code = ast.get_source_segment(expression, keyword_arg.value)
+        if value_code is None:
+            return code
+        prefix = "**" if keyword_arg.arg is None else f"{keyword_arg.arg}="
+        arguments.append(f"{prefix}{value_code}")
+    if not arguments:
+        return code
+    return "\n".join(
+        (
+            f"{output_name} = {function_code}(",
+            *(f"    {argument}," for argument in arguments),
+            ")",
+        )
+    )
+
+
 class ToolProvenanceOperation(pydantic.BaseModel):
     """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
@@ -1174,6 +1219,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         *,
         output_name: str,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         """Return Python statements applying this operation to an input name.
 
@@ -1190,6 +1236,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         *,
         output_name: str | None = None,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         """Return replay code for this operation with caller-selected names.
 
@@ -1208,6 +1255,9 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         source_name
             Python expression or identifier for the original public input array for
             the enclosing replay sequence. Passed through to :meth:`expression_code`.
+        reserved_names
+            Names already used by the enclosing replay sequence. Statement-based
+            operations use these to choose collision-free auxiliary targets.
 
         Returns
         -------
@@ -1224,10 +1274,11 @@ class ToolProvenanceOperation(pydantic.BaseModel):
                 input_name,
                 output_name=output_name,
                 source_name=source_name,
+                reserved_names=reserved_names,
             )
         if output_name is None:
             return expression
-        return f"{output_name} = {expression}"
+        return _assignment_code(output_name, expression)
 
     def preferred_replay_output_name(self) -> str | None:
         """Return a semantic output name when this operation changes value kind.
@@ -1928,6 +1979,7 @@ class _SourceViewOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         return _dynamic_nonuniform_restore_replay_code(
             input_name,

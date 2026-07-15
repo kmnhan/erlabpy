@@ -25,12 +25,17 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    BoxcarFilterOperation,
+    FillNaOperation,
+    GaussianFilterOperation,
+    ImageDerivativeOperation,
     IselOperation,
     QSelOperation,
     SelOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
     TransposeOperation,
+    UniformInterpolationOperation,
 )
 
 
@@ -72,13 +77,31 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     qtbot.addWidget(win)
 
     def check_generated_code(w: DerivativeTool) -> None:
+        code = w.copy_code()
         namespace = _exec_generated_code(
-            w.copy_code(),
+            code,
             {"data": data.copy(deep=True), "result": None},
         )
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
         xr.testing.assert_identical(w.result, result)
+        spec = w.current_provenance_spec()
+        assert spec is not None
+        assert all(
+            operation.op != "script_code" or not getattr(operation, "visible", True)
+            for operation in spec.operations
+        )
+        assert isinstance(spec.operations[-1], ImageDerivativeOperation)
+        if interpmode == "interp":
+            assert max(map(len, code.splitlines())) <= 88
+            assert "processed_data = data\n" not in code
+            assert (
+                sum(
+                    isinstance(operation, UniformInterpolationOperation)
+                    for operation in spec.operations
+                )
+                == 1
+            )
 
     win.interp_group.setChecked(interpmode == "interp")
     win.smooth_group.setChecked(smoothmode != "none")
@@ -138,7 +161,18 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     win.sn_spin.setValue(2)
     code = win.copy_code()
     assert "\t" not in code
-    assert "for _ in range(2):\n    processed = era.image.gaussian_filter(" in code
+    assert code.count("era.image.gaussian_filter(") == 2
+    assert "processed_data = era.image.gaussian_filter(data" in code
+    assert "processed_data = processed_data" not in code
+    provenance = win.current_provenance_spec()
+    assert provenance is not None
+    assert (
+        sum(
+            isinstance(operation, GaussianFilterOperation)
+            for operation in provenance.operations
+        )
+        == 2
+    )
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     assert isinstance(namespace["result"], xr.DataArray)
     xr.testing.assert_identical(win.result, namespace["result"])
@@ -146,6 +180,7 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     spec = script(
         *win._copy_provenance(input_name="data"),
         start_label="Compute derivative output",
+        seed_code="derived = data",
         active_name="result",
         script_inputs=(ScriptInput(name="data", label="Input"),),
     )
@@ -153,6 +188,75 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     graph = compile_replay_graph(spec, external_inputs={"data": data.copy(deep=True)})
     result = execute_replay_graph(graph)
     xr.testing.assert_identical(win.result, result)
+
+    win.smooth_combo.setCurrentIndex(1)
+    win.sx_spin.setValue(3)
+    win.sy_spin.setValue(3)
+    provenance = win.current_provenance_spec()
+    assert provenance is not None
+    assert (
+        sum(
+            isinstance(operation, BoxcarFilterOperation)
+            for operation in provenance.operations
+        )
+        == 2
+    )
+
+
+def test_dtool_nan_input_records_fill_operation(qtbot, monkeypatch) -> None:
+    values = np.arange(25, dtype=float).reshape(5, 5)
+    values[0, 0] = np.nan
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        name="data",
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Ok,
+    )
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    provenance = win.current_provenance_spec()
+    assert provenance is not None
+    fill_operation = next(
+        operation
+        for operation in provenance.operations
+        if isinstance(operation, FillNaOperation)
+    )
+    assert fill_operation.derivation_label() == "Fill missing values with 0.0"
+    xr.testing.assert_identical(
+        fill_operation.apply(data, parent_data=data),
+        data.fillna(0.0),
+    )
+
+    namespace = _exec_generated_code(
+        win.copy_code(),
+        {"data": data.copy(deep=True)},
+    )
+    generated = namespace["result"]
+    assert isinstance(generated, xr.DataArray)
+    xr.testing.assert_identical(generated, win.result)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, DerivativeTool)
+    assert restored.data_has_nan is True
+    restored_provenance = restored.current_provenance_spec()
+    assert restored_provenance is not None
+    assert any(
+        isinstance(operation, FillNaOperation)
+        for operation in restored_provenance.operations
+    )
+    restored_namespace = _exec_generated_code(
+        restored.copy_code(),
+        {"data": data.copy(deep=True)},
+    )
+    restored_result = restored_namespace["result"]
+    assert isinstance(restored_result, xr.DataArray)
+    xr.testing.assert_identical(restored_result, restored.result)
 
 
 def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> None:

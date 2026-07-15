@@ -65,15 +65,18 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoordsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
+    BoxcarFilterOperation,
     CoarsenOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
+    ImageDerivativeOperation,
     InterpolationOperation,
     IselOperation,
     LeadingEdgeOperation,
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RotateOperation,
     ScriptCodeOperation,
@@ -84,6 +87,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeNfoldOperation,
     SymmetrizeOperation,
     ThinOperation,
+    UniformInterpolationOperation,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -354,6 +358,191 @@ def test_operation_backed_dialog_empty_operation_edges(qtbot, monkeypatch) -> No
         rename_dialog.source_transform_operation()
 
     win.close()
+
+
+def test_tool_output_operation_editors_restore_parameters(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=("x", "y"),
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    derivative_dialog = imagetool_dialogs._ImageDerivativeDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(derivative_dialog)
+    derivative_dialog.restore_transform_operation(NormalizeOperation(dims=("x",)))
+    derivative_operations = (
+        ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x", "order": 3},
+        ),
+        ImageDerivativeOperation(
+            method="scaled_laplace",
+            kwargs={"factor": 0.5},
+        ),
+        ImageDerivativeOperation(
+            method="curvature1d",
+            kwargs={"along": "y", "a0": 0.25},
+        ),
+        ImageDerivativeOperation(
+            method="curvature",
+            kwargs={"a0": 0.75, "factor": 1.5},
+        ),
+        ImageDerivativeOperation(method="minimum_gradient", kwargs={}),
+    )
+    for derivative_operation in derivative_operations:
+        derivative_dialog.restore_transform_operation(derivative_operation)
+        assert derivative_dialog.source_transform_operation() == derivative_operation
+
+    missing_dimension = ImageDerivativeOperation(
+        method="diffn",
+        kwargs={"coord": "missing", "order": 2},
+    )
+    with pytest.raises(ValueError, match="is not available"):
+        derivative_dialog.restore_transform_operation(missing_dimension)
+    with pytest.raises(ValueError, match="outside the editor range"):
+        derivative_dialog.restore_transform_operation(
+            ImageDerivativeOperation(
+                method="diffn",
+                kwargs={"coord": "x", "order": 10},
+            )
+        )
+    _set_combo_data(derivative_dialog.method_combo, "diffn")
+    derivative_dialog.dimension_combo.setCurrentIndex(-1)
+    with pytest.raises(ValueError, match="has no dimensions"):
+        derivative_dialog.source_transform_operation()
+
+    uniform_interpolation = UniformInterpolationOperation(sizes={"x": 7, "y": 9})
+    interpolation_dialog = imagetool_dialogs._UniformInterpolationDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(interpolation_dialog)
+    interpolation_dialog.restore_transform_operation(uniform_interpolation)
+    assert interpolation_dialog.source_transform_operation() == uniform_interpolation
+    with pytest.raises(ValueError, match="outside the editor range"):
+        interpolation_dialog.restore_transform_operation(
+            UniformInterpolationOperation(sizes={"x": 10_000_001})
+        )
+
+    boxcar_operation = BoxcarFilterOperation(
+        size={"x": 3, "y": 5},
+        mode="constant",
+        cval=-1.5,
+    )
+    boxcar_dialog = imagetool_dialogs._BoxcarFilterDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(boxcar_dialog)
+    assert boxcar_dialog.filter_operation() is None
+    xr.testing.assert_identical(boxcar_dialog.process_data(data), data)
+    boxcar_dialog.restore_filter_operation(derivative_operations[0])
+    boxcar_dialog.restore_filter_operation(boxcar_operation)
+    assert boxcar_dialog.filter_operation() == boxcar_operation
+    xr.testing.assert_identical(
+        boxcar_dialog.process_data(data),
+        boxcar_operation.apply(data, parent_data=data),
+    )
+
+    missing_boxcar_dimension = BoxcarFilterOperation(size={"missing": 3})
+    with pytest.raises(ValueError, match="is not available"):
+        boxcar_dialog.restore_filter_operation(missing_boxcar_dimension)
+    with pytest.raises(ValueError, match="outside the editor range"):
+        boxcar_dialog.restore_filter_operation(
+            BoxcarFilterOperation(size={"x": 10_000})
+        )
+    boxcar_dialog.mode_combo.removeItem(
+        boxcar_dialog.mode_combo.findData(
+            boxcar_operation.mode,
+            QtCore.Qt.ItemDataRole.UserRole,
+        )
+    )
+    with pytest.raises(ValueError, match="is not available"):
+        boxcar_dialog.restore_filter_operation(boxcar_operation)
+
+    mesh_data = xr.DataArray(
+        np.ones((8, 8), dtype=float),
+        dims=("alpha", "eV"),
+    )
+    mesh_win = itool(mesh_data, execute=False)
+    qtbot.addWidget(mesh_win)
+    mesh_operation = RemoveMeshOperation(
+        first_order_peaks=((4, 4), (4, 6), (4, 2)),
+        order=1,
+        n_pad=0,
+        roi_hw=2,
+        k=0.25,
+        feather=1.5,
+        undo_edge_correction=False,
+        method="gaussian",
+        output="mesh",
+    )
+    mesh_dialog = imagetool_dialogs._RemoveMeshDialog(
+        mesh_win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(mesh_dialog)
+    mesh_dialog.restore_transform_operation(NormalizeOperation(dims=("alpha",)))
+    mesh_dialog.restore_transform_operation(mesh_operation)
+    assert mesh_dialog.source_transform_operation() == mesh_operation
+    mesh_code = mesh_dialog.make_code()
+    assert "corrected, mesh = era.mesh.remove_mesh(" in mesh_code
+    assert max(map(len, mesh_code.splitlines())) <= 88
+
+    with pytest.raises(ValueError, match="requires 'alpha' and 'eV'"):
+        mesh_dialog.preflight_data(data)
+    invalid_peak = mesh_operation.model_copy(
+        update={"first_order_peaks": ((4, 4), (4, 8), (4, 2))}
+    )
+    with pytest.raises(ValueError, match="outside the input data"):
+        mesh_dialog.restore_transform_operation(invalid_peak)
+    with pytest.raises(ValueError, match="outside the editor range"):
+        mesh_dialog.restore_transform_operation(
+            mesh_operation.model_copy(update={"order": 10})
+        )
+    mesh_dialog.method_combo.removeItem(
+        mesh_dialog.method_combo.findData(
+            mesh_operation.method,
+            QtCore.Qt.ItemDataRole.UserRole,
+        )
+    )
+    with pytest.raises(ValueError, match="is not available"):
+        mesh_dialog.restore_transform_operation(mesh_operation)
+    mesh_dialog.output_combo.clear()
+    with pytest.raises(ValueError, match="is not available"):
+        mesh_dialog.restore_transform_operation(mesh_operation)
+
+
+def test_uniform_interpolation_editor_uses_public_nonuniform_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.4, 1.0], "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    dialog = imagetool_dialogs._UniformInterpolationDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(dialog)
+    assert set(dialog.dim_checks) == {"x", "y"}
+
+    operation = UniformInterpolationOperation(sizes={"x": 5})
+    dialog.restore_transform_operation(operation)
+    assert dialog.source_transform_operation() == operation
+    public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
+    xr.testing.assert_identical(
+        dialog.process_data(public_data),
+        operation.apply(public_data, parent_data=public_data),
+    )
 
 
 def _assert_guideline_state(

@@ -5,7 +5,8 @@ from __future__ import annotations
 import contextlib
 import keyword
 import typing
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Collection, Hashable, Mapping, Sequence
+from numbers import Integral
 
 import numpy as np
 import pydantic
@@ -50,6 +51,19 @@ from erlab.interactive.imagetool._provenance._model import (
     decode_provenance_value,
     encode_provenance_value,
 )
+
+
+def _require_integer_mapping(value: typing.Any, *, field_name: str) -> typing.Any:
+    """Reject lossy integer coercion before provenance mapping normalization."""
+    decoded = decode_provenance_value(value)
+    if not isinstance(decoded, Mapping):
+        return value
+    if any(
+        isinstance(item, bool) or not isinstance(item, Integral)
+        for item in decoded.values()
+    ):
+        raise TypeError(f"{field_name} must be integers")
+    return value
 
 
 class ImageToolSelectionSourceBinding(pydantic.BaseModel):
@@ -749,7 +763,7 @@ class TransposeOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         if self.dims:
             return data.transpose(*self.dims)
-        return data.transpose(*reversed(data.dims))
+        return data.transpose()
 
     def derivation_label(self) -> str:
         if self.dims:
@@ -766,7 +780,7 @@ class TransposeOperation(ToolProvenanceOperation):
                 f"{input_name}.transpose(*"
                 f"{erlab.interactive.utils._parse_single_arg(dims_tuple)})"
             )
-        return f"{input_name}.transpose(*reversed({input_name}.dims))"
+        return f"{input_name}.transpose()"
 
 
 class SqueezeOperation(ToolProvenanceOperation):
@@ -891,6 +905,7 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         if self.dimension_mapping is not None:
             return _known_nonuniform_restore_statement_code(
@@ -1152,6 +1167,89 @@ class InterpolationOperation(ToolProvenanceOperation):
         return f"Interpolate({_format_derivation_value(label_kwargs)})"
 
 
+class UniformInterpolationOperation(ToolProvenanceOperation):
+    """Interpolate dimensions over their current coordinate bounds."""
+
+    op: typing.Literal["uniform_interpolation"] = "uniform_interpolation"
+    batch_available: typing.ClassVar[bool] = True
+    sizes: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
+    method: typing.Literal["linear", "nearest"] = "linear"
+
+    @pydantic.field_validator("sizes", mode="before")
+    @classmethod
+    def _validate_integer_sizes(cls, value: typing.Any) -> typing.Any:
+        return _require_integer_mapping(value, field_name="interpolation sizes")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_sizes(self) -> typing.Self:
+        if not self.sizes:
+            raise ValueError("uniform interpolation requires at least one dimension")
+        if any(size < 1 for size in self.sizes.values()):
+            raise ValueError("uniform interpolation sizes must be positive integers")
+        return self
+
+    @staticmethod
+    def _target_values(data: xr.DataArray, dim: Hashable, size: int) -> np.ndarray:
+        coord = np.asarray(data[dim].values)
+        if coord.ndim != 1 or coord.size == 0:
+            raise ValueError(
+                "uniform interpolation requires a nonempty 1D dimension coordinate"
+            )
+        if not np.issubdtype(coord.dtype, np.number) or np.issubdtype(
+            coord.dtype, np.complexfloating
+        ):
+            raise ValueError(
+                "uniform interpolation requires a real numeric dimension coordinate"
+            )
+        endpoints = coord.astype(np.float64, copy=False)[[0, -1]]
+        if not np.all(np.isfinite(endpoints)):
+            raise ValueError("uniform interpolation bounds must be finite")
+        return np.linspace(float(endpoints[0]), float(endpoints[1]), size)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.interp(
+            {
+                dim: self._target_values(data, dim, size)
+                for dim, size in self.sizes.items()
+            },
+            method=self.method,
+        )
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        target_lines = [
+            (
+                f"        {erlab.interactive.utils._parse_single_arg(dim)}: "
+                f"np.linspace(*{input_name}["
+                f"{erlab.interactive.utils._parse_single_arg(dim)}"
+                f"].values[[0, -1]], {size}),"
+            )
+            for dim, size in self.sizes.items()
+        ]
+        method_code = erlab.interactive.utils._parse_single_arg(self.method)
+        return "\n".join(
+            (
+                f"{input_name}.interp(",
+                "    {",
+                *target_lines,
+                "    },",
+                f"    method={method_code},",
+                ")",
+            )
+        )
+
+    def derivation_label(self) -> str:
+        label_kwargs = {
+            "sizes": self.sizes,
+            "method": self.method,
+        }
+        return f"Interpolate Uniform Grid({_format_derivation_value(label_kwargs)})"
+
+    def preferred_replay_output_name(self) -> str:
+        return "processed_data"
+
+
 class LeadingEdgeOperation(ToolProvenanceOperation):
     op: typing.Literal["leading_edge"] = "leading_edge"
     batch_available: typing.ClassVar[bool] = True
@@ -1253,6 +1351,246 @@ class GaussianFilterOperation(ToolProvenanceOperation):
             {"sigma": self.sigma},
             module="era.image",
         )
+
+
+class BoxcarFilterOperation(ToolProvenanceOperation):
+    """Apply a coordinate-preserving boxcar filter along selected dimensions."""
+
+    op: typing.Literal["boxcar_filter"] = "boxcar_filter"
+    batch_available: typing.ClassVar[bool] = True
+    size: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
+    mode: typing.Literal["reflect", "constant", "nearest", "mirror", "wrap"] = "nearest"
+    cval: float = 0.0
+
+    @pydantic.field_validator("size", mode="before")
+    @classmethod
+    def _validate_integer_sizes(cls, value: typing.Any) -> typing.Any:
+        return _require_integer_mapping(value, field_name="boxcar filter sizes")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_boxcar_filter(self) -> typing.Self:
+        if not self.size:
+            raise ValueError("boxcar filter requires at least one dimension")
+        if any(value <= 0 for value in self.size.values()):
+            raise ValueError("boxcar filter sizes must be positive integers")
+        if not np.isfinite(self.cval):
+            raise ValueError("boxcar filter cval must be finite")
+        return self
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {"size": self.size, "mode": self.mode, "cval": self.cval}
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.image.boxcar_filter(data, **self.kwargs)
+
+    def derivation_label(self) -> str:
+        return f"Boxcar Filter({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.image.boxcar_filter,
+            [f"|{input_name}|"],
+            self.kwargs,
+            module="era.image",
+        )
+
+
+class FillNaOperation(ToolProvenanceOperation):
+    """Replace missing values with a scalar through the public xarray API."""
+
+    op: typing.Literal["fillna"] = "fillna"
+    value: float = 0.0
+
+    @pydantic.field_validator("value")
+    @classmethod
+    def _validate_fill_value(cls, value: float) -> float:
+        if not np.isfinite(value):
+            raise ValueError("fill value must be finite")
+        return value
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.fillna(self.value)
+
+    def derivation_label(self) -> str:
+        return f"Fill missing values with {_format_derivation_value(self.value)}"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return f"{input_name}.fillna({_provenance_value_code(self.value)})"
+
+
+_IMAGE_DERIVATIVE_KWARGS: dict[str, frozenset[str]] = {
+    "diffn": frozenset(("coord", "order")),
+    "scaled_laplace": frozenset(("factor",)),
+    "curvature1d": frozenset(("along", "a0")),
+    "curvature": frozenset(("a0", "factor")),
+    "minimum_gradient": frozenset(),
+}
+
+
+class ImageDerivativeOperation(ToolProvenanceOperation):
+    """Apply one of the public image-derivative functions."""
+
+    op: typing.Literal["image_derivative"] = "image_derivative"
+    method: typing.Literal[
+        "diffn",
+        "scaled_laplace",
+        "curvature1d",
+        "curvature",
+        "minimum_gradient",
+    ]
+    kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
+
+    @pydantic.model_validator(mode="after")
+    def _validate_derivative(self) -> typing.Self:
+        if any(not isinstance(key, str) for key in self.kwargs):
+            raise ValueError("image derivative keyword names must be strings")
+        expected = _IMAGE_DERIVATIVE_KWARGS[self.method]
+        actual = frozenset(typing.cast("dict[str, typing.Any]", self.kwargs))
+        if actual != expected:
+            raise ValueError(
+                f"{self.method} requires keyword arguments {sorted(expected)!r}"
+            )
+
+        kwargs = typing.cast("dict[str, typing.Any]", dict(self.kwargs))
+        dimension_key = "coord" if self.method == "diffn" else "along"
+        if dimension_key in kwargs and not isinstance(kwargs[dimension_key], Hashable):
+            raise ValueError(f"{dimension_key} must be hashable")
+        if self.method == "diffn":
+            order = kwargs["order"]
+            if isinstance(order, bool) or not isinstance(order, int) or order <= 0:
+                raise ValueError("diffn order must be a positive integer")
+        for name in expected & {"a0", "factor"}:
+            value = kwargs[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be a real number")
+            if not np.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+        if "a0" in kwargs and kwargs["a0"] <= 0:
+            raise ValueError("a0 must be positive")
+        return self
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        function = getattr(erlab.analysis.image, self.method)
+        kwargs = typing.cast("dict[str, typing.Any]", dict(self.kwargs))
+        result = function(data, **kwargs)
+        if not isinstance(result, xr.DataArray):  # pragma: no cover - validation guard.
+            raise TypeError(f"{self.method} did not return a DataArray")
+        return result
+
+    def derivation_label(self) -> str:
+        return (
+            f"Image Derivative({self.method}, {_format_derivation_value(self.kwargs)})"
+        )
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            getattr(erlab.analysis.image, self.method),
+            [f"|{input_name}|"],
+            typing.cast("dict[str, typing.Any]", dict(self.kwargs)),
+            module="era.image",
+            remove_defaults=False,
+        )
+
+    def preferred_replay_output_name(self) -> str:
+        return "result"
+
+    def preferred_replay_input_name(self) -> str:
+        return "processed_data"
+
+
+class RemoveMeshOperation(ToolProvenanceOperation):
+    """Remove a mesh pattern and select one of the two DataArray outputs."""
+
+    op: typing.Literal["remove_mesh"] = "remove_mesh"
+    first_order_peaks: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
+    order: int = pydantic.Field(default=3, ge=0)
+    n_pad: int = pydantic.Field(default=90, ge=0)
+    roi_hw: int = pydantic.Field(default=25, ge=0)
+    k: float = 0.5
+    feather: float = pydantic.Field(default=3.0, ge=0.0)
+    undo_edge_correction: bool = False
+    method: typing.Literal["constant", "gaussian", "circular"] = "constant"
+    output: typing.Literal["corrected", "mesh"] = "corrected"
+
+    @pydantic.model_validator(mode="after")
+    def _validate_remove_mesh(self) -> typing.Self:
+        if not np.isfinite(self.k):
+            raise ValueError("mesh threshold k must be finite")
+        if not np.isfinite(self.feather):
+            raise ValueError("mesh feather must be finite")
+        return self
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "first_order_peaks": self.first_order_peaks,
+            "order": self.order,
+            "n_pad": self.n_pad,
+            "roi_hw": self.roi_hw,
+            "k": self.k,
+            "feather": self.feather,
+            "undo_edge_correction": self.undo_edge_correction,
+            "method": self.method,
+        }
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        corrected, mesh = typing.cast(
+            "tuple[xr.DataArray, xr.DataArray]",
+            erlab.analysis.mesh.remove_mesh(data, **self.kwargs),
+        )
+        return corrected if self.output == "corrected" else mesh
+
+    def derivation_label(self) -> str:
+        action = "Remove Mesh" if self.output == "corrected" else "Extract Mesh"
+        return f"{action}({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        raise NotImplementedError
+
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        other_base = "mesh" if self.output == "corrected" else "corrected"
+        unavailable = {input_name, output_name, *reserved_names}
+        other_name = other_base
+        suffix = 2
+        while other_name in unavailable:
+            other_name = f"{other_base}_{suffix}"
+            suffix += 1
+        corrected_name, mesh_name = (
+            (output_name, other_name)
+            if self.output == "corrected"
+            else (other_name, output_name)
+        )
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.mesh.remove_mesh,
+            [f"|{input_name}|"],
+            self.kwargs,
+            module="era.mesh",
+            assign=(corrected_name, mesh_name),
+            remove_defaults=False,
+            copy=False,
+        )
+
+    def preferred_replay_output_name(self) -> str:
+        return self.output
+
+    def preferred_replay_input_name(self) -> str:
+        return "mesh_data"
 
 
 class NormalizeOperation(ToolProvenanceOperation):
@@ -2093,6 +2431,7 @@ class _MutatingKspaceOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         if input_name == output_name:
             return self._kspace_statement_code(output_name)

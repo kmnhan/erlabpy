@@ -63,9 +63,11 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoordsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
+    BoxcarFilterOperation,
     CoarsenOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
+    ImageDerivativeOperation,
     InterpolationOperation,
     IselOperation,
     KspaceConvertOperation,
@@ -75,6 +77,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RenameOperation,
     RestoreNonuniformDimsOperation,
@@ -87,6 +90,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeOperation,
     ThinOperation,
     TransposeOperation,
+    UniformInterpolationOperation,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
@@ -781,6 +785,7 @@ def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
         AverageOperation(dims=("x",)),
         QSelAggregationOperation(dims=("x",), func="mean"),
         InterpolationOperation(dim="x", values=[0.0, 1.0]),
+        UniformInterpolationOperation(sizes={"x": 3}),
         LeadingEdgeOperation(dim="x", fraction=0.5),
         CoarsenOperation(
             dim={"x": 2},
@@ -799,6 +804,17 @@ def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
         NormalizeOperation(dims=("x",), mode="area"),
         DivideByCoordOperation(coord_name="x"),
         GaussianFilterOperation(sigma={"x": 1.0}),
+        BoxcarFilterOperation(size={"x": 3}),
+        ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x", "order": 2},
+        ),
+        RemoveMeshOperation(
+            first_order_peaks=((1, 1), (1, 2), (1, 0)),
+            order=1,
+            n_pad=0,
+            roi_hw=1,
+        ),
         SwapDimsOperation(mapping={"x": "kx"}),
         RenameDimsCoordsOperation(mapping={"x": "kx"}),
         AffineCoordOperation(coord_name="x", scale=1.0, offset=0.0),
@@ -7882,8 +7898,17 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
 
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
-        child._corrected = child.tool_data.copy(deep=True) + 1
-        child._mesh = child.tool_data.copy(deep=True) - 1
+        child.order_spin.setValue(1)
+        child.n_pad_spin.setValue(0)
+        child.roi_hw_spin.setValue(1)
+        child.feather_spin.setValue(0.0)
+        child.p0_spin0.setValue(1)
+        child.p0_spin1.setValue(3)
+        child.p1_spin0.setValue(1)
+        child.p1_spin1.setValue(1)
+        child.update()
+        assert child._corrected is not None
+        assert child._mesh is not None
 
         if output_id == "meshtool.corrected_output":
             child._corr_itool()
@@ -7915,6 +7940,16 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         assert ")[0]" not in copied
         assert ")[1]" not in copied
         assert f"derived = {expected_name}.qsel(alpha=1, alpha_width=1)" in copied
+        namespace = _exec_generated_code(
+            copied,
+            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+        )
+        generated = namespace["derived"]
+        assert isinstance(generated, xr.DataArray)
+        xr.testing.assert_identical(
+            generated,
+            output_data.qsel(alpha=1, alpha_width=1),
+        )
 
 
 def test_manager_fit2d_output_itools_use_distinct_output_ids(

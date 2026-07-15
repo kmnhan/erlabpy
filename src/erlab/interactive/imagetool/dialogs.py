@@ -39,10 +39,12 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoordsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
+    BoxcarFilterOperation,
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
+    ImageDerivativeOperation,
     InterpolationOperation,
     IselOperation,
     KspaceConfigurationOperation,
@@ -55,6 +57,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RestoreNonuniformDimsOperation,
     RotateOperation,
@@ -66,6 +69,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeNfoldOperation,
     SymmetrizeOperation,
     ThinOperation,
+    UniformInterpolationOperation,
 )
 
 __all__ = [
@@ -140,6 +144,25 @@ def _set_combo_text(combo: QtWidgets.QComboBox, value: str) -> bool:
         return False
     combo.setCurrentIndex(index)
     return True
+
+
+def _set_spin_value(
+    spin: (
+        QtWidgets.QSpinBox
+        | QtWidgets.QDoubleSpinBox
+        | erlab.interactive.utils.BetterSpinBox
+    ),
+    value: float,
+    *,
+    label: str,
+) -> None:
+    """Restore a spin value without silently clamping the operation model."""
+    if not spin.minimum() <= value <= spin.maximum():
+        raise ValueError(f"{label} {value!r} is outside the editor range")
+    if isinstance(spin, QtWidgets.QSpinBox):
+        spin.setValue(int(value))
+    else:
+        spin.setValue(float(value))
 
 
 _AGGREGATION_REDUCERS: dict[str, str] = {
@@ -846,10 +869,23 @@ class DataTransformDialog(_DataManipulationDialog):
             operations = self.source_operations()
             input_name = self._copy_data_name()
             if not any(operation.statement_mutates_input for operation in operations):
-                return operations_expression_code(
-                    operations,
-                    input_name,
-                )
+                try:
+                    return operations_expression_code(
+                        operations,
+                        input_name,
+                    )
+                except NotImplementedError:
+                    if len(operations) != 1:
+                        raise
+                    operation = operations[0]
+                    output_name = (
+                        operation.preferred_replay_output_name()
+                        or f"{input_name}{self.copy_output_suffix}"
+                    )
+                    return operation.replay_code(
+                        input_name,
+                        output_name=output_name,
+                    )
 
             if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
@@ -2752,10 +2788,7 @@ class InterpolationDialog(DataTransformDialog):
         self,
         operation: ToolProvenanceOperation,
     ) -> None:
-        if not isinstance(
-            operation,
-            InterpolationOperation,
-        ):
+        if not isinstance(operation, InterpolationOperation):
             return
         if not _set_combo_data(self.dim_combo, operation.dim):
             raise ValueError(f"Dimension {operation.dim!r} is not available")
@@ -2796,6 +2829,382 @@ class InterpolationDialog(DataTransformDialog):
             return
 
         super().accept()
+
+
+class _UniformInterpolationDialog(DataTransformDialog):
+    """Parameter editor for interpolation over current coordinate bounds."""
+
+    title = "Interpolate Uniform Grid"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (UniformInterpolationOperation,)
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        self.size_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout(dim_group)
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Point Count"), 0, 1)
+        for row, dim in enumerate(self._source_data.dims, start=1):
+            check = QtWidgets.QCheckBox(str(dim))
+            size_spin = QtWidgets.QSpinBox()
+            size_spin.setRange(1, 10_000_000)
+            size_spin.setValue(self._source_data.sizes[dim])
+            size_spin.setEnabled(False)
+            check.toggled.connect(size_spin.setEnabled)
+            self.dim_checks[dim] = check
+            self.size_spins[dim] = size_spin
+            dim_layout.addWidget(check, row, 0)
+            dim_layout.addWidget(size_spin, row, 1)
+        self.layout_.addRow(dim_group)
+
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.addItems(["linear", "nearest"])
+        self.layout_.addRow("Method", self.method_combo)
+
+    @property
+    def _sizes(self) -> dict[Hashable, int]:
+        return {
+            dim: self.size_spins[dim].value()
+            for dim, check in self.dim_checks.items()
+            if check.isChecked()
+        }
+
+    def source_transform_operation(self) -> UniformInterpolationOperation:
+        if not (sizes := self._sizes):
+            raise ValueError("No dimensions selected")
+        return UniformInterpolationOperation(
+            sizes=sizes,
+            method=typing.cast(
+                "typing.Literal['linear', 'nearest']",
+                self.method_combo.currentText(),
+            ),
+        )
+
+    def restore_transform_operation(
+        self,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, UniformInterpolationOperation):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim, size in operation.sizes.items():
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+            _set_spin_value(
+                self.size_spins[dim],
+                size,
+                label=f"Interpolation size for {dim!r}",
+            )
+        if not _set_combo_text(self.method_combo, operation.method):
+            raise ValueError(
+                f"Interpolation method {operation.method!r} is not available"
+            )
+
+
+class _ImageDerivativeDialog(DataTransformDialog):
+    """Parameter editor for image-derivative provenance."""
+
+    title = "Image Derivative"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (ImageDerivativeOperation,)
+    _METHODS: typing.ClassVar[tuple[tuple[str, str], ...]] = (
+        ("diffn", "Second Derivative"),
+        ("scaled_laplace", "Scaled Laplace"),
+        ("curvature1d", "1D Curvature"),
+        ("curvature", "2D Curvature"),
+        ("minimum_gradient", "Minimum Gradient"),
+    )
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        self.method_combo = QtWidgets.QComboBox()
+        for method, label in self._METHODS:
+            self.method_combo.addItem(label, userData=method)
+        self.method_combo.currentIndexChanged.connect(self._sync_method_controls)
+        self.layout_.addRow("Method", self.method_combo)
+
+        self.dimension_label = QtWidgets.QLabel("Dimension")
+        self.dimension_combo = QtWidgets.QComboBox()
+        for dim in self._source_data.dims:
+            self.dimension_combo.addItem(str(dim), userData=dim)
+        self.layout_.addRow(self.dimension_label, self.dimension_combo)
+
+        self.order_label = QtWidgets.QLabel("Order")
+        self.order_spin = QtWidgets.QSpinBox()
+        self.order_spin.setRange(1, 9)
+        self.order_spin.setValue(2)
+        self.layout_.addRow(self.order_label, self.order_spin)
+
+        self.a0_label = QtWidgets.QLabel("a₀")
+        self.a0_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+        )
+        self.a0_spin.setRange(1e-12, 1e12)
+        self.a0_spin.setDecimals(8)
+        self.a0_spin.setValue(1.0)
+        self.layout_.addRow(self.a0_label, self.a0_spin)
+
+        self.factor_label = QtWidgets.QLabel("Factor")
+        self.factor_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+        )
+        self.factor_spin.setRange(-1e12, 1e12)
+        self.factor_spin.setDecimals(8)
+        self.factor_spin.setValue(1.0)
+        self.layout_.addRow(self.factor_label, self.factor_spin)
+        self._sync_method_controls()
+
+    @property
+    def _method(self) -> str:
+        return str(self.method_combo.currentData(QtCore.Qt.ItemDataRole.UserRole))
+
+    @property
+    def _dimension(self) -> Hashable:
+        if self.dimension_combo.currentIndex() < 0:
+            raise ValueError("Derivative input has no dimensions")
+        return typing.cast(
+            "Hashable",
+            self.dimension_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _sync_method_controls(self, _index: int | None = None) -> None:
+        method = self._method
+        uses_dimension = method in {"diffn", "curvature1d"}
+        uses_order = method == "diffn"
+        uses_a0 = method in {"curvature1d", "curvature"}
+        uses_factor = method in {"scaled_laplace", "curvature"}
+        self.dimension_label.setVisible(uses_dimension)
+        self.dimension_combo.setVisible(uses_dimension)
+        self.order_label.setVisible(uses_order)
+        self.order_spin.setVisible(uses_order)
+        self.a0_label.setVisible(uses_a0)
+        self.a0_spin.setVisible(uses_a0)
+        self.factor_label.setVisible(uses_factor)
+        self.factor_spin.setVisible(uses_factor)
+
+    def source_transform_operation(self) -> ImageDerivativeOperation:
+        method = self._method
+        kwargs: dict[str, typing.Any]
+        if method == "diffn":
+            kwargs = {"coord": self._dimension, "order": self.order_spin.value()}
+        elif method == "scaled_laplace":
+            kwargs = {"factor": self.factor_spin.value()}
+        elif method == "curvature1d":
+            kwargs = {"along": self._dimension, "a0": self.a0_spin.value()}
+        elif method == "curvature":
+            kwargs = {
+                "a0": self.a0_spin.value(),
+                "factor": self.factor_spin.value(),
+            }
+        else:
+            kwargs = {}
+        return ImageDerivativeOperation(
+            method=typing.cast(
+                "typing.Literal['diffn', 'scaled_laplace', 'curvature1d', "
+                "'curvature', 'minimum_gradient']",
+                method,
+            ),
+            kwargs=typing.cast("dict[Hashable, typing.Any]", kwargs),
+        )
+
+    def restore_transform_operation(
+        self,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, ImageDerivativeOperation):
+            return
+        if not _set_combo_data(self.method_combo, operation.method):
+            raise ValueError(f"Derivative method {operation.method!r} is not available")
+        kwargs = typing.cast("dict[str, typing.Any]", dict(operation.kwargs))
+        dimension = kwargs.get("coord", kwargs.get("along"))
+        if dimension is not None and not _set_combo_data(
+            self.dimension_combo, dimension
+        ):
+            raise ValueError(f"Dimension {dimension!r} is not available")
+        if "order" in kwargs:
+            _set_spin_value(
+                self.order_spin,
+                int(kwargs["order"]),
+                label="Derivative order",
+            )
+        if "a0" in kwargs:
+            _set_spin_value(
+                self.a0_spin,
+                float(kwargs["a0"]),
+                label="Derivative a0",
+            )
+        if "factor" in kwargs:
+            _set_spin_value(
+                self.factor_spin,
+                float(kwargs["factor"]),
+                label="Derivative factor",
+            )
+        self._sync_method_controls()
+
+
+class _RemoveMeshDialog(DataTransformDialog):
+    """Parameter editor for mesh-removal provenance."""
+
+    title = "Remove Mesh"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (RemoveMeshOperation,)
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        self.output_combo = QtWidgets.QComboBox()
+        self.output_combo.addItem("Corrected Data", userData="corrected")
+        self.output_combo.addItem("Extracted Mesh", userData="mesh")
+        self.layout_.addRow("Output", self.output_combo)
+
+        self.peak_spins: list[tuple[QtWidgets.QSpinBox, QtWidgets.QSpinBox]] = []
+        peak_group = QtWidgets.QGroupBox("First-order Peaks")
+        peak_layout = QtWidgets.QGridLayout(peak_group)
+        peak_layout.addWidget(QtWidgets.QLabel("Point"), 0, 0)
+        peak_layout.addWidget(QtWidgets.QLabel("alpha index"), 0, 1)
+        peak_layout.addWidget(QtWidgets.QLabel("eV index"), 0, 2)
+        alpha_max = max(0, self._source_data.sizes.get("alpha", 1) - 1)
+        energy_max = max(0, self._source_data.sizes.get("eV", 1) - 1)
+        for row, label in enumerate(("Center", "Peak 1", "Peak 2"), start=1):
+            alpha_spin = QtWidgets.QSpinBox()
+            energy_spin = QtWidgets.QSpinBox()
+            alpha_spin.setRange(0, alpha_max)
+            energy_spin.setRange(0, energy_max)
+            self.peak_spins.append((alpha_spin, energy_spin))
+            peak_layout.addWidget(QtWidgets.QLabel(label), row, 0)
+            peak_layout.addWidget(alpha_spin, row, 1)
+            peak_layout.addWidget(energy_spin, row, 2)
+        self.layout_.addRow(peak_group)
+
+        self.method_combo = QtWidgets.QComboBox()
+        for method in ("constant", "gaussian", "circular"):
+            self.method_combo.addItem(method.title(), userData=method)
+        self.layout_.addRow("Mask Method", self.method_combo)
+
+        self.order_spin = QtWidgets.QSpinBox()
+        self.order_spin.setRange(0, 9)
+        self.order_spin.setValue(3)
+        self.layout_.addRow("Order", self.order_spin)
+
+        self.n_pad_spin = QtWidgets.QSpinBox()
+        self.n_pad_spin.setRange(0, 9999)
+        self.n_pad_spin.setValue(90)
+        self.layout_.addRow("Padding", self.n_pad_spin)
+
+        self.roi_hw_spin = QtWidgets.QSpinBox()
+        self.roi_hw_spin.setRange(0, 9999)
+        self.roi_hw_spin.setValue(25)
+        self.layout_.addRow("ROI Half-width", self.roi_hw_spin)
+
+        self.k_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+        )
+        self.k_spin.setRange(-1e12, 1e12)
+        self.k_spin.setDecimals(8)
+        self.k_spin.setValue(0.5)
+        self.layout_.addRow("Threshold k", self.k_spin)
+
+        self.feather_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+        )
+        self.feather_spin.setRange(0.0, 1e12)
+        self.feather_spin.setDecimals(8)
+        self.feather_spin.setValue(3.0)
+        self.layout_.addRow("Feather", self.feather_spin)
+
+        self.undo_edge_check = QtWidgets.QCheckBox()
+        self.layout_.addRow("Undo Edge Correction", self.undo_edge_check)
+
+    @property
+    def _first_order_peaks(
+        self,
+    ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+        values = tuple(
+            (alpha_spin.value(), energy_spin.value())
+            for alpha_spin, energy_spin in self.peak_spins
+        )
+        return typing.cast(
+            "tuple[tuple[int, int], tuple[int, int], tuple[int, int]]",
+            values,
+        )
+
+    def preflight_data(self, data: xr.DataArray) -> None:
+        missing = {"alpha", "eV"} - set(data.dims)
+        if missing:
+            raise ValueError("Mesh removal requires 'alpha' and 'eV' dimensions")
+
+    def source_transform_operation(self) -> RemoveMeshOperation:
+        return RemoveMeshOperation(
+            first_order_peaks=self._first_order_peaks,
+            order=self.order_spin.value(),
+            n_pad=self.n_pad_spin.value(),
+            roi_hw=self.roi_hw_spin.value(),
+            k=self.k_spin.value(),
+            feather=self.feather_spin.value(),
+            undo_edge_correction=self.undo_edge_check.isChecked(),
+            method=typing.cast(
+                "typing.Literal['constant', 'gaussian', 'circular']",
+                self.method_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+            ),
+            output=typing.cast(
+                "typing.Literal['corrected', 'mesh']",
+                self.output_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+            ),
+        )
+
+    def restore_transform_operation(
+        self,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, RemoveMeshOperation):
+            return
+        if not _set_combo_data(self.output_combo, operation.output):
+            raise ValueError(f"Mesh output {operation.output!r} is not available")
+        if not _set_combo_data(self.method_combo, operation.method):
+            raise ValueError(f"Mesh method {operation.method!r} is not available")
+        for spins, peak in zip(
+            self.peak_spins, operation.first_order_peaks, strict=True
+        ):
+            for spin, value in zip(spins, peak, strict=True):
+                if not spin.minimum() <= value <= spin.maximum():
+                    raise ValueError(
+                        f"Mesh peak index {value} is outside the input data"
+                    )
+                spin.setValue(value)
+        _set_spin_value(self.order_spin, operation.order, label="Mesh order")
+        _set_spin_value(self.n_pad_spin, operation.n_pad, label="Mesh padding")
+        _set_spin_value(
+            self.roi_hw_spin,
+            operation.roi_hw,
+            label="Mesh ROI half-width",
+        )
+        _set_spin_value(self.k_spin, operation.k, label="Mesh threshold k")
+        _set_spin_value(
+            self.feather_spin,
+            operation.feather,
+            label="Mesh feather",
+        )
+        self.undo_edge_check.setChecked(operation.undo_edge_correction)
 
 
 class SortByDialog(DataTransformDialog):
@@ -4374,6 +4783,99 @@ class GaussianFilterDialog(DataFilterDialog):
             self.dim_checks[dim].setChecked(True)
             self._set_synced_exact_value(self.sigma_spins[dim], float(sigma))
             self._sync_from_sigma(dim)
+
+
+class _BoxcarFilterDialog(DataFilterDialog):
+    """Parameter editor for boxcar-filter provenance."""
+
+    title = "Boxcar Filter"
+    enable_copy = True
+    operation_types = (BoxcarFilterOperation,)
+
+    def setup_widgets(self) -> None:
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        self.size_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout(dim_group)
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Window Size"), 0, 1)
+        for row, dim in enumerate(self.slicer_area.data.dims, start=1):
+            check = QtWidgets.QCheckBox(str(dim))
+            size_spin = QtWidgets.QSpinBox()
+            size_spin.setRange(1, 9999)
+            size_spin.setValue(3)
+            size_spin.setEnabled(False)
+            check.toggled.connect(size_spin.setEnabled)
+            self.dim_checks[dim] = check
+            self.size_spins[dim] = size_spin
+            dim_layout.addWidget(check, row, 0)
+            dim_layout.addWidget(size_spin, row, 1)
+        self.layout_.addRow(dim_group)
+
+        self.mode_combo = QtWidgets.QComboBox()
+        for mode in ("nearest", "reflect", "constant", "mirror", "wrap"):
+            self.mode_combo.addItem(mode.title(), userData=mode)
+        self.layout_.addRow("Boundary Mode", self.mode_combo)
+
+        self.cval_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+        )
+        self.cval_spin.setRange(-1e12, 1e12)
+        self.cval_spin.setDecimals(8)
+        self.layout_.addRow("Constant Value", self.cval_spin)
+
+    @property
+    def _sizes(self) -> dict[Hashable, int]:
+        return {
+            dim: self.size_spins[dim].value()
+            for dim, check in self.dim_checks.items()
+            if check.isChecked()
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        operation = self.filter_operation()
+        if operation is None:
+            return data
+        return operation.apply(data, parent_data=data)
+
+    def filter_operation(self) -> ToolProvenanceOperation | None:
+        if not (sizes := self._sizes):
+            return None
+        return BoxcarFilterOperation(
+            size=sizes,
+            mode=typing.cast(
+                "typing.Literal['reflect', 'constant', 'nearest', 'mirror', 'wrap']",
+                self.mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+            ),
+            cval=self.cval_spin.value(),
+        )
+
+    def restore_filter_operation(
+        self,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, BoxcarFilterOperation):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim, size in operation.size.items():
+            if dim not in self.dim_checks:
+                raise ValueError(f"Dimension {dim!r} is not available")
+            self.dim_checks[dim].setChecked(True)
+            _set_spin_value(
+                self.size_spins[dim],
+                size,
+                label=f"Boxcar size for {dim!r}",
+            )
+        if not _set_combo_data(self.mode_combo, operation.mode):
+            raise ValueError(f"Boxcar mode {operation.mode!r} is not available")
+        _set_spin_value(
+            self.cval_spin,
+            operation.cval,
+            label="Boxcar constant value",
+        )
 
 
 class SwapDimsDialog(DataTransformDialog):

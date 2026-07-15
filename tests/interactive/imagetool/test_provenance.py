@@ -59,6 +59,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _as_script_replay_spec,
+    _assignment_code,
     _callable_paths,
     _coerce_float_sequence,
     _console_mapping_values,
@@ -106,10 +107,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoordsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
+    BoxcarFilterOperation,
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    FillNaOperation,
     GaussianFilterOperation,
+    ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
     InterpolationOperation,
     IselOperation,
@@ -124,6 +128,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RenameOperation,
     RestoreNonuniformDimsOperation,
@@ -140,6 +145,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeOperation,
     ThinOperation,
     TransposeOperation,
+    UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
 
@@ -490,9 +496,23 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         AverageOperation(dims=("x",)),
         QSelAggregationOperation(dims=("x",), func="sum"),
         InterpolationOperation(dim="x", values=[0.25, 0.75]),
+        UniformInterpolationOperation(sizes={"x": 4}),
         LeadingEdgeOperation(fraction=0.5, dim="x"),
         DivideByCoordOperation(coord_name="x"),
         GaussianFilterOperation(sigma={"x": 0.5}),
+        BoxcarFilterOperation(size={"x": 3}),
+        FillNaOperation(value=0.0),
+        ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x", "order": 2},
+        ),
+        RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            order=1,
+            n_pad=0,
+            roi_hw=2,
+            output="corrected",
+        ),
         NormalizeOperation(dims=("x",), mode="minmax"),
         CoarsenOperation(
             dim={"x": 2},
@@ -563,6 +583,96 @@ def test_structured_operations_generate_public_code(
 
     assert "erlab.interactive.imagetool" not in code
     assert "decode_provenance_value" not in code
+
+
+@pytest.mark.parametrize(
+    "operation_factory",
+    [
+        lambda: BoxcarFilterOperation(size={}),
+        lambda: BoxcarFilterOperation(size={"x": 0}),
+        lambda: BoxcarFilterOperation(size={"x": True}),
+        lambda: BoxcarFilterOperation(size={"x": 1.5}),
+        lambda: BoxcarFilterOperation(size={"x": 3}, cval=np.inf),
+        lambda: UniformInterpolationOperation(sizes={}),
+        lambda: UniformInterpolationOperation(sizes={"x": 0}),
+        lambda: UniformInterpolationOperation(sizes={"x": True}),
+        lambda: UniformInterpolationOperation(sizes={"x": 1.5}),
+        lambda: FillNaOperation(value=np.nan),
+        lambda: ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x"},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x", "order": 0},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="curvature",
+            kwargs={"a0": 0.0, "factor": 1.0},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="scaled_laplace",
+            kwargs={"factor": np.inf},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="scaled_laplace",
+            kwargs={"factor": True},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": ["x"], "order": 2},
+        ),
+        lambda: ImageDerivativeOperation(
+            method="minimum_gradient",
+            kwargs={1: 2},
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            k=np.inf,
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            feather=np.inf,
+        ),
+    ],
+)
+def test_tool_output_operations_reject_invalid_parameters(operation_factory) -> None:
+    with pytest.raises((TypeError, ValidationError)):
+        operation_factory()
+
+
+def test_uniform_interpolation_uses_current_coordinate_bounds() -> None:
+    operation = UniformInterpolationOperation(sizes={"x": 5})
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [10.0, 20.0, 40.0], "y": [0.0, 1.0]},
+    )
+    expected = data.interp(x=np.linspace(10.0, 40.0, 5))
+
+    xr.testing.assert_identical(
+        operation.apply(data, parent_data=data),
+        expected,
+    )
+    namespace = _exec_generated_code(
+        operation.replay_code("data", output_name="derived"),
+        {"data": data},
+    )
+    generated = namespace["derived"]
+    assert isinstance(generated, xr.DataArray)
+    xr.testing.assert_identical(generated, expected)
+
+
+def test_assignment_code_wraps_generator_calls_without_changing_behavior() -> None:
+    output_name = "generated_result_with_a_name_long_enough_to_require_wrapping"
+    code = _assignment_code(
+        output_name,
+        "sum(value for value in range(10))",
+    )
+    assert "\n" in code
+    namespace: dict[str, object] = {}
+    exec(code, {"sum": sum, "range": range}, namespace)  # noqa: S102
+    assert namespace[output_name] == 45
 
 
 def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
@@ -2775,7 +2885,7 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         data.transpose(*reversed(data.dims)),
     )
     assert TransposeOperation().derivation_entry().code == (
-        "derived = derived.transpose(*reversed(derived.dims))"
+        "derived = derived.transpose()"
     )
     assert SortCoordOrderOperation().derivation_entry().copyable is True
     assert SelOperation(kwargs={"x": 1.0}).derivation_entry().label.startswith("sel(")

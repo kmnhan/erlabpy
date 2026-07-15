@@ -1,3 +1,4 @@
+import pathlib
 import typing
 
 import numpy as np
@@ -7,7 +8,19 @@ from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive._mesh import MeshTool, meshtool
-from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
+from erlab.interactive.imagetool._provenance._model import (
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
+    ToolProvenanceSpec,
+    file_load,
+    parse_tool_provenance_spec,
+    script,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    RemoveMeshOperation,
+    ScriptCodeOperation,
+)
 
 
 @pytest.fixture
@@ -98,9 +111,15 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
 ) -> None:
     win: MeshTool = meshtool(meshy_data, data_name="mesh_data", execute=False)
     qtbot.addWidget(win)
-
-    win._corrected = meshy_data.copy(deep=True) + 1
-    win._mesh = meshy_data.copy(deep=True) - 1
+    win.order_spin.setValue(1)
+    win.n_pad_spin.setValue(0)
+    win.roi_hw_spin.setValue(8)
+    win.p0_spin0.setValue(16)
+    win.p0_spin1.setValue(20)
+    win.p1_spin0.setValue(16)
+    win.p1_spin1.setValue(12)
+    win.update()
+    qtbot.wait_until(lambda: win._corrected is not None and win._mesh is not None)
 
     for output_id, expected_name in (
         (MeshTool.Output.CORRECTED, "corrected"),
@@ -116,17 +135,149 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
 
         reparsed = parse_tool_provenance_spec(payload)
         assert reparsed is not None
+        assert isinstance(reparsed.operations[-1], RemoveMeshOperation)
+        assert reparsed.operations[-1].output == expected_name
+        xr.testing.assert_identical(
+            reparsed.operations[-1].apply(meshy_data, parent_data=meshy_data),
+            typing.cast("xr.DataArray", win.output_imagetool_data(output_id)),
+        )
         code = reparsed.display_code()
         assert code is not None
         assert "corrected, mesh =" in code
         assert ")[0]" not in code
         assert ")[1]" not in code
+        assert max(map(len, code.splitlines())) <= 88
+        namespace: dict[str, object] = {
+            "era": erlab.analysis,
+            "mesh_data": meshy_data,
+        }
+        exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+        output = namespace[expected_name]
+        assert isinstance(output, xr.DataArray)
+        xr.testing.assert_identical(
+            typing.cast("xr.DataArray", win.output_imagetool_data(output_id)),
+            output,
+        )
+
+    corrected_operation = win._mesh_provenance_operation(output="corrected")
+    assert corrected_operation.statement_code(
+        "mesh", output_name="corrected"
+    ).startswith("corrected, mesh_2 =")
+    mesh_operation = win._mesh_provenance_operation(output="mesh")
+    assert mesh_operation.statement_code("corrected", output_name="mesh").startswith(
+        "corrected_2, mesh ="
+    )
+
+    corrected_collision_code = corrected_operation.statement_code(
+        "mesh",
+        output_name="mesh_output",
+    )
+    corrected_namespace: dict[str, object] = {
+        "era": erlab.analysis,
+        "mesh": meshy_data,
+    }
+    exec(  # noqa: S102
+        corrected_collision_code,
+        {"__builtins__": {}},
+        corrected_namespace,
+    )
+    xr.testing.assert_identical(
+        typing.cast("xr.DataArray", corrected_namespace["mesh_output"]),
+        corrected_operation.apply(meshy_data, parent_data=meshy_data),
+    )
+
+    mesh_collision_code = mesh_operation.statement_code(
+        "corrected",
+        output_name="corrected_output",
+    )
+    mesh_namespace: dict[str, object] = {
+        "era": erlab.analysis,
+        "corrected": meshy_data,
+    }
+    exec(mesh_collision_code, {"__builtins__": {}}, mesh_namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        typing.cast("xr.DataArray", mesh_namespace["corrected_output"]),
+        mesh_operation.apply(meshy_data, parent_data=meshy_data),
+    )
+
+
+def test_remove_mesh_replay_preserves_reserved_tuple_binding(
+    meshy_data, tmp_path
+) -> None:
+    operation = RemoveMeshOperation(
+        first_order_peaks=((16, 16), (16, 20), (16, 12)),
+        order=1,
+        n_pad=0,
+        roi_hw=8,
+        output="corrected",
+    )
+    data_path = tmp_path / "mesh_removal_input.nc"
+    existing_mesh_path = tmp_path / "existing_mesh.nc"
+    existing_mesh = xr.zeros_like(meshy_data) + 2.0
+    meshy_data.to_netcdf(data_path)
+    existing_mesh.to_netcdf(existing_mesh_path)
+
+    def file_spec(path: pathlib.Path) -> ToolProvenanceSpec:
+        load_code = f"derived = xr.load_dataarray({str(path)!r})"
+        return file_load(
+            start_label=f"Load {path.name}",
+            seed_code=load_code,
+            file_load_source=FileLoadSource(
+                path=str(path),
+                loader_label="xarray.load_dataarray",
+                loader_text="xarray.load_dataarray",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_dataarray",
+                    selected_index=0,
+                ),
+                load_code=load_code,
+            ),
+        )
+
+    provenance = script(
+        operation,
+        ScriptCodeOperation(
+            label="Combine corrected data with an existing mesh array",
+            code="result = corrected + mesh",
+        ),
+        start_label="Start from mesh-removal inputs",
+        seed_code="derived = data",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                label="Mesh-removal input",
+                provenance_spec=file_spec(data_path),
+            ),
+            ScriptInput(
+                name="mesh",
+                label="Existing mesh array",
+                provenance_spec=file_spec(existing_mesh_path),
+            ),
+        ),
+    )
+    code = provenance.display_code()
+    assert code is not None
+    assert "corrected, mesh_2 = era.mesh.remove_mesh(" in code
+
+    namespace: dict[str, object] = {
+        "era": erlab.analysis,
+        "xr": xr,
+    }
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    expected = operation.apply(meshy_data, parent_data=meshy_data) + existing_mesh
+    xr.testing.assert_identical(
+        typing.cast("xr.DataArray", namespace["result"]),
+        expected,
+    )
 
 
 def test_meshtool_autofind_and_persistence(
     qtbot, meshy_data, tmp_path, monkeypatch
 ) -> None:
-    win: MeshTool = meshtool(meshy_data, execute=False)
+    win: MeshTool = meshtool(meshy_data, data_name="mesh_input", execute=False)
     qtbot.addWidget(win)
 
     win.n_pad_spin.setValue(0)
@@ -171,6 +322,7 @@ def test_meshtool_autofind_and_persistence(
     assert "No mesh data" in warnings[-1]
 
     state_file = tmp_path / "meshtool_state.h5"
+    saved_code = win.copy_code()
     win.to_file(state_file)
 
     restored = erlab.interactive.utils.ToolWindow.from_file(state_file)
@@ -178,7 +330,23 @@ def test_meshtool_autofind_and_persistence(
     assert isinstance(restored, MeshTool)
 
     assert restored.tool_status == win.tool_status
+    assert restored.data_name == "mesh_input"
+    assert restored.copy_code() == saved_code
     xr.testing.assert_identical(restored.tool_data, win.tool_data)
+
+    namespace: dict[str, object] = {
+        "era": erlab.analysis,
+        "mesh_input": meshy_data,
+    }
+    exec(restored.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    corrected, mesh = erlab.analysis.mesh.remove_mesh(
+        meshy_data,
+        **restored.get_params_dict(),
+    )
+    xr.testing.assert_identical(
+        typing.cast("xr.DataArray", namespace["corrected"]), corrected
+    )
+    xr.testing.assert_identical(typing.cast("xr.DataArray", namespace["mesh"]), mesh)
 
 
 def test_meshtool_deferred_restore_queues_initial_preview(
